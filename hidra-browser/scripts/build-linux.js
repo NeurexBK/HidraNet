@@ -1,0 +1,378 @@
+#!/usr/bin/env node
+/**
+ * HidraNet Browser — Linux Package Builder (cross-platform)
+ *
+ * Runs on Windows/Linux/macOS. Downloads the official Electron Linux ZIP
+ * from GitHub, renames the binary to hidranet, adds our app source,
+ * and produces a ZIP with correct Unix permissions (+x on the binary).
+ *
+ * Usage:
+ *   node scripts/build-linux.js          # x64 only
+ *   node scripts/build-linux.js x64
+ *   node scripts/build-linux.js arm64
+ *   node scripts/build-linux.js all      # x64 + arm64
+ */
+'use strict';
+
+const fs    = require('fs');
+const path  = require('path');
+const https = require('https');
+const { deflateRawSync, inflateRawSync } = require('zlib');
+
+const ELECTRON_VER = '33.4.11';
+const APP_NAME     = 'hidranet';       // lowercase binary name
+const APP_DISPLAY  = 'HidraNet';      // human-readable
+const VERSION      = '1.0.0';
+const ROOT         = path.join(__dirname, '..');
+const DIST         = path.join(ROOT, 'dist');
+const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
+const ARCH_ARG     = process.argv[2] || 'x64';
+
+// ── CRC-32 ───────────────────────────────────────────────────────────────────
+const CRC_TBL = (function() {
+  var t = new Uint32Array(256);
+  for (var i = 0; i < 256; i++) {
+    var c = i;
+    for (var j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  var c = 0xFFFFFFFF;
+  for (var i = 0; i < buf.length; i++) c = CRC_TBL[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// ── ZIP Reader ────────────────────────────────────────────────────────────────
+function readZip(buf) {
+  var eocd = -1;
+  for (var i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('EOCD not found — not a valid ZIP');
+
+  var cdCount  = buf.readUInt16LE(eocd + 10);
+  var cdOffset = buf.readUInt32LE(eocd + 16);
+  var entries  = [];
+  var pos      = cdOffset;
+
+  for (var n = 0; n < cdCount; n++) {
+    if (buf.readUInt32LE(pos) !== 0x02014b50) throw new Error('Bad CD signature at ' + pos);
+    var versionMadeBy = buf.readUInt16LE(pos + 4);
+    var method        = buf.readUInt16LE(pos + 10);
+    var crc           = buf.readUInt32LE(pos + 16);
+    var compSz        = buf.readUInt32LE(pos + 20);
+    var uncompSz      = buf.readUInt32LE(pos + 24);
+    var fnLen         = buf.readUInt16LE(pos + 28);
+    var exLen         = buf.readUInt16LE(pos + 30);
+    var cmLen         = buf.readUInt16LE(pos + 32);
+    var extAttr       = buf.readUInt32LE(pos + 38);
+    var lhOffset      = buf.readUInt32LE(pos + 42);
+    var filename      = buf.slice(pos + 46, pos + 46 + fnLen).toString('utf8');
+
+    var lhFnLen   = buf.readUInt16LE(lhOffset + 26);
+    var lhExLen   = buf.readUInt16LE(lhOffset + 28);
+    var dataStart = lhOffset + 30 + lhFnLen + lhExLen;
+    var rawData   = Buffer.from(buf.slice(dataStart, dataStart + compSz));
+
+    entries.push({ filename, method, crc, compSz, uncompSz, extAttr, versionMadeBy, rawData });
+    pos += 46 + fnLen + exLen + cmLen;
+  }
+  return entries;
+}
+
+// ── ZIP Writer ────────────────────────────────────────────────────────────────
+function writeZip(entries) {
+  var lhParts = [];
+  var cdParts = [];
+  var offset  = 0;
+
+  for (var i = 0; i < entries.length; i++) {
+    var e       = entries[i];
+    var nameBuf = Buffer.from(e.filename, 'utf8');
+
+    var lh = Buffer.alloc(30 + nameBuf.length);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(0, 6);
+    lh.writeUInt16LE(e.method, 8);
+    lh.writeUInt32LE(0, 10);
+    lh.writeUInt32LE(e.crc, 14);
+    lh.writeUInt32LE(e.compSz, 18);
+    lh.writeUInt32LE(e.uncompSz, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);
+    nameBuf.copy(lh, 30);
+
+    var cd = Buffer.alloc(46 + nameBuf.length);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(e.versionMadeBy || 0x0314, 4); // Unix 2.0
+    cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(0, 8);
+    cd.writeUInt16LE(e.method, 10);
+    cd.writeUInt32LE(0, 12);
+    cd.writeUInt32LE(e.crc, 16);
+    cd.writeUInt32LE(e.compSz, 20);
+    cd.writeUInt32LE(e.uncompSz, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt16LE(0, 30);
+    cd.writeUInt16LE(0, 32);
+    cd.writeUInt16LE(0, 34);
+    cd.writeUInt16LE(0, 36);
+    cd.writeUInt32LE(e.extAttr, 38);  // Unix permissions
+    cd.writeUInt32LE(offset, 42);
+    nameBuf.copy(cd, 46);
+
+    lhParts.push(lh, e.rawData);
+    cdParts.push(cd);
+    offset += lh.length + e.rawData.length;
+  }
+
+  var cdBuf = Buffer.concat(cdParts);
+  var eocd  = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat(lhParts.concat([cdBuf, eocd]));
+}
+
+// ── Entry helpers ─────────────────────────────────────────────────────────────
+var UNIX_VER = 0x0314;
+
+function mkFile(filename, data, mode) {
+  mode = mode || 0o644;
+  var comp    = deflateRawSync(data, { level: 6 });
+  var useComp = comp.length < data.length;
+  return {
+    filename,
+    method:        useComp ? 8 : 0,
+    crc:           crc32(data),
+    compSz:        useComp ? comp.length : data.length,
+    uncompSz:      data.length,
+    extAttr:       ((0o100000 | mode) << 16) >>> 0,
+    versionMadeBy: UNIX_VER,
+    rawData:       useComp ? comp : data
+  };
+}
+
+function mkDir(filename) {
+  if (!filename.endsWith('/')) filename += '/';
+  return {
+    filename,
+    method: 0, crc: 0, compSz: 0, uncompSz: 0,
+    extAttr:       (0o040755 << 16) >>> 0,
+    versionMadeBy: UNIX_VER,
+    rawData:       Buffer.alloc(0)
+  };
+}
+
+// ── HTTPS download with redirect + progress ───────────────────────────────────
+function download(url, dest, redirects) {
+  redirects = redirects === undefined ? 10 : redirects;
+  return new Promise(function(resolve, reject) {
+    var file = fs.createWriteStream(dest);
+    https.get(url, { headers: { 'User-Agent': 'HidraNet-Linux-Builder/1.0' } }, function(res) {
+      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch(_) {}
+        if (redirects <= 0) return reject(new Error('Too many redirects'));
+        return download(res.headers.location, dest, redirects - 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        try { fs.unlinkSync(dest); } catch(_) {}
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      var total = parseInt(res.headers['content-length'] || '0');
+      var recv = 0, lastPct = -1;
+      res.on('data', function(chunk) {
+        recv += chunk.length;
+        if (total > 0) {
+          var pct = Math.floor(recv / total * 20) * 5;
+          if (pct !== lastPct) {
+            process.stdout.write('\r    ' + pct + '%  ' +
+              (recv / 1048576).toFixed(1) + ' / ' + (total / 1048576).toFixed(1) + ' MB   ');
+            lastPct = pct;
+          }
+        }
+      });
+      res.pipe(file);
+      file.on('finish', function() { file.close(); process.stdout.write('\n'); resolve(); });
+    }).on('error', function(err) {
+      file.close();
+      try { fs.unlinkSync(dest); } catch(_) {}
+      reject(err);
+    });
+  });
+}
+
+// ── Recursive dir scan ────────────────────────────────────────────────────────
+function scanDir(dir, base) {
+  base = base || dir;
+  var result = [];
+  fs.readdirSync(dir, { withFileTypes: true }).forEach(function(ent) {
+    var abs = path.join(dir, ent.name);
+    var rel = path.relative(base, abs).replace(/\\/g, '/');
+    if (ent.isDirectory()) {
+      result.push({ rel: rel + '/', abs: abs, isDir: true });
+      scanDir(abs, base).forEach(function(x) { result.push(x); });
+    } else {
+      result.push({ rel: rel, abs: abs, isDir: false });
+    }
+  });
+  return result;
+}
+
+// ── Build one architecture ────────────────────────────────────────────────────
+async function buildArch(arch) {
+  console.log('\n' + '─'.repeat(54));
+  console.log('  Linux ' + arch);
+  console.log('─'.repeat(54));
+
+  var cacheDir = path.join(DIST, 'electron-cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  var zipName  = 'electron-v' + ELECTRON_VER + '-linux-' + arch + '.zip';
+  var zipCache = path.join(cacheDir, zipName);
+  var dlUrl    = 'https://github.com/electron/electron/releases/download/v' +
+                 ELECTRON_VER + '/' + zipName;
+
+  if (!fs.existsSync(zipCache)) {
+    console.log('  Descarregando ' + zipName + ' ...');
+    console.log('  (GitHub → ~80 MB, pode demorar)');
+    await download(dlUrl, zipCache);
+    console.log('  Guardado em cache: ' + zipCache);
+  } else {
+    console.log('  Cache: ' + zipName);
+  }
+
+  console.log('  Lendo ZIP ...');
+  var srcBuf     = fs.readFileSync(zipCache);
+  var srcEntries = readZip(srcBuf);
+  console.log('  ' + srcEntries.length + ' entradas lidas.');
+
+  // Top-level folder name in the output zip
+  var PREFIX = APP_DISPLAY + '-Linux-' + arch + '/';
+
+  var outEntries = [];
+
+  // Add the top-level directory entry
+  outEntries.push(mkDir(PREFIX));
+
+  for (var i = 0; i < srcEntries.length; i++) {
+    var e    = srcEntries[i];
+    // Strip leading ./ if present
+    var orig = e.filename.replace(/^\.\//, '');
+
+    // Skip empty root directory entry (if any)
+    if (orig === '' || orig === '.') continue;
+
+    // Build new path with prefix
+    var name = PREFIX + orig;
+
+    // Rename Electron binary: PREFIX + 'electron' → PREFIX + 'hidranet'
+    if (orig === 'electron') name = PREFIX + APP_NAME;
+
+    // Skip default app
+    if (orig.indexOf('default_app.asar') !== -1) continue;
+
+    outEntries.push(Object.assign({}, e, { filename: name }));
+  }
+
+  // ── Add app source ────────────────────────────────────────────────────────
+  console.log('  Adicionando fonte do app ...');
+  var resPfx = PREFIX + 'resources/';
+  outEntries.push(mkDir(resPfx + 'app'));
+  outEntries.push(mkFile(
+    resPfx + 'app/package.json',
+    Buffer.from(JSON.stringify(
+      { name: 'hidra-browser', version: VERSION, main: 'src/main/main.js' },
+      null, 2
+    ), 'utf8')
+  ));
+  scanDir(path.join(ROOT, 'src')).forEach(function(item) {
+    var zp = resPfx + 'app/src/' + item.rel;
+    if (item.isDir) outEntries.push(mkDir(zp));
+    else outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
+  });
+
+  // ── Launcher script (0o755) ───────────────────────────────────────────────
+  var launcher = [
+    '#!/bin/bash',
+    '# HidraNet Browser — Iniciador Linux',
+    'DIR="$(cd "$(dirname "$0")" && pwd)"',
+    'BIN="$DIR/' + APP_NAME + '"',
+    'chmod +x "$BIN" 2>/dev/null',
+    '"$BIN" "$@"',
+    ''
+  ].join('\n');
+  outEntries.push(mkFile(PREFIX + 'iniciar.sh', Buffer.from(launcher, 'utf8'), 0o755));
+
+  // ── README ────────────────────────────────────────────────────────────────
+  var archNote = arch === 'arm64'
+    ? 'Linux ARM64 (Raspberry Pi 4+, servidores ARM, etc.)'
+    : 'Linux x86-64 (desktop/laptop padrão)';
+  var readme = [
+    APP_DISPLAY + ' Browser ' + VERSION + ' — Linux ' + arch,
+    'Para: ' + archNote,
+    '',
+    'COMO INICIAR',
+    '─'.repeat(40),
+    '',
+    'Opção A (script):',
+    '  chmod +x iniciar.sh && ./iniciar.sh',
+    '',
+    'Opção B (direto):',
+    '  chmod +x ' + APP_NAME + ' && ./' + APP_NAME,
+    '',
+    'DEPENDÊNCIAS',
+    '─'.repeat(40),
+    'Requer bibliotecas comuns do sistema (GTK3, libX11, libnss3).',
+    'Em Ubuntu/Debian:',
+    '  sudo apt install libgtk-3-0 libnss3 libasound2 libxss1',
+    '',
+    '                              — Equipa HidraNet',
+    ''
+  ].join('\n');
+  outEntries.push(mkFile(PREFIX + 'LEIA-ME.txt', Buffer.from(readme, 'utf8')));
+
+  // ── Write ZIP ─────────────────────────────────────────────────────────────
+  console.log('  Escrevendo ZIP (' + outEntries.length + ' entradas) ...');
+  var outBuf  = writeZip(outEntries);
+  var outName = 'HidraNet-Browser-' + VERSION + '-Linux-' + arch + '.zip';
+  var outPath = path.join(DESKTOP, outName);
+  fs.writeFileSync(outPath, outBuf);
+  console.log('  >>> ' + outName + ' (' + (outBuf.length / 1048576).toFixed(1) + ' MB) → Desktop');
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+(async function main() {
+  console.log('╔══════════════════════════════════════════════════════╗');
+  console.log('║  HidraNet Browser — Linux Package Builder           ║');
+  console.log('║  (cross-platform, pure Node.js, Unix perms OK)      ║');
+  console.log('╚══════════════════════════════════════════════════════╝');
+
+  fs.mkdirSync(DIST, { recursive: true });
+
+  var archs = ARCH_ARG === 'arm64' ? ['arm64']
+            : ARCH_ARG === 'all'   ? ['x64', 'arm64']
+            : ['x64'];
+
+  for (var i = 0; i < archs.length; i++) await buildArch(archs[i]);
+
+  console.log('\n╔══════════════════════════════════════════════════════╗');
+  console.log('║  Concluído! ZIP no Desktop.                         ║');
+  console.log('║                                                     ║');
+  console.log('║  Extrair e correr: chmod +x iniciar.sh && ./iniciar.sh ║');
+  console.log('╚══════════════════════════════════════════════════════╝');
+})().catch(function(e) {
+  console.error('\nERRO:', e.message);
+  process.exit(1);
+});

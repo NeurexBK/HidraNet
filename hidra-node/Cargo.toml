@@ -1,0 +1,36 @@
+[package]
+name = "hidra-node"
+version = "0.1.0"
+edition = "2024"
+description = "HidraNet secure relay node — military-grade encrypted overlay network"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+blake3 = "1"
+chacha20poly1305 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+config = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+rand_core = { version = "0.6", features = ["getrandom"] }
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+bincode = "1"
+rand = "0.8"
+futures = "0.3"
+bytes = "1"
+tokio-tungstenite = "0.24"
+sha1 = "0.10"
+http = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+pqc_kyber = { version = "0.7", features = ["kyber1024", "std"] }
+argon2 = "0.5"
+aes-gcm = "0.10"
+subtle = "2"

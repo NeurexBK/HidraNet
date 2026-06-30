@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Publicar Site .hidra na rede</title>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#06070d;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--danger:#ff5c6c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
+.wrap{max-width:760px;margin:0 auto;padding:26px 22px 50px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .logo{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:20px}
+.brand h1{font-size:1.08em;font-weight:700}
+.brand .sub{font-size:.7em;color:var(--txt3);text-transform:uppercase;letter-spacing:1.4px;margin-top:2px}
+.conn{display:flex;align-items:center;gap:8px;font-size:.8em;color:var(--txt2)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--txt3)}
+.dot.on{background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:22px;margin-bottom:18px}
+.card h2{font-size:1em;margin-bottom:6px}
+.card .d{color:var(--txt2);font-size:.86em;margin-bottom:16px;line-height:1.55}
+label{display:block;font-size:.8em;color:var(--txt2);margin:12px 0 6px}
+input,textarea,select{width:100%;padding:11px 13px;background:#0a0d16;border:1px solid var(--border);border-radius:9px;color:var(--txt);font-size:.9em;outline:none;font-family:inherit}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize:vertical;line-height:1.5}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border:none;border-radius:9px;font-weight:700;font-size:.92em;cursor:pointer}
+.btn-primary{background:var(--accent);color:#04120e}
+.btn-primary:hover{background:var(--accent2)}
+.btn-ghost{background:rgba(0,212,170,.1);color:var(--accent);border:1px solid rgba(0,212,170,.3)}
+.btn:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:10px;align-items:center}
+.spin{width:15px;height:15px;border:2px solid rgba(0,212,170,.3);border-top-color:var(--accent);border-radius:50%;animation:s .6s linear infinite;display:inline-block}
+@keyframes s{to{transform:rotate(360deg)}}
+.result{background:linear-gradient(135deg,#0e2a24,var(--card));border:1px solid rgba(0,212,170,.35)}
+.addr-box{display:flex;align-items:center;gap:10px;background:#0a0d16;border:1px solid var(--border);border-radius:10px;padding:13px 15px;margin:12px 0}
+.addr-box code{flex:1;color:var(--accent);font-family:'SF Mono',monospace;font-size:1em;font-weight:600;word-break:break-all}
+.addr-box button{background:none;border:none;color:var(--txt3);cursor:pointer;font-size:1.1em}
+.addr-box button:hover{color:var(--accent)}
+.mine{display:flex;flex-direction:column;gap:8px}
+.mine .it{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#0a0d16;border:1px solid var(--border);border-radius:10px;padding:11px 14px}
+.mine .it .nm{font-weight:600;font-size:.9em}
+.mine .it .ad{font-family:'SF Mono',monospace;font-size:.76em;color:var(--txt3)}
+.mine .it .st{font-size:.72em;color:var(--accent)}
+.empty{color:var(--txt3);font-style:italic;font-size:.86em;text-align:center;padding:14px}
+.msg{padding:11px 14px;border-radius:9px;font-size:.86em;margin-top:12px}
+.msg.ok{background:rgba(0,212,170,.1);color:var(--accent);border:1px solid rgba(0,212,170,.3)}
+.msg.err{background:rgba(255,92,108,.1);color:var(--danger);border:1px solid rgba(255,92,108,.3)}
+.hidden{display:none!important}
+.hint{font-size:.74em;color:var(--txt3);margin-top:6px;line-height:1.5}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--accent);color:#04120e;padding:11px 20px;border-radius:9px;font-weight:600;font-size:.88em;opacity:0;transition:.25s;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand"><div class="logo">🌐</div><div><h1>Publicar Site na Rede HidraNet</h1><div class="sub">Sites .hidra acessíveis de qualquer lugar</div></div></div>
+    <div class="conn"><span class="dot" id="cdot"></span><span id="ctxt">Conectando…</span></div>
+  </div>
+
+  <div class="card">
+    <h2>1. Escolha o site</h2>
+    <div class="d">Pegue um site que você criou no SevenNine, ou cole o HTML aqui. Ele será criptografado e publicado na rede.</div>
+    <label>Sites do SevenNine (se o HidraNet estiver conectado)</label>
+    <div class="row">
+      <select id="sn-sites"><option value="">— carregando… —</option></select>
+      <button class="btn btn-ghost" id="btn-load" style="white-space:nowrap">Carregar</button>
+    </div>
+    <label>Nome do site</label>
+    <input type="text" id="site-name" placeholder="Meu site" maxlength="40">
+    <label>HTML do site (página inicial)</label>
+    <textarea id="site-html" placeholder="<!DOCTYPE html><html>... cole aqui ou carregue do SevenNine ..."></textarea>
+    <div class="hint">Dica: páginas extras (loja.html etc.) também são publicadas se você carregar do SevenNine.</div>
+  </div>
+
+  <div class="card">
+    <h2>2. Publicar</h2>
+    <div class="d">Gera um endereço <b>.hidra</b> secreto (é a chave de acesso). Quem tiver o endereço acessa de qualquer rede; o conteúdo fica criptografado de ponta a ponta.</div>
+    <button class="btn btn-primary" id="btn-pub"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg> Publicar na rede</button>
+    <div id="msg"></div>
+
+    <div id="result" class="result card hidden" style="margin-top:16px">
+      <h2 style="color:var(--accent)">✓ Site publicado!</h2>
+      <div class="d">Compartilhe este endereço com quem você quiser. Eles abrem na barra do HidraNet:</div>
+      <div class="addr-box"><code id="r-addr"></code><button onclick="copyAddr()" title="Copiar">⧉</button></div>
+      <div class="row">
+        <a class="btn btn-ghost" id="r-open" target="_blank">Abrir o site</a>
+      </div>
+      <div class="hint" style="margin-top:10px">⚠️ Deixe esta janela aberta: enquanto aberta, o site é mantido no ar (re-publicado a cada minuto). Se fechar tudo por muito tempo, o site pode sair do ar.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Meus sites publicados</h2>
+    <div class="mine" id="mine"><div class="empty">Nenhum site publicado ainda.</div></div>
+  </div>
+</div>
+<div class="toast" id="toast">Copiado!</div>
+
+<script>
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+var enc=new TextEncoder(), dec=new TextDecoder();
+var mqttClient=null, published=[];  // {name, addr, bundle}
+var lastAddr='';
+
+// ── cripto: endereco .hidra = chave secreta ──
+function b32(bytes){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<bytes.length;i++){v=(v<<8)|bytes[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
+function newAddr(){var r=crypto.getRandomValues(new Uint8Array(16));return b32(r)+'.hidra';}
+async function deriveKey(a){var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function siteTopic(a){var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a));var u=new Uint8Array(b),h='';for(var i=0;i<16;i++)h+=u[i].toString(16).padStart(2,'0');return 'hsite/'+h;}
+async function E(k,t){var iv=crypto.getRandomValues(new Uint8Array(12));var c=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,enc.encode(t));var o=new Uint8Array(12+c.byteLength);o.set(iv);o.set(new Uint8Array(c),12);var s='';for(var i=0;i<o.length;i++)s+=String.fromCharCode(o[i]);return btoa(s);}
+
+function connect(){
+  mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidrapub_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
+  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Conectado'; repubAll(); });
+  mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconectando…'; });
+}
+
+async function loadFromSevenNine(){
+  try{
+    var r=await fetch('http://127.0.0.1:8084/api/sites'); var d=await r.json();
+    var sel=$('sn-sites');
+    if(d&&d.ok&&d.sites&&d.sites.length){ sel.innerHTML='<option value="">— escolha um site —</option>'+d.sites.map(function(s){return '<option value="'+esc(s.name)+'">'+esc(s.name)+' ('+s.files.length+' arq.)</option>';}).join(''); }
+    else sel.innerHTML='<option value="">— nenhum site no SevenNine —</option>';
+  }catch(e){ $('sn-sites').innerHTML='<option value="">— SevenNine offline —</option>'; }
+}
+async function loadSelected(){
+  var name=$('sn-sites').value; if(!name) return;
+  try{
+    var r=await fetch('http://127.0.0.1:8084/sites/'+name+'/'); var html=await r.text();
+    $('site-name').value=name; $('site-html').value=html;
+    showMsg('Site "'+name+'" carregado do SevenNine.','ok');
+  }catch(e){ showMsg('Não consegui carregar do SevenNine.','err'); }
+}
+
+async function publish(){
+  var name=$('site-name').value.trim()||'Site';
+  var html=$('site-html').value.trim();
+  if(!html){ showMsg('Cole o HTML ou carregue um site do SevenNine.','err'); return; }
+  var btn=$('btn-pub'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Publicando…';
+  try{
+    var addr=newAddr();
+    var bundle={'index.html':html};
+    await doPublish(addr,bundle);
+    published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
+    lastAddr=addr;
+    $('r-addr').textContent=addr;
+    $('r-open').href='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
+    $('result').classList.remove('hidden');
+    showMsg('','');
+  }catch(e){ showMsg('Erro ao publicar: '+e.message,'err'); }
+  btn.disabled=false; btn.innerHTML=old;
+}
+async function doPublish(addr,bundle){
+  var key=await deriveKey(addr), top=await siteTopic(addr);
+  var ct=await E(key,JSON.stringify(bundle));
+  if(ct.length>900000) throw new Error('site muito grande (máx ~600 KB)');
+  return new Promise(function(res,rej){
+    if(!mqttClient||!mqttClient.connected) return rej(new Error('sem conexão'));
+    mqttClient.publish(top,ct,{qos:0,retain:true},function(err){ err?rej(err):res(); });
+  });
+}
+function repubAll(){ published.forEach(function(p){ doPublish(p.addr,p.bundle).catch(function(){}); }); }
+setInterval(repubAll,60000); // mantém os sites "no ar"
+
+function saveMine(){ try{ localStorage.setItem('hidra_pub_sites',JSON.stringify(published)); }catch(e){} }
+function loadMine(){ try{ published=JSON.parse(localStorage.getItem('hidra_pub_sites')||'[]'); }catch(e){ published=[]; } renderMine(); }
+function renderMine(){
+  var el=$('mine');
+  if(!published.length){ el.innerHTML='<div class="empty">Nenhum site publicado ainda.</div>'; return; }
+  el.innerHTML=published.map(function(p,i){
+    return '<div class="it"><div><div class="nm">'+esc(p.name)+'</div><div class="ad">'+esc(p.addr)+'</div></div>'+
+      '<div class="row"><span class="st">no ar</span><a class="btn btn-ghost" style="padding:6px 12px;font-size:.78em" target="_blank" href="http://127.0.0.1:8090/site?addr='+encodeURIComponent(p.addr)+'">Abrir</a>'+
+      '<button class="btn btn-ghost" style="padding:6px 10px;font-size:.78em" onclick="copyOne('+i+')">Copiar</button></div></div>';
+  }).join('');
+}
+window.copyOne=function(i){ copy(published[i].addr); };
+window.copyAddr=function(){ copy(lastAddr); };
+function copy(s){ if(navigator.clipboard){ navigator.clipboard.writeText(s).then(toast); } }
+function toast(){ var t=$('toast'); t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},1500); }
+function showMsg(s,type){ var m=$('msg'); if(!s){m.innerHTML='';return;} m.className='msg '+type; m.textContent=s; }
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+
+$('btn-load').onclick=loadSelected;
+$('btn-pub').onclick=publish;
+loadMine(); connect(); loadFromSevenNine();
+</script>
+</body>
+</html>

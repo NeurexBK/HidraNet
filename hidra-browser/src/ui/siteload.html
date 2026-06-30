@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carregando site .hidra…</title>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#06070d;color:#e9ecf5;display:flex;flex-direction:column}
+.bar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:#0b0d16;border-bottom:1px solid #1c2133;font-size:.8em;color:#9aa3bd;flex-shrink:0}
+.bar .lock{color:#00d4aa}
+.bar code{color:#00d4aa;font-family:'SF Mono',monospace;font-size:.92em;word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+.bar .st{margin-left:auto;color:#5b6480}
+#frame{flex:1;border:none;width:100%;background:#fff}
+.center{flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;text-align:center;padding:30px}
+.spin{width:34px;height:34px;border:3px solid #1a1a2e;border-top-color:#00d4aa;border-radius:50%;animation:s .8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+.center h2{color:#00d4aa;font-weight:400;font-size:1.2em}
+.center.err h2{color:#ff5c6c}
+.center p{color:#5b6480;font-size:.9em;max-width:380px;line-height:1.6}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="bar">
+  <span class="lock">🔒</span><code id="addr">—</code>
+  <span class="st" id="st">conectando…</span>
+</div>
+<div class="center" id="loading">
+  <div class="spin"></div>
+  <h2>Buscando site na rede HidraNet</h2>
+  <p>Conteúdo criptografado — descriptografando com o endereço…</p>
+</div>
+<div class="center err hidden" id="error">
+  <h2>Site não encontrado</h2>
+  <p id="err-msg">Este site .hidra não está no ar no momento, ou o endereço está incorreto.</p>
+</div>
+<iframe id="frame" class="hidden" sandbox="allow-same-origin allow-popups allow-forms"></iframe>
+
+<script>
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+var enc=new TextEncoder(), dec=new TextDecoder();
+var bundle=null, addr='', mqttClient=null, done=false;
+
+function qparam(n){ var m=new RegExp('[?&]'+n+'=([^&]+)').exec(location.search); return m?decodeURIComponent(m[1]):''; }
+async function deriveKey(a){var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function siteTopic(a){var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a));var u=new Uint8Array(b),h='';for(var i=0;i<16;i++)h+=u[i].toString(16).padStart(2,'0');return 'hsite/'+h;}
+async function D(k,b64){var raw=atob(b64),a=new Uint8Array(raw.length);for(var i=0;i<raw.length;i++)a[i]=raw.charCodeAt(i);if(a.length<13)return null;var p=await crypto.subtle.decrypt({name:'AES-GCM',iv:a.slice(0,12)},k,a.slice(12));return dec.decode(p);}
+
+function fail(m){ if(done)return; done=true; $('loading').classList.add('hidden'); $('error').classList.remove('hidden'); if(m)$('err-msg').textContent=m; $('st').textContent='offline'; if(mqttClient)try{mqttClient.end(true)}catch(e){} }
+
+async function start(){
+  addr=qparam('addr'); if(!addr.toLowerCase().endsWith('.hidra')) addr=addr+'.hidra';
+  $('addr').textContent=addr;
+  if(!addr||addr==='.hidra'){ fail('Endereço inválido.'); return; }
+  var key,top;
+  try{ key=await deriveKey(addr); top=await siteTopic(addr); }catch(e){ fail('Erro de criptografia.'); return; }
+  $('st').textContent='conectando…';
+  mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidrasee_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:0,keepalive:30});
+  mqttClient.on('connect',function(){ $('st').textContent='buscando…'; mqttClient.subscribe(top,{qos:0}); });
+  mqttClient.on('error',function(){ fail('Sem conexão com a rede.'); });
+  mqttClient.on('message',async function(t,payload){
+    if(done) return;
+    var plain=await D(key,payload.toString()).catch(function(){return null;});
+    if(plain===null){ fail('Não foi possível descriptografar (endereço incorreto).'); return; }
+    try{ bundle=JSON.parse(plain); }catch(e){ fail('Conteúdo inválido.'); return; }
+    done=true;
+    render('index.html');
+    $('loading').classList.add('hidden'); $('frame').classList.remove('hidden'); $('st').textContent='no ar';
+  });
+  setTimeout(function(){ fail(); }, 10000);
+}
+
+function normalize(p){ p=(p||'').split('#')[0].split('?')[0]; if(p.indexOf('/')>=0)p=p.split('/').pop(); if(!p||p==='')p='index.html'; return p; }
+function render(path){
+  if(!bundle) return;
+  var html=bundle[path]||bundle['index.html']||'<h1>Página não encontrada</h1>';
+  // injeta interceptador de links internos
+  var inject='<scr'+'ipt>document.addEventListener("click",function(e){var a=e.target.closest("a");if(!a)return;var h=a.getAttribute("href")||"";if(/^https?:|^mailto:|^#/.test(h))return;e.preventDefault();parent.postMessage({hnav:h},"*");},true);</scr'+'ipt>';
+  $('frame').srcdoc=html.replace(/<\/body>/i, inject+'</body>') === html ? html+inject : html.replace(/<\/body>/i, inject+'</body>');
+}
+window.addEventListener('message',function(ev){ var m=ev.data||{}; if(m.hnav){ render(normalize(m.hnav)); } });
+
+start();
+</script>
+</body>
+</html>

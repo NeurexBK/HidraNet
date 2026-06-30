@@ -1,0 +1,57 @@
+{
+  "name": "hidra-browser",
+  "version": "1.0.0",
+  "description": "HidraNet Browser — anonymous browsing with onion routing, E2E encryption",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "prebuild": "node scripts/prepare-build.js",
+    "build:win": "node scripts/prepare-build.js && electron-builder --win --x64",
+    "build:linux": "node scripts/prepare-build.js && electron-builder --linux --x64",
+    "build:mac": "node scripts/prepare-build.js && node scripts/build-mac.js",
+    "build:linux-zip": "node scripts/prepare-build.js && node scripts/build-linux.js",
+    "build:all": "node scripts/prepare-build.js && electron-builder --win --linux --x64",
+    "build": "node scripts/prepare-build.js && electron-builder --win --x64",
+    "pack": "node scripts/pack-portable.js"
+  },
+  "author": "HidraNet <contact@hidranet.org>",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "net.hidra.browser",
+    "productName": "HidraNet Browser",
+    "artifactName": "HidraNet-Browser-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "dir", "arch": ["x64"] }
+      ],
+      "signAndEditExecutable": false,
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        { "target": "dir", "arch": ["x64"] }
+      ],
+      "icon": "build/icons",
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.utilities"
+    }
+  }
+}

@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraMail</title>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--txt);height:100vh;overflow:hidden}
+.app{display:grid;grid-template-rows:auto 1fr;height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:11px}
+.brand .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:19px}
+.brand h1{font-size:1.02em;font-weight:700}
+.me{display:flex;align-items:center;gap:12px}
+.me .addr{font-family:'SF Mono',monospace;font-size:.84em;color:var(--accent);background:var(--card);border:1px solid var(--border);padding:6px 11px;border-radius:8px;cursor:pointer}
+.me .addr:hover{border-color:var(--accent)}
+.conn{display:flex;align-items:center;gap:7px;font-size:.78em;color:var(--txt2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--txt3)}
+.dot.on{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+.iconbtn{background:var(--card);border:1px solid var(--border);color:var(--txt2);width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:1.05em;display:flex;align-items:center;justify-content:center}
+.iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+
+.main{display:grid;grid-template-columns:230px 340px 1fr;min-height:0}
+.col{min-height:0;overflow-y:auto;border-right:1px solid var(--border)}
+.side{background:var(--bg2);padding:16px 12px;display:flex;flex-direction:column;gap:6px}
+.btn-compose{display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent);color:#04120e;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:.92em;cursor:pointer;margin-bottom:10px}
+.btn-compose:hover{background:var(--accent2)}
+.folder{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;cursor:pointer;color:var(--txt2);font-size:.9em}
+.folder:hover{background:var(--card)}
+.folder.active{background:var(--card);color:var(--txt);font-weight:600}
+.folder .ic{width:18px;text-align:center}
+.folder .ct{margin-left:auto;font-size:.78em;color:var(--txt3);background:var(--card2);padding:1px 7px;border-radius:10px}
+.folder.active .ct,.folder .ct.unread{color:var(--accent)}
+.side-sep{height:1px;background:var(--border);margin:10px 4px}
+.side-t{font-size:.66em;color:var(--txt3);text-transform:uppercase;letter-spacing:1.2px;padding:4px 12px;font-weight:700}
+.alias{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:.8em;color:var(--txt2)}
+.alias:hover{background:var(--card)}
+.alias.active{color:var(--accent)}
+.alias code{font-family:monospace;font-size:.92em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.listcol{background:var(--bg)}
+.search{position:sticky;top:0;background:var(--bg);padding:12px;border-bottom:1px solid var(--border);z-index:2}
+.search input{width:100%;padding:9px 13px;background:var(--card);border:1px solid var(--border);border-radius:8px;color:var(--txt);font-size:.86em;outline:none}
+.search input:focus{border-color:var(--accent)}
+.mail-item{padding:13px 16px;border-bottom:1px solid var(--border);cursor:pointer}
+.mail-item:hover{background:var(--bg2)}
+.mail-item.sel{background:var(--card);border-left:3px solid var(--accent);padding-left:13px}
+.mail-item.unread .mi-from{font-weight:700;color:var(--txt)}
+.mail-item.unread .mi-subj{color:var(--txt);font-weight:600}
+.mail-item.unread::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px;vertical-align:middle}
+.mi-top{display:flex;justify-content:space-between;gap:8px;margin-bottom:3px}
+.mi-from{font-size:.88em;color:var(--txt2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mi-date{font-size:.74em;color:var(--txt3);white-space:nowrap}
+.mi-subj{font-size:.86em;color:var(--txt2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mi-prev{font-size:.78em;color:var(--txt3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.empty{color:var(--txt3);text-align:center;padding:40px 20px;font-style:italic;font-size:.88em}
+
+.view{padding:24px 28px;overflow-y:auto}
+.v-subj{font-size:1.4em;font-weight:700;margin-bottom:14px}
+.v-meta{display:flex;align-items:center;gap:12px;padding-bottom:16px;border-bottom:1px solid var(--border);margin-bottom:18px}
+.v-av{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;color:#04120e}
+.v-from{font-weight:600}
+.v-addr{font-size:.8em;color:var(--txt3);font-family:monospace}
+.v-date{margin-left:auto;font-size:.82em;color:var(--txt3)}
+.v-body{line-height:1.7;color:var(--txt);white-space:pre-wrap;font-size:.95em;word-break:break-word}
+.v-actions{display:flex;gap:9px;margin-bottom:18px}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:9px;font-size:.86em;font-weight:600;cursor:pointer;border:none}
+.btn-p{background:var(--accent);color:#04120e}.btn-p:hover{background:var(--accent2)}
+.btn-g{background:var(--card);color:var(--txt2);border:1px solid var(--border)}.btn-g:hover{color:var(--txt);border-color:var(--accent)}
+.btn-d{background:transparent;color:var(--danger);border:1px solid rgba(255,92,108,.3)}.btn-d:hover{background:rgba(255,92,108,.1)}
+.center-msg{display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:14px;color:var(--txt3);text-align:center;padding:30px}
+.center-msg .big{font-size:2.6em;opacity:.5}
+
+/* compose / modal */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:flex;align-items:center;justify-content:center}
+.modal.hidden{display:none}
+.compose{background:var(--card);border:1px solid var(--border);border-radius:16px;width:640px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
+.c-head{display:flex;align-items:center;justify-content:space-between;padding:15px 20px;border-bottom:1px solid var(--border)}
+.c-head h3{font-size:1em}
+.c-body{padding:16px 20px;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+.c-body input,.c-body textarea{width:100%;padding:11px 13px;background:var(--bg2);border:1px solid var(--border);border-radius:9px;color:var(--txt);font-size:.9em;outline:none;font-family:inherit}
+.c-body input:focus,.c-body textarea:focus{border-color:var(--accent)}
+.c-body textarea{min-height:200px;resize:vertical;line-height:1.6}
+.c-foot{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:1px solid var(--border)}
+.c-foot .stat{margin-left:auto;font-size:.8em;color:var(--txt3)}
+.modal-sm .compose{width:460px}
+.opt{display:flex;flex-direction:column;gap:8px}
+.opt .it{display:flex;align-items:center;justify-content:space-between;background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:11px 13px}
+.opt .it code{font-family:monospace;font-size:.82em;color:var(--accent);overflow:hidden;text-overflow:ellipsis}
+.muted{color:var(--txt3);font-size:.82em;line-height:1.5}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--accent);color:#04120e;padding:11px 20px;border-radius:9px;font-weight:600;font-size:.86em;opacity:0;transition:.25s;pointer-events:none;z-index:200}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.spin{width:14px;height:14px;border:2px solid rgba(4,18,14,.3);border-top-color:#04120e;border-radius:50%;animation:s .6s linear infinite;display:inline-block}
+@keyframes s{to{transform:rotate(360deg)}}
+::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><div class="logo">✉️</div><h1>HidraMail</h1></div>
+    <div class="me">
+      <span class="conn"><span class="dot" id="cdot"></span><span id="ctxt">conectando…</span></span>
+      <span class="addr" id="my-addr" title="Clique para copiar seu endereço">—</span>
+      <button class="iconbtn" id="btn-settings" title="Configurações / endereços">⚙</button>
+    </div>
+  </div>
+  <div class="main">
+    <aside class="col side">
+      <button class="btn-compose" id="btn-compose"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19h8M14 5l5 5L8 21H3v-5z"/></svg> Escrever</button>
+      <div class="folder active" data-folder="inbox"><span class="ic">📥</span> Caixa de entrada <span class="ct" id="ct-inbox">0</span></div>
+      <div class="folder" data-folder="sent"><span class="ic">📤</span> Enviados <span class="ct" id="ct-sent">0</span></div>
+      <div class="folder" data-folder="drafts"><span class="ic">📝</span> Rascunhos <span class="ct" id="ct-drafts">0</span></div>
+      <div class="folder" data-folder="trash"><span class="ic">🗑</span> Lixeira <span class="ct" id="ct-trash">0</span></div>
+      <div class="folder" data-folder="spam"><span class="ic">🚫</span> Spam <span class="ct" id="ct-spam">0</span></div>
+      <div class="side-sep"></div>
+      <div class="side-t">Meus endereços</div>
+      <div id="aliases"></div>
+      <div class="alias" id="btn-new-addr" style="color:var(--accent)">＋ Novo endereço</div>
+    </aside>
+
+    <section class="col listcol">
+      <div class="search"><input type="text" id="search" placeholder="🔍 Buscar (remetente, assunto, corpo)…"></div>
+      <div id="list"><div class="empty">Carregando…</div></div>
+    </section>
+
+    <section class="view" id="view">
+      <div class="center-msg"><div class="big">✉️</div><div>Selecione um e-mail para ler<br><span class="muted">ou clique em "Escrever" para enviar um novo.</span></div></div>
+    </section>
+  </div>
+</div>
+
+<!-- Compose -->
+<div class="modal hidden" id="m-compose">
+  <div class="compose">
+    <div class="c-head"><h3 id="c-title">Novo e-mail</h3><button class="iconbtn" onclick="closeCompose()">✕</button></div>
+    <div class="c-body">
+      <input type="text" id="c-to" placeholder="Para: endereço@hidra" autocomplete="off" spellcheck="false">
+      <input type="text" id="c-subj" placeholder="Assunto">
+      <textarea id="c-body" placeholder="Escreva sua mensagem…"></textarea>
+    </div>
+    <div class="c-foot">
+      <button class="btn btn-p" id="btn-send">Enviar 🔒</button>
+      <button class="btn btn-g" onclick="saveDraft()">Salvar rascunho</button>
+      <span class="stat" id="c-stat">Criptografado de ponta a ponta</span>
+    </div>
+  </div>
+</div>
+
+<!-- Settings / endereços -->
+<div class="modal modal-sm hidden" id="m-settings">
+  <div class="compose">
+    <div class="c-head"><h3>Endereços & Segurança</h3><button class="iconbtn" onclick="closeSettings()">✕</button></div>
+    <div class="c-body">
+      <div class="muted">Seu ID é um par de chaves no seu dispositivo. Você pode ter vários endereços (aliases) e trocar quando quiser — anônimo. E-mails antigos continuam acessíveis enquanto você guardar o endereço.</div>
+      <div class="side-t" style="padding-left:0;margin-top:6px">Seus endereços</div>
+      <div class="opt" id="set-aliases"></div>
+      <button class="btn btn-p" id="set-new" style="margin-top:6px">＋ Gerar novo endereço anônimo</button>
+      <div class="muted" style="margin-top:6px">⚠️ Para receber, deixe o HidraMail aberto. E-mails recebidos ficam salvos neste dispositivo.</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+var subtle=crypto.subtle, te=new TextEncoder(), td=new TextDecoder();
+var client=null, ready=false;
+var state={ ids:[], active:0, box:{inbox:[],sent:[],drafts:[],trash:[],spam:[]}, folder:'inbox', selId:null, search:'' };
+var resolvers={};
+
+// ───────── cripto ─────────
+function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
+function b64e(u){var s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s);}
+function b64d(s){var r=atob(s),u=new Uint8Array(r.length);for(var i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u;}
+async function genId(){
+  var kp=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+  var pubRaw=new Uint8Array(await subtle.exportKey('raw',kp.publicKey));
+  var addr=await addrFromPub(pubRaw);
+  return { addr:addr, pubRaw:b64e(pubRaw), privJwk:await subtle.exportKey('jwk',kp.privateKey), client:b32(crypto.getRandomValues(new Uint8Array(10))), created:Date.now() };
+}
+async function addrFromPub(pubRaw){ var h=new Uint8Array(await subtle.digest('SHA-256',pubRaw)); return b32(h.slice(0,10))+'@hidra'; }
+async function importPriv(jwk){ return subtle.importKey('jwk',jwk,{name:'ECDH',namedCurve:'P-256'},false,['deriveBits']); }
+async function importPub(raw){ return subtle.importKey('raw',raw,{name:'ECDH',namedCurve:'P-256'},false,[]); }
+async function deriveAES(priv,pub){ var b=await subtle.deriveBits({name:'ECDH',public:pub},priv,256); return subtle.importKey('raw',b,{name:'AES-GCM'},false,['encrypt','decrypt']); }
+async function encryptTo(recipPubRaw,text){
+  var eph=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+  var aes=await deriveAES(eph.privateKey, await importPub(recipPubRaw));
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  var ct=new Uint8Array(await subtle.encrypt({name:'AES-GCM',iv},aes,te.encode(text)));
+  var ep=new Uint8Array(await subtle.exportKey('raw',eph.publicKey));
+  var out=new Uint8Array(ep.length+12+ct.length); out.set(ep,0); out.set(iv,ep.length); out.set(ct,ep.length+12);
+  return b64e(out);
+}
+async function decryptWith(privJwk,b64){
+  var a=b64d(b64); var ep=a.slice(0,65),iv=a.slice(65,77),ct=a.slice(77);
+  var priv=await importPriv(privJwk);
+  var aes=await deriveAES(priv, await importPub(ep));
+  return td.decode(await subtle.decrypt({name:'AES-GCM',iv},aes,ct));
+}
+async function inboxTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmail:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmail/'+s; }
+async function dirTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmaildir:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmaildir/'+s; }
+
+// ───────── storage ─────────
+function save(){ try{ localStorage.setItem('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box})); }catch(e){} }
+function load(){ try{ var s=JSON.parse(localStorage.getItem('hmail_state')||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!state.box[k])state.box[k]=[]; } }catch(e){} }
+function activeId(){ return state.ids[state.active]; }
+
+// ───────── mqtt ─────────
+async function connect(){
+  var id=activeId(); if(!id) return;
+  $('ctxt').textContent='conectando…';
+  client=mqtt.connect(MQTT_BROKERS[0],{clientId:'hmail_'+id.client,clean:false,reconnectPeriod:4000,keepalive:30,protocolVersion:5,properties:{sessionExpiryInterval:86400}});
+  client.on('connect',async function(){
+    $('cdot').className='dot on'; $('ctxt').textContent='conectado';
+    // assina a caixa de TODOS os meus endereços (pra receber em qualquer alias)
+    for(var i=0;i<state.ids.length;i++){ client.subscribe(await inboxTopic(state.ids[i].addr)+'/+',{qos:1}); }
+    publishDirs();
+  });
+  client.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='reconectando…'; });
+  client.on('message',onMessage);
+  ready=true;
+}
+function publishDirs(){ state.ids.forEach(async function(id){ try{ client.publish(await dirTopic(id.addr), id.pubRaw, {qos:0,retain:true}); }catch(e){} }); }
+setInterval(function(){ if(client&&client.connected) publishDirs(); }, 120000);
+
+async function onMessage(topic,payload){
+  if(topic.indexOf('hmaildir/')===0){ var cb=resolvers[topic]; if(cb){ delete resolvers[topic]; try{client.unsubscribe(topic)}catch(e){} cb(payload.toString()); } return; }
+  // mensagem de e-mail numa das minhas caixas (tópico = inbox/<mid>, retido no relay)
+  var ps=payload.toString(); if(!ps) return; // mensagem vazia = apagada (tombstone)
+  for(var i=0;i<state.ids.length;i++){
+    var id=state.ids[i]; var t=await inboxTopic(id.addr);
+    if(topic.indexOf(t+'/')===0){
+      try{
+        var plain=await decryptWith(id.privJwk, ps);
+        var m=JSON.parse(plain);
+        for(var fk in state.box){ if(state.box[fk].some(function(x){return x.mid===m.mid;})) return; } // já tenho (qualquer pasta)
+        m.to=id.addr; m.read=false; m.folder='inbox'; m._t=topic; if(!m.mid)m.mid='m'+Date.now()+Math.random();
+        state.box.inbox.unshift(m); save(); renderAll(); notify(m);
+      }catch(e){ /* não era pra mim / corrompido */ }
+      return;
+    }
+  }
+}
+function dirResolve(addr){
+  return new Promise(async function(res){
+    var t=await dirTopic(addr); var done=false;
+    resolvers[t]=function(payload){ done=true; res(payload); };
+    client.subscribe(t,{qos:0});
+    setTimeout(function(){ if(!done){ delete resolvers[t]; try{client.unsubscribe(t)}catch(e){} res(null); } },7000);
+  });
+}
+
+async function sendMail(to,subject,body){
+  to=to.trim().toLowerCase(); if(to.indexOf('@hidra')<0) to=to+'@hidra';
+  if(!ready||!client.connected) return {ok:false,err:'Sem conexão com a rede.'};
+  var pub64=await dirResolve(to);
+  if(!pub64) return {ok:false,err:'Endereço não encontrado na rede (o destinatário precisa ter aberto o HidraMail ao menos uma vez).'};
+  var pubRaw=b64d(pub64);
+  // verifica que a chave bate com o endereço (auto-certificado, anti-falsificação)
+  var check=await addrFromPub(pubRaw); if(check!==to){ return {ok:false,err:'Falha de verificação do endereço.'}; }
+  var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
+  var payload={ mid:mid, from:activeId().addr, subject:subject, body:body, date:Date.now() };
+  var ct=await encryptTo(pubRaw, JSON.stringify(payload));
+  if(ct.length>800000) return {ok:false,err:'Mensagem grande demais (máx ~500 KB).'};
+  var toTopic=await inboxTopic(to)+'/'+mid;
+  await new Promise(function(r){ client.publish(toTopic, ct, {qos:1, retain:true}, function(){ r(); }); });
+  state.box.sent.unshift({ mid:mid, from:activeId().addr, to:to, subject:subject, body:body, date:Date.now(), read:true, folder:'sent' });
+  save();
+  return {ok:true};
+}
+
+// ───────── UI ─────────
+function renderAll(){ renderFolders(); renderAliases(); renderList(); }
+function renderFolders(){
+  $('ct-inbox').textContent=state.box.inbox.length; $('ct-inbox').className='ct'+(unread()>0?' unread':'');
+  $('ct-sent').textContent=state.box.sent.length; $('ct-drafts').textContent=state.box.drafts.length; $('ct-trash').textContent=state.box.trash.length; $('ct-spam').textContent=state.box.spam.length;
+  document.querySelectorAll('.folder[data-folder]').forEach(function(f){ f.classList.toggle('active', f.getAttribute('data-folder')===state.folder); });
+}
+function unread(){ return state.box.inbox.filter(function(m){return !m.read;}).length; }
+function renderAliases(){
+  var el=$('aliases');
+  el.innerHTML=state.ids.map(function(id,i){
+    return '<div class="alias'+(i===state.active?' active':'')+'" data-i="'+i+'"><span>'+(i===state.active?'●':'○')+'</span><code title="'+id.addr+'">'+id.addr+'</code></div>';
+  }).join('');
+  Array.prototype.forEach.call(el.querySelectorAll('.alias'),function(a){ a.onclick=function(){ switchAlias(parseInt(a.getAttribute('data-i'))); }; });
+  var me=activeId(); $('my-addr').textContent=me?me.addr:'—';
+}
+function fmtDate(t){ var d=new Date(t),n=new Date(); if(d.toDateString()===n.toDateString()) return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2); }
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+function renderList(){
+  var arr=(state.box[state.folder]||[]).slice();
+  if(state.search){ var q=state.search.toLowerCase(); arr=arr.filter(function(m){ return ((m.from||'')+(m.to||'')+(m.subject||'')+(m.body||'')).toLowerCase().indexOf(q)>=0; }); }
+  var el=$('list');
+  if(!arr.length){ el.innerHTML='<div class="empty">Nenhum e-mail aqui.</div>'; return; }
+  el.innerHTML=arr.map(function(m){
+    var who=(state.folder==='sent')?('Para: '+m.to):(m.from||'desconhecido');
+    return '<div class="mail-item'+(m.read?'':' unread')+(m.mid===state.selId?' sel':'')+'" data-mid="'+m.mid+'">'+
+      '<div class="mi-top"><span class="mi-from">'+esc(who)+'</span><span class="mi-date">'+fmtDate(m.date)+'</span></div>'+
+      '<div class="mi-subj">'+esc(m.subject||'(sem assunto)')+'</div>'+
+      '<div class="mi-prev">'+esc((m.body||'').slice(0,80))+'</div></div>';
+  }).join('');
+  Array.prototype.forEach.call(el.querySelectorAll('.mail-item'),function(it){ it.onclick=function(){ openMail(it.getAttribute('data-mid')); }; });
+}
+function findMail(mid){ for(var f in state.box){ var m=state.box[f].filter(function(x){return x.mid===mid;})[0]; if(m) return m; } return null; }
+function openMail(mid){
+  var m=findMail(mid); if(!m) return; state.selId=mid; if(!m.read){ m.read=true; save(); }
+  var who=(m.folder==='sent')?m.to:(m.from||'desconhecido');
+  var init=(who||'?').slice(0,1).toUpperCase();
+  var spamBtn=(m.folder==='inbox')?'<button class="btn btn-g" onclick="spam(\''+mid+'\')">🚫 Spam</button>':'';
+  $('view').innerHTML='<div class="v-actions"><button class="btn btn-p" onclick="reply()">↩ Responder</button>'+spamBtn+'<button class="btn btn-d" onclick="trash(\''+mid+'\')">🗑 Excluir</button></div>'+
+    '<div class="v-subj">'+esc(m.subject||'(sem assunto)')+'</div>'+
+    '<div class="v-meta"><div class="v-av">'+esc(init)+'</div><div><div class="v-from">'+esc(who)+'</div><div class="v-addr">'+esc(m.folder==='sent'?('de: '+m.from):who)+'</div></div><div class="v-date">'+new Date(m.date).toLocaleString('pt-BR')+'</div></div>'+
+    '<div class="v-body">'+esc(m.body||'')+'</div>';
+  renderAll();
+}
+window.reply=function(){ var m=findMail(state.selId); if(!m)return; openCompose({to:(m.folder==='sent'?m.to:m.from),subject:(/^re:/i.test(m.subject||'')?m.subject:'Re: '+(m.subject||'')),body:'\n\n--- '+(m.from||'')+' escreveu ---\n'+(m.body||'')}); };
+function clearRetained(m){ try{ if(m&&m._t&&client&&client.connected){ client.publish(m._t,'',{qos:1,retain:true}); m._t=null; } }catch(e){} }
+window.trash=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); if(f!=='trash'){ m.folder='trash'; state.box.trash.unshift(m); } break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Selecione um e-mail.</div></div>'; renderAll(); };
+window.spam=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); m.folder='spam'; state.box.spam.unshift(m); break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Selecione um e-mail.</div></div>'; renderAll(); };
+
+function openCompose(pre){ pre=pre||{}; $('c-to').value=pre.to||''; $('c-subj').value=pre.subject||''; $('c-body').value=pre.body||''; $('m-compose').classList.remove('hidden'); (pre.to?$('c-subj'):$('c-to')).focus(); }
+window.closeCompose=function(){ $('m-compose').classList.add('hidden'); };
+window.saveDraft=function(){ var d={mid:'m'+Date.now(),from:activeId().addr,to:$('c-to').value,subject:$('c-subj').value,body:$('c-body').value,date:Date.now(),read:true,folder:'drafts'}; state.box.drafts.unshift(d); save(); renderAll(); closeCompose(); toast('Rascunho salvo.'); };
+window.closeSettings=function(){ $('m-settings').classList.add('hidden'); };
+
+async function doSend(){
+  var to=$('c-to').value, subj=$('c-subj').value, body=$('c-body').value;
+  if(!to){ toast('Informe o destinatário.'); return; }
+  var btn=$('btn-send'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Enviando…';
+  var r=await sendMail(to,subj,body);
+  btn.disabled=false; btn.innerHTML=old;
+  if(r.ok){ closeCompose(); renderAll(); toast('E-mail enviado e criptografado 🔒'); }
+  else toast(r.err||'Falha ao enviar.');
+}
+
+async function switchAlias(i){ state.active=i; save(); renderAll(); }
+async function newAddress(){
+  var id=await genId(); state.ids.push(id); state.active=state.ids.length-1; save();
+  if(client&&client.connected){ client.subscribe(await inboxTopic(id.addr),{qos:1}); client.publish(await dirTopic(id.addr),id.pubRaw,{qos:0,retain:true}); }
+  renderAll(); renderSettings(); toast('Novo endereço criado: '+id.addr);
+}
+function renderSettings(){
+  $('set-aliases').innerHTML=state.ids.map(function(id,i){
+    return '<div class="it"><code>'+id.addr+(i===state.active?' (ativo)':'')+'</code><button class="btn btn-g" style="padding:5px 10px;font-size:.78em" onclick="copyTxt(\''+id.addr+'\')">Copiar</button></div>';
+  }).join('');
+}
+window.copyTxt=function(s){ if(navigator.clipboard) navigator.clipboard.writeText(s); toast('Endereço copiado.'); };
+function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
+function notify(m){
+  try{ var a=new (window.AudioContext||window.webkitAudioContext)(); var o=a.createOscillator(),g=a.createGain(); o.connect(g);g.connect(a.destination); o.frequency.value=880;g.gain.value=.05;g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.25);o.start();o.stop(a.currentTime+.25);}catch(e){}
+  toast('📬 Novo e-mail de '+(m.from||'desconhecido'));
+}
+
+// init
+load();
+(async function init(){
+  if(!state.ids.length){ state.ids=[await genId()]; state.active=0; save(); }
+  renderAll(); renderSettings();
+  document.querySelectorAll('.folder[data-folder]').forEach(function(f){ f.onclick=function(){ state.folder=f.getAttribute('data-folder'); state.selId=null; renderAll(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Selecione um e-mail.</div></div>'; }; });
+  $('btn-compose').onclick=function(){ openCompose(); };
+  $('btn-send').onclick=doSend;
+  $('btn-new-addr').onclick=newAddress;
+  $('set-new').onclick=newAddress;
+  $('btn-settings').onclick=function(){ renderSettings(); $('m-settings').classList.remove('hidden'); };
+  $('my-addr').onclick=function(){ var me=activeId(); if(me){ if(navigator.clipboard)navigator.clipboard.writeText(me.addr); toast('Seu endereço foi copiado!'); } };
+  $('search').oninput=function(){ state.search=this.value; renderList(); };
+  connect();
+})();
+</script>
+</body>
+</html>

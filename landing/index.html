@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraNet — A Internet que Ninguém Pode Desligar</title>
+<meta name="description" content="HidraNet: rede descentralizada e anônima. Navegue, converse, publique e compartilhe sem censura, sem vigilância, sem dono. Criptografia pós-quântica, roteamento cebola e serviços ocultos.">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="author" content="HidraNet">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="HidraNet — A Internet que Ninguém Pode Desligar">
+<meta property="og:description" content="Rede descentralizada e anônima. Liberdade, privacidade e resistência contra a censura.">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" type="image/png" href="assets/hidranet-logo.png">
+<link rel="alternate icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐍</text></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --bg:#0a0a0a;
+    --bg-2:#0d0e10;
+    --neon:#00ff88;
+    --cyan:#00ccff;
+    --white:#ffffff;
+    --muted:#aaaaaa;
+    --dim:#6b6f76;
+    --line:rgba(255,255,255,.08);
+    --line-strong:rgba(255,255,255,.16);
+    --card:rgba(255,255,255,.025);
+    --card-hover:rgba(255,255,255,.045);
+    --neon-soft:rgba(0,255,136,.12);
+    --cyan-soft:rgba(0,204,255,.12);
+    --header-h:72px;
+    --font:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --maxw:1180px;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box}
+
+  html{scroll-behavior:smooth}
+
+  body{
+    font-family:var(--font);
+    background:var(--bg);
+    color:var(--white);
+    line-height:1.65;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+
+  ::selection{background:var(--neon);color:#000}
+
+  a{color:inherit;text-decoration:none}
+  img,svg{display:block}
+
+  /* ===== Backgrounds ===== */
+  #matrix{position:fixed;inset:0;z-index:0;opacity:.10;pointer-events:none}
+
+  .grid-bg{
+    position:fixed;inset:0;z-index:0;pointer-events:none;
+    background-image:
+      linear-gradient(rgba(0,255,136,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(0,255,136,.05) 1px,transparent 1px);
+    background-size:46px 46px;
+    animation:gridMove 6s linear infinite;
+    -webkit-mask-image:radial-gradient(ellipse 90% 70% at 50% 30%,#000 35%,transparent 100%);
+            mask-image:radial-gradient(ellipse 90% 70% at 50% 30%,#000 35%,transparent 100%);
+  }
+  @keyframes gridMove{from{background-position:0 0}to{background-position:0 46px}}
+
+  .glow{
+    position:fixed;top:0;left:0;width:520px;height:520px;z-index:0;
+    margin:-260px 0 0 -260px;border-radius:50%;pointer-events:none;
+    background:radial-gradient(circle,rgba(0,255,136,.10),rgba(0,204,255,.04) 45%,transparent 70%);
+    transform:translate3d(50vw,50vh,0);will-change:transform;transition:opacity .3s;
+  }
+
+  /* page vignette so text stays readable */
+  body::after{
+    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:radial-gradient(ellipse 120% 80% at 50% 0%,transparent 40%,rgba(10,10,10,.55) 100%);
+  }
+
+  /* ===== Scroll progress ===== */
+  #progress{
+    position:fixed;top:0;left:0;height:2px;width:0;z-index:200;
+    background:linear-gradient(90deg,var(--neon),var(--cyan));
+    box-shadow:0 0 12px var(--neon);transition:width .08s linear;
+  }
+
+  /* ===== Layout ===== */
+  .wrap{width:100%;max-width:var(--maxw);margin:0 auto;padding:0 24px;position:relative;z-index:1}
+  section{position:relative;z-index:1;scroll-margin-top:var(--header-h)}
+
+  /* ===== Header ===== */
+  header{
+    position:sticky;top:0;z-index:100;
+    backdrop-filter:blur(2px);
+    transition:background .3s,border-color .3s,backdrop-filter .3s;
+    border-bottom:1px solid transparent;
+  }
+  header.scrolled{
+    background:rgba(10,10,10,.72);
+    backdrop-filter:blur(14px) saturate(140%);
+    border-bottom:1px solid var(--line);
+  }
+  .nav{display:flex;align-items:center;justify-content:space-between;height:var(--header-h)}
+
+  .logo{display:flex;align-items:center;gap:11px;font-weight:800;font-size:1.35rem;letter-spacing:-.02em}
+  .logo .logo-mark{height:44px;width:auto;filter:drop-shadow(0 0 10px rgba(0,255,136,.4))}
+  .logo .logo-mark.hide{display:none}
+  .logo .snake{font-size:1.5rem;filter:drop-shadow(0 0 8px var(--neon-soft));display:none}
+  .logo .logo-mark.hide + .snake{display:inline}
+  .logo .net{color:var(--neon);text-shadow:0 0 14px rgba(0,255,136,.5)}
+
+  .nav-links{display:flex;align-items:center;gap:8px}
+  .nav-links a{
+    position:relative;padding:9px 14px;border-radius:9px;font-size:.95rem;font-weight:500;
+    color:var(--muted);transition:color .2s,background .2s;
+  }
+  .nav-links a:not(.btn-nav):hover{color:var(--white)}
+  .nav-links a:not(.btn-nav).active{color:var(--neon)}
+  .nav-links a:not(.btn-nav)::after{
+    content:"";position:absolute;left:14px;right:14px;bottom:4px;height:1px;
+    background:var(--neon);transform:scaleX(0);transform-origin:left;transition:transform .25s;
+  }
+  .nav-links a:not(.btn-nav):hover::after,.nav-links a:not(.btn-nav).active::after{transform:scaleX(1)}
+
+  .btn-nav{
+    color:#001b10 !important;font-weight:700;background:var(--neon);
+    box-shadow:0 0 0 1px rgba(0,255,136,.5),0 6px 22px rgba(0,255,136,.25);
+  }
+  .btn-nav:hover{background:#19ff97;box-shadow:0 0 0 1px var(--neon),0 8px 30px rgba(0,255,136,.45)}
+
+  .hamburger{
+    display:none;width:44px;height:44px;border:1px solid var(--line);border-radius:10px;
+    background:var(--card);cursor:pointer;flex-direction:column;gap:5px;align-items:center;justify-content:center;
+  }
+  .hamburger span{display:block;width:20px;height:2px;background:var(--white);transition:.3s;border-radius:2px}
+  .hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+  .hamburger.open span:nth-child(2){opacity:0}
+  .hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+
+  /* ===== Buttons ===== */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:10px;
+    padding:15px 28px;border-radius:12px;font-family:var(--font);font-weight:700;font-size:1rem;
+    cursor:pointer;border:1px solid transparent;transition:transform .2s,box-shadow .2s,background .2s,border-color .2s;
+    position:relative;overflow:hidden;
+  }
+  .btn:active{transform:translateY(1px) scale(.99)}
+  .btn-primary{
+    background:var(--neon);color:#001b10;
+    box-shadow:0 0 0 1px rgba(0,255,136,.4),0 10px 34px rgba(0,255,136,.28);
+  }
+  .btn-primary:hover{background:#19ff97;transform:translateY(-2px);box-shadow:0 0 0 1px var(--neon),0 14px 44px rgba(0,255,136,.5)}
+  .btn-ghost{background:transparent;color:var(--white);border-color:var(--line-strong)}
+  .btn-ghost:hover{border-color:var(--cyan);color:var(--cyan);transform:translateY(-2px);box-shadow:0 10px 34px rgba(0,204,255,.18)}
+  .btn .sweep{position:absolute;inset:0;background:linear-gradient(120deg,transparent 30%,rgba(255,255,255,.35),transparent 70%);transform:translateX(-120%);transition:transform .6s}
+  .btn:hover .sweep{transform:translateX(120%)}
+
+  /* ===== Hero ===== */
+  .hero{padding:clamp(54px,8vh,100px) 0 90px;text-align:center}
+
+  .hero-logo{
+    width:clamp(190px,30vw,320px);height:auto;margin:0 auto 26px;
+    filter:drop-shadow(0 0 30px rgba(0,255,136,.45));
+    animation:floatLogo 5s ease-in-out infinite;
+  }
+  @keyframes floatLogo{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+
+  .badge{
+    display:inline-flex;align-items:center;gap:10px;
+    padding:9px 18px;border-radius:999px;margin-bottom:34px;
+    font-family:var(--mono);font-size:.82rem;font-weight:500;letter-spacing:.04em;color:var(--neon);
+    background:var(--neon-soft);border:1px solid rgba(0,255,136,.35);
+    animation:badgePulse 2.4s ease-in-out infinite;
+  }
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:var(--neon);box-shadow:0 0 10px var(--neon);animation:blink 1.4s ease-in-out infinite}
+  @keyframes badgePulse{
+    0%,100%{box-shadow:0 0 0 0 rgba(0,255,136,.32)}
+    50%{box-shadow:0 0 0 14px rgba(0,255,136,0)}
+  }
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+
+  .hero h1{
+    font-size:clamp(2.4rem,7vw,5.4rem);line-height:1.04;font-weight:900;letter-spacing:-.03em;
+    margin:0 auto 26px;max-width:16ch;
+  }
+
+  /* Glitch */
+  .glitch{position:relative;display:inline-block;color:var(--white);text-shadow:0 0 26px rgba(0,255,136,.18)}
+  .glitch::before,.glitch::after{
+    content:attr(data-text);position:absolute;inset:0;left:0;top:0;
+    pointer-events:none;clip-path:inset(0 0 0 0);
+  }
+  .glitch::before{color:var(--cyan);transform:translateX(-2px);text-shadow:-2px 0 var(--cyan);opacity:.85;animation:glitchTop 3.2s infinite steps(2,end) alternate-reverse}
+  .glitch::after{color:var(--neon);transform:translateX(2px);text-shadow:2px 0 var(--neon);opacity:.85;animation:glitchBot 2.6s infinite steps(2,end) alternate-reverse}
+  @keyframes glitchTop{
+    0%{clip-path:inset(0 0 96% 0)}
+    14%{clip-path:inset(12% 0 70% 0);transform:translateX(-4px)}
+    28%{clip-path:inset(38% 0 50% 0);transform:translateX(2px)}
+    42%{clip-path:inset(0 0 96% 0);transform:translateX(-2px)}
+    60%{clip-path:inset(60% 0 20% 0);transform:translateX(3px)}
+    74%{clip-path:inset(20% 0 60% 0);transform:translateX(-3px)}
+    88%,100%{clip-path:inset(0 0 96% 0);transform:translateX(-2px)}
+  }
+  @keyframes glitchBot{
+    0%{clip-path:inset(85% 0 0 0)}
+    16%{clip-path:inset(55% 0 18% 0);transform:translateX(4px)}
+    32%{clip-path:inset(30% 0 45% 0);transform:translateX(-2px)}
+    48%{clip-path:inset(70% 0 8% 0);transform:translateX(2px)}
+    64%{clip-path:inset(20% 0 60% 0);transform:translateX(-4px)}
+    82%{clip-path:inset(48% 0 30% 0);transform:translateX(3px)}
+    96%,100%{clip-path:inset(85% 0 0 0);transform:translateX(2px)}
+  }
+
+  .hero p.sub{
+    font-size:clamp(1.05rem,2.2vw,1.3rem);color:var(--muted);max-width:62ch;margin:0 auto 42px;font-weight:400;
+  }
+
+  .hero-actions{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:60px}
+
+  .stats{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:14px;max-width:760px;margin:0 auto;
+    border-top:1px solid var(--line);padding-top:34px;
+  }
+  .stat .num{font-family:var(--mono);font-size:clamp(1.5rem,4vw,2.1rem);font-weight:700;color:var(--neon);line-height:1}
+  .stat .num.cyan{color:var(--cyan)}
+  .stat .lbl{font-size:.8rem;color:var(--dim);margin-top:8px;text-transform:uppercase;letter-spacing:.08em}
+
+  /* ===== Section heads ===== */
+  .section{padding:clamp(70px,10vh,120px) 0}
+  .kicker{
+    font-family:var(--mono);font-size:.82rem;letter-spacing:.18em;color:var(--neon);
+    text-transform:uppercase;display:inline-block;margin-bottom:16px;
+  }
+  .head{text-align:center;max-width:720px;margin:0 auto 60px}
+  .head h2{font-size:clamp(1.9rem,5vw,3.2rem);font-weight:800;letter-spacing:-.02em;line-height:1.1}
+  .head p{color:var(--muted);font-size:clamp(1rem,2vw,1.18rem);margin-top:16px}
+
+  /* ===== Pillars ===== */
+  .grid-pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:22px}
+  .pillar{
+    position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;
+    padding:34px 30px;overflow:hidden;
+    transition:transform .35s cubic-bezier(.2,.8,.2,1),border-color .35s,background .35s,box-shadow .35s;
+  }
+  .pillar::before{
+    content:"";position:absolute;left:0;top:0;height:3px;width:100%;transform:scaleX(0);transform-origin:left;
+    background:linear-gradient(90deg,var(--neon),var(--cyan));transition:transform .4s;
+  }
+  .pillar:hover{transform:translateY(-10px);border-color:rgba(0,255,136,.45);background:var(--card-hover);box-shadow:0 24px 60px rgba(0,0,0,.6),0 0 0 1px rgba(0,255,136,.25)}
+  .pillar:hover::before{transform:scaleX(1)}
+  .pillar .pnum{position:absolute;top:24px;right:28px;font-family:var(--mono);font-size:.9rem;color:var(--dim);transition:color .3s}
+  .pillar:hover .pnum{color:var(--neon)}
+  .pillar .picon{
+    width:64px;height:64px;border-radius:16px;display:flex;align-items:center;justify-content:center;
+    font-size:2rem;margin-bottom:22px;background:var(--neon-soft);border:1px solid rgba(0,255,136,.25);
+    transition:transform .35s,box-shadow .35s;
+  }
+  .pillar:hover .picon{transform:scale(1.08) rotate(-4deg);box-shadow:0 0 26px rgba(0,255,136,.4)}
+  .pillar h3{font-size:1.3rem;font-weight:700;margin-bottom:12px;letter-spacing:-.01em}
+  .pillar p{color:var(--muted);font-size:1rem}
+
+  /* ===== Download ===== */
+  .grid-dl{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+  .dl{
+    position:relative;display:flex;flex-direction:column;
+    background:var(--card);border:1px solid var(--line);border-radius:18px;
+    padding:32px 24px;text-align:center;overflow:hidden;
+    transition:transform .35s cubic-bezier(.2,.8,.2,1),border-color .35s,background .35s,box-shadow .35s;
+  }
+  .dl:hover{transform:translateY(-10px);border-color:rgba(0,204,255,.45);background:var(--card-hover);box-shadow:0 24px 60px rgba(0,0,0,.6),0 0 0 1px rgba(0,204,255,.22)}
+  .dl .osicon{margin:0 auto 18px;width:54px;height:54px;color:var(--cyan);filter:drop-shadow(0 0 10px rgba(0,204,255,.35));transition:transform .35s,color .35s}
+  .dl:hover .osicon{transform:scale(1.1);color:var(--neon);filter:drop-shadow(0 0 14px rgba(0,255,136,.5))}
+  .dl .osicon svg{width:100%;height:100%}
+  .dl h3{font-size:1.2rem;font-weight:700;margin-bottom:6px}
+  .dl .meta{font-family:var(--mono);font-size:.8rem;color:var(--dim);margin-bottom:22px;min-height:2.4em;display:flex;align-items:center;justify-content:center}
+  .dl .dlbtn{
+    width:100%;padding:12px;border-radius:11px;background:transparent;color:var(--white);
+    border:1px solid var(--line-strong);font-family:var(--font);font-weight:600;font-size:.95rem;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:.25s;
+  }
+  .dl .dlbtn:hover{background:var(--neon);color:#001b10;border-color:var(--neon);box-shadow:0 8px 24px rgba(0,255,136,.35)}
+
+  .dl .dlbtn{margin-top:auto}
+  .dl-desc{color:var(--white);font-weight:600;font-size:.98rem;margin-bottom:10px;min-height:2.6em;display:flex;align-items:center;justify-content:center}
+
+  .dl-note{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    margin-top:40px;color:var(--dim);font-size:.92rem;font-family:var(--mono);text-align:center;flex-wrap:wrap;
+  }
+  .dl-note b{color:var(--muted);font-weight:500}
+
+  /* ===== Manifesto ===== */
+  .manifesto{text-align:center}
+  .manifesto .quote{
+    position:relative;max-width:900px;margin:0 auto;padding:50px 30px;
+    font-size:clamp(1.4rem,3.6vw,2.5rem);font-weight:700;line-height:1.45;letter-spacing:-.01em;
+  }
+  .manifesto .quote::before{
+    content:"“";position:absolute;top:-30px;left:50%;transform:translateX(-50%);
+    font-family:Georgia,serif;font-size:8rem;color:var(--neon);opacity:.18;line-height:1;
+  }
+  .manifesto .quote .hl{color:var(--neon);text-shadow:0 0 24px rgba(0,255,136,.35)}
+  .manifesto .sign{
+    margin-top:30px;font-family:var(--mono);font-size:1.02rem;color:var(--cyan);letter-spacing:.02em;
+  }
+  .manifesto .divline{width:90px;height:2px;margin:38px auto 0;background:linear-gradient(90deg,transparent,var(--neon),transparent)}
+
+  /* ===== Footer ===== */
+  footer{border-top:1px solid var(--line);padding:54px 0 40px;position:relative;z-index:1;background:rgba(10,10,10,.5)}
+  .foot{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
+  .foot .brand{display:flex;align-items:center;gap:10px;font-weight:700}
+  .foot .brand .foot-mark{height:36px;width:auto;border-radius:7px}
+  .foot .brand .foot-mark.hide{display:none}
+  .foot .brand .foot-snake{display:none}
+  .foot .brand .foot-mark.hide + .foot-snake{display:inline}
+  .foot .brand .net{color:var(--neon)}
+  .foot .copy{color:var(--dim);font-size:.9rem;margin-top:6px;font-family:var(--mono)}
+  .foot-links{display:flex;gap:8px;flex-wrap:wrap}
+  .foot-links a{
+    padding:9px 16px;border-radius:10px;border:1px solid var(--line);color:var(--muted);
+    font-size:.92rem;font-weight:500;transition:.25s;
+  }
+  .foot-links a:hover{color:var(--neon);border-color:rgba(0,255,136,.45);background:var(--neon-soft)}
+  .foot-tag{text-align:center;margin-top:34px;color:var(--dim);font-family:var(--mono);font-size:.82rem;letter-spacing:.16em;text-transform:uppercase}
+
+  /* ===== Reveal ===== */
+  .reveal{opacity:0;transform:translateY(28px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.8,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+
+  /* ===== Toasts ===== */
+  #toasts{position:fixed;right:20px;bottom:20px;z-index:300;display:flex;flex-direction:column;gap:12px;max-width:340px}
+  .toast{
+    background:rgba(15,16,18,.96);border:1px solid rgba(0,255,136,.4);border-left:3px solid var(--neon);
+    border-radius:12px;padding:14px 16px;box-shadow:0 18px 50px rgba(0,0,0,.6);
+    transform:translateX(120%);opacity:0;transition:transform .4s cubic-bezier(.2,.8,.2,1),opacity .4s;cursor:pointer;
+  }
+  .toast.show{transform:none;opacity:1}
+  .toast .tt{display:flex;align-items:center;gap:9px;font-weight:700;font-size:.96rem;color:var(--neon);margin-bottom:4px}
+  .toast .tm{color:var(--muted);font-size:.86rem;line-height:1.5}
+  .toast .bar{height:2px;margin-top:10px;background:rgba(0,255,136,.25);border-radius:2px;overflow:hidden}
+  .toast .bar i{display:block;height:100%;width:100%;background:var(--neon);transform-origin:left;animation:toastBar 4s linear forwards}
+  @keyframes toastBar{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+
+  /* ===== Responsive ===== */
+  @media (max-width:980px){
+    .grid-pillars{grid-template-columns:repeat(2,1fr)}
+    .grid-dl{grid-template-columns:repeat(2,1fr)}
+  }
+  @media (max-width:820px){
+    .hamburger{display:flex}
+    .nav-links{
+      position:absolute;top:calc(var(--header-h) + 8px);right:24px;left:24px;
+      flex-direction:column;align-items:stretch;gap:6px;padding:14px;
+      background:rgba(13,14,16,.97);border:1px solid var(--line);border-radius:16px;
+      backdrop-filter:blur(16px);box-shadow:0 24px 60px rgba(0,0,0,.6);
+      opacity:0;transform:translateY(-12px) scale(.98);pointer-events:none;transition:.28s;
+    }
+    .nav-links.open{opacity:1;transform:none;pointer-events:auto}
+    .nav-links a{padding:13px 16px}
+    .nav-links a:not(.btn-nav)::after{display:none}
+    .btn-nav{margin-top:4px;text-align:center}
+  }
+  @media (max-width:620px){
+    .stats{grid-template-columns:repeat(2,1fr);gap:24px 14px}
+    .grid-pillars,.grid-dl{grid-template-columns:1fr}
+    .hero-actions .btn{width:100%}
+    .wrap{padding:0 18px}
+    .foot{flex-direction:column;text-align:center}
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important;scroll-behavior:auto !important;transition:none !important}
+    .grid-bg{animation:none}
+    .reveal{opacity:1;transform:none}
+  }
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+<canvas id="matrix" aria-hidden="true"></canvas>
+<div class="grid-bg" aria-hidden="true"></div>
+<div class="glow" id="glow" aria-hidden="true"></div>
+
+<!-- ===== HEADER ===== -->
+<header id="header">
+  <div class="wrap nav">
+    <a href="#top" class="logo" aria-label="HidraNet — início">
+      <img src="assets/hidranet-logo.png" alt="" class="logo-mark" onerror="this.classList.add('hide')">
+      <span class="snake" aria-hidden="true">🐍</span>
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+
+    <nav class="nav-links" id="navLinks">
+      <a href="#pilares">Pilares</a>
+      <a href="#download">Download</a>
+      <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+      <a href="#manifesto" class="btn-nav">Manifesto</a>
+    </nav>
+
+    <button class="hamburger" id="hamburger" aria-label="Abrir menu" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ===== HERO ===== -->
+  <section class="hero">
+    <div class="wrap">
+      <img src="assets/hidranet-logo.png" alt="Logo HidraNet" class="hero-logo" onerror="this.style.display='none'">
+
+      <span class="badge"><span class="dot" aria-hidden="true"></span>🚀 LANÇAMENTO OFICIAL · 2026</span>
+
+      <h1><span class="glitch" data-text="A Internet que Ninguém Pode Desligar">A Internet que Ninguém Pode Desligar</span></h1>
+
+      <p class="sub">Navegue, converse, publique e compartilhe sem censura, sem vigilância, sem dono. Cada computador é um nó. A rede é a própria liberdade.</p>
+
+      <div class="hero-actions">
+        <a href="#download" class="btn btn-primary"><span class="sweep" aria-hidden="true"></span>⬇ Baixar HidraBrowser</a>
+        <a href="#pilares" class="btn btn-ghost">Conheça os Pilares →</a>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="num">0</div><div class="lbl">Servidores Centrais</div></div>
+        <div class="stat"><div class="num cyan">3–7</div><div class="lbl">Saltos por Rota</div></div>
+        <div class="stat"><div class="num">∞</div><div class="lbl">Nós Possíveis</div></div>
+        <div class="stat"><div class="num cyan">100%</div><div class="lbl">Código Aberto</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== PILLARS ===== -->
+  <section class="section" id="pilares">
+    <div class="wrap">
+      <div class="head reveal">
+        <span class="kicker">// Arquitetura</span>
+        <h2>Os 6 Pilares da HidraNet</h2>
+        <p>Uma rede construída para resistir, proteger e libertar.</p>
+      </div>
+
+      <div class="grid-pillars">
+        <article class="pillar reveal">
+          <span class="pnum">01</span>
+          <div class="picon" aria-hidden="true">🔐</div>
+          <h3>Criptografia Blindada</h3>
+          <p>Noise Protocol + Kyber (Pós-Quântica). Resistente até a ataques de computadores quânticos.</p>
+        </article>
+
+        <article class="pillar reveal">
+          <span class="pnum">02</span>
+          <div class="picon" aria-hidden="true">🧅</div>
+          <h3>Roteamento Cebola</h3>
+          <p>3 a 7 saltos com chaffing. Seu IP nunca é exposto.</p>
+        </article>
+
+        <article class="pillar reveal">
+          <span class="pnum">03</span>
+          <div class="picon" aria-hidden="true">🌐</div>
+          <h3>DHT Kademlia</h3>
+          <p>100% descentralizada. Sem servidores centrais, sem ponto único de falha.</p>
+        </article>
+
+        <article class="pillar reveal">
+          <span class="pnum">04</span>
+          <div class="picon" aria-hidden="true">🛡️</div>
+          <h3>Ofuscação</h3>
+          <p>Tráfego indistinguível de HTTPS. Nenhum firewall te bloqueia.</p>
+        </article>
+
+        <article class="pillar reveal">
+          <span class="pnum">05</span>
+          <div class="picon" aria-hidden="true">🏛️</div>
+          <h3>Serviços Ocultos</h3>
+          <p>Publique sites <span style="color:var(--neon);font-family:var(--mono)">.hidra</span> sem revelar IP ou identidade.</p>
+        </article>
+
+        <article class="pillar reveal">
+          <span class="pnum">06</span>
+          <div class="picon" aria-hidden="true">📱</div>
+          <h3>Aplicações Nativas</h3>
+          <p>Chat, e-mail, fórum e criador de sites — tudo anônimo e integrado.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== DOWNLOAD ===== -->
+  <section class="section" id="download">
+    <div class="wrap">
+      <div class="head reveal">
+        <span class="kicker">// Obter Acesso</span>
+        <h2>Baixe o HidraBrowser</h2>
+        <p>Disponível para todos os sistemas. Escolha o seu e comece a navegar com liberdade.</p>
+      </div>
+
+      <div class="grid-dl">
+        <article class="dl reveal">
+          <div class="osicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4.5 10.5 3.4v8H3zM13.5 3 21 2v9.4h-7.5zM3 12.5h7.5v8L3 19.6zM13.5 12.5H21V22l-7.5-1.1z"/></svg>
+          </div>
+          <h3>Windows</h3>
+          <p class="dl-desc">PC desktop / laptop</p>
+          <div class="meta">v1.0.0 · x64 · 117 MB</div>
+          <a class="dlbtn" href="downloads/HidraNet-Browser-1.0.0-Windows-x64.zip" download="HidraNet-Browser-1.0.0-Windows-x64.zip" data-download="Windows">⬇ Baixar</a>
+        </article>
+
+        <article class="dl reveal">
+          <div class="osicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.22-3.91-1.21-1.77-3.1-2.01-3.77-2.04-1.6-.16-3.13.94-3.94.94s-2.07-.92-3.4-.89c-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.46 7.83 1.3 10.4.86 1.25 1.88 2.66 3.22 2.61 1.29-.05 1.78-.83 3.34-.83s2 .83 3.37.81c1.39-.03 2.27-1.28 3.12-2.54.98-1.46 1.39-2.87 1.41-2.94-.03-.01-2.71-1.04-2.74-4.13zM14.69 4.6c.71-.86 1.19-2.06 1.06-3.25-1.02.04-2.26.68-2.99 1.54-.66.76-1.23 1.98-1.08 3.15 1.14.09 2.3-.58 3.01-1.44z"/></svg>
+          </div>
+          <h3>macOS · Apple Silicon</h3>
+          <p class="dl-desc">MacBook M1/M2/M3/M4 (pós-2020)</p>
+          <div class="meta">v1.0.0 · arm64 · 95 MB</div>
+          <a class="dlbtn" href="downloads/HidraNet-Browser-1.0.0-macOS-arm64.zip" download="HidraNet-Browser-1.0.0-macOS-arm64.zip" data-download="macOS (Apple Silicon)">⬇ Baixar</a>
+        </article>
+
+        <article class="dl reveal">
+          <div class="osicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.22-3.91-1.21-1.77-3.1-2.01-3.77-2.04-1.6-.16-3.13.94-3.94.94s-2.07-.92-3.4-.89c-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.46 7.83 1.3 10.4.86 1.25 1.88 2.66 3.22 2.61 1.29-.05 1.78-.83 3.34-.83s2 .83 3.37.81c1.39-.03 2.27-1.28 3.12-2.54.98-1.46 1.39-2.87 1.41-2.94-.03-.01-2.71-1.04-2.74-4.13zM14.69 4.6c.71-.86 1.19-2.06 1.06-3.25-1.02.04-2.26.68-2.99 1.54-.66.76-1.23 1.98-1.08 3.15 1.14.09 2.3-.58 3.01-1.44z"/></svg>
+          </div>
+          <h3>macOS · Intel</h3>
+          <p class="dl-desc">MacBook Intel (anterior a 2020)</p>
+          <div class="meta">v1.0.0 · x64 · 100 MB</div>
+          <a class="dlbtn" href="downloads/HidraNet-Browser-1.0.0-macOS-x64.zip" download="HidraNet-Browser-1.0.0-macOS-x64.zip" data-download="macOS (Intel)">⬇ Baixar</a>
+        </article>
+
+        <article class="dl reveal">
+          <div class="osicon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-1.7 0-2.6 1.5-2.6 3.4 0 .9.2 1.7.2 2.4-.6.7-1.5 1.9-2.3 3.6-.8 1.6-1.7 2.7-2.4 3.9-.4.7-.2 1.5.3 1.8.2.6.1 1.3.5 1.7.5.5 1.3.3 1.9.5.5.5 1.2 1 2 1.1.3.3.9.5 1.4.5s1.1-.2 1.4-.5c.8-.1 1.5-.6 2-1.1.6-.2 1.4 0 1.9-.5.4-.4.3-1.1.5-1.7.5-.3.7-1.1.3-1.8-.7-1.2-1.6-2.3-2.4-3.9-.8-1.7-1.7-2.9-2.3-3.6 0-.7.2-1.5.2-2.4C14.6 3.5 13.7 2 12 2m-1.4 4.1c.3 0 .6.4.6.9s-.3.9-.6.9-.6-.4-.6-.9.3-.9.6-.9m2.8 0c.3 0 .6.4.6.9s-.3.9-.6.9-.6-.4-.6-.9.3-.9.6-.9M12 9.2c.8 0 1.9.7 1.9 1.1 0 .3-.5.5-1 .7v.7c0 .4-.5.6-.9.6s-.9-.2-.9-.6v-.7c-.5-.2-1-.4-1-.7 0-.4 1.1-1.1 1.9-1.1"/></svg>
+          </div>
+          <h3>Linux</h3>
+          <p class="dl-desc">Desktop / laptop (x64)</p>
+          <div class="meta">v1.0.0 · x64 · 101 MB</div>
+          <a class="dlbtn" href="downloads/HidraNet-Browser-1.0.0-Linux-x64.zip" download="HidraNet-Browser-1.0.0-Linux-x64.zip" data-download="Linux">⬇ Baixar</a>
+        </article>
+      </div>
+
+      <p class="dl-note reveal">🔒 <b>Todos os arquivos são assinados criptograficamente. Verifique as hashes SHA-256 antes de executar.</b></p>
+    </div>
+  </section>
+
+  <!-- ===== MANIFESTO ===== -->
+  <section class="section manifesto" id="manifesto">
+    <div class="wrap">
+      <div class="head reveal">
+        <span class="kicker">// Princípios</span>
+        <h2>📜 Manifesto HidraNet</h2>
+      </div>
+
+      <blockquote class="quote reveal">
+        A internet não pode ser desligada. Ela pertence a <span class="hl">todos e a ninguém</span>. A HidraNet é a prova de que a liberdade não é um privilégio — <span class="hl">é um direito</span>.
+        <div class="divline" aria-hidden="true"></div>
+      </blockquote>
+    </div>
+  </section>
+
+</main>
+
+<!-- ===== FOOTER ===== -->
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <div class="brand"><img src="assets/hidranet-logo.png" alt="" class="foot-mark" onerror="this.classList.add('hide')"><span class="foot-snake" aria-hidden="true">🐍</span> Hidra<span class="net">Net</span></div>
+        <div class="copy">© 2026 — Liberdade Digital</div>
+      </div>
+      <nav class="foot-links">
+        <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://twitter.com/" target="_blank" rel="noopener">Twitter</a>
+        <a href="https://telegram.org/" target="_blank" rel="noopener">Telegram</a>
+        <a href="mailto:contato@hidranet.org">Contato</a>
+      </nav>
+    </div>
+    <div class="foot-tag">Feito para resistir · A rede é a própria liberdade</div>
+  </div>
+</footer>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---- Header scroll state + progress bar ---- */
+  var header = document.getElementById('header');
+  var progress = document.getElementById('progress');
+  function onScroll(){
+    var y = window.scrollY || document.documentElement.scrollTop;
+    header.classList.toggle('scrolled', y > 20);
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    progress.style.width = (h > 0 ? (y / h) * 100 : 0) + '%';
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  /* ---- Mobile menu ---- */
+  var burger = document.getElementById('hamburger');
+  var nav = document.getElementById('navLinks');
+  function closeMenu(){ nav.classList.remove('open'); burger.classList.remove('open'); burger.setAttribute('aria-expanded','false'); }
+  burger.addEventListener('click', function(){
+    var open = nav.classList.toggle('open');
+    burger.classList.toggle('open', open);
+    burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  nav.querySelectorAll('a').forEach(function(a){ a.addEventListener('click', closeMenu); });
+
+  /* ---- Active section highlight ---- */
+  var navMap = {};
+  nav.querySelectorAll('a[href^="#"]').forEach(function(a){ navMap[a.getAttribute('href').slice(1)] = a; });
+  var sections = ['pilares','download','manifesto'].map(function(id){ return document.getElementById(id); }).filter(Boolean);
+  if ('IntersectionObserver' in window){
+    var spy = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        var link = navMap[e.target.id];
+        if (link && e.isIntersecting){
+          Object.keys(navMap).forEach(function(k){ navMap[k].classList.remove('active'); });
+          link.classList.add('active');
+        }
+      });
+    }, {rootMargin:'-45% 0px -50% 0px'});
+    sections.forEach(function(s){ spy.observe(s); });
+
+    /* ---- Reveal on scroll ---- */
+    var revealObs = new IntersectionObserver(function(entries, obs){
+      entries.forEach(function(e){
+        if (e.isIntersecting){ e.target.classList.add('in'); obs.unobserve(e.target); }
+      });
+    }, {threshold:0.12});
+    document.querySelectorAll('.reveal').forEach(function(el){ revealObs.observe(el); });
+  } else {
+    document.querySelectorAll('.reveal').forEach(function(el){ el.classList.add('in'); });
+  }
+
+  /* ---- Toast / download simulation ---- */
+  var toasts = document.getElementById('toasts');
+  function showToast(os){
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = '<div class="tt">⬇ Iniciando download</div>' +
+                  '<div class="tm">HidraBrowser para <b style="color:#fff">' + os + '</b> está sendo baixado. Lembre-se de verificar a hash SHA-256.</div>' +
+                  '<div class="bar"><i></i></div>';
+    toasts.appendChild(t);
+    requestAnimationFrame(function(){ t.classList.add('show'); });
+    var kill = function(){ t.classList.remove('show'); setTimeout(function(){ t.remove(); }, 420); };
+    var timer = setTimeout(kill, 4000);
+    t.addEventListener('click', function(){ clearTimeout(timer); kill(); });
+  }
+  document.querySelectorAll('[data-download]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      showToast(btn.getAttribute('data-download'));
+      /* O proprio <a download> inicia o download de landing/downloads/HidraNet.zip.
+         Em producao, hospede o .zip e aponte o href para a URL real
+         (ex.: GitHub Releases: https://github.com/SEU-REPO/releases/latest). */
+    });
+  });
+
+  /* ---- Cursor glow ---- */
+  if (!reduce && window.matchMedia('(pointer:fine)').matches){
+    var glow = document.getElementById('glow');
+    var gx = innerWidth/2, gy = innerHeight/2, queued = false;
+    window.addEventListener('pointermove', function(e){
+      gx = e.clientX; gy = e.clientY;
+      if (!queued){ queued = true; requestAnimationFrame(function(){ glow.style.transform = 'translate3d('+gx+'px,'+gy+'px,0)'; queued = false; }); }
+    }, {passive:true});
+  } else {
+    document.getElementById('glow').style.display = 'none';
+  }
+
+  /* ---- Matrix rain ---- */
+  (function(){
+    var canvas = document.getElementById('matrix');
+    if (!canvas || reduce){ if(canvas) canvas.style.display='none'; return; }
+    var ctx = canvas.getContext('2d');
+    var fontSize = 14, cols = 0, drops = [];
+    var chars = 'アァカサタナハマヤラ0123456789ABCDEFｦｧ#@$%&*<>/\\|=+-'.split('');
+    function resize(){
+      canvas.width = innerWidth; canvas.height = innerHeight;
+      cols = Math.floor(canvas.width / fontSize);
+      drops = []; for (var i=0;i<cols;i++) drops[i] = Math.random() * (canvas.height/fontSize);
+    }
+    function draw(){
+      ctx.fillStyle = 'rgba(10,10,10,0.09)';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.font = fontSize + 'px monospace';
+      for (var i=0;i<drops.length;i++){
+        var ch = chars[(Math.random()*chars.length)|0];
+        var x = i*fontSize, y = drops[i]*fontSize;
+        ctx.fillStyle = Math.random() > 0.97 ? '#ccffe6' : '#00ff88';
+        ctx.fillText(ch, x, y);
+        if (y > canvas.height && Math.random() > 0.975) drops[i] = 0;
+        drops[i] += 1;
+      }
+    }
+    resize();
+    var resizeTimer;
+    window.addEventListener('resize', function(){ clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 200); });
+    setInterval(draw, 55);
+  })();
+
+})();
+</script>
+</body>
+</html>

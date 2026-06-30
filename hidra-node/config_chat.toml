@@ -1,0 +1,42 @@
+[node]
+name = "hidra-chat-01"
+
+[network]
+listen_addr = "0.0.0.0"
+listen_port = 9150
+
+[logging]
+level = "debug"
+format = "pretty"
+
+[paths]
+keys_dir = "keys"
+
+[dht]
+port = 7000
+enabled = true
+bootstrap_nodes = []
+
+[proxy]
+listen_addr = "127.0.0.1"
+port = 9050
+
+[hidden_service]
+enabled = true
+local_port = 8080
+app = "hidrachat"
+
+[[relays]]
+name = "relay-1"
+addr = "127.0.0.1:7001"
+noise_pubkey = ""
+
+[[relays]]
+name = "relay-2"
+addr = "127.0.0.1:7002"
+noise_pubkey = ""
+
+[[relays]]
+name = "relay-3"
+addr = "127.0.0.1:7003"
+noise_pubkey = ""

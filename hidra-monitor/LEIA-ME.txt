@@ -1,0 +1,44 @@
+╔══════════════════════════════════════════════════════════════╗
+║   HidraNet — Monitor de Acessos (Painel de Controle)         ║
+╚══════════════════════════════════════════════════════════════╝
+
+O QUE É
+  Um painel separado para você acompanhar, em tempo real:
+    • Quantas pessoas estão acessando a HidraNet agora
+    • De quais países estão se conectando
+    • Quantas pessoas em cada servidor (sala)
+    • Um mapa mundial mostrando cada conexão
+  Dados 100% reais, ao vivo. Não vê mensagens, nomes nem senhas.
+
+COMO ABRIR
+  1. Extraia esta pasta.
+  2. Dê 2 cliques em "Abrir Painel.bat"
+     (ou abra "index.html" no Google Chrome ou Microsoft Edge).
+  3. Pronto — o painel conecta sozinho e começa a contar.
+     NÃO precisa de senha: ele já mostra TODA a rede HidraNet.
+
+O QUE VOCÊ VÊ
+  • Número grande = pessoas online na HidraNet naquele momento.
+  • "Por país" = de onde estão se conectando (localização aproximada).
+  • "Por servidor" = quantas pessoas em cada sala (código anônimo).
+  • Mapa = cada pessoa plotada na sua cidade/país aproximado.
+
+REQUISITOS
+  • Internet (para a rede de mensagens e o mapa).
+  • As pessoas precisam estar usando a versão ATUALIZADA do HidraNet
+    (o HidraNet.zip novo) para aparecerem no mapa e na contagem.
+
+COMO FUNCIONA (de verdade)
+  • Cada app da HidraNet emite um "sinal de presença" anônimo num
+    canal comum. O painel apenas conta esses sinais — não há servidor
+    central, não há cadastro.
+  • O sinal NÃO contém mensagens, nomes nem a senha das salas — só um
+    código temporário e a cidade aproximada (por IP).
+
+PRIVACIDADE
+  • A localização é APROXIMADA (país/cidade por IP), nunca GPS.
+  • Para o mapa funcionar, o app de chat das pessoas compartilha a
+    cidade aproximada delas. Avise seus amigos sobre isso.
+
+──────────────────────────────────────────────────────────────────
+  HidraNet — rede descentralizada · monitor de acessos

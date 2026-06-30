@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraNet — Monitor de Acessos</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--txt);min-height:100vh}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 20px 36px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.brand{display:flex;align-items:center;gap:13px}
+.brand .logo{width:42px;height:42px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:22px}
+.brand h1{font-size:1.1em;font-weight:700;letter-spacing:-.3px}
+.brand .sub{font-size:.68em;color:var(--txt3);text-transform:uppercase;letter-spacing:1.6px;margin-top:2px}
+.conn{display:flex;align-items:center;gap:8px;font-size:.82em;color:var(--txt2)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--txt3)}
+.dot.on{background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 2s infinite}
+.dot.err{background:#ff5c6c}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+.kpis{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:14px;margin-bottom:20px}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px 22px;position:relative;overflow:hidden}
+.kpi.hero{background:linear-gradient(135deg,#0e2a24,#10131f)}
+.kpi .v{font-size:2.6em;font-weight:800;color:var(--accent);line-height:1;font-variant-numeric:tabular-nums}
+.kpi:not(.hero) .v{font-size:1.9em;color:var(--txt)}
+.kpi .l{font-size:.72em;color:var(--txt3);text-transform:uppercase;letter-spacing:1px;margin-top:6px}
+.kpi.hero .live{display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:.66em;color:var(--accent);text-transform:uppercase;letter-spacing:1.4px}
+.kpi.hero .live .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1.4s infinite}
+
+.grid{display:grid;grid-template-columns:1fr 330px;gap:18px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
+.card h3{font-size:.72em;color:var(--txt3);text-transform:uppercase;letter-spacing:1.4px;padding:15px 18px 0;font-weight:700}
+#map{width:100%;height:480px;background:#0a0c14}
+.leaflet-container{background:#0a0c14}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--card);color:var(--txt);border:1px solid var(--border)}
+.leaflet-popup-content{margin:9px 12px;font-size:.85em}
+.pp-c{font-weight:700;color:var(--accent)}
+.pp-r{color:var(--txt2);margin-top:2px}
+
+.side{display:flex;flex-direction:column;gap:18px}
+.list{padding:8px 16px 16px;display:flex;flex-direction:column;gap:7px;max-height:230px;overflow-y:auto}
+.row{display:flex;align-items:center;justify-content:space-between;padding:10px 13px;background:var(--bg2);border:1px solid var(--border);border-radius:10px}
+.row .nm{display:flex;align-items:center;gap:10px;font-size:.9em;min-width:0}
+.row .nm .ico{width:28px;height:28px;border-radius:7px;background:rgba(0,212,170,.1);display:flex;align-items:center;justify-content:center;font-size:.95em}
+.row .nm code{color:var(--txt2);font-family:'SF Mono',monospace;font-size:.92em}
+.row .nm span.t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .ct{font-size:1.15em;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
+.empty{color:var(--txt3);text-align:center;padding:22px;font-style:italic;font-size:.86em}
+.foot{text-align:center;color:var(--txt3);font-size:.76em;margin-top:18px;line-height:1.6}
+::-webkit-scrollbar{width:7px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand"><div class="logo">📡</div><div><h1>HidraNet — Monitor de Acessos</h1><div class="sub">Painel de Controle</div></div></div>
+    <div class="conn"><span class="dot" id="cdot"></span><span id="ctxt">Conectando…</span></div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi hero"><div class="v" id="k-online">0</div><div class="l">Pessoas online na HidraNet</div><div class="live"><span class="d"></span>Ao vivo</div></div>
+    <div class="kpi"><div class="v" id="k-countries">0</div><div class="l">Países</div></div>
+    <div class="kpi"><div class="v" id="k-servers">0</div><div class="l">Servidores ativos</div></div>
+    <div class="kpi"><div class="v" id="k-peak">0</div><div class="l">Pico na sessão</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>Mapa de conexões em tempo real</h3><div id="map"></div></div>
+    <div class="side">
+      <div class="card"><h3>Por país</h3><div class="list" id="countries"><div class="empty">Aguardando…</div></div></div>
+      <div class="card"><h3>Por servidor</h3><div class="list" id="servers"><div class="empty">Aguardando…</div></div></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Conta sinais de presença anônimos da HidraNet em tempo real (não vê mensagens, nomes nem senhas).<br>
+    Localização aproximada por IP (nível de país/cidade). Cada "servidor" é uma sala, com código anônimo.
+  </div>
+</div>
+
+<script>
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+var PRESENCE_TOPIC='hidra/presence/v1';
+var TTL=70000;
+var presence={};   // cid -> {room,last,geo}
+var peak=0, map=null, markers=null, mqttClient=null;
+
+function initMap(){
+  map=L.map('map',{worldCopyJump:true,attributionControl:false}).setView([20,0],2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:18,subdomains:'abcd'}).addTo(map);
+  markers=L.layerGroup().addTo(map);
+}
+function connect(){
+  mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidracount_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
+  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Conectado (rede HidraNet)'; mqttClient.subscribe(PRESENCE_TOPIC,{qos:0}); });
+  mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconectando…'; });
+  mqttClient.on('error',function(){ $('cdot').className='dot err'; });
+  mqttClient.on('message',function(t,payload){
+    var o; try{o=JSON.parse(payload.toString())}catch(e){return}
+    if(!o||!o.cid) return;
+    if(o.leave){ delete presence[o.cid]; refresh(); return; }
+    var p=presence[o.cid]||{}; p.room=o.room||p.room||'?'; p.last=Date.now();
+    if(o.geo&&typeof o.geo.lat==='number') p.geo={lat:o.geo.lat,lon:o.geo.lon,city:o.geo.city||'',country:o.geo.country||''};
+    presence[o.cid]=p; refresh();
+  });
+}
+function active(){ var now=Date.now(),a=[]; Object.keys(presence).forEach(function(c){ if(now-presence[c].last<=TTL)a.push(c); else delete presence[c]; }); return a; }
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+
+function refresh(){
+  var a=active(), n=a.length;
+  $('k-online').textContent=n;
+  if(n>peak){ peak=n; $('k-peak').textContent=peak; }
+  var countries={},servers={};
+  a.forEach(function(c){
+    var p=presence[c];
+    if(p.geo&&p.geo.country) countries[p.geo.country]=(countries[p.geo.country]||0)+1;
+    servers[p.room]=(servers[p.room]||0)+1;
+  });
+  $('k-countries').textContent=Object.keys(countries).length;
+  $('k-servers').textContent=Object.keys(servers).length;
+
+  var ck=Object.keys(countries).sort(function(x,y){return countries[y]-countries[x]});
+  $('countries').innerHTML=ck.length?ck.map(function(co){
+    return '<div class="row"><div class="nm"><span class="ico">🌍</span><span class="t">'+esc(co)+'</span></div><div class="ct">'+countries[co]+'</div></div>';
+  }).join(''):'<div class="empty">Nenhuma localização ainda.</div>';
+
+  var sk=Object.keys(servers).sort(function(x,y){return servers[y]-servers[x]});
+  $('servers').innerHTML=sk.length?sk.map(function(r){
+    var code=(r&&r.indexOf('hidra-')===0)?r.slice(6,12):(r||'?').slice(0,6);
+    return '<div class="row"><div class="nm"><span class="ico">🔒</span><span>Servidor <code>#'+esc(code)+'</code></span></div><div class="ct">'+servers[r]+'</div></div>';
+  }).join(''):'<div class="empty">Nenhum servidor ativo.</div>';
+
+  if(markers){
+    markers.clearLayers();
+    var seen={};
+    a.forEach(function(c){
+      var p=presence[c]; if(!p.geo||typeof p.geo.lat!=='number')return;
+      var key=p.geo.lat.toFixed(2)+','+p.geo.lon.toFixed(2);
+      var jit=seen[key]?(seen[key]*0.06):0; seen[key]=(seen[key]||0)+1;
+      var m=L.circleMarker([p.geo.lat+jit,p.geo.lon+jit],{radius:8,color:'#fff',weight:1.4,fillColor:'#00d4aa',fillOpacity:.85});
+      m.bindPopup('<div class="pp-c">'+esc((p.geo.city?p.geo.city+', ':'')+(p.geo.country||''))+'</div><div class="pp-r">1 pessoa conectada</div>');
+      markers.addLayer(m);
+    });
+  }
+}
+setInterval(refresh,3000);
+initMap(); connect(); refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# ─── Rust build artifacts ────────────────────────────────────────────────────
+hidra-node/target/
+*.pdb
+
+# ─── Node / Electron ─────────────────────────────────────────────────────────
+hidra-browser/node_modules/
+hidra-browser/dist/
+hidra-browser/chromium/
+# auto-gerado por scripts/prepare-build.js
+hidra-browser/build/
+
+# ─── Chaves e segredos ───────────────────────────────────────────────────────
+hidra-node/keys/
+hidra-node/keys_b/
+hidra-node/keys_bob/
+*.secret
+.env
+.env.*
+!.env.example
+
+# ─── Configs de teste (não são configs de produção) ──────────────────────────
+hidra-node/config_bob.toml
+hidra-node/sevennine.toml
+
+# ─── Saída de testes / debug ─────────────────────────────────────────────────
+*.out
+*.log
+hidra-node/*_err*.txt
+hidra-node/*_out*.txt
+hidra-browser/*.out
+hidra-browser/forum.out
+hidra-browser/mail.out
+
+# ─── Conteúdo gerado em runtime ──────────────────────────────────────────────
+hidra-node/sites/
+
+# ─── Pacotes de distribuição na raiz ─────────────────────────────────────────
+/*.zip
+/landing/downloads/
+
+# ─── IDE / OS ─────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# ─── Backup local ────────────────────────────────────────────────────────────
+.git_local_backup/

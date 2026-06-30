@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apoie a HidraNet</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<style>
+:root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--btc:#f7931a;--btc2:#ffa733;--danger:#ff5c6c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#0d1020,#06070d);color:var(--txt);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:42px 20px;-webkit-font-smoothing:antialiased}
+svg{display:block}
+.wrap{width:100%;max-width:520px}
+.hero{text-align:center;margin-bottom:26px}
+.logo{width:64px;height:64px;border-radius:18px;background:linear-gradient(135deg,var(--btc),var(--btc2));display:flex;align-items:center;justify-content:center;color:#241400;margin:0 auto 16px;box-shadow:0 10px 30px rgba(247,147,26,.28)}
+.hero h1{font-size:1.65em;font-weight:650;letter-spacing:-.3px;margin-bottom:8px}
+.lead{color:var(--txt2);font-size:.92em;line-height:1.65;max-width:430px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.qrbox{width:208px;height:208px;background:#fff;border-radius:14px;padding:13px;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}
+.qrbox svg{width:100%;height:100%}
+.amt{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.amt button{background:var(--bg2);border:1px solid var(--border);color:var(--txt2);padding:9px 4px;border-radius:9px;cursor:pointer;font-size:.8em;font-weight:600;font-family:inherit;transition:.15s;line-height:1.25}
+.amt button small{display:block;font-size:.78em;color:var(--txt3);font-weight:500}
+.amt button:hover{border-color:var(--border2);color:var(--txt)}
+.amt button.active{background:rgba(247,147,26,.12);border-color:var(--btc);color:var(--btc2)}
+.amt button.active small{color:var(--btc)}
+.custom{margin-bottom:18px}
+.custom input{width:100%;padding:10px 13px;background:var(--bg2);border:1px solid var(--border);border-radius:9px;color:var(--txt);font-size:.86em;outline:none;font-family:inherit;transition:border-color .15s}
+.custom input:focus{border-color:var(--btc)}
+.lbl{font-size:.7em;text-transform:uppercase;letter-spacing:1px;color:var(--txt3);font-weight:700;margin-bottom:8px}
+.addr-row{display:flex;align-items:stretch;gap:8px;margin-bottom:12px}
+.addr{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-family:'SF Mono',ui-monospace,monospace;font-size:.82em;color:var(--txt);word-break:break-all;line-height:1.45;user-select:all}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:10px;font-size:.85em;font-weight:600;cursor:pointer;border:none;font-family:inherit;transition:.15s}
+.btn-copy{background:var(--card2);color:var(--txt2);border:1px solid var(--border);padding:0 16px;white-space:nowrap}
+.btn-copy:hover{color:var(--txt);border-color:var(--border2)}
+.note{display:flex;align-items:flex-start;gap:9px;background:rgba(247,147,26,.07);border:1px solid rgba(247,147,26,.2);border-radius:10px;padding:11px 13px;font-size:.8em;color:var(--txt2);line-height:1.55}
+.note svg{flex-shrink:0;color:var(--btc2);margin-top:1px}
+.note b{color:var(--txt);font-weight:600}
+.foot{text-align:center;color:var(--txt3);font-size:.84em;margin-top:22px;line-height:1.6}
+.foot svg{display:inline-block;vertical-align:-2px;margin-right:5px;color:var(--accent)}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--accent);color:#04120e;padding:11px 20px;border-radius:9px;font-weight:600;font-size:.85em;opacity:0;transition:.25s;pointer-events:none;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="logo"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6h8a3 3 0 0 1 0 6a3 3 0 0 1 0 6H6"/><path d="M8 6v12"/><path d="M8 12h6"/><path d="M9 3v3"/><path d="M13 3v3"/><path d="M9 18v3"/><path d="M13 18v3"/></svg></div>
+    <h1>Apoie a HidraNet</h1>
+    <p class="lead">A HidraNet é mantida de forma independente — sem anúncios e sem rastreamento. Sua doação em Bitcoin ajuda a manter a rede livre, privada e no ar.</p>
+  </div>
+
+  <div class="card">
+    <div class="qrbox" id="qrbox"></div>
+
+    <div class="lbl">Valor sugerido</div>
+    <div class="amt" id="amt">
+      <button class="active" data-a="">Qualquer<small>valor</small></button>
+      <button data-a="0.0005">0,0005<small>BTC</small></button>
+      <button data-a="0.001">0,001<small>BTC</small></button>
+      <button data-a="0.005">0,005<small>BTC</small></button>
+    </div>
+    <div class="custom"><input type="text" id="custom" inputmode="decimal" placeholder="Outro valor em BTC (ex.: 0,0025)"></div>
+
+    <div class="lbl">Endereço Bitcoin (BTC) · rede on-chain</div>
+    <div class="addr-row">
+      <div class="addr" id="addr">bc1q6y0z52d85xxvtvkpd3chp5uz79zhnmsf57v2z3</div>
+      <button class="btn btn-copy" id="copy"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar</button>
+    </div>
+
+    <div class="note"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>Envie <b>apenas Bitcoin (BTC)</b> na rede on-chain para este endereço. Outras moedas enviadas para cá podem ser perdidas.</span></div>
+  </div>
+
+  <div class="foot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Obrigado por manter a rede viva.</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var ADDR='bc1q6y0z52d85xxvtvkpd3chp5uz79zhnmsf57v2z3';
+var curAmount='';
+function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2400); }
+function buildURI(a){ return 'bitcoin:'+ADDR+(a?('?amount='+a):''); }
+function renderQR(a){
+  var uri=buildURI(a);
+  try{
+    if(typeof qrcode==='function'){
+      var qr=qrcode(0,'M'); qr.addData(uri); qr.make();
+      $('qrbox').innerHTML=qr.createSvgTag({cellSize:5,margin:0,scalable:true});
+    } else { $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">QR indisponível offline.<br>Use o endereço abaixo.</div>'; }
+  }catch(e){ $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">Use o endereço abaixo.</div>'; }
+}
+function normAmount(v){ v=(v||'').toString().trim().replace(',','.'); if(!v) return ''; var n=parseFloat(v); if(isNaN(n)||n<=0) return null; return String(n); }
+function setActive(btn){ Array.prototype.forEach.call(document.querySelectorAll('#amt button'),function(b){ b.classList.toggle('active', b===btn); }); }
+
+Array.prototype.forEach.call(document.querySelectorAll('#amt button'),function(b){
+  b.onclick=function(){ setActive(b); $('custom').value=''; curAmount=b.getAttribute('data-a'); renderQR(curAmount); };
+});
+$('custom').oninput=function(){
+  var n=normAmount(this.value);
+  if(this.value.trim()===''){ setActive(document.querySelector('#amt button[data-a=""]')); curAmount=''; renderQR(''); return; }
+  setActive(null);
+  if(n===null){ return; } // valor inválido: mantém o QR atual
+  curAmount=n; renderQR(n);
+};
+$('copy').onclick=function(){
+  function done(){ toast('Endereço Bitcoin copiado.'); }
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ADDR).then(done).catch(fallback); }
+  else fallback();
+  function fallback(){ try{ var r=document.createRange(); r.selectNode($('addr')); var s=getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy'); s.removeAllRanges(); done(); }catch(e){ toast('Selecione e copie o endereço.'); } }
+};
+renderQR('');
+</script>
+</body>
+</html>

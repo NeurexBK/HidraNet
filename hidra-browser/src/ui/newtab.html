@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HidraNet — Secure Network</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #06060b;
+      --bg-card: #10101c;
+      --bg-card-hover: #14142a;
+      --bg-input: #0a0a16;
+      --text-primary: #e0e0e8;
+      --text-secondary: #8888a0;
+      --text-muted: #555570;
+      --accent: #00d4aa;
+      --accent-dim: #00a888;
+      --accent-glow: rgba(0, 212, 170, 0.15);
+      --danger: #ff4466;
+      --warning: #ffaa33;
+      --border: #1a1a2e;
+      --border-light: #22223a;
+      --radius: 10px;
+      --radius-sm: 6px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-y: auto;
+    }
+
+    .dashboard {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 48px 24px 32px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header { text-align: center; margin-bottom: 48px; }
+    .logo-container { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+
+    .logo-svg {
+      width: 100px; height: 100px;
+      animation: pulse-glow 4s ease-in-out infinite;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.2)); }
+      50% { filter: drop-shadow(0 0 20px rgba(0, 212, 170, 0.4)); }
+    }
+
+    .logo-text h1 {
+      font-size: 32px; font-weight: 300; letter-spacing: 6px;
+      color: var(--accent); text-transform: uppercase;
+    }
+
+    .tagline {
+      font-size: 13px; color: var(--text-muted); letter-spacing: 2px;
+      margin-top: 4px; text-transform: uppercase;
+    }
+
+    /* Search */
+    .search-container { margin-bottom: 32px; }
+    .search-box {
+      display: flex; align-items: center; gap: 12px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 24px; padding: 12px 20px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .search-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-glow);
+    }
+    .search-svg { color: var(--text-muted); flex-shrink: 0; }
+    .search-box:focus-within .search-svg { color: var(--accent); }
+    #newtab-search {
+      flex: 1; background: none; border: none; outline: none;
+      color: var(--text-primary); font-size: 15px;
+      font-family: inherit;
+    }
+    #newtab-search::placeholder { color: var(--text-muted); }
+
+    /* Cards */
+    .cards { display: flex; flex-direction: column; gap: 20px; flex: 1; }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .card:hover { border-color: var(--border-light); background: var(--bg-card-hover); }
+
+    .card-header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+    }
+    .card-icon { color: var(--accent); flex-shrink: 0; }
+    .card-header h2 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; flex: 1; }
+
+    .btn-small {
+      background: none; border: 1px solid var(--border); color: var(--text-secondary);
+      width: 28px; height: 28px; border-radius: var(--radius-sm);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+    }
+    .btn-small:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+
+    /* Status */
+    .status-indicator {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 20px; padding: 12px 16px;
+      background: var(--bg-input); border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+    }
+
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; transition: all 0.3s;
+    }
+    .dot.connected { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: dot-pulse 2s ease-in-out infinite; }
+    .dot.disconnected { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+    .dot.connecting { background: var(--warning); box-shadow: 0 0 8px var(--warning); animation: dot-pulse 1s ease-in-out infinite; }
+
+    @keyframes dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .status-label { font-size: 14px; font-weight: 500; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+    .stat {
+      text-align: center; padding: 12px 8px;
+      background: var(--bg-input); border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+    }
+    .stat-value {
+      display: block; font-size: 20px; font-weight: 600;
+      color: var(--accent); margin-bottom: 4px; font-variant-numeric: tabular-nums;
+    }
+    .stat-label {
+      display: block; font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+
+    /* Circuit */
+    .circuit-path {
+      display: flex; align-items: center; gap: 0;
+      padding: 16px 0; overflow-x: auto; scrollbar-width: none;
+    }
+    .circuit-path::-webkit-scrollbar { display: none; }
+
+    .circuit-node {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 4px; min-width: 80px; flex-shrink: 0;
+    }
+
+    .node-icon {
+      width: 40px; height: 40px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      border: 2px solid var(--border); background: var(--bg-input);
+      color: var(--text-secondary); transition: all 0.3s;
+    }
+    .circuit-node.you .node-icon { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+    .circuit-node.relay .node-icon { border-color: var(--accent-dim); color: var(--accent-dim); }
+    .circuit-node.relay.active .node-icon { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+    .circuit-node.destination .node-icon { border-color: var(--text-muted); color: var(--text-muted); }
+
+    .node-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+    .node-ip { font-size: 10px; color: var(--text-muted); font-family: 'Consolas', monospace; }
+
+    .circuit-line {
+      flex: 1; min-width: 40px; height: 2px;
+      background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+      position: relative; opacity: 0.4; margin: 0 -4px;
+      align-self: center; margin-bottom: 24px;
+    }
+    .line-encrypted {
+      position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+      font-size: 8px; color: var(--text-muted); white-space: nowrap;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+
+    /* Settings */
+    .settings-list { display: flex; flex-direction: column; gap: 2px; }
+
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; border-radius: var(--radius-sm); transition: background 0.15s;
+    }
+    .setting-row:hover { background: var(--bg-input); }
+
+    .setting-info { display: flex; flex-direction: column; gap: 2px; }
+    .setting-name { font-size: 13px; font-weight: 500; }
+    .setting-desc { font-size: 11px; color: var(--text-muted); }
+
+    .setting-select {
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 4px 10px; font-size: 12px; cursor: pointer;
+      outline: none; font-family: inherit;
+    }
+    .setting-select:focus { border-color: var(--accent-dim); }
+
+    .setting-badge {
+      font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 500;
+      background: rgba(0, 212, 170, 0.1); color: var(--accent);
+      border: 1px solid rgba(0, 212, 170, 0.2);
+    }
+
+    /* Apps Grid */
+    .apps-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .app-shortcut {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 20px 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .app-shortcut:hover {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px rgba(0, 212, 170, 0.1);
+    }
+
+    .app-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .mail-icon { background: linear-gradient(135deg, #1a3a5c, #0d4a6b); color: #4fc3f7; }
+    .chat-icon { background: linear-gradient(135deg, #1a4a3a, #0d6b4a); color: #00d4aa; }
+    .search-icon { background: linear-gradient(135deg, #3a3a1a, #6b5a0d); color: #ffcc02; }
+
+    .app-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .app-desc {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-align: center;
+      line-height: 1.3;
+    }
+
+    .app-badge {
+      font-size: 9px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 500;
+      background: rgba(85, 85, 112, 0.2);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+
+    .app-badge.online {
+      background: rgba(0, 212, 170, 0.1);
+      color: var(--accent);
+      border-color: rgba(0, 212, 170, 0.3);
+    }
+
+    .app-badge.offline {
+      background: rgba(255, 68, 102, 0.1);
+      color: var(--danger);
+      border-color: rgba(255, 68, 102, 0.3);
+    }
+
+    @media (max-width: 768px) {
+      .apps-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* Connect Button */
+    .connect-section {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 20px; padding: 16px 20px;
+      background: var(--bg-input); border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+
+    .connect-btn {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 28px; border-radius: 24px;
+      font-size: 14px; font-weight: 600; font-family: inherit;
+      cursor: pointer; border: none; transition: all 0.25s;
+      letter-spacing: 0.4px;
+    }
+
+    .connect-btn.off {
+      background: linear-gradient(135deg, #00d4aa, #00a888);
+      color: #06060b; box-shadow: 0 0 20px rgba(0,212,170,0.25);
+    }
+    .connect-btn.off:hover {
+      box-shadow: 0 0 30px rgba(0,212,170,0.4);
+      transform: translateY(-1px);
+    }
+
+    .connect-btn.on {
+      background: rgba(255,68,102,0.12);
+      color: var(--danger);
+      border: 1px solid rgba(255,68,102,0.3);
+    }
+    .connect-btn.on:hover {
+      background: rgba(255,68,102,0.2);
+    }
+
+    .connect-btn.loading {
+      background: rgba(255,170,51,0.12);
+      color: var(--warning);
+      border: 1px solid rgba(255,170,51,0.3);
+      pointer-events: none;
+    }
+
+    .connect-btn svg { flex-shrink: 0; }
+
+    .connect-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+    .connect-title { font-size: 14px; font-weight: 600; }
+    .connect-desc { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 1s linear infinite; }
+
+    /* Footer */
+    .footer {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);
+    }
+    .footer-left { display: flex; align-items: center; gap: 8px; }
+    .version, .separator, .crypto { font-size: 11px; color: var(--text-muted); }
+    .crypto { font-family: 'Consolas', monospace; }
+
+    .footer-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+    .footer-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
+
+    @media (max-width: 768px) {
+      .dashboard { padding: 24px 16px; }
+      .logo-svg { width: 72px; height: 72px; }
+      .logo-text h1 { font-size: 24px; letter-spacing: 4px; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr); }
+      .footer { flex-direction: column; gap: 8px; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <div class="dashboard">
+
+    <header class="header">
+      <div class="logo-container">
+        <svg class="logo-svg" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="60" cy="60" r="54" stroke="#00d4aa" stroke-width="1.5" opacity="0.2"/>
+          <circle cx="60" cy="60" r="40" stroke="#00d4aa" stroke-width="1.5" opacity="0.35"/>
+          <circle cx="60" cy="60" r="26" stroke="#00d4aa" stroke-width="1.5" opacity="0.55"/>
+          <circle cx="60" cy="60" r="12" stroke="#00d4aa" stroke-width="2" opacity="0.8"/>
+          <circle cx="60" cy="60" r="4" fill="#00d4aa"/>
+          <line x1="60" y1="6" x2="60" y2="20" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
+          <line x1="60" y1="100" x2="60" y2="114" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
+          <line x1="6" y1="60" x2="20" y2="60" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
+          <line x1="100" y1="60" x2="114" y2="60" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
+          <line x1="17" y1="17" x2="28" y2="28" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
+          <line x1="92" y1="92" x2="103" y2="103" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
+          <line x1="103" y1="17" x2="92" y2="28" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
+          <line x1="17" y1="103" x2="28" y2="92" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
+        </svg>
+        <div class="logo-text">
+          <h1>HidraNet</h1>
+          <p class="tagline">Anonymous Overlay Network</p>
+        </div>
+      </div>
+    </header>
+
+    <div class="search-container">
+      <div class="search-box">
+        <svg class="search-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" id="newtab-search" placeholder="Pesquisar com HidraSearch — anônimo e criptografado..." autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <section class="cards">
+
+      <!-- HidraNet Apps -->
+      <div class="card apps-card">
+        <div class="card-header">
+          <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7" rx="1"/>
+            <rect x="14" y="3" width="7" height="7" rx="1"/>
+            <rect x="3" y="14" width="7" height="7" rx="1"/>
+            <rect x="14" y="14" width="7" height="7" rx="1"/>
+          </svg>
+          <h2>HidraNet Apps</h2>
+        </div>
+        <div class="apps-grid">
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/mail" id="app-mail">
+            <div class="app-icon mail-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="2" y="4" width="20" height="16" rx="2"/>
+                <path d="M22 7l-10 7L2 7"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraMail</span>
+            <span class="app-desc">Email criptografado E2E</span>
+            <span class="app-badge online">Pronto</span>
+          </a>
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090" id="app-chat">
+            <div class="app-icon chat-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraChat</span>
+            <span class="app-desc">Chat anônimo em tempo real</span>
+            <span class="app-badge" id="chat-badge">Verificando...</span>
+          </a>
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/forum" id="app-forum">
+            <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: #fff;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                <line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/>
+              </svg>
+            </div>
+            <span class="app-name">Fórum Hidra</span>
+            <span class="app-desc">Comunidade anônima</span>
+            <span class="app-badge online">Pronto</span>
+          </a>
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/donate" id="app-donate">
+            <div class="app-icon" style="background: linear-gradient(135deg, #f7931a, #ffa733); color: #241400;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 6h8a3 3 0 0 1 0 6a3 3 0 0 1 0 6H6"/>
+                <path d="M8 6v12"/><path d="M8 12h6"/>
+                <path d="M9 3v3"/><path d="M13 3v3"/>
+                <path d="M9 18v3"/><path d="M13 18v3"/>
+              </svg>
+            </div>
+            <span class="app-name">Apoiar</span>
+            <span class="app-desc">Doe Bitcoin para a HidraNet</span>
+            <span class="app-badge online">BTC</span>
+          </a>
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8083">
+            <div class="app-icon search-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraSearch</span>
+            <span class="app-desc">Busca anônima e criptografada</span>
+            <span class="app-badge online">Disponível</span>
+          </a>
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8084">
+            <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); border-color: rgba(108, 92, 231, 0.3);">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="3" width="7" height="7" rx="1"/>
+                <rect x="14" y="3" width="7" height="7" rx="1"/>
+                <rect x="3" y="14" width="7" height="7" rx="1"/>
+                <rect x="14" y="14" width="7" height="7" rx="1"/>
+              </svg>
+            </div>
+            <span class="app-name">SevenNine</span>
+            <span class="app-desc">Criador de sites .hidra</span>
+            <span class="app-badge" id="sevennine-badge">Offline</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Network Status -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+          </svg>
+          <h2>Network Status</h2>
+        </div>
+        <div class="connect-section">
+          <div class="connect-info">
+            <span class="connect-title" id="connect-title">HidraNet Desconectada</span>
+            <span class="connect-desc" id="connect-desc">Clique para iniciar o nó e conectar todos os serviços (Chat, Mail, Search)</span>
+          </div>
+          <button class="connect-btn off" id="connectBtn" onclick="toggleConnection()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            <span id="connectBtnText">Conectar</span>
+          </button>
+        </div>
+        <div class="status-indicator">
+          <span id="status-dot" class="dot connecting"></span>
+          <span id="status-text" class="status-label">Connecting...</span>
+        </div>
+        <div class="stat-grid">
+          <div class="stat">
+            <span class="stat-value" id="stat-relays">—</span>
+            <span class="stat-label">Active Relays</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="stat-latency">—</span>
+            <span class="stat-label">Latency</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="stat-uptime">0s</span>
+            <span class="stat-label">Uptime</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="stat-hops">3</span>
+            <span class="stat-label">Hops</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Circuit Viewer -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          <h2>Current Circuit</h2>
+        </div>
+        <div class="circuit-path">
+          <div class="circuit-node you">
+            <div class="node-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <span class="node-label">You</span>
+            <span class="node-ip">localhost</span>
+          </div>
+          <div class="circuit-line"><span class="line-encrypted">AES-256</span></div>
+          <div class="circuit-node relay" id="relay-1">
+            <div class="node-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+            </div>
+            <span class="node-label">Guard</span>
+            <span class="node-ip" id="relay-1-ip">—</span>
+          </div>
+          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-node relay" id="relay-2">
+            <div class="node-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+            </div>
+            <span class="node-label">Middle</span>
+            <span class="node-ip" id="relay-2-ip">—</span>
+          </div>
+          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-node relay" id="relay-3">
+            <div class="node-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+            </div>
+            <span class="node-label">Exit</span>
+            <span class="node-ip" id="relay-3-ip">—</span>
+          </div>
+          <div class="circuit-line"><span class="line-encrypted">TLS</span></div>
+          <div class="circuit-node destination">
+            <div class="node-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10"/>
+                <path d="M12 2a15.3 15.3 0 0 0-4 10 15.3 15.3 0 0 0 4 10"/>
+              </svg>
+            </div>
+            <span class="node-label">Internet</span>
+            <span class="node-ip">encrypted</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Anonymity Settings -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <h2>Anonymity Settings</h2>
+        </div>
+        <div class="settings-list">
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Circuit Hops</span>
+              <span class="setting-desc">Number of relay nodes in your circuit</span>
+            </div>
+            <select id="setting-hops" class="setting-select">
+              <option value="3" selected>3 (Standard)</option>
+              <option value="5">5 (High)</option>
+              <option value="7">7 (Maximum)</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Fingerprint Protection</span>
+              <span class="setting-desc">Canvas, WebGL, Audio spoofing per tab</span>
+            </div>
+            <div class="setting-badge">Active</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">WebRTC Leak Protection</span>
+              <span class="setting-desc">Blocks IP leaks via ICE candidates</span>
+            </div>
+            <div class="setting-badge">Blocked</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">DNS Leak Protection</span>
+              <span class="setting-desc">All DNS resolved at exit relay</span>
+            </div>
+            <div class="setting-badge">Active</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Tab Isolation</span>
+              <span class="setting-desc">Separate cookies, storage, fingerprint per tab</span>
+            </div>
+            <div class="setting-badge">Enforced</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Referrer Stripping</span>
+              <span class="setting-desc">No cross-site tracking via Referer header</span>
+            </div>
+            <div class="setting-badge">Active</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Client Hints</span>
+              <span class="setting-desc">Sec-CH-UA-* headers stripped</span>
+            </div>
+            <div class="setting-badge">Stripped</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Persistent Data</span>
+              <span class="setting-desc">Cookies, cache, history cleared on exit</span>
+            </div>
+            <div class="setting-badge">None</div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <footer class="footer">
+      <div class="footer-left">
+        <span class="version">HidraNet Browser v0.1.0</span>
+        <span class="separator">&middot;</span>
+        <span class="crypto">Noise XX + ChaCha20-Poly1305 + BLAKE3</span>
+      </div>
+      <div class="footer-right">
+        <span class="footer-indicator">
+          <span class="footer-dot"></span>
+          All traffic routed through HidraNet
+        </span>
+      </div>
+    </footer>
+
+  </div>
+
+  <script>
+    const startTime = Date.now();
+    var isConnecting = false;
+
+    function maskIp(addr) {
+      if (!addr) return '—';
+      var parts = addr.split(':');
+      var octets = parts[0].split('.');
+      if (octets.length === 4) {
+        return octets[0] + '.' + octets[1] + '.***.**' + (parts[1] ? ':' + parts[1] : '');
+      }
+      return addr.substring(0, 12) + '...';
+    }
+
+    function updateUptime() {
+      var elapsed = Math.floor((Date.now() - startTime) / 1000);
+      var h = Math.floor(elapsed / 3600);
+      var m = Math.floor((elapsed % 3600) / 60);
+      var s = elapsed % 60;
+      document.getElementById('stat-uptime').textContent =
+        h > 0 ? h + 'h ' + m + 'm' : m > 0 ? m + 'm ' + s + 's' : s + 's';
+    }
+
+    async function checkService(port, svcPath) {
+      try {
+        var ctrl = new AbortController();
+        setTimeout(function() { ctrl.abort(); }, 2000);
+        var res = await fetch('http://127.0.0.1:' + port + svcPath, { signal: ctrl.signal });
+        return res.ok || res.status < 500;
+      } catch(e) { return false; }
+    }
+
+    async function detectApps() {
+      var chatOk = await checkService(8090, '/');
+      var chatBadge = document.getElementById('chat-badge');
+      if (chatOk) {
+        chatBadge.textContent = 'Online';
+        chatBadge.className = 'app-badge online';
+      } else {
+        chatBadge.textContent = 'Offline';
+        chatBadge.className = 'app-badge offline';
+      }
+
+      var snOk = await checkService(8084, '/');
+      var snBadge = document.getElementById('sevennine-badge');
+      if (snBadge) {
+        if (snOk) {
+          snBadge.textContent = 'Online';
+          snBadge.className = 'app-badge online';
+        } else {
+          snBadge.textContent = 'Offline';
+          snBadge.className = 'app-badge offline';
+        }
+      }
+
+      return chatOk || snOk;
+    }
+
+    // ── Connect / Disconnect ──
+
+    function updateConnectUI(state) {
+      var btn = document.getElementById('connectBtn');
+      var btnText = document.getElementById('connectBtnText');
+      var title = document.getElementById('connect-title');
+      var desc = document.getElementById('connect-desc');
+
+      if (state === 'connecting') {
+        btn.className = 'connect-btn loading';
+        btnText.textContent = 'Conectando...';
+        btn.querySelector('svg').innerHTML = '<circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="10" class="spinner"/>';
+        title.textContent = 'Iniciando HidraNet...';
+        title.style.color = 'var(--warning)';
+        desc.textContent = 'Iniciando o nó e os serviços — pode levar alguns segundos';
+      } else if (state === 'connected') {
+        btn.className = 'connect-btn on';
+        btnText.textContent = 'Desconectar';
+        btn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+        title.textContent = 'HidraNet Conectada';
+        title.style.color = 'var(--accent)';
+        desc.textContent = 'Todos os serviços estão rodando — Chat, Mail e Search disponíveis';
+      } else {
+        btn.className = 'connect-btn off';
+        btnText.textContent = 'Conectar';
+        btn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+        title.textContent = 'HidraNet Desconectada';
+        title.style.color = 'var(--text-primary)';
+        desc.textContent = 'Clique para iniciar o nó e conectar todos os serviços (Chat, Mail, Search)';
+      }
+    }
+
+    async function toggleConnection() {
+      if (isConnecting) return;
+
+      var btn = document.getElementById('connectBtn');
+      if (btn.classList.contains('on')) {
+        // Disconnect
+        if (window.hidra && window.hidra.proxy) {
+          await window.hidra.proxy.disconnect();
+        }
+        updateConnectUI('disconnected');
+        poll();
+        return;
+      }
+
+      // Connect
+      isConnecting = true;
+      updateConnectUI('connecting');
+
+      try {
+        if (window.hidra && window.hidra.proxy) {
+          var result = await window.hidra.proxy.connect();
+          if (result && result.ok) {
+            updateConnectUI('connected');
+            await poll();
+          } else {
+            updateConnectUI('disconnected');
+            var title = document.getElementById('connect-title');
+            title.textContent = 'Falha ao conectar';
+            title.style.color = 'var(--danger)';
+            var desc = document.getElementById('connect-desc');
+            desc.textContent = (result && result.msg) || 'Não foi possível iniciar o hidra-node — verifique se o binário existe';
+          }
+        } else {
+          updateConnectUI('disconnected');
+          var t2 = document.getElementById('connect-title');
+          t2.textContent = 'API não disponível';
+          t2.style.color = 'var(--danger)';
+        }
+      } catch(e) {
+        updateConnectUI('disconnected');
+        var t3 = document.getElementById('connect-title');
+        t3.textContent = 'Erro: ' + (e.message || 'falha desconhecida');
+        t3.style.color = 'var(--danger)';
+      } finally {
+        isConnecting = false;
+      }
+    }
+
+    // ── Status polling ──
+
+    async function poll() {
+      var dot = document.getElementById('status-dot');
+      var text = document.getElementById('status-text');
+      var connected = false;
+      var mode = 'disconnected';
+
+      try {
+        if (window.hidra && window.hidra.proxy) {
+          var status = await window.hidra.proxy.status();
+          if (status) {
+            connected = status.connected;
+            mode = status.mode || (connected ? 'local' : 'disconnected');
+            document.getElementById('stat-relays').textContent = status.relayCount || '—';
+            document.getElementById('stat-latency').textContent =
+              status.latencyMs ? status.latencyMs + 'ms' : '—';
+            document.getElementById('stat-hops').textContent = status.hopCount || '3';
+
+            if (status.relayChain) {
+              var relays = status.relayChain.split(' → ');
+              for (var i = 0; i < 3; i++) {
+                var node = document.getElementById('relay-' + (i + 1));
+                var ip = document.getElementById('relay-' + (i + 1) + '-ip');
+                if (relays[i]) {
+                  node.classList.add('active');
+                  ip.textContent = maskIp(relays[i]);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      if (!connected) {
+        var localOk = await detectApps();
+        if (localOk) { connected = true; mode = 'local'; }
+      } else {
+        detectApps();
+      }
+
+      if (connected && mode === 'full') {
+        dot.className = 'dot connected';
+        text.textContent = 'Conectado — Tráfego Protegido';
+        text.style.color = '#00d4aa';
+        if (!isConnecting) updateConnectUI('connected');
+      } else if (connected) {
+        dot.className = 'dot connected';
+        text.textContent = 'Conectado — Modo Local';
+        text.style.color = '#00d4aa';
+        if (!isConnecting) updateConnectUI('connected');
+      } else {
+        dot.className = 'dot disconnected';
+        text.textContent = 'Desconectado';
+        text.style.color = '#ff4466';
+        if (!isConnecting) updateConnectUI('disconnected');
+      }
+
+      updateUptime();
+    }
+
+    // ── Search box ──
+    document.getElementById('newtab-search').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        var q = this.value.trim();
+        if (q) {
+          window.location.href = 'http://127.0.0.1:8083/?q=' + encodeURIComponent(q);
+        }
+      }
+    });
+
+    // ── App shortcut clicks ──
+    document.querySelectorAll('.app-shortcut').forEach(function(el) {
+      el.addEventListener('click', function(e) {
+        e.preventDefault();
+        var url = this.dataset.url;
+        if (url) window.location.href = url;
+      });
+    });
+
+    document.getElementById('setting-hops').addEventListener('change', function(e) {
+      var hops = parseInt(e.target.value, 10);
+      if (window.hidra && window.hidra.proxy) {
+        window.hidra.proxy.setHops(hops);
+      }
+      document.getElementById('stat-hops').textContent = hops;
+    });
+
+    poll();
+    setInterval(poll, 5000);
+    setInterval(updateUptime, 1000);
+  </script>
+</body>
+</html>
