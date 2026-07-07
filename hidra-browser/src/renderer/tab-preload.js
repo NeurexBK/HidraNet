@@ -23,5 +23,9 @@ if (isInternalPage) {
       connect: () => ipcRenderer.invoke('proxy:connect'),
       disconnect: () => ipcRenderer.invoke('proxy:disconnect'),
     },
+    prefs: {
+      get: () => ipcRenderer.invoke('prefs:get'),
+      save: (p) => ipcRenderer.invoke('prefs:save', p),
+    },
   });
 }

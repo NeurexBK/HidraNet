@@ -1,0 +1,7 @@
+# Binarios grandes ficam no GitHub Releases — nao subir pro Vercel
+downloads/
+
+# Docs internas — nao precisam ir pro site publico
+SEGURANCA.md
+_headers
+assets/README.txt

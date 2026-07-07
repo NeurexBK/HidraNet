@@ -1,0 +1,9 @@
+# Binarios grandes — hospedados via GitHub Releases, nao no repositorio
+downloads/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vercel

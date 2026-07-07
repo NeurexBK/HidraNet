@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraSearch — Busca Anônima</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#06060b;--bg2:#0d0d14;--bg3:#13131d;
+  --text:#e0e0e8;--text2:#8888a0;--text3:#555570;
+  --accent:#00d4aa;--accent2:#00b894;
+  --danger:#ff6b6b;--link:#4ecdc4;--link-hover:#00d4aa;
+  --border:#1a1a2e;--border2:#22223a;--card:#0f0f18;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;min-height:100vh}
+a{color:var(--link);text-decoration:none}
+a:hover{color:var(--link-hover)}
+
+/* ── HOME VIEW ── */
+.home-view{
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:center;min-height:100vh;padding:20px;
+}
+.logo-area{text-align:center;margin-bottom:44px}
+.logo-text{font-size:52px;font-weight:800;letter-spacing:-1px;line-height:1}
+.logo-text .hi{color:var(--accent)}
+.logo-text .search{color:var(--text2);font-weight:300;font-size:38px;margin-left:6px}
+.logo-sub{color:var(--text3);font-size:13px;margin-top:10px;letter-spacing:2.5px;text-transform:uppercase}
+
+.search-wrap{width:100%;max-width:660px;margin:0 auto}
+.search-box{
+  display:flex;align-items:center;
+  background:var(--bg2);border:1.5px solid var(--border);
+  border-radius:32px;padding:4px 4px 4px 20px;
+  transition:border-color .2s,box-shadow .2s;
+}
+.search-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,212,170,.12)}
+.search-icon{color:var(--text3);flex-shrink:0;margin-right:10px;transition:color .2s}
+.search-box:focus-within .search-icon{color:var(--accent)}
+.search-input{
+  flex:1;background:none;border:none;outline:none;
+  color:var(--text);font-size:17px;font-family:inherit;
+  padding:12px 0;
+}
+.search-input::placeholder{color:var(--text3)}
+.search-btn{
+  width:46px;height:46px;flex-shrink:0;
+  background:var(--accent);border:none;border-radius:50%;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:all .2s;color:var(--bg);
+}
+.search-btn:hover{background:var(--accent2);transform:scale(1.05)}
+.search-btn svg{width:20px;height:20px;fill:currentColor}
+
+.badges{
+  display:flex;gap:10px;margin-top:28px;
+  flex-wrap:wrap;justify-content:center;
+}
+.badge{
+  display:flex;align-items:center;gap:6px;
+  padding:5px 14px;background:var(--bg3);
+  border:1px solid var(--border);border-radius:20px;
+  font-size:11px;color:var(--text2);letter-spacing:0.3px;
+}
+.badge .dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0}
+
+/* ── RESULTS VIEW ── */
+.results-view{display:none;min-height:100vh;flex-direction:column}
+
+.top-bar{
+  display:flex;align-items:center;gap:14px;
+  padding:12px 24px;background:var(--bg2);
+  border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:100;
+}
+.top-logo{
+  font-size:20px;font-weight:700;cursor:pointer;
+  white-space:nowrap;flex-shrink:0;
+  transition:opacity .15s;
+}
+.top-logo:hover{opacity:.8}
+.top-logo .hi{color:var(--accent)}
+.top-search{flex:1;max-width:580px}
+.top-search .search-box{border-radius:22px;padding:2px 4px 2px 16px}
+.top-search .search-input{font-size:15px;padding:9px 0}
+.top-search .search-btn{width:36px;height:36px}
+.top-search .search-btn svg{width:16px;height:16px}
+.top-privacy{
+  flex-shrink:0;display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--text3);margin-left:auto;
+}
+.top-privacy .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 4px var(--accent)}
+
+.results-body{max-width:740px;margin:0 auto;padding:24px 24px 80px;width:100%}
+
+.results-meta{
+  font-size:13px;color:var(--text3);
+  margin-bottom:18px;padding-bottom:14px;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;
+}
+.results-meta .privacy-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;background:rgba(0,212,170,.08);
+  border:1px solid rgba(0,212,170,.2);border-radius:10px;
+  font-size:10px;color:var(--accent);letter-spacing:0.3px;
+}
+
+.tabs{display:flex;gap:2px;margin-bottom:22px}
+.tab-btn{
+  padding:6px 16px;background:none;border:1px solid transparent;
+  border-radius:14px;color:var(--text3);font-size:13px;
+  cursor:pointer;font-family:inherit;transition:all .2s;
+}
+.tab-btn:hover{color:var(--text2);border-color:var(--border2)}
+.tab-btn.active{
+  background:rgba(0,212,170,.1);color:var(--accent);
+  border-color:rgba(0,212,170,.3);
+}
+
+/* ── Loading ── */
+.loading{display:none;text-align:center;padding:80px 20px}
+.loading.active{display:block}
+.spin{
+  width:40px;height:40px;margin:0 auto 18px;
+  border:3px solid var(--border2);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .75s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-label{color:var(--text3);font-size:14px;letter-spacing:0.5px}
+.loading-sub{color:var(--text3);font-size:11px;margin-top:6px;opacity:.6}
+
+/* ── Result Items ── */
+.result{margin-bottom:30px}
+.result-domain{
+  display:flex;align-items:center;gap:6px;
+  font-size:12px;color:var(--text3);margin-bottom:3px;
+}
+.result-domain .favicon{
+  width:16px;height:16px;border-radius:3px;
+  background:var(--bg3);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;
+  font-size:9px;color:var(--text3);flex-shrink:0;overflow:hidden;
+}
+.result-domain .favicon img{width:100%;height:100%;object-fit:contain}
+.result-engine{
+  display:inline-block;padding:1px 6px;
+  background:var(--bg3);border:1px solid var(--border);
+  border-radius:4px;font-size:10px;color:var(--text3);
+  margin-left:4px;
+}
+.result-title{
+  display:block;font-size:18px;color:var(--link);
+  line-height:1.35;margin-bottom:5px;cursor:pointer;
+  transition:color .15s;
+}
+.result-title:hover{color:var(--link-hover);text-decoration:underline}
+.result-snippet{
+  font-size:14px;color:var(--text2);
+  line-height:1.65;
+}
+
+/* ── Empty/Error ── */
+.empty{text-align:center;padding:80px 20px}
+.empty h3{font-size:20px;color:var(--text);margin-bottom:10px;font-weight:400}
+.empty p{color:var(--text3);font-size:14px;line-height:1.6}
+.empty .suggest{
+  margin-top:20px;display:flex;gap:8px;
+  flex-wrap:wrap;justify-content:center;
+}
+.empty .tag{
+  padding:5px 14px;background:var(--bg3);
+  border:1px solid var(--border2);border-radius:14px;
+  font-size:12px;color:var(--text2);cursor:pointer;
+  transition:all .15s;
+}
+.empty .tag:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── Pagination ── */
+.pagination{
+  display:flex;align-items:center;justify-content:center;
+  gap:8px;margin-top:40px;padding-top:24px;
+  border-top:1px solid var(--border);
+}
+.page-btn{
+  padding:7px 18px;background:var(--bg3);
+  border:1px solid var(--border2);border-radius:16px;
+  color:var(--text2);font-size:13px;cursor:pointer;
+  font-family:inherit;transition:all .2s;
+}
+.page-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent);background:rgba(0,212,170,.05)}
+.page-btn:disabled{opacity:.3;cursor:default}
+.page-info{font-size:13px;color:var(--text3);padding:0 8px}
+
+/* ── Privacy Footer ── */
+.privacy-footer{
+  margin-top:48px;padding:32px 20px;
+  border-top:1px solid var(--border);text-align:center;
+}
+.privacy-footer p{color:var(--text3);font-size:12px;margin-bottom:12px;line-height:1.6}
+.shields{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+.shield{
+  padding:3px 10px;background:var(--bg3);
+  border:1px solid var(--border);border-radius:10px;
+  font-size:10px;color:var(--accent);letter-spacing:0.3px;
+}
+
+@media(max-width:640px){
+  .logo-text{font-size:38px}
+  .logo-text .search{font-size:28px}
+  .top-privacy{display:none}
+  .results-body{padding:16px 16px 60px}
+  .result-title{font-size:16px}
+}
+</style>
+</head>
+<body>
+
+<!-- HOME VIEW -->
+<div class="home-view" id="homeView">
+  <div class="logo-area">
+    <div class="logo-text"><span class="hi">Hidra</span><span class="search">Search</span></div>
+    <div class="logo-sub">Busca Anônima &amp; Privada</div>
+  </div>
+  <div class="search-wrap">
+    <div class="search-box">
+      <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" class="search-input" id="homeInput"
+        placeholder="Pesquisar de forma anônima..." autofocus autocomplete="off" spellcheck="false">
+      <button class="search-btn" id="homeBtn" title="Pesquisar">
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      </button>
+    </div>
+    <div class="badges">
+      <div class="badge"><span class="dot"></span>Sem logs</div>
+      <div class="badge"><span class="dot"></span>HTTPS proxy local</div>
+      <div class="badge"><span class="dot"></span>Multi-engine</div>
+      <div class="badge"><span class="dot"></span>Sem cookies</div>
+      <div class="badge"><span class="dot"></span>Sem rastreamento</div>
+    </div>
+  </div>
+</div>
+
+<!-- RESULTS VIEW -->
+<div class="results-view" id="resultsView">
+  <div class="top-bar">
+    <div class="top-logo" id="topLogo"><span class="hi">Hidra</span>Search</div>
+    <div class="top-search">
+      <div class="search-box">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" id="topInput"
+          placeholder="Buscar..." autocomplete="off" spellcheck="false">
+        <button class="search-btn" id="topBtn" title="Pesquisar">
+          <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="top-privacy">
+      <span class="dot"></span>
+      Proxy privado ativo
+    </div>
+  </div>
+
+  <div class="results-body">
+    <div class="results-meta" id="resultsMeta"></div>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="all">Tudo</button>
+      <button class="tab-btn" data-tab="news">Notícias</button>
+      <button class="tab-btn" data-tab="images">Imagens</button>
+      <button class="tab-btn" data-tab="hidra">Rede .hidra</button>
+    </div>
+    <div class="loading" id="loading">
+      <div class="spin"></div>
+      <div class="loading-label">Buscando de forma anônima...</div>
+      <div class="loading-sub">Proxy local → HTTPS → SearXNG / DuckDuckGo</div>
+    </div>
+    <div id="resultsList"></div>
+    <div class="pagination" id="pagination" style="display:none">
+      <button class="page-btn" id="prevBtn">← Anterior</button>
+      <span class="page-info" id="pageInfo"></span>
+      <button class="page-btn" id="nextBtn">Próxima →</button>
+    </div>
+    <div class="privacy-footer">
+      <p>Busca roteada pelo proxy local HidraNet — nenhum dado armazenado, sem cookies.<br>
+         Sua busca foi enviada por HTTPS sem identificadores de rastreamento.</p>
+      <div class="shields">
+        <span class="shield">Zero Logs</span>
+        <span class="shield">HTTPS Transit</span>
+        <span class="shield">No Cookies</span>
+        <span class="shield">SearXNG + DDG</span>
+        <span class="shield">Local Proxy</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const API_BASE = 'http://127.0.0.1:8090';
+let currentQuery = '';
+let currentPage = 1;
+let currentTab = 'all';
+let isLoading = false;
+let currentPrefs = { theme: 'teal', searchLang: 'all' };
+
+var THEMES = {
+  teal:    { accent: '#00d4aa', dim: '#00b894', glow: 'rgba(0,212,170,0.15)' },
+  cyber:   { accent: '#c026d3', dim: '#7c3aed', glow: 'rgba(192,38,211,0.15)' },
+  ocean:   { accent: '#0ea5e9', dim: '#0284c7', glow: 'rgba(14,165,233,0.15)' },
+  sunset:  { accent: '#f97316', dim: '#dc2626', glow: 'rgba(249,115,22,0.15)' },
+  rose:    { accent: '#ec4899', dim: '#be185d', glow: 'rgba(236,72,153,0.15)' },
+  matrix:  { accent: '#22c55e', dim: '#15803d', glow: 'rgba(34,197,94,0.15)' },
+  gold:    { accent: '#eab308', dim: '#ca8a04', glow: 'rgba(234,179,8,0.15)' },
+  crimson: { accent: '#ef4444', dim: '#b91c1c', glow: 'rgba(239,68,68,0.15)' },
+};
+
+function applyTheme(name) {
+  var t = THEMES[name] || THEMES.teal;
+  var r = document.documentElement;
+  r.style.setProperty('--accent', t.accent);
+  r.style.setProperty('--accent2', t.dim);
+  r.style.setProperty('--link', t.accent);
+  r.style.setProperty('--link-hover', t.dim);
+}
+
+async function loadPrefs() {
+  try {
+    var res = await fetch(API_BASE + '/prefs');
+    if (res.ok) {
+      currentPrefs = await res.json();
+      applyTheme(currentPrefs.theme || 'teal');
+    }
+  } catch(e) {}
+}
+
+loadPrefs();
+
+// ── Input wiring ──
+document.getElementById('homeInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doSearch(this.value.trim(), 1);
+});
+document.getElementById('homeBtn').addEventListener('click', function() {
+  doSearch(document.getElementById('homeInput').value.trim(), 1);
+});
+document.getElementById('topInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doSearch(this.value.trim(), 1);
+});
+document.getElementById('topBtn').addEventListener('click', function() {
+  doSearch(document.getElementById('topInput').value.trim(), 1);
+});
+document.getElementById('topLogo').addEventListener('click', goHome);
+
+// ── Tab wiring ──
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    this.classList.add('active');
+    currentTab = this.dataset.tab;
+    if (currentQuery) doSearch(currentQuery, 1);
+  });
+});
+
+// ── Pagination ──
+document.getElementById('prevBtn').addEventListener('click', function() {
+  if (currentPage > 1) doSearch(currentQuery, currentPage - 1);
+});
+document.getElementById('nextBtn').addEventListener('click', function() {
+  doSearch(currentQuery, currentPage + 1);
+});
+
+// ── Auto-search from URL param ──
+(function() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var q = (params.get('q') || '').trim();
+    if (q) {
+      doSearch(q, 1);
+    }
+  } catch(e) {}
+})();
+
+function doSearch(q, page) {
+  if (!q || isLoading) return;
+  currentQuery = q;
+  currentPage = page || 1;
+
+  document.getElementById('homeInput').value = q;
+  document.getElementById('topInput').value = q;
+  showResults();
+
+  document.getElementById('loading').classList.add('active');
+  document.getElementById('resultsList').innerHTML = '';
+  document.getElementById('resultsMeta').innerHTML = '';
+  document.getElementById('pagination').style.display = 'none';
+  isLoading = true;
+
+  var url = API_BASE + '/search/api?q=' + encodeURIComponent(q) + '&p=' + currentPage;
+  if (currentTab !== 'all') url += '&tab=' + currentTab;
+  if (currentPrefs.searchLang && currentPrefs.searchLang !== 'all') {
+    url += '&lang=' + encodeURIComponent(currentPrefs.searchLang);
+  }
+
+  fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      isLoading = false;
+      document.getElementById('loading').classList.remove('active');
+      renderResults(data, q);
+    })
+    .catch(function(err) {
+      isLoading = false;
+      document.getElementById('loading').classList.remove('active');
+      renderError(err.message, q);
+    });
+}
+
+function showResults() {
+  document.getElementById('homeView').style.display = 'none';
+  document.getElementById('resultsView').style.display = 'flex';
+  document.getElementById('resultsView').style.flexDirection = 'column';
+}
+
+function goHome() {
+  document.getElementById('homeView').style.display = 'flex';
+  document.getElementById('resultsView').style.display = 'none';
+  document.getElementById('homeInput').value = '';
+  document.getElementById('homeInput').focus();
+  currentQuery = '';
+  currentPage = 1;
+  try {
+    history.pushState(null, '', window.location.pathname);
+  } catch(e) {}
+}
+
+function renderResults(data, q) {
+  var meta = document.getElementById('resultsMeta');
+  var list = document.getElementById('resultsList');
+
+  if (!data.results || data.results.length === 0) {
+    meta.innerHTML = 'Nenhum resultado para <strong>' + esc(q) + '</strong>';
+    list.innerHTML = [
+      '<div class="empty">',
+      '  <h3>Nenhum resultado encontrado</h3>',
+      '  <p>Tente usar palavras-chave diferentes ou verifique a ortografia.</p>',
+      '  <div class="suggest">',
+      suggestionsFor(q).map(function(s) {
+        return '<span class="tag" onclick="doSearch(' + JSON.stringify(s) + ',1)">' + esc(s) + '</span>';
+      }).join(''),
+      '  </div>',
+      '</div>'
+    ].join('\n');
+    return;
+  }
+
+  var elapsed = data.elapsed_ms ? (' em ' + data.elapsed_ms + 'ms') : '';
+  meta.innerHTML =
+    data.results.length + ' resultados' + elapsed + ' — ' +
+    '<span class="privacy-pill"><span class="dot" style="width:4px;height:4px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:3px"></span>Proxy local ativo</span>';
+
+  list.innerHTML = data.results.map(function(r) {
+    var domain = '';
+    try { domain = new URL(r.url).hostname.replace('www.', ''); } catch(e) { domain = r.url; }
+    var engine = r.engine ? '<span class="result-engine">' + esc(r.engine) + '</span>' : '';
+    var snippet = r.snippet
+      ? '<div class="result-snippet">' + esc(r.snippet) + '</div>'
+      : '';
+    return [
+      '<div class="result">',
+      '  <div class="result-domain">',
+      '    <span class="favicon">' + esc(domain.charAt(0).toUpperCase()) + '</span>',
+      '    ' + esc(domain) + engine,
+      '  </div>',
+      '  <a class="result-title" href="' + escAttr(r.url) + '">' + esc(r.title) + '</a>',
+      snippet,
+      '</div>'
+    ].join('\n');
+  }).join('\n');
+
+  // Pagination
+  var hasPrev = currentPage > 1;
+  var hasNext = data.results.length >= 10;
+  if (hasPrev || hasNext) {
+    document.getElementById('pagination').style.display = 'flex';
+    document.getElementById('prevBtn').disabled = !hasPrev;
+    document.getElementById('nextBtn').disabled = !hasNext;
+    document.getElementById('pageInfo').textContent = 'Página ' + currentPage;
+  }
+}
+
+function renderError(msg, q) {
+  var list = document.getElementById('resultsList');
+  var isMqtt = msg.indexOf('All') !== -1 || msg.indexOf('fetch') !== -1 || msg.indexOf('net') !== -1;
+  list.innerHTML = [
+    '<div class="empty">',
+    '  <h3>Busca indisponível</h3>',
+    '  <p>Não foi possível obter resultados agora.<br>',
+    '     Verifique sua conexão com a internet e tente novamente.</p>',
+    '  <div class="suggest" style="margin-top:16px">',
+    '    <a class="tag" href="https://duckduckgo.com/?q=' + encodeURIComponent(q) + '" style="text-decoration:none">DuckDuckGo</a>',
+    '    <a class="tag" href="https://search.brave.com/search?q=' + encodeURIComponent(q) + '" style="text-decoration:none">Brave Search</a>',
+    '    <a class="tag" href="https://searx.be/search?q=' + encodeURIComponent(q) + '" style="text-decoration:none">SearXNG</a>',
+    '  </div>',
+    '</div>'
+  ].join('\n');
+}
+
+function suggestionsFor(q) {
+  return [q + ' download', q + ' tutorial', q + ' grátis', '"' + q + '"'];
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  if (!s) return '#';
+  return esc(s);
+}
+</script>
+</body>
+</html>

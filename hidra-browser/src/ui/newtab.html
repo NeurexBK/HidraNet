@@ -313,11 +313,11 @@
     }
 
     .connect-btn.off {
-      background: linear-gradient(135deg, #00d4aa, #00a888);
-      color: #06060b; box-shadow: 0 0 20px rgba(0,212,170,0.25);
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      color: #06060b; box-shadow: 0 0 20px var(--accent-glow);
     }
     .connect-btn.off:hover {
-      box-shadow: 0 0 30px rgba(0,212,170,0.4);
+      box-shadow: 0 0 30px var(--accent-glow);
       transform: translateY(-1px);
     }
 
@@ -357,6 +357,41 @@
 
     .footer-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
     .footer-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent); }
+
+    /* Preferences Card */
+    .pref-section { margin-bottom: 18px; }
+    .pref-section:last-child { margin-bottom: 0; }
+    .pref-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+
+    .theme-grid { display: flex; gap: 10px; flex-wrap: wrap; padding: 2px 0; }
+    .theme-swatch {
+      width: 34px; height: 34px; border-radius: 50%;
+      cursor: pointer; border: 2px solid transparent;
+      transition: all 0.2s; position: relative; flex-shrink: 0;
+    }
+    .theme-swatch:hover { transform: scale(1.15); }
+    .theme-swatch.active {
+      border-color: var(--text-primary);
+      box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--text-primary);
+    }
+    .theme-swatch .check {
+      position: absolute; inset: 0; display: none;
+      align-items: center; justify-content: center;
+      color: rgba(0,0,0,0.7); font-size: 14px;
+    }
+    .theme-swatch.active .check { display: flex; }
+
+    .lang-select {
+      width: 100%; background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 8px 12px; font-size: 13px; font-family: inherit;
+      cursor: pointer; outline: none; appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238888a0' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center;
+      padding-right: 32px;
+    }
+    .lang-select:focus { border-color: var(--accent); }
+    .lang-select option { background: #0d0d14; }
 
     @media (max-width: 768px) {
       .dashboard { padding: 24px 16px; }
@@ -462,7 +497,7 @@
             <span class="app-desc">Doe Bitcoin para a HidraNet</span>
             <span class="app-badge online">BTC</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8083">
+          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/search">
             <div class="app-icon search-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="11" cy="11" r="8"/>
@@ -671,6 +706,189 @@
             </div>
             <div class="setting-badge">None</div>
           </div>
+        </div>
+      </div>
+
+      <!-- Preferences -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+          <h2>Preferências</h2>
+        </div>
+
+        <!-- Color Theme -->
+        <div class="pref-section">
+          <div class="pref-label">Tema de cores</div>
+          <div class="theme-grid" id="themeGrid">
+            <div class="theme-swatch active" data-theme="teal"    style="background:linear-gradient(135deg,#00d4aa,#00a888)" title="Teal"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="cyber"   style="background:linear-gradient(135deg,#c026d3,#7c3aed)" title="Ciberpunk"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="ocean"   style="background:linear-gradient(135deg,#0ea5e9,#0284c7)" title="Oceano"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="sunset"  style="background:linear-gradient(135deg,#f97316,#dc2626)" title="Pôr do Sol"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="rose"    style="background:linear-gradient(135deg,#ec4899,#be185d)" title="Rosa"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="matrix"  style="background:linear-gradient(135deg,#22c55e,#15803d)" title="Matrix"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="gold"    style="background:linear-gradient(135deg,#eab308,#ca8a04)" title="Dourado"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="crimson" style="background:linear-gradient(135deg,#ef4444,#b91c1c)" title="Carmesim"><span class="check">✓</span></div>
+          </div>
+        </div>
+
+        <!-- Search Language -->
+        <div class="pref-section">
+          <div class="pref-label">Idioma da busca</div>
+          <select class="lang-select" id="langSelect">
+            <option value="all">🌐 Todos os idiomas</option>
+            <optgroup label="── Mais usados ──">
+              <option value="pt-BR">🇧🇷 Português (Brasil)</option>
+              <option value="pt-PT">🇵🇹 Português (Portugal)</option>
+              <option value="en-US">🇺🇸 Inglês (EUA)</option>
+              <option value="en-GB">🇬🇧 Inglês (Reino Unido)</option>
+              <option value="es">🇪🇸 Espanhol</option>
+              <option value="fr">🇫🇷 Francês</option>
+              <option value="de">🇩🇪 Alemão</option>
+              <option value="it">🇮🇹 Italiano</option>
+              <option value="ja">🇯🇵 Japonês</option>
+              <option value="zh-CN">🇨🇳 Chinês (Simplificado)</option>
+              <option value="ru">🇷🇺 Russo</option>
+              <option value="ar">🇸🇦 Árabe</option>
+            </optgroup>
+            <optgroup label="── A ──">
+              <option value="af">Afrikaans</option>
+              <option value="sq">Albanês</option>
+              <option value="am">Amárico</option>
+              <option value="hy">Armênio</option>
+              <option value="az">Azerbaijano</option>
+            </optgroup>
+            <optgroup label="── B ──">
+              <option value="eu">Basco</option>
+              <option value="be">Bielorrusso</option>
+              <option value="bn">Bengali</option>
+              <option value="bs">Bósnio</option>
+              <option value="bg">Búlgaro</option>
+            </optgroup>
+            <optgroup label="── C ──">
+              <option value="ca">Catalão</option>
+              <option value="ceb">Cebuano</option>
+              <option value="ny">Chichewa</option>
+              <option value="zh-TW">Chinês (Tradicional)</option>
+              <option value="co">Córsico</option>
+              <option value="hr">Croata</option>
+              <option value="cs">Tcheco</option>
+            </optgroup>
+            <optgroup label="── D ──">
+              <option value="da">Dinamarquês</option>
+              <option value="nl">Holandês</option>
+            </optgroup>
+            <optgroup label="── E ──">
+              <option value="eo">Esperanto</option>
+              <option value="et">Estoniano</option>
+            </optgroup>
+            <optgroup label="── F ──">
+              <option value="tl">Filipino</option>
+              <option value="fi">Finlandês</option>
+              <option value="fy">Frísio Ocidental</option>
+            </optgroup>
+            <optgroup label="── G ──">
+              <option value="gl">Galego</option>
+              <option value="cy">Galês</option>
+              <option value="ka">Georgiano</option>
+              <option value="el">Grego</option>
+              <option value="gu">Guzerate</option>
+            </optgroup>
+            <optgroup label="── H ──">
+              <option value="ht">Haitiano</option>
+              <option value="ha">Hauçá</option>
+              <option value="haw">Havaiano</option>
+              <option value="he">Hebraico</option>
+              <option value="hi">Hindi</option>
+              <option value="hu">Húngaro</option>
+            </optgroup>
+            <optgroup label="── I ──">
+              <option value="is">Islandês</option>
+              <option value="ig">Igbo</option>
+              <option value="id">Indonésio</option>
+              <option value="ga">Irlandês</option>
+            </optgroup>
+            <optgroup label="── J ──">
+              <option value="jw">Javanês</option>
+            </optgroup>
+            <optgroup label="── K ──">
+              <option value="kn">Canarês</option>
+              <option value="kk">Cazaque</option>
+              <option value="km">Khmer</option>
+              <option value="ko">Coreano</option>
+              <option value="ku">Curdo</option>
+              <option value="ky">Quirguiz</option>
+            </optgroup>
+            <optgroup label="── L ──">
+              <option value="lo">Laociano</option>
+              <option value="la">Latim</option>
+              <option value="lv">Letão</option>
+              <option value="lt">Lituano</option>
+              <option value="lb">Luxemburguês</option>
+            </optgroup>
+            <optgroup label="── M ──">
+              <option value="mk">Macedônio</option>
+              <option value="mg">Malgaxe</option>
+              <option value="ms">Malaio</option>
+              <option value="ml">Malaiala</option>
+              <option value="mt">Maltês</option>
+              <option value="mi">Maori</option>
+              <option value="mr">Marata</option>
+              <option value="mn">Mongol</option>
+              <option value="my">Birmanês</option>
+            </optgroup>
+            <optgroup label="── N ──">
+              <option value="ne">Nepali</option>
+              <option value="no">Norueguês</option>
+            </optgroup>
+            <optgroup label="── P ──">
+              <option value="ps">Pachto</option>
+              <option value="fa">Persa</option>
+              <option value="pl">Polonês</option>
+              <option value="pa">Punjabi</option>
+            </optgroup>
+            <optgroup label="── R ──">
+              <option value="ro">Romeno</option>
+            </optgroup>
+            <optgroup label="── S ──">
+              <option value="sm">Samoano</option>
+              <option value="gd">Gaélico Escocês</option>
+              <option value="sr">Sérvio</option>
+              <option value="st">Sesoto</option>
+              <option value="sn">Shona</option>
+              <option value="sd">Sindi</option>
+              <option value="si">Cingalês</option>
+              <option value="sk">Eslovaco</option>
+              <option value="sl">Esloveno</option>
+              <option value="so">Somali</option>
+              <option value="su">Sundanês</option>
+              <option value="sw">Suaíli</option>
+              <option value="sv">Sueco</option>
+            </optgroup>
+            <optgroup label="── T ──">
+              <option value="tg">Tadjique</option>
+              <option value="ta">Tâmil</option>
+              <option value="te">Télugo</option>
+              <option value="th">Tailandês</option>
+              <option value="tr">Turco</option>
+            </optgroup>
+            <optgroup label="── U ──">
+              <option value="uk">Ucraniano</option>
+              <option value="ur">Urdu</option>
+              <option value="uz">Usbeque</option>
+            </optgroup>
+            <optgroup label="── V ──">
+              <option value="vi">Vietnamita</option>
+            </optgroup>
+            <optgroup label="── X Y Z ──">
+              <option value="xh">Xhosa</option>
+              <option value="yi">Iídiche</option>
+              <option value="yo">Iorubá</option>
+              <option value="zu">Zulu</option>
+            </optgroup>
+          </select>
         </div>
       </div>
 
@@ -896,7 +1114,7 @@
       if (e.key === 'Enter') {
         var q = this.value.trim();
         if (q) {
-          window.location.href = 'http://127.0.0.1:8083/?q=' + encodeURIComponent(q);
+          window.location.href = 'http://127.0.0.1:8090/search?q=' + encodeURIComponent(q);
         }
       }
     });
@@ -921,6 +1139,69 @@
     poll();
     setInterval(poll, 5000);
     setInterval(updateUptime, 1000);
+
+    // ── Preferences — Themes & Language ──────────────────────────────────────
+    var THEMES = {
+      teal:    { accent: '#00d4aa', dim: '#00a888', glow: 'rgba(0,212,170,0.15)' },
+      cyber:   { accent: '#c026d3', dim: '#7c3aed', glow: 'rgba(192,38,211,0.15)' },
+      ocean:   { accent: '#0ea5e9', dim: '#0284c7', glow: 'rgba(14,165,233,0.15)' },
+      sunset:  { accent: '#f97316', dim: '#dc2626', glow: 'rgba(249,115,22,0.15)' },
+      rose:    { accent: '#ec4899', dim: '#be185d', glow: 'rgba(236,72,153,0.15)' },
+      matrix:  { accent: '#22c55e', dim: '#15803d', glow: 'rgba(34,197,94,0.15)' },
+      gold:    { accent: '#eab308', dim: '#ca8a04', glow: 'rgba(234,179,8,0.15)' },
+      crimson: { accent: '#ef4444', dim: '#b91c1c', glow: 'rgba(239,68,68,0.15)' },
+    };
+
+    function applyTheme(name) {
+      var t = THEMES[name] || THEMES.teal;
+      var r = document.documentElement;
+      r.style.setProperty('--accent', t.accent);
+      r.style.setProperty('--accent-dim', t.dim);
+      r.style.setProperty('--accent-glow', t.glow);
+      // Update swatch active state
+      document.querySelectorAll('.theme-swatch').forEach(function(s) {
+        s.classList.toggle('active', s.dataset.theme === name);
+      });
+    }
+
+    async function initPrefs() {
+      var prefs = { theme: 'teal', searchLang: 'all' };
+      try {
+        if (window.hidra && window.hidra.prefs) {
+          prefs = await window.hidra.prefs.get();
+        }
+      } catch(e) {}
+      applyTheme(prefs.theme || 'teal');
+      var sel = document.getElementById('langSelect');
+      if (sel) sel.value = prefs.searchLang || 'all';
+    }
+
+    async function savePrefs(update) {
+      try {
+        if (window.hidra && window.hidra.prefs) {
+          await window.hidra.prefs.save(update);
+        }
+      } catch(e) {}
+    }
+
+    // Theme swatch clicks
+    document.querySelectorAll('.theme-swatch').forEach(function(swatch) {
+      swatch.addEventListener('click', function() {
+        var name = this.dataset.theme;
+        applyTheme(name);
+        savePrefs({ theme: name });
+      });
+    });
+
+    // Language select
+    var langSel = document.getElementById('langSelect');
+    if (langSel) {
+      langSel.addEventListener('change', function() {
+        savePrefs({ searchLang: this.value });
+      });
+    }
+
+    initPrefs();
   </script>
 </body>
 </html>

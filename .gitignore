@@ -49,3 +49,7 @@ desktop.ini
 
 # ─── Backup local ────────────────────────────────────────────────────────────
 .git_local_backup/
+
+# ─── Projetos separados / config local (não pertencem ao repo público) ───────
+defimind/
+.claude/
