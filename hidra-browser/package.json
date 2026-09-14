@@ -13,7 +13,8 @@
     "build:linux-zip": "node scripts/prepare-build.js && node scripts/build-linux.js",
     "build:all": "node scripts/prepare-build.js && electron-builder --win --linux --x64",
     "build": "node scripts/prepare-build.js && electron-builder --win --x64",
-    "pack": "node scripts/pack-portable.js"
+    "fetch-tor": "node scripts/fetch-tor.js",
+    "pack": "node scripts/fetch-tor.js && node scripts/pack-portable.js"
   },
   "author": "HidraNet <contact@hidranet.org>",
   "license": "MIT",

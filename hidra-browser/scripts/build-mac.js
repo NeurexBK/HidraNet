@@ -343,6 +343,23 @@ async function buildArch(arch) {
     }
   });
 
+  // ── Tor daemon — o que de facto anonimiza a navegacao ────────────────────
+  // Sem isto o pacote abre, mas sai sempre pelo IP real do utilizador.
+  var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'darwin-' + arch);
+  if (fs.existsSync(path.join(torDir, 'tor'))) {
+    outEntries.push(mkDir(resPfx + 'bin'));
+    outEntries.push(mkDir(resPfx + 'bin/tor'));
+    ['tor', 'geoip', 'geoip6'].forEach(function(f) {
+      var abs = path.join(torDir, f);
+      if (!fs.existsSync(abs)) return;
+      outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
+    });
+    console.log('  Tor incluido (darwin-' + arch + ')');
+  } else {
+    console.log('  [!!] Tor AUSENTE para darwin-' + arch + ' — este pacote nao tera anonimato.');
+    console.log('       node scripts/fetch-tor.js --platform darwin --arch ' + arch);
+  }
+
   // ── Launcher script (0o755 → double-clickable on macOS) ──────────────────
   var launcher = [
     '#!/bin/bash',

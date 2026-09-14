@@ -119,20 +119,35 @@ document.addEventListener('click', (e) => {
   }
 });
 
-document.getElementById('panel-hops').addEventListener('change', (e) => {
-  const hops = parseInt(e.target.value);
-  window.hidra.proxy.setHops(hops);
+document.getElementById('panel-new-identity').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Trocando…';
+  try {
+    const r = await window.hidra.tor.newIdentity();
+    if (r && r.ok) {
+      btn.textContent = r.changed ? r.exitIp : 'Mesmo nó — repita';
+    } else {
+      btn.textContent = 'Falhou';
+    }
+  } catch (err) {
+    btn.textContent = 'Falhou';
+  }
+  setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 4000);
+  refreshProxyStatus();
 });
 
 async function refreshProxyStatus() {
   const status = await window.hidra.proxy.status();
 
   const panelStatus = document.getElementById('panel-status');
-  if (status.connected && status.mode === 'full') {
-    panelStatus.textContent = 'Conectado — Protegido';
+  if (status.connected && (status.mode === 'tor' || status.mode === 'full')) {
+    const exit = status.tor && status.tor.exitIp;
+    panelStatus.textContent = exit ? `Anônimo — ${exit}` : 'Anônimo (Tor)';
     panelStatus.style.color = '#00d4aa';
     proxyDot.className = 'connected';
-    proxyLabel.textContent = 'Protegido';
+    proxyLabel.textContent = 'Anônimo';
   } else if (status.connected) {
     panelStatus.textContent = 'Conectado — Local';
     panelStatus.style.color = '#00d4aa';
@@ -224,6 +239,13 @@ window.hidra.on('tab:navigated', (data) => {
 
 window.hidra.on('tab:loading', (data) => {
   setTabLoading(data.tabId, data.loading);
+});
+
+// Ctrl+L pressed while the page had focus — the main process hands focus back
+// to the chrome so the address bar can take it.
+window.hidra.on('ui:focus-url', () => {
+  urlInput.focus();
+  urlInput.select();
 });
 
 // === INIT ===

@@ -19,13 +19,22 @@ if (isInternalPage) {
   contextBridge.exposeInMainWorld('hidra', {
     proxy: {
       status: () => ipcRenderer.invoke('proxy:status'),
-      setHops: (hops) => ipcRenderer.invoke('proxy:set-hops', hops),
       connect: () => ipcRenderer.invoke('proxy:connect'),
       disconnect: () => ipcRenderer.invoke('proxy:disconnect'),
     },
     prefs: {
       get: () => ipcRenderer.invoke('prefs:get'),
       save: (p) => ipcRenderer.invoke('prefs:save', p),
+    },
+    apps: {
+      status: () => ipcRenderer.invoke('apps:status'),
+    },
+    tor: {
+      newIdentity: () => ipcRenderer.invoke('tor:new-identity'),
+    },
+    sevennine: {
+      start: () => ipcRenderer.invoke('sevennine:start'),
+      stop: () => ipcRenderer.invoke('sevennine:stop'),
     },
   });
 }

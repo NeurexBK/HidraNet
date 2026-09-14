@@ -13,9 +13,11 @@ contextBridge.exposeInMainWorld('hidra', {
   },
   proxy: {
     status: () => ipcRenderer.invoke('proxy:status'),
-    setHops: (hops) => ipcRenderer.invoke('proxy:set-hops', hops),
     connect: () => ipcRenderer.invoke('proxy:connect'),
     disconnect: () => ipcRenderer.invoke('proxy:disconnect'),
+  },
+  tor: {
+    newIdentity: () => ipcRenderer.invoke('tor:new-identity'),
   },
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
@@ -26,6 +28,7 @@ contextBridge.exposeInMainWorld('hidra', {
     const validChannels = [
       'tab:created', 'tab:closed', 'tab:activated',
       'tab:title', 'tab:navigated', 'tab:loading',
+      'ui:focus-url',
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, (_event, data) => callback(data));

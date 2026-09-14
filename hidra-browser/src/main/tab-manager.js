@@ -4,6 +4,13 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { FingerprintEngine } = require('../fingerprint/engine');
 
+// HidraNet apps (chat, mail, forum, search, sites) are served by main.js on this
+// port — not by the hidra-node engine, so they work even when the engine is not
+// running. Keep in sync with CHAT_PORT in main.js.
+const APPS_PORT = 8090;
+const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
+const SEARCH_URL = `${APPS_ORIGIN}/search`;
+
 class TabManager {
   constructor(parentWindow, proxyManager) {
     this.window = parentWindow;
@@ -11,12 +18,27 @@ class TabManager {
     this.tabs = new Map();
     this.activeTabId = null;
     this.nextId = 1;
+    // Set while connected, so tabs opened after connecting inherit the same
+    // network route instead of quietly going out direct.
+    this.proxyRules = null;
+  }
+
+  setProxyRules(rules) {
+    this.proxyRules = rules || null;
+  }
+
+  async _applyProxy(tabSession) {
+    if (this.proxyRules) {
+      await tabSession.setProxy({ proxyRules: this.proxyRules, proxyBypassRules: '<local>' });
+      return;
+    }
+    await this.proxyManager.configure(tabSession);
   }
 
   async createTab(url) {
     const tabId = this.nextId++;
-    const tabSession = this._createIsolatedSession(tabId);
     const fingerprint = FingerprintEngine.generate();
+    const tabSession = this._createIsolatedSession(tabId, fingerprint);
 
     const view = new BrowserView({
       webPreferences: {
@@ -30,9 +52,10 @@ class TabManager {
       },
     });
 
-    await this.proxyManager.configure(tabSession);
+    await this._applyProxy(tabSession);
 
     this._injectFingerprint(view, fingerprint);
+    this._bindShortcuts(view, tabId);
 
     // Inject the "Publicar na rede" feature into the SevenNine page (no engine rebuild)
     view.webContents.on('did-finish-load', () => {
@@ -93,11 +116,14 @@ class TabManager {
     });
 
     this.tabs.set(tabId, tabInfo);
+
+    // The UI creates the tab strip element on 'tab:created', so it has to arrive
+    // before 'tab:activated' — otherwise activateTab marks a tab that is not in
+    // the DOM yet and the new tab never gets the active highlight.
+    this._notifyUI('tab:created', { tabId, title: tabInfo.title, url: tabInfo.url });
     this.activateTab(tabId);
     this.navigate(tabId, url || 'hidra://newtab');
 
-
-    this._notifyUI('tab:created', { tabId, title: tabInfo.title, url: tabInfo.url });
     return tabId;
   }
 
@@ -159,7 +185,7 @@ class TabManager {
       } else if (url.includes('.') && !url.includes(' ')) {
         finalUrl = 'https://' + url;
       } else {
-        finalUrl = 'http://127.0.0.1:8083/?q=' + encodeURIComponent(url);
+        finalUrl = SEARCH_URL + '?q=' + encodeURIComponent(url);
       }
     }
 
@@ -172,8 +198,8 @@ class TabManager {
         ? finalUrl.split('?q=')[1]
         : '';
       const searchUrl = searchQuery
-        ? 'http://127.0.0.1:8083/?q=' + searchQuery
-        : 'http://127.0.0.1:8083/';
+        ? SEARCH_URL + '?q=' + searchQuery
+        : SEARCH_URL;
       tab.view.webContents.loadURL(searchUrl);
     } else if (finalUrl.startsWith('hidra://')) {
       this._resolveHidraDomain(tab, finalUrl);
@@ -219,21 +245,50 @@ class TabManager {
     }));
   }
 
-  _createIsolatedSession(tabId) {
+  _createIsolatedSession(tabId, fingerprint) {
     const partition = `tab-${tabId}-${crypto.randomBytes(8).toString('hex')}`;
     const tabSession = session.fromPartition(partition, { cache: false });
 
+    // Without this every request advertises the real Electron user agent
+    // ("HidraNet Browser/1.0.0 ... Electron/33"), which both identifies the
+    // browser to every server and contradicts the spoofed navigator.userAgent.
+    tabSession.setUserAgent(fingerprint.userAgent, fingerprint.languages.join(','));
+
     tabSession.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = { ...details.requestHeaders };
-      delete headers['X-Client-Data'];
-      delete headers['Sec-CH-UA'];
-      delete headers['Sec-CH-UA-Platform'];
-      delete headers['Sec-CH-UA-Mobile'];
-      delete headers['Sec-CH-UA-Full-Version'];
-      delete headers['Sec-CH-UA-Full-Version-List'];
-      delete headers['Sec-CH-UA-Arch'];
-      delete headers['Sec-CH-UA-Bitness'];
-      delete headers['Sec-CH-UA-Model'];
+
+      // Chromium hands these over lowercase ("sec-ch-ua"), and delete is
+      // case-sensitive — the old fixed-case deletes never matched a single
+      // header, so the client hints went out on every request while the UI
+      // claimed they were stripped.
+      const drop = (name) => {
+        const target = name.toLowerCase();
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === target) delete headers[key];
+        }
+      };
+
+      [
+        'X-Client-Data',
+        'Sec-CH-UA', 'Sec-CH-UA-Platform', 'Sec-CH-UA-Mobile',
+        'Sec-CH-UA-Full-Version', 'Sec-CH-UA-Full-Version-List',
+        'Sec-CH-UA-Arch', 'Sec-CH-UA-Bitness', 'Sec-CH-UA-Model',
+        'Sec-CH-UA-Platform-Version', 'Sec-CH-UA-WoW64',
+      ].forEach(drop);
+
+      // Cross-site referrers are the tracking vector; same-origin ones are load
+      // bearing (CSRF checks, hotlink protection) so they stay.
+      const refKey = Object.keys(headers).find((k) => k.toLowerCase() === 'referer');
+      if (refKey) {
+        let sameOrigin = false;
+        try {
+          sameOrigin = new URL(headers[refKey]).origin === new URL(details.url).origin;
+        } catch (e) {
+          sameOrigin = false;
+        }
+        if (!sameOrigin) delete headers[refKey];
+      }
+
       callback({ requestHeaders: headers });
     });
 
@@ -243,6 +298,36 @@ class TabManager {
     });
 
     return tabSession;
+  }
+
+  // While the user is browsing, keyboard focus lives in the BrowserView, so the
+  // keydown listener in browser.js never fires. Mirror the shortcuts here.
+  _bindShortcuts(view, tabId) {
+    view.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+
+      const mod = input.control || input.meta;
+      const key = (input.key || '').toLowerCase();
+
+      let action = null;
+      if (mod && key === 't') action = () => this.createTab('hidra://newtab');
+      else if (mod && key === 'w') action = () => this.closeTab(tabId);
+      else if (mod && key === 'l') action = () => this._focusAddressBar();
+      else if ((mod && key === 'r') || key === 'f5') action = () => this.reload(tabId);
+      if (!action) return;
+
+      // preventDefault has to come first: closing the tab destroys the
+      // webContents this very event belongs to.
+      event.preventDefault();
+      action();
+    });
+  }
+
+  _focusAddressBar() {
+    if (this.window && !this.window.isDestroyed()) {
+      this.window.webContents.focus();
+      this._notifyUI('ui:focus-url', {});
+    }
   }
 
   _injectFingerprint(view, fingerprint) {
@@ -268,7 +353,7 @@ class TabManager {
     // Network .hidra address (encrypted site on the relay): long base32 label.
     const label = hostname.replace('.hidra', '');
     if (label.length >= 24 && /^[a-z2-7]+$/.test(label)) {
-      tab.view.webContents.loadURL('http://127.0.0.1:8090/site?addr=' + encodeURIComponent(hostname));
+      tab.view.webContents.loadURL(APPS_ORIGIN + '/site?addr=' + encodeURIComponent(hostname));
       return;
     }
 

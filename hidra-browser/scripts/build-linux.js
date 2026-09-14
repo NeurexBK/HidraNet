@@ -303,6 +303,23 @@ async function buildArch(arch) {
     else outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
   });
 
+  // ── Tor daemon — o que de facto anonimiza a navegacao ────────────────────
+  // Sem isto o pacote abre, mas sai sempre pelo IP real do utilizador.
+  var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'linux-' + arch);
+  if (fs.existsSync(path.join(torDir, 'tor'))) {
+    outEntries.push(mkDir(resPfx + 'bin'));
+    outEntries.push(mkDir(resPfx + 'bin/tor'));
+    ['tor', 'geoip', 'geoip6'].forEach(function(f) {
+      var abs = path.join(torDir, f);
+      if (!fs.existsSync(abs)) return;
+      outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
+    });
+    console.log('  Tor incluido (linux-' + arch + ')');
+  } else {
+    console.log('  [!!] Tor AUSENTE para linux-' + arch + ' — este pacote nao tera anonimato.');
+    console.log('       node scripts/fetch-tor.js --platform linux --arch ' + arch);
+  }
+
   // ── Launcher script (0o755) ───────────────────────────────────────────────
   var launcher = [
     '#!/bin/bash',

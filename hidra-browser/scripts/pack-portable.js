@@ -67,11 +67,15 @@ function copyNodeBinary(destBin, isWin) {
   fs.mkdirSync(destBin, { recursive: true });
   const binName = isWin ? 'hidra-node.exe' : 'hidra-node';
 
-  // Prefer debug over release (debug has --apps flag from latest build)
-  const candidates = [
-    path.join(NODE_ROOT, 'target', 'debug', binName),
-    path.join(NODE_ROOT, 'target', 'release', binName),
-  ];
+  // Newest build wins. The profiles drift apart, and shipping the older one
+  // means shipping an engine missing flags the browser depends on — the release
+  // build here predates --sevennine entirely. Rebuild release from current
+  // source to get the smaller binary without losing features.
+  const candidates = ['release', 'debug']
+    .map((profile) => path.join(NODE_ROOT, 'target', profile, binName))
+    .filter((p) => fs.existsSync(p))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+
   for (const src of candidates) {
     if (fs.existsSync(src)) {
       fs.copyFileSync(src, path.join(destBin, binName));
@@ -89,6 +93,28 @@ function copyNodeBinary(destBin, isWin) {
   }
   console.log(`  [!!] ${binName} not found — users will need to compile`);
   return false;
+}
+
+// ── Helper: copy the Tor daemon (what actually anonymises traffic) ──
+function copyTorBundle(destBin, targetPlatform, targetArch) {
+  const arch = targetArch || 'x64';
+  const src = path.join(ROOT, 'build', 'bin', 'tor', `${targetPlatform}-${arch}`);
+  const exe = targetPlatform === 'win32' ? 'tor.exe' : 'tor';
+
+  if (!fs.existsSync(path.join(src, exe))) {
+    console.log(`  [!!] Tor for ${targetPlatform}-${arch} not bundled — run:`);
+    console.log(`       node scripts/fetch-tor.js --platform ${targetPlatform} --arch ${arch}`);
+    console.log('       The package would ship WITHOUT network anonymity.');
+    return false;
+  }
+
+  const dest = path.join(destBin, 'tor');
+  copyDir(src, dest);
+  try { fs.chmodSync(path.join(dest, exe), 0o755); } catch (e) {}
+
+  const mb = (fs.statSync(path.join(dest, exe)).size / 1024 / 1024).toFixed(1);
+  console.log(`  [ok] Tor bundled (${exe}: ${mb} MB + geoip)`);
+  return true;
 }
 
 // ── Build Windows package ──
@@ -118,6 +144,7 @@ function buildWindows() {
 
   // Copy hidra-node binary
   copyNodeBinary(path.join(outDir, 'resources', 'bin'), true);
+  copyTorBundle(path.join(outDir, 'resources', 'bin'), 'win32', 'x64');
 
   // Create launcher bat (if HidraNet.exe gets blocked, this is a fallback)
   fs.writeFileSync(path.join(outDir, 'Iniciar HidraNet.bat'),
@@ -189,6 +216,7 @@ function buildLinux() {
 
   // Copy hidra-node binary (Linux)
   copyNodeBinary(path.join(outDir, 'resources', 'bin'), false);
+  copyTorBundle(path.join(outDir, 'resources', 'bin'), 'linux', 'x64');
 
   // Create launcher script
   fs.writeFileSync(path.join(outDir, 'iniciar.sh'),

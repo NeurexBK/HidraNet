@@ -508,7 +508,7 @@
             <span class="app-desc">Busca anônima e criptografada</span>
             <span class="app-badge online">Disponível</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8084">
+          <a class="app-shortcut" href="#" id="app-sevennine" data-url="http://127.0.0.1:8084">
             <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); border-color: rgba(108, 92, 231, 0.3);">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="3" y="3" width="7" height="7" rx="1"/>
@@ -562,8 +562,8 @@
             <span class="stat-label">Uptime</span>
           </div>
           <div class="stat">
-            <span class="stat-value" id="stat-hops">3</span>
-            <span class="stat-label">Hops</span>
+            <span class="stat-value" id="stat-exit">—</span>
+            <span class="stat-label">IP de saída</span>
           </div>
         </div>
       </div>
@@ -648,14 +648,10 @@
         <div class="settings-list">
           <div class="setting-row">
             <div class="setting-info">
-              <span class="setting-name">Circuit Hops</span>
-              <span class="setting-desc">Number of relay nodes in your circuit</span>
+              <span class="setting-name">Nova Identidade</span>
+              <span class="setting-desc" id="identity-desc">Troca seu circuito — o IP de saída muda</span>
             </div>
-            <select id="setting-hops" class="setting-select">
-              <option value="3" selected>3 (Standard)</option>
-              <option value="5">5 (High)</option>
-              <option value="7">7 (Maximum)</option>
-            </select>
+            <button id="btn-new-identity" class="setting-select" type="button">Trocar circuito</button>
           </div>
           <div class="setting-row">
             <div class="setting-info">
@@ -933,17 +929,19 @@
         h > 0 ? h + 'h ' + m + 'm' : m > 0 ? m + 'm ' + s + 's' : s + 's';
     }
 
-    async function checkService(port, svcPath) {
+    // This page is served from file://, so fetching the apps ports directly is
+    // a cross-origin request that never resolves — every app read as "Offline".
+    // The main process probes the ports and reports back over IPC instead.
+    async function appsStatus() {
       try {
-        var ctrl = new AbortController();
-        setTimeout(function() { ctrl.abort(); }, 2000);
-        var res = await fetch('http://127.0.0.1:' + port + svcPath, { signal: ctrl.signal });
-        return res.ok || res.status < 500;
-      } catch(e) { return false; }
+        if (window.hidra && window.hidra.apps) return await window.hidra.apps.status();
+      } catch(e) {}
+      return { chat: false, sevennine: false };
     }
 
     async function detectApps() {
-      var chatOk = await checkService(8090, '/');
+      var status = await appsStatus();
+      var chatOk = status.chat;
       var chatBadge = document.getElementById('chat-badge');
       if (chatOk) {
         chatBadge.textContent = 'Online';
@@ -953,7 +951,7 @@
         chatBadge.className = 'app-badge offline';
       }
 
-      var snOk = await checkService(8084, '/');
+      var snOk = status.sevennine;
       var snBadge = document.getElementById('sevennine-badge');
       if (snBadge) {
         if (snOk) {
@@ -970,6 +968,30 @@
 
     // ── Connect / Disconnect ──
 
+    // Filled in from the connect result: the exit IP the Tor Project's own
+    // checker reported back, so the panel states a verified fact.
+    var lastExitDetail = '';
+    var bootstrapTimer = null;
+
+    function watchBootstrap() {
+      stopBootstrapWatch();
+      bootstrapTimer = setInterval(async function () {
+        try {
+          if (!(window.hidra && window.hidra.proxy)) return;
+          var s = await window.hidra.proxy.status();
+          var pct = (s && s.tor) ? (s.tor.bootstrapPercent || 0) : 0;
+          document.getElementById('connect-title').textContent = 'Iniciando o Tor — ' + pct + '%';
+          document.getElementById('connect-desc').textContent = pct < 100
+            ? 'Construindo um circuito anônimo pela rede Tor'
+            : 'Circuito pronto — confirmando o IP de saída';
+        } catch (e) {}
+      }, 700);
+    }
+
+    function stopBootstrapWatch() {
+      if (bootstrapTimer) { clearInterval(bootstrapTimer); bootstrapTimer = null; }
+    }
+
     function updateConnectUI(state) {
       var btn = document.getElementById('connectBtn');
       var btnText = document.getElementById('connectBtnText');
@@ -980,23 +1002,23 @@
         btn.className = 'connect-btn loading';
         btnText.textContent = 'Conectando...';
         btn.querySelector('svg').innerHTML = '<circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="10" class="spinner"/>';
-        title.textContent = 'Iniciando HidraNet...';
+        title.textContent = 'Iniciando o Tor…';
         title.style.color = 'var(--warning)';
-        desc.textContent = 'Iniciando o nó e os serviços — pode levar alguns segundos';
+        desc.textContent = 'Construindo um circuito anônimo — costuma levar 20 a 40 segundos';
       } else if (state === 'connected') {
         btn.className = 'connect-btn on';
         btnText.textContent = 'Desconectar';
         btn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
-        title.textContent = 'HidraNet Conectada';
+        title.textContent = 'Conectado — Tráfego Anônimo';
         title.style.color = 'var(--accent)';
-        desc.textContent = 'Todos os serviços estão rodando — Chat, Mail e Search disponíveis';
+        desc.textContent = lastExitDetail || 'Navegação saindo pela rede Tor';
       } else {
         btn.className = 'connect-btn off';
         btnText.textContent = 'Conectar';
         btn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
         title.textContent = 'HidraNet Desconectada';
         title.style.color = 'var(--text-primary)';
-        desc.textContent = 'Clique para iniciar o nó e conectar todos os serviços (Chat, Mail, Search)';
+        desc.textContent = 'Sua navegação está saindo pelo seu próprio IP. Clique para conectar pela rede Tor.';
       }
     }
 
@@ -1009,6 +1031,7 @@
         if (window.hidra && window.hidra.proxy) {
           await window.hidra.proxy.disconnect();
         }
+        lastExitDetail = '';
         updateConnectUI('disconnected');
         poll();
         return;
@@ -1017,11 +1040,14 @@
       // Connect
       isConnecting = true;
       updateConnectUI('connecting');
+      watchBootstrap();
 
       try {
         if (window.hidra && window.hidra.proxy) {
           var result = await window.hidra.proxy.connect();
+          stopBootstrapWatch();
           if (result && result.ok) {
+            lastExitDetail = result.msg || '';
             updateConnectUI('connected');
             await poll();
           } else {
@@ -1044,6 +1070,7 @@
         t3.textContent = 'Erro: ' + (e.message || 'falha desconhecida');
         t3.style.color = 'var(--danger)';
       } finally {
+        stopBootstrapWatch();
         isConnecting = false;
       }
     }
@@ -1065,7 +1092,8 @@
             document.getElementById('stat-relays').textContent = status.relayCount || '—';
             document.getElementById('stat-latency').textContent =
               status.latencyMs ? status.latencyMs + 'ms' : '—';
-            document.getElementById('stat-hops').textContent = status.hopCount || '3';
+            document.getElementById('stat-exit').textContent =
+              (status.tor && status.tor.exitIp) ? status.tor.exitIp : '—';
 
             if (status.relayChain) {
               var relays = status.relayChain.split(' → ');
@@ -1082,16 +1110,15 @@
         }
       } catch (e) {}
 
-      if (!connected) {
-        var localOk = await detectApps();
-        if (localOk) { connected = true; mode = 'local'; }
-      } else {
-        detectApps();
-      }
+      // The badges below are about which apps are reachable; they must not
+      // decide the network state. Chat, mail, forum and search are served by
+      // the browser itself, so they are always up and were making this panel
+      // claim "HidraNet Conectada" while nothing was actually connected.
+      detectApps();
 
-      if (connected && mode === 'full') {
+      if (connected && (mode === 'tor' || mode === 'full')) {
         dot.className = 'dot connected';
-        text.textContent = 'Conectado — Tráfego Protegido';
+        text.textContent = 'Conectado — Tráfego Anônimo (Tor)';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
       } else if (connected) {
@@ -1121,19 +1148,58 @@
 
     // ── App shortcut clicks ──
     document.querySelectorAll('.app-shortcut').forEach(function(el) {
-      el.addEventListener('click', function(e) {
+      el.addEventListener('click', async function(e) {
         e.preventDefault();
         var url = this.dataset.url;
-        if (url) window.location.href = url;
+        if (!url) return;
+
+        // Chat, mail, forum and search are served by the browser itself and are
+        // always up. SevenNine lives in the engine, so it has to be started
+        // before there is anything to navigate to.
+        if (this.id === 'app-sevennine' && window.hidra && window.hidra.sevennine) {
+          var badge = document.getElementById('sevennine-badge');
+          if (!badge || badge.textContent !== 'Online') {
+            if (badge) { badge.textContent = 'Iniciando…'; badge.className = 'app-badge'; }
+            var r = await window.hidra.sevennine.start();
+            if (!r || !r.ok) {
+              if (badge) {
+                badge.textContent = 'Falhou';
+                badge.className = 'app-badge offline';
+                badge.title = (r && r.msg) || 'não foi possível iniciar';
+              }
+              return;
+            }
+            if (badge) { badge.textContent = 'Online'; badge.className = 'app-badge online'; }
+          }
+        }
+
+        window.location.href = url;
       });
     });
 
-    document.getElementById('setting-hops').addEventListener('change', function(e) {
-      var hops = parseInt(e.target.value, 10);
-      if (window.hidra && window.hidra.proxy) {
-        window.hidra.proxy.setHops(hops);
+    document.getElementById('btn-new-identity').addEventListener('click', async function() {
+      var btn = this;
+      var desc = document.getElementById('identity-desc');
+      if (!(window.hidra && window.hidra.tor)) return;
+      btn.disabled = true;
+      var antes = document.getElementById('stat-exit').textContent;
+      // The Tor daemon rate-limits this signal, so confirming the new exit can
+      // take a few seconds. Keep the button held rather than looking stuck.
+      desc.textContent = 'Trocando circuito… pode levar alguns segundos';
+      try {
+        var r = await window.hidra.tor.newIdentity();
+        if (r && r.ok) {
+          document.getElementById('stat-exit').textContent = r.exitIp;
+          desc.textContent = r.changed
+            ? 'IP de saída: ' + antes + ' → ' + r.exitIp
+            : (r.msg || 'mesmo nó de saída — tente de novo');
+        } else {
+          desc.textContent = (r && r.msg) || 'não foi possível trocar';
+        }
+      } catch (e) {
+        desc.textContent = 'erro: ' + (e.message || e);
       }
-      document.getElementById('stat-hops').textContent = hops;
+      btn.disabled = false;
     });
 
     poll();
