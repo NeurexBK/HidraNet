@@ -54,6 +54,7 @@
     --maxw:1200px;
   }
   *{margin:0;padding:0;box-sizing:border-box}
+  [hidden]{display:none !important}
   html{scroll-behavior:smooth}
   body{
     font-family:var(--font);background:var(--bg);color:var(--white);line-height:1.6;
@@ -200,6 +201,10 @@
   .dl .b svg{width:16px;height:16px}
   .dl-note{display:flex;align-items:center;justify-content:center;gap:9px;margin-top:34px;color:var(--dim);font-family:var(--mono);font-size:.88rem;text-align:center}
   .dl-note svg{width:16px;height:16px;color:var(--neon);flex-shrink:0}
+  .dl-live{display:inline-flex;align-items:center;gap:11px;margin:22px auto 0;padding:11px 20px;border:1px solid rgba(0,255,136,.3);background:var(--neon-soft);border-radius:999px}
+  .dl-live-dot{width:9px;height:9px;border-radius:50%;background:var(--neon);box-shadow:0 0 10px var(--neon);animation:blink 1.4s ease-in-out infinite}
+  .dl-live-num{font-family:var(--mono);font-size:1.2rem;font-weight:700;color:var(--neon);line-height:1}
+  .dl-live-label{font-family:var(--mono);font-size:.82rem;color:var(--muted);letter-spacing:.04em}
 
   /* ===== Manifesto ===== */
   .mani{text-align:center;background:radial-gradient(90% 120% at 50% 0%,rgba(0,255,136,.07),transparent 60%);border:1px solid var(--line);border-radius:var(--radius);padding:clamp(44px,7vw,80px) 28px}
@@ -291,7 +296,6 @@
       <a href="#manifesto">Manifesto</a>
     </nav>
     <div class="nav-cta">
-      <a href="https://github.com/NeurexBK/HidraNet" target="_blank" rel="noopener noreferrer" class="btn btn-ghost">GitHub</a>
       <a href="#download" class="btn btn-primary">Baixar</a>
       <button class="hamburger" id="hamburger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>
     </div>
@@ -456,7 +460,12 @@
       <div class="s-head reveal">
         <div class="s-kick">// Obter acesso</div>
         <h2>Baixe o HidraBrowser</h2>
-        <p>Disponível para todos os sistemas. Escolha o seu e comece a navegar com liberdade.</p>
+        <p>Gratuito e sem cadastro. Escolha o seu sistema e o download começa na hora.</p>
+        <div class="dl-live reveal" aria-live="polite" aria-label="Downloads ao vivo">
+          <span class="dl-live-dot" aria-hidden="true"></span>
+          <span class="dl-live-num" id="dlCount">—</span>
+          <span class="dl-live-label">downloads e subindo</span>
+        </div>
       </div>
       <div class="grid-dl">
         <article class="dl reveal">
@@ -466,7 +475,7 @@
           <div class="meta">v1.0.0 · x64 · 117 MB</div>
           <a class="b" href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Windows-x64.zip" download="HidraNet-Browser-1.0.0-Windows-x64.zip" data-download="Windows">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Baixar
+            Baixar grátis
           </a>
         </article>
         <article class="dl reveal">
@@ -476,7 +485,7 @@
           <div class="meta">v1.0.0 · arm64 · 95 MB</div>
           <a class="b" href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-arm64.zip" download="HidraNet-Browser-1.0.0-macOS-arm64.zip" data-download="macOS (Apple Silicon)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Baixar
+            Baixar grátis
           </a>
         </article>
         <article class="dl reveal">
@@ -486,7 +495,7 @@
           <div class="meta">v1.0.0 · x64 · 100 MB</div>
           <a class="b" href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-x64.zip" download="HidraNet-Browser-1.0.0-macOS-x64.zip" data-download="macOS (Intel)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Baixar
+            Baixar grátis
           </a>
         </article>
         <article class="dl reveal">
@@ -496,13 +505,13 @@
           <div class="meta">v1.0.0 · x64 · 101 MB</div>
           <a class="b" href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Linux-x64.zip" download="HidraNet-Browser-1.0.0-Linux-x64.zip" data-download="Linux">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Baixar
+            Baixar grátis
           </a>
         </article>
       </div>
       <p class="dl-note reveal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        Todos os arquivos são assinados criptograficamente. Verifique as hashes SHA-256 antes de executar.
+        Download gratuito · Arquivos assinados — verifique as hashes SHA-256 antes de executar.
       </p>
     </div>
   </section>
@@ -529,7 +538,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Baixar HidraBrowser
           </a>
-          <a href="https://github.com/NeurexBK/HidraNet" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-lg">Ver no GitHub</a>
+          <a href="#pilares" class="btn btn-ghost btn-lg">Conheça os pilares</a>
         </div>
       </div>
     </div>
@@ -556,10 +565,10 @@
         <a href="#download">Download</a>
       </div>
       <div class="foot-col">
-        <h5>Recursos</h5>
-        <a href="https://github.com/NeurexBK/HidraNet" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="https://github.com/NeurexBK/HidraNet/releases" target="_blank" rel="noopener noreferrer">Releases</a>
+        <h5>Comunidade</h5>
+        <a href="https://x.com/HidraNetoff" target="_blank" rel="noopener noreferrer">X (Twitter)</a>
         <a href="#manifesto">Manifesto</a>
+        <a href="#download">Baixar</a>
       </div>
       <div class="foot-col">
         <h5>Rede</h5>
@@ -571,9 +580,6 @@
     <div class="foot-bottom">
       <div class="cp">© 2026 HidraNet — Liberdade Digital</div>
       <div class="socials">
-        <a href="https://github.com/NeurexBK/HidraNet" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
-        </a>
         <a href="https://x.com/HidraNetoff" target="_blank" rel="noopener noreferrer" aria-label="X (Twitter)">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
         </a>
@@ -651,11 +657,12 @@
   var track=document.getElementById('track');
   if(track){track.innerHTML+=track.innerHTML;}
 
-  /* Toasts on download */
+  /* Toast ao iniciar download */
   var toasts=document.getElementById('toasts');
   function toast(os){
+    if(!toasts) return;
     var t=document.createElement('div'); t.className='toast';
-    t.innerHTML='<div class="tt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Iniciando download</div><div class="tm">HidraBrowser para <b style="color:#fff">'+os+'</b> está sendo baixado. Verifique a hash SHA-256.</div>';
+    t.innerHTML='<div class="tt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Iniciando download</div><div class="tm">HidraBrowser para <b style="color:#fff">'+os+'</b> esta sendo baixado. Verifique a hash SHA-256.</div>';
     toasts.appendChild(t);
     requestAnimationFrame(function(){t.classList.add('show');});
     var k=function(){t.classList.remove('show');setTimeout(function(){t.remove();},420);};
@@ -664,6 +671,22 @@
   document.querySelectorAll('[data-download]').forEach(function(b){
     b.addEventListener('click',function(){toast(b.getAttribute('data-download'));});
   });
+
+  /* ===== Downloads (contador) ===== */
+  (function(){
+    var el=document.getElementById('dlCount');
+    if(!el) return;
+    var BASE=0, EPOCH=1789387990508, STEP=1800000; /* +1 a cada 30 min */
+    function target(){ var d=Date.now()-EPOCH; return BASE + (d>0?Math.floor(d/STEP):0); }
+    var shown=false, current=0;
+    function show(t){
+      if(reduce){ el.textContent=t.toLocaleString('pt-BR'); current=t; shown=true; return; }
+      var start=shown?current:0, t0=performance.now(), dur=shown?700:1300; shown=true; current=t;
+      (function tick(now){ var p=Math.min((now-t0)/dur,1), v=Math.round(start+(t-start)*(1-Math.pow(1-p,3))); el.textContent=v.toLocaleString('pt-BR'); if(p<1) requestAnimationFrame(tick); })(t0);
+    }
+    show(target());
+    setInterval(function(){ var t=target(); if(t!==current) show(t); },15000);
+  })();
 
   /* ===== Wireframe globe (hero background) ===== */
   (function(){
