@@ -8796,7 +8796,9 @@ async fn run_apps_standalone(
         .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
     let sn_data = sevennine_data.clone();
     tokio::spawn(async move {
-        if let Err(e) = apps::sevennine::run_sevennine("0.0.0.0", sevennine_port, &sn_data).await {
+        // Loopback only: binding 0.0.0.0 published the site builder to every
+        // machine on the local network.
+        if let Err(e) = apps::sevennine::run_sevennine("127.0.0.1", sevennine_port, &sn_data).await {
             tracing::error!(error = %e, "SevenNine error");
         }
     });
@@ -9433,7 +9435,8 @@ async fn run_sevennine_mode(
     info!("╚═══════════════════════════════════════════════════════════════╝");
 
     tokio::select! {
-        result = apps::sevennine::run_sevennine("0.0.0.0", 8084, &data_dir) => {
+        // Loopback only — the banner above already promises 127.0.0.1.
+        result = apps::sevennine::run_sevennine("127.0.0.1", 8084, &data_dir) => {
             if let Err(e) = result {
                 tracing::error!("SevenNine error: {}", e);
             }
