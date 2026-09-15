@@ -245,7 +245,9 @@ function buildLinux() {
 
 // ── Build macOS packages ──
 function buildMac() {
-  execSync('node ' + path.join(__dirname, 'build-mac.js'), {
+  // Aspas obrigatorias: o caminho do projecto tem um espaco ("Navegador Hidra")
+  // e sem elas o node tenta carregar "C:\Users\...\Desktop\Navegador".
+  execSync('node "' + path.join(__dirname, 'build-mac.js') + '"', {
     cwd: ROOT, stdio: 'inherit', timeout: 900000
   });
 }
