@@ -49,6 +49,9 @@ let tabManager = null;
 let proxyManager = null;
 let torManager = null;
 let chatServer = null;
+// Whether the apps server actually got its port. A silent failure here
+// costs chat, mail, forum and search with no sign in the interface.
+let appsServer = { listening: false, error: null };
 
 // Applies (or clears) the network proxy on every session the browser owns —
 // the default one plus each tab's isolated partition. New tabs pick the same
@@ -404,7 +407,8 @@ async function performSearch(query, page, searchLang) {
 // for Web Crypto). The chat is fully client-side (MQTT relay + E2E in browser),
 // so it does NOT depend on the hidra-node engine — works even if Smart App
 // Control blocks the engine.
-function startChatServer() {
+function startChatServer(attempt) {
+  attempt = attempt || 0;
   const load = (f) => {
     try { return fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8'); }
     catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' não encontrado</h1>'; }
@@ -476,8 +480,28 @@ function startChatServer() {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     res.end(html);
   });
-  chatServer.on('error', (e) => console.error('[srv] server error:', e.message));
+  chatServer.on('error', (e) => {
+    console.error('[srv] server error:', e.message);
+
+    // Another copy of the browser that is still shutting down holds the port
+    // for a few seconds. Retry before giving up, and record why if we do —
+    // otherwise the apps just read "Offline" forever with no explanation.
+    if (e.code === 'EADDRINUSE' && attempt < 5) {
+      appsServer = { listening: false, error: 'porta ' + CHAT_PORT + ' ocupada, a tentar de novo' };
+      setTimeout(() => startChatServer(attempt + 1), 2000);
+      return;
+    }
+
+    appsServer = {
+      listening: false,
+      error: e.code === 'EADDRINUSE'
+        ? 'a porta ' + CHAT_PORT + ' está ocupada por outro programa — feche a outra janela da HidraNet e reinicie'
+        : 'falha ao abrir a porta ' + CHAT_PORT + ': ' + e.message,
+    };
+  });
+
   chatServer.listen(CHAT_PORT, '127.0.0.1', () => {
+    appsServer = { listening: true, error: null };
     console.log('[srv] HidraNet apps at http://127.0.0.1:' + CHAT_PORT + ' (chat, /publish, /site)');
   });
 }
@@ -680,7 +704,9 @@ function setupIPC(tabs, proxy) {
       pingLocalPort(CHAT_PORT, '/'),
       pingLocalPort(SEVENNINE_PORT, '/'),
     ]);
-    return { chat, sevennine };
+    // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
+    // the port was taken, usually by a second copy of the browser.
+    return { chat, sevennine, error: chat ? null : appsServer.error };
   });
 
   ipcMain.handle('prefs:get', () => ({ ...userPrefs }));

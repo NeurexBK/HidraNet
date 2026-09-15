@@ -936,7 +936,7 @@
       try {
         if (window.hidra && window.hidra.apps) return await window.hidra.apps.status();
       } catch(e) {}
-      return { chat: false, sevennine: false };
+      return { chat: false, sevennine: false, error: null };
     }
 
     async function detectApps() {
@@ -946,9 +946,13 @@
       if (chatOk) {
         chatBadge.textContent = 'Online';
         chatBadge.className = 'app-badge online';
+        chatBadge.title = '';
       } else {
-        chatBadge.textContent = 'Offline';
+        // "Offline" alone sent people hunting for a problem in the app when the
+        // real cause was a second copy of the browser holding the port.
+        chatBadge.textContent = status.error ? 'Porta ocupada' : 'Offline';
         chatBadge.className = 'app-badge offline';
+        chatBadge.title = status.error || '';
       }
 
       var snOk = status.sevennine;
