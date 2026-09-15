@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HidraNet — Secure Network</title>
+  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1294,6 +1295,80 @@
     }
 
     initPrefs();
+  </script>
+
+  <script>
+  /* ---- Beacon de no da HidraNet ----
+     Anuncia, de forma anonima, que esta instalacao esta ativa, para o
+     painel de operacao contar nos, salas e localizacao. Nao envia nome,
+     mensagens nem palavras-passe: so um codigo aleatorio, o pais/cidade
+     aproximado por IP e se esta a sair por Tor. Quando o Tor esta ligado,
+     este sinal tambem sai por Tor — logo a localizacao e a do no de saida,
+     nao a da pessoa (e o que mantem o utilizador anonimo). */
+  (function () {
+    'use strict';
+    var TOPIC = 'hidra/node/v1';
+    var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+    var VER = '1.0.0';
+    var cid = '';
+    try {
+      cid = localStorage.getItem('hidra_node_cid') || '';
+      if (!cid) {
+        var a = new Uint8Array(8); crypto.getRandomValues(a);
+        cid = Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+        localStorage.setItem('hidra_node_cid', cid);
+      }
+    } catch (e) { cid = 'anon' + Math.floor(Math.random() * 1e9); }
+
+    var geo = null, cli = null, timer = null;
+
+    function grabGeo() {
+      // Segue o proxy da sessao (Tor quando ligado), como o resto da pagina.
+      fetch('https://ipwho.is/', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && typeof d.latitude === 'number') {
+            geo = { lat: d.latitude, lon: d.longitude, city: d.city || '', country: d.country || '' };
+          }
+        }).catch(function () {});
+    }
+
+    async function torOn() {
+      try {
+        if (!(window.hidra && window.hidra.proxy)) return null;
+        var s = await window.hidra.proxy.status();
+        if (!s || !s.connected) return false;
+        return (s.mode === 'tor' || s.mode === 'full');
+      } catch (e) { return null; }
+    }
+
+    async function beat() {
+      if (!cli || !cli.connected) return;
+      var tor = await torOn();
+      var msg = { cid: cid, room: 'lobby', ver: VER, t: Date.now() };
+      if (geo) msg.geo = geo;
+      if (typeof tor === 'boolean') msg.tor = tor;
+      try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
+    }
+
+    function start() {
+      try {
+        cli = mqtt.connect(BROKERS[0], {
+          clientId: 'hidranode_' + cid, clean: true, reconnectPeriod: 8000, keepalive: 45,
+          will: { topic: TOPIC, payload: JSON.stringify({ cid: cid, leave: 1 }), qos: 0 }
+        });
+        cli.on('connect', function () { beat(); });
+      } catch (e) { return; }
+      if (timer) clearInterval(timer);
+      timer = setInterval(beat, 30000);
+    }
+
+    window.addEventListener('beforeunload', function () {
+      try { if (cli && cli.connected) cli.publish(TOPIC, JSON.stringify({ cid: cid, leave: 1 }), { qos: 0 }); } catch (e) {}
+    });
+
+    if (typeof mqtt !== 'undefined') { grabGeo(); setTimeout(grabGeo, 8000); start(); }
+  })();
   </script>
 </body>
 </html>

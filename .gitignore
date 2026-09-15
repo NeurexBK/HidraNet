@@ -53,3 +53,6 @@ desktop.ini
 # ─── Projetos separados / config local (não pertencem ao repo público) ───────
 defimind/
 .claude/
+
+# --- Painel de operacao (SECRETO: hash de senha + IP allowlist). Nunca publicar. ---
+hidra-admin/
