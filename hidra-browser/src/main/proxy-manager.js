@@ -205,9 +205,15 @@ class ProxyManager {
   // the proxy — "--sevennine" serves it on 8084 and opens no SOCKS port — so it
   // gets its own process rather than riding on Conectar.
   async startSevenNine() {
-    if (this.sevenNineProcess) return { ok: true, alreadyRunning: true };
+    return this._startEngineApp('sevenNineProcess', '--sevennine', SEVENNINE_PORT, 'sevennine');
+  }
 
-    if (await this._httpPing('127.0.0.1', SEVENNINE_PORT, '/')) {
+  /// A prontidao e sempre a porta abrir, nunca uma linha de log — foi a licao
+  /// do arranque do proxy.
+  async _startEngineApp(field, flag, port, label) {
+    if (this[field]) return { ok: true, alreadyRunning: true };
+
+    if (await this._httpPing('127.0.0.1', port, '/')) {
       return { ok: true, alreadyRunning: true, external: true };
     }
 
@@ -217,7 +223,7 @@ class ProxyManager {
     }
 
     const configPath = this._findConfig(hidraPath);
-    const args = ['--sevennine'];
+    const args = [flag];
     if (configPath) args.push('--config', configPath);
     const cwd = configPath ? path.dirname(configPath) : path.dirname(hidraPath);
 
@@ -228,7 +234,7 @@ class ProxyManager {
       } catch (err) {
         return resolve({ ok: false, error: err.message });
       }
-      this.sevenNineProcess = proc;
+      this[field] = proc;
 
       let settled = false;
       let stderrTail = '';
@@ -243,37 +249,41 @@ class ProxyManager {
       // Readiness is the open port, not a log line — the same lesson the proxy
       // start had to learn.
       const readyPoll = setInterval(() => {
-        this._httpPing('127.0.0.1', SEVENNINE_PORT, '/').then((up) => {
-          if (up) finish({ ok: true, port: SEVENNINE_PORT });
+        this._httpPing('127.0.0.1', port, '/').then((up) => {
+          if (up) finish({ ok: true, port: port });
         });
       }, 300);
 
       const readyTimeout = setTimeout(() => {
-        finish({ ok: false, error: `o SevenNine não abriu a porta ${SEVENNINE_PORT} a tempo` });
+        finish({ ok: false, error: `o SevenNine não abriu a porta ${port} a tempo` });
       }, 20000);
 
-      proc.stdout.on('data', (d) => console.log('[sevennine]', d.toString().trimEnd()));
+      proc.stdout.on('data', (d) => console.log('[' + label + ']', d.toString().trimEnd()));
       proc.stderr.on('data', (d) => {
         stderrTail = (stderrTail + d.toString()).slice(-500);
-        console.error('[sevennine]', d.toString().trimEnd());
+        console.error('[' + label + ']', d.toString().trimEnd());
       });
 
       proc.on('error', (err) => {
-        this.sevenNineProcess = null;
+        this[field] = null;
         finish({ ok: false, error: err.message });
       });
 
       proc.on('close', (code) => {
-        this.sevenNineProcess = null;
+        this[field] = null;
         finish({ ok: false, error: this._explainExit(stderrTail, code) });
       });
     });
   }
 
   async stopSevenNine() {
-    const proc = this.sevenNineProcess;
+    return this._stopEngineApp('sevenNineProcess');
+  }
+
+  async _stopEngineApp(field) {
+    const proc = this[field];
     if (!proc) return { ok: true };
-    this.sevenNineProcess = null;
+    this[field] = null;
 
     await new Promise((resolve) => {
       let settled = false;

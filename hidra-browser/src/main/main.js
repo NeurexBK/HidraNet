@@ -384,6 +384,7 @@ async function searchSearxng(query, pageNo, lang) {
   return [];
 }
 
+
 async function performSearch(query, page, searchLang) {
   const pageNo = Math.max(1, page);
   const lang = (searchLang && searchLang !== 'all') ? searchLang : 'all';
@@ -413,7 +414,7 @@ function startChatServer(attempt) {
     try { return fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8'); }
     catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' não encontrado</h1>'; }
   };
-  const pages = { chat: load('hidrachat.html'), publish: load('sitepub.html'), site: load('siteload.html'), mail: load('hidramail.html'), forum: load('forum.html'), donate: load('donate.html'), search: load('hidrasearch.html') };
+  const pages = { chat: load('hidrachat.html'), publish: load('sitepub.html'), site: load('siteload.html'), mail: load('hidramail.html'), forum: load('forum.html'), donate: load('donate.html'), search: load('hidrasearch.html'), reviews: load('hidrareview.html') };
   chatServer = http.createServer(async (req, res) => {
     if (!isTrustedRequest(req)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -477,6 +478,7 @@ function startChatServer(attempt) {
     else if (p === '/sites' || p.indexOf('/publish') === 0) html = pages.publish;
     else if (p.indexOf('/site') === 0) html = pages.site;
     else if (p.indexOf('/search') === 0) html = pages.search;
+    else if (p.indexOf('/reviews') === 0) html = pages.reviews;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     res.end(html);
   });
@@ -706,7 +708,7 @@ function setupIPC(tabs, proxy) {
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    return { chat, sevennine, error: chat ? null : appsServer.error };
+    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error };
   });
 
   ipcMain.handle('prefs:get', () => ({ ...userPrefs }));

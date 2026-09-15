@@ -521,6 +521,16 @@
             <span class="app-desc">Criador de sites .hidra</span>
             <span class="app-badge" id="sevennine-badge">Offline</span>
           </a>
+          <a class="app-shortcut" href="#" id="app-hidrareview" data-url="http://127.0.0.1:8090/reviews">
+            <div class="app-icon" style="background: linear-gradient(135deg, #ffaa33, #ff7043); border-color: rgba(255, 170, 51, 0.3);">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 2l2.9 6.3 6.6.8-4.9 4.6 1.3 6.6L12 17l-5.9 3.3 1.3-6.6L2.5 9.1l6.6-.8z"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraReview</span>
+            <span class="app-desc">Avaliações de negócios .hidra</span>
+            <span class="app-badge online" id="hidrareview-badge">Disponível</span>
+          </a>
         </div>
       </div>
 
@@ -955,6 +965,12 @@
         chatBadge.title = status.error || '';
       }
 
+      var hrBadge = document.getElementById('hidrareview-badge');
+      if (hrBadge) {
+        hrBadge.textContent = status.hidrareview ? 'Disponível' : 'Offline';
+        hrBadge.className = 'app-badge ' + (status.hidrareview ? 'online' : 'offline');
+      }
+
       var snOk = status.sevennine;
       var snBadge = document.getElementById('sevennine-badge');
       if (snBadge) {
@@ -1160,11 +1176,17 @@
         // Chat, mail, forum and search are served by the browser itself and are
         // always up. SevenNine lives in the engine, so it has to be started
         // before there is anything to navigate to.
-        if (this.id === 'app-sevennine' && window.hidra && window.hidra.sevennine) {
-          var badge = document.getElementById('sevennine-badge');
+        // So o SevenNine vive no motor; o HidraReview e servido pelo browser
+        // como o chat e o forum, por isso abre direto.
+        var engineApps = {
+          'app-sevennine': { api: 'sevennine', badge: 'sevennine-badge' }
+        };
+        var svc = engineApps[this.id];
+        if (svc && window.hidra && window.hidra[svc.api]) {
+          var badge = document.getElementById(svc.badge);
           if (!badge || badge.textContent !== 'Online') {
             if (badge) { badge.textContent = 'Iniciando…'; badge.className = 'app-badge'; }
-            var r = await window.hidra.sevennine.start();
+            var r = await window.hidra[svc.api].start();
             if (!r || !r.ok) {
               if (badge) {
                 badge.textContent = 'Falhou';

@@ -1,0 +1,19 @@
+{
+  "name": "HidraNet — Avaliações",
+  "short_name": "HidraNet",
+  "description": "Avaliações reais de estabelecimentos na rede HidraNet. Sem conta, sem rastreio.",
+  "start_url": "/r/",
+  "scope": "/r/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#06060b",
+  "theme_color": "#06060b",
+  "lang": "pt",
+  "categories": ["food", "lifestyle", "social"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

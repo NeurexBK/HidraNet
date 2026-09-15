@@ -398,39 +398,33 @@ class TabManager {
       // DHT resolver not available
     }
 
-    // Fallback: check if SevenNine hosts this site locally
-    try {
-      const snRes = await fetch(
-        `http://127.0.0.1:8084/api/resolve?name=${encodeURIComponent(siteName)}`,
-        { signal: AbortSignal.timeout(3000) }
-      ).catch(() => null);
+    // Fallback: ask SevenNine, which hosts .hidra sites locally.
+    for (const port of [8084]) {
+      try {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/resolve?name=${encodeURIComponent(siteName)}`,
+          { signal: AbortSignal.timeout(2000) }
+        ).catch(() => null);
 
-      if (snRes && snRes.ok) {
-        const snData = await snRes.json();
-        if (snData.found) {
-          tab.view.webContents.loadURL(`http://${snData.address}${snData.path}`);
-          return;
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data.found) {
+            tab.view.webContents.loadURL(`http://${data.address}${data.path || ''}`);
+            return;
+          }
         }
+      } catch {
+        // serviço indisponível — tenta o próximo
       }
-    } catch {
-      // SevenNine not available
     }
 
-    tab.view.webContents.loadURL('data:text/html,' + encodeURIComponent(
-      `<!DOCTYPE html><html><head><style>
-        body { background: #06060b; color: #e0e0e8; font-family: -apple-system, sans-serif;
-               display: flex; align-items: center; justify-content: center; height: 100vh; }
-        .error { text-align: center; max-width: 400px; }
-        .error h2 { color: #ff4466; font-weight: 400; margin-bottom: 12px; }
-        .error p { color: #555570; font-size: 13px; line-height: 1.6; }
-        .error code { color: #00d4aa; background: #10101c; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-      </style></head><body><div class="error">
-        <h2>Cannot resolve ${hostname}</h2>
-        <p>The .hidra domain could not be found in the DHT network.
-        Make sure the HidraNet client is running and the service is registered.</p>
-        <p style="margin-top: 16px;">Tried: <code>http://127.0.0.1:9051/api/resolve</code></p>
-      </div></body></html>`
-    ));
+    // Ultimo recurso: o HidraReview. Cada estabelecimento tem um endereco
+    // <slug>.hidra para gravar em cartoes NFC, e a pagina resolve-o contra a
+    // rede — se nao existir, mostra-o com um caminho de volta ao diretorio,
+    // em vez de um beco sem saida.
+    tab.view.webContents.loadURL(
+      `${APPS_ORIGIN}/reviews?b=${encodeURIComponent(siteName)}`
+    );
   }
 
   _resizeView(view) {

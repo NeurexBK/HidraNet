@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraReview — avaliações de estabelecimentos</title>
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#06060b;--card:#10101c;--card2:#14142a;--line:#1a1a2e;--line2:#22223a;
+--txt:#e0e0e8;--dim:#8888a0;--mut:#555570;--acc:#00d4aa;--warn:#ffaa33;--dgr:#ff4466;--r:10px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);
+color:var(--txt);min-height:100vh;line-height:1.5;overflow-y:auto}
+.wrap{max-width:920px;margin:0 auto;padding:28px 20px 60px}
+
+.top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.top h1{font-size:22px;font-weight:700;flex:1}
+.top h1 span{color:var(--acc)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);flex-shrink:0}
+.dot.on{background:var(--acc);box-shadow:0 0 8px var(--acc)}
+.conn{font-size:12px;color:var(--mut)}
+.sub{color:var(--dim);font-size:14px;margin-bottom:20px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px;margin-bottom:16px}
+h2{font-size:15px;font-weight:600;margin-bottom:14px}
+a{color:var(--acc);text-decoration:none;cursor:pointer}
+a:hover{text-decoration:underline}
+
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.filters input,.filters select{background:#0a0a16;border:1px solid var(--line2);border-radius:8px;
+padding:9px 12px;color:var(--txt);font-family:inherit;font-size:13px;outline:none}
+.filters input{flex:1;min-width:150px}
+.filters input:focus,.filters select:focus{border-color:var(--acc)}
+.tools{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
+.tools button{padding:7px 14px;font-size:13px;background:transparent;color:var(--dim);
+border:1px solid var(--line2);border-radius:8px;cursor:pointer;font-family:inherit}
+.tools button.on{background:var(--acc);color:#00140a;border-color:var(--acc);font-weight:700}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.biz{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+cursor:pointer;transition:border-color .15s}
+.biz:hover{border-color:var(--acc)}
+.cover{height:120px;background:var(--card2);position:relative;overflow:hidden}
+.cover img{width:100%;height:100%;object-fit:cover;display:block}
+.cover .noimg{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+font-size:34px;font-weight:700;color:var(--acc);opacity:.45}
+.tag{position:absolute;top:9px;left:9px;background:rgba(6,6,11,.82);border:1px solid var(--line2);
+color:var(--dim);font-size:11px;padding:3px 9px;border-radius:999px}
+.binfo{padding:13px 15px 15px}
+.bn{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd{font-size:12px;color:var(--mut);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br{display:flex;align-items:center;gap:7px;margin-top:8px;font-size:13px}
+.st{color:var(--warn);letter-spacing:1px}
+.cnt{color:var(--mut);font-size:12px}
+
+.hero{display:flex;gap:18px;align-items:flex-start}
+.hph{width:80px;height:80px;border-radius:14px;background:var(--card2);display:flex;align-items:center;
+justify-content:center;font-size:31px;font-weight:700;color:var(--acc);flex-shrink:0;overflow:hidden}
+.hph img{width:100%;height:100%;object-fit:cover}
+.hero h3{font-size:22px;font-weight:700}
+.meta{font-size:13px;color:var(--dim);margin-top:2px}
+.meta b{color:var(--txt);font-weight:600}
+.avg{display:flex;align-items:baseline;gap:9px;margin-top:10px}
+.avgn{font-size:28px;font-weight:700;color:var(--acc);line-height:1}
+
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:9px;margin-top:16px}
+.gal img{width:100%;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line);cursor:pointer}
+.lightbox{position:fixed;inset:0;background:rgba(3,4,6,.93);display:none;align-items:center;
+justify-content:center;z-index:80;padding:24px;cursor:zoom-out}
+.lightbox.on{display:flex}
+.lightbox img{max-width:100%;max-height:100%;border-radius:10px}
+
+label{display:block;font-size:13px;color:var(--dim);margin:12px 0 5px}
+input,textarea,select{width:100%;background:#0a0a16;border:1px solid var(--line);border-radius:8px;
+padding:10px 12px;color:var(--txt);font-family:inherit;font-size:14px;outline:none}
+input:focus,textarea:focus,select:focus{border-color:var(--acc)}
+textarea{resize:vertical;min-height:84px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>div{flex:1;min-width:150px}
+button.go{background:var(--acc);color:#00140a;border:none;border-radius:8px;padding:11px 20px;
+font-weight:700;cursor:pointer;font-family:inherit;font-size:14px}
+button.go:disabled{opacity:.45;cursor:default}
+button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line2)}
+
+.drop{border:1px dashed var(--line2);border-radius:8px;padding:16px;text-align:center;
+color:var(--mut);font-size:13px;cursor:pointer;transition:border-color .15s,color .15s}
+.drop:hover{border-color:var(--acc);color:var(--dim)}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.thumb{position:relative;width:74px;height:74px;border-radius:8px;overflow:hidden;border:1px solid var(--line2)}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.thumb b{position:absolute;top:2px;right:2px;background:rgba(6,6,11,.85);color:var(--dgr);
+width:19px;height:19px;border-radius:50%;font-size:13px;display:flex;align-items:center;
+justify-content:center;cursor:pointer;font-weight:700;line-height:1}
+
+.pick{display:flex;gap:5px;margin-top:4px}
+.pick span{font-size:31px;cursor:pointer;color:#2a2a3a;transition:color .12s;line-height:1;user-select:none}
+.pick span.on{color:var(--warn)}
+
+.rev{border-top:1px solid var(--line);padding:15px 0}
+.rev:first-child{border-top:none}
+.rh{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.ra{font-weight:600;font-size:14px}
+.loc{color:var(--mut);font-weight:400;font-size:13px}
+.rc{margin-top:6px;white-space:pre-wrap;word-break:break-word}
+.rd{font-size:12px;color:var(--mut)}
+
+.bar{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:13px}
+.bt{width:58px;color:var(--warn);flex-shrink:0;letter-spacing:1px}
+.bo{flex:1;height:7px;background:#0a0a16;border-radius:4px;overflow:hidden}
+.bin{height:100%;background:var(--acc)}
+.bnum{width:32px;text-align:right;color:var(--mut);flex-shrink:0;font-size:12px}
+
+.msg{padding:11px 14px;border-radius:8px;margin-top:12px;font-size:14px;display:none}
+.msg.ok{background:rgba(0,212,170,.12);color:var(--acc);display:block}
+.msg.err{background:rgba(255,68,102,.12);color:var(--dgr);display:block}
+.msg.work{background:rgba(255,170,51,.12);color:var(--warn);display:block}
+
+/* ── Site do estabelecimento ── */
+.site-hero{position:relative;border-radius:var(--r);overflow:hidden;margin-bottom:16px;
+background:var(--card2);min-height:230px;display:flex;align-items:flex-end}
+.site-hero>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.site-hero .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,6,11,.15) 0%,rgba(6,6,11,.55) 45%,rgba(6,6,11,.94) 100%)}
+.site-hero .inner{position:relative;padding:26px 24px 22px;width:100%}
+.site-hero h3{font-size:31px;font-weight:800;line-height:1.15;letter-spacing:-.4px}
+.site-kicker{font-size:12px;color:var(--acc);text-transform:uppercase;letter-spacing:.14em;font-weight:700;margin-bottom:7px}
+.site-sub{color:#c3c3d4;font-size:14px;margin-top:5px}
+.hero-rate{display:flex;align-items:center;gap:9px;margin-top:11px;flex-wrap:wrap}
+.hero-rate .n{font-size:19px;font-weight:800;color:var(--acc)}
+
+.acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.act{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);
+border-radius:var(--r);padding:13px 15px;color:var(--txt);transition:border-color .15s}
+.act:hover{border-color:var(--acc);text-decoration:none}
+.act .ic{width:32px;height:32px;border-radius:9px;background:var(--card2);display:flex;
+align-items:center;justify-content:center;color:var(--acc);flex-shrink:0;font-size:15px}
+.act>span:last-child{display:flex;flex-direction:column;min-width:0;line-height:1.35}
+.act .t{display:block;font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.act .v{display:block;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.cols{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:720px){.cols{grid-template-columns:1.55fr 1fr}}
+.sect-t{font-size:12px;color:var(--acc);text-transform:uppercase;letter-spacing:.13em;
+font-weight:700;margin-bottom:9px}
+.about{white-space:pre-wrap;color:#c8c8d8}
+.hours{font-size:14px;color:#c8c8d8;white-space:pre-wrap}
+.menu-item{padding:7px 0;border-bottom:1px solid var(--line);font-size:14px;color:#c8c8d8}
+.menu-item:last-child{border-bottom:none}
+.addrbox{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-top:16px;
+background:#0a0a16;border:1px solid rgba(0,212,170,.3);border-radius:8px;padding:11px 14px}
+.addrbox .lbl{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.addrbox .val{font-family:Consolas,monospace;font-size:14px;color:var(--acc);font-weight:700;flex:1;word-break:break-all}
+.addrbox button{padding:6px 12px;font-size:12px}
+.seal{display:inline-flex;align-items:center;gap:4px;background:rgba(0,212,170,.14);
+border:1px solid rgba(0,212,170,.45);color:var(--acc);font-size:11px;font-weight:700;
+padding:2px 8px;border-radius:999px;vertical-align:middle;margin-left:6px}
+.seal.big{font-size:12px;padding:3px 11px}
+.paybox{background:#0a0a16;border:1px solid var(--line2);border-radius:8px;padding:14px;margin-top:12px}
+.payrow{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:4px 0;flex-wrap:wrap}
+.payrow span:first-child{color:var(--mut)}
+.mono{font-family:Consolas,monospace;font-size:12px;word-break:break-all;color:var(--acc)}
+.empty{color:var(--mut);font-size:14px;padding:18px 0;text-align:center}
+.back{font-size:14px;color:var(--dim);margin-bottom:14px;display:inline-block}
+.hidden{display:none}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+background:var(--card2);border:1px solid var(--acc);color:var(--txt);padding:11px 20px;
+border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all .25s;z-index:90}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <h1>Hidra<span>Review</span></h1>
+    <span class="dot" id="cdot"></span><span class="conn" id="ctxt">a ligar…</span>
+  </div>
+  <div class="sub">Avaliações de restaurantes e negócios, partilhadas por toda a rede HidraNet.</div>
+
+  <!-- ─── Diretório ─── -->
+  <div id="view-list">
+    <div class="filters">
+      <input id="f-q" placeholder="Procurar por nome…">
+      <select id="f-city"><option value="">Todas as cidades</option></select>
+      <select id="f-cat"><option value="">Todos os tipos</option></select>
+      <button class="go ghost" id="btn-add">+ Adicionar</button>
+    </div>
+
+    <div class="tools">
+      <button class="on" data-s="melhores">Melhor avaliados</button>
+      <button data-s="recentes">Mais recentes</button>
+      <button data-s="populares">Mais avaliados</button>
+    </div>
+
+    <div id="add-form" class="card hidden">
+      <h2>Registar o seu estabelecimento</h2>
+
+      <div class="row">
+        <div>
+          <label for="n-name">Nome do estabelecimento *</label>
+          <input id="n-name" maxlength="70" placeholder="Tasca do Bacalhau">
+        </div>
+        <div>
+          <label for="n-cat">Tipo</label>
+          <select id="n-cat">
+            <option>Restaurante</option><option>Café</option><option>Bar</option>
+            <option>Padaria</option><option>Hotel</option><option>Loja</option>
+            <option>Serviço</option><option>Outro</option>
+          </select>
+        </div>
+      </div>
+
+      <label for="n-desc">Descrição curta</label>
+      <input id="n-desc" maxlength="140" placeholder="Comida tradicional portuguesa, forno a lenha">
+
+      <div class="row">
+        <div>
+          <label for="n-city">Cidade *</label>
+          <input id="n-city" maxlength="50" placeholder="Lisboa">
+        </div>
+        <div>
+          <label for="n-addr">Morada</label>
+          <input id="n-addr" maxlength="150" placeholder="Rua das Flores 21">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="n-phone">Telefone</label>
+          <input id="n-phone" maxlength="40" placeholder="+351 912 345 678">
+        </div>
+        <div>
+          <label for="n-site">Website ou rede social</label>
+          <input id="n-site" maxlength="200" placeholder="https://…">
+        </div>
+      </div>
+
+      <label for="n-hours">Horário</label>
+      <input id="n-hours" maxlength="120" placeholder="Seg–Sáb, 12h–15h e 19h–23h">
+
+      <label for="n-about">Sobre o estabelecimento (aparece no site)</label>
+      <textarea id="n-about" maxlength="900" placeholder="Conte a história da casa, o que a torna diferente, quem cozinha…"></textarea>
+
+      <label for="n-menu">Especialidades — uma por linha</label>
+      <textarea id="n-menu" maxlength="600" placeholder="Bacalhau à Brás&#10;Arroz de marisco&#10;Pastéis de nata da casa"></textarea>
+
+      <label>Fotos</label>
+      <div class="drop" id="n-drop">Clique para escolher fotos — são reduzidas antes de publicar</div>
+      <input type="file" id="n-files" accept="image/*" multiple style="display:none">
+      <div class="thumbs" id="n-thumbs"></div>
+
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="go" id="n-save">Publicar estabelecimento</button>
+        <button class="go ghost" id="n-cancel">Cancelar</button>
+      </div>
+      <div class="msg" id="n-msg"></div>
+    </div>
+
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="list-empty">A carregar estabelecimentos da rede…</div>
+  </div>
+
+  <!-- ─── Página de um estabelecimento ─── -->
+  <div id="view-biz" class="hidden">
+    <a class="back" id="back">← Todos os estabelecimentos</a>
+
+    <div class="site-hero" id="b-hero"></div>
+    <div class="acts" id="b-acts"></div>
+
+    <div class="cols">
+      <div>
+        <div class="card" id="b-about-card">
+          <div class="sect-t">Sobre</div>
+          <div class="about" id="b-about"></div>
+        </div>
+        <div class="card" id="b-menu-card">
+          <div class="sect-t">Especialidades</div>
+          <div id="b-menu"></div>
+        </div>
+      </div>
+      <div>
+        <div class="card" id="b-hours-card">
+          <div class="sect-t">Horário</div>
+          <div class="hours" id="b-hours"></div>
+        </div>
+        <div class="card">
+          <div class="sect-t">Avaliações</div>
+          <div class="avg"><span class="avgn" id="b-avg">—</span>
+            <span class="st" id="b-stars">☆☆☆☆☆</span></div>
+          <div class="cnt" id="b-cnt" style="margin-bottom:10px"></div>
+          <div id="b-dist"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="b-gal-card">
+      <div class="sect-t">Galeria</div>
+      <div class="gal" id="b-gal"></div>
+    </div>
+
+    <div class="card">
+      <div class="sect-t">Para o proprietário</div>
+      <div class="addrbox" id="b-addr-box"></div>
+      <div id="b-pay"></div>
+    </div>
+
+    <div class="card">
+      <h2>Deixe o seu feedback</h2>
+      <label>A sua nota</label>
+      <div class="pick" id="pick">
+        <span data-v="1">★</span><span data-v="2">★</span><span data-v="3">★</span>
+        <span data-v="4">★</span><span data-v="5">★</span>
+      </div>
+      <div class="row">
+        <div>
+          <label for="r-name">O seu nome (opcional)</label>
+          <input id="r-name" maxlength="36" placeholder="Anónimo">
+        </div>
+        <div>
+          <label for="r-loc">De onde é (opcional)</label>
+          <input id="r-loc" maxlength="50" placeholder="Lisboa">
+        </div>
+      </div>
+      <label for="r-text">Como foi a sua experiência?</label>
+      <textarea id="r-text" maxlength="1200" placeholder="Conte o que achou…"></textarea>
+      <div style="margin-top:14px"><button class="go" id="r-send">Publicar avaliação</button></div>
+      <div class="msg" id="r-msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Avaliações</h2>
+      <div class="tools">
+        <button class="on" data-rs="recentes">Mais recentes</button>
+        <button data-rs="melhores">Melhores</button>
+        <button data-rs="piores">Piores</button>
+      </div>
+      <div id="r-list"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="lightbox" id="lb"><img id="lb-img" alt=""></div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+
+// Mesmo relay do chat, mail e fórum. Tudo é publicado como retido, por isso
+// quem abrir amanhã recebe o que já foi escrito — não há servidor a guardar.
+var MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+
+// O broker recusa cargas grandes, por isso cada foto vai no seu próprio tópico
+// e é reduzida antes de sair daqui.
+var MAX_PHOTO_BYTES = 170000;
+var MAX_PHOTOS = 6;
+
+// Selo de estabelecimento confirmado. O pagamento é verificado na blockchain
+// por cada cliente — nunca acreditamos numa mensagem que diga "sou verificado",
+// porque qualquer pessoa pode publicar uma.
+var BTC_ADDR = 'bc1ql68lqgkcurm7mv5zjdnprq6ya5ydq4a7pwuvsx';
+var BADGE_USD = 10;
+
+// Endereco publico da landing. E ESTE que vai no cartao NFC: ".hidra" so
+// resolve dentro do navegador HidraNet, e o telemovel de um cliente cai na
+// busca do Google. Trocar aqui se o dominio mudar.
+var PUBLIC_BASE = 'https://ladingpage-hidra.vercel.app';
+var CHAIN_API = 'https://blockstream.info/api';
+var PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
+
+var client = null, brokerIx = 0;
+var state = { biz: {}, revs: {}, pics: {}, sort: 'melhores', rsort: 'recentes',
+  open: null, stars: 0, draft: [], paidSats: null, btcPrice: null };
+
+function rid(n) {
+  var a = new Uint8Array(n || 8);
+  crypto.getRandomValues(a);
+  return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+}
+function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
+function when(t) { try { return new Date(t).toLocaleDateString('pt-PT'); } catch (e) { return ''; } }
+function toast(t) {
+  var el = $('toast'); el.textContent = t; el.className = 'toast show';
+  setTimeout(function () { el.className = 'toast'; }, 2600);
+}
+function say(id, text, kind) { var e = $(id); e.textContent = text; e.className = 'msg ' + kind; }
+
+function slugify(s) {
+  var map = { 'á':'a','à':'a','â':'a','ã':'a','é':'e','ê':'e','í':'i','ó':'o','ô':'o','õ':'o','ú':'u','ç':'c' };
+  return s.toLowerCase().replace(/[áàâãéêíóôõúç]/g, function (c) { return map[c] || c; })
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 44);
+}
+
+/** Aceita um link http(s) — o resto é descartado para não abrir porta a javascript:. */
+function safeUrl(u) {
+  u = (u || '').trim();
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  try { var p = new URL(u); return (p.protocol === 'http:' || p.protocol === 'https:') ? p.href : ''; }
+  catch (e) { return ''; }
+}
+
+// ───────── fotos ─────────
+
+/**
+ * Reduz a imagem até caber no limite do broker. Vai baixando a qualidade e,
+ * se ainda assim não couber, a resolução — uma foto de telemóvel tem 3-6 MB e
+ * nunca passaria como está.
+ */
+function shrink(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onerror = function () { reject(new Error('não consegui ler o ficheiro')); };
+    reader.onload = function () {
+      var img = new Image();
+      img.onerror = function () { reject(new Error('ficheiro não é uma imagem válida')); };
+      img.onload = function () {
+        var side = 1000;
+        for (var attempt = 0; attempt < 5; attempt++) {
+          var scale = Math.min(1, side / Math.max(img.width, img.height));
+          var w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+
+          for (var q = 0.72; q >= 0.4; q -= 0.12) {
+            var data = c.toDataURL('image/jpeg', q);
+            if (data.length <= MAX_PHOTO_BYTES) return resolve(data);
+          }
+          side = Math.round(side * 0.75);
+        }
+        reject(new Error('imagem grande demais mesmo depois de reduzir'));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderThumbs() {
+  $('n-thumbs').innerHTML = state.draft.map(function (d, i) {
+    return '<div class="thumb"><img src="' + d + '" alt=""><b data-rm="' + i + '">×</b></div>';
+  }).join('');
+  [].forEach.call(document.querySelectorAll('[data-rm]'), function (x) {
+    x.addEventListener('click', function () {
+      state.draft.splice(parseInt(x.getAttribute('data-rm'), 10), 1);
+      renderThumbs();
+    });
+  });
+}
+
+$('n-drop').addEventListener('click', function () { $('n-files').click(); });
+$('n-files').addEventListener('change', async function () {
+  var files = Array.prototype.slice.call(this.files || []);
+  this.value = '';
+  for (var i = 0; i < files.length; i++) {
+    if (state.draft.length >= MAX_PHOTOS) { say('n-msg', 'Máximo de ' + MAX_PHOTOS + ' fotos.', 'err'); break; }
+    say('n-msg', 'A reduzir ' + files[i].name + '…', 'work');
+    try {
+      state.draft.push(await shrink(files[i]));
+      renderThumbs();
+      $('n-msg').className = 'msg';
+    } catch (e) {
+      say('n-msg', files[i].name + ': ' + e.message, 'err');
+    }
+  }
+});
+
+// ───────── ligação ─────────
+function connect() {
+  $('ctxt').textContent = 'a ligar…';
+  client = mqtt.connect(MQTT_BROKERS[brokerIx], {
+    clientId: 'hreview_' + rid(6), clean: true, reconnectPeriod: 4000, keepalive: 30
+  });
+
+  client.on('connect', function () {
+    $('cdot').className = 'dot on';
+    $('ctxt').textContent = 'ligado à rede';
+    client.subscribe('hreview/b/+', { qos: 1 });
+    client.subscribe('hreview/r/+/+', { qos: 1 });
+    client.subscribe('hreview/p/+/+', { qos: 1 });
+    // As retidas chegam logo a seguir; sem isto, uma rede vazia ficaria presa
+    // em "a carregar" para sempre.
+    setTimeout(schedule, 1500);
+  });
+  client.on('reconnect', function () { $('cdot').className = 'dot'; $('ctxt').textContent = 'a religar…'; });
+  client.on('close', function () { $('cdot').className = 'dot'; $('ctxt').textContent = 'offline'; });
+  client.on('error', function () { brokerIx = (brokerIx + 1) % MQTT_BROKERS.length; });
+  client.on('message', onMessage);
+}
+
+var pending = false;
+function schedule() {
+  if (pending) return;
+  pending = true;
+  setTimeout(function () { pending = false; render(); }, 120);
+}
+
+function onMessage(topic, payload) {
+  var s = payload.toString();
+  try {
+    if (topic.indexOf('hreview/b/') === 0) {
+      var slug = topic.slice(10);
+      if (!s) delete state.biz[slug]; else state.biz[slug] = JSON.parse(s);
+      schedule(); return;
+    }
+    if (topic.indexOf('hreview/r/') === 0) {
+      var p = topic.split('/'), id = p[3];
+      if (!s) delete state.revs[id]; else { var r = JSON.parse(s); r._slug = p[2]; state.revs[id] = r; }
+      schedule(); return;
+    }
+    if (topic.indexOf('hreview/p/') === 0) {
+      var q = topic.split('/'), sl = q[2], pid = q[3];
+      if (!state.pics[sl]) state.pics[sl] = {};
+      if (!s) delete state.pics[sl][pid]; else state.pics[sl][pid] = s;
+      schedule(); return;
+    }
+  } catch (e) { /* mensagem malformada de outro cliente: ignorar */ }
+}
+
+function publish(topic, value) {
+  return new Promise(function (res) {
+    if (!client || !client.connected) { res(false); return; }
+    var body = typeof value === 'string' ? value : JSON.stringify(value);
+    client.publish(topic, body, { qos: 1, retain: true }, function () { res(true); });
+  });
+}
+
+
+// ───────── selo pago ─────────
+
+/** Nome normalizado, para comparar "Kimoa Beach Bar" com "kimoa  beach-bar". */
+function normName(n) {
+  var map = { 'á':'a','à':'a','â':'a','ã':'a','é':'e','ê':'e','í':'i','ó':'o','ô':'o','õ':'o','ú':'u','ç':'c' };
+  return (n || '').toLowerCase().replace(/[áàâãéêíóôõúç]/g, function (c) { return map[c] || c; })
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function nameTaken(name) {
+  var want = normName(name);
+  for (var slug in state.biz) if (normName(state.biz[slug].name) === want) return slug;
+  return null;
+}
+
+/**
+ * Sal de 4 dígitos derivado do slug. É o que liga um pagamento a um
+ * estabelecimento: dois negócios nunca pedem o mesmo valor, por isso ninguém
+ * consegue reclamar o pagamento de outro.
+ */
+function saltOf(slug) {
+  var h = 2166136261;
+  for (var i = 0; i < slug.length; i++) { h ^= slug.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return Math.abs(h) % 10000;
+}
+
+function hidraAddr(slug) { return slug + '.hidra'; }
+
+function fmtSats(sats) { return (sats / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' BTC'; }
+
+async function btcPrice() {
+  if (state.btcPrice) return state.btcPrice;
+  var r = await fetch(PRICE_API, { cache: 'no-store' });
+  var j = await r.json();
+  state.btcPrice = j.bitcoin.usd;
+  return state.btcPrice;
+}
+
+/**
+ * Valor exato a pagar por este estabelecimento. O sal ocupa os ultimos 3
+ * digitos e o resto e o equivalente a 10 dolares arredondado ao milhar mais
+ * proximo — com o BTC na casa das dezenas de milhares, 10 dolares sao apenas
+ * ~13 mil satoshis, por isso um sal maior distorceria o preco (a primeira
+ * versao pedia 8,86 em vez de 10).
+ */
+function satsFor(slug, price) {
+  var base = Math.round(BADGE_USD / price * 1e8 / 1000) * 1000;
+  return base + (saltOf(slug) % 1000);
+}
+
+/**
+ * Lê da blockchain todos os valores já recebidos nesta carteira. Um
+ * estabelecimento fica com selo se existir um pagamento com o valor exato que
+ * lhe corresponde — verificado aqui, não acreditado de uma mensagem.
+ */
+async function loadPayments() {
+  try {
+    var r = await fetch(CHAIN_API + '/address/' + BTC_ADDR + '/txs', { cache: 'no-store' });
+    if (!r.ok) return;
+    var txs = await r.json();
+    var seen = {};
+    txs.forEach(function (tx) {
+      (tx.vout || []).forEach(function (o) {
+        if (o.scriptpubkey_address === BTC_ADDR) {
+          seen[o.value] = { txid: tx.txid, confirmed: !!(tx.status && tx.status.confirmed) };
+        }
+      });
+    });
+    state.paidSats = seen;
+    schedule();
+  } catch (e) {
+    // Sem rede ou API em baixo: os selos simplesmente não aparecem.
+  }
+}
+
+/** Um selo só existe se a cadeia o confirmar. */
+function isVerified(slug) {
+  var b = state.biz[slug];
+  if (!b || !b.sats || !state.paidSats) return false;
+  // O valor tem de corresponder ao sal deste slug, senão é pagamento de outro.
+  if (b.sats % 1000 !== saltOf(slug) % 1000) return false;
+  var hit = state.paidSats[b.sats];
+  return !!(hit && hit.confirmed);
+}
+
+// ───────── cálculos ─────────
+function reviewsOf(slug) {
+  var out = [];
+  for (var k in state.revs) if (state.revs[k]._slug === slug) out.push(state.revs[k]);
+  return out;
+}
+function photosOf(slug) {
+  var m = state.pics[slug] || {}, out = [];
+  for (var k in m) out.push(m[k]);
+  return out;
+}
+function statsOf(slug) {
+  var rs = reviewsOf(slug), sum = 0, dist = [0, 0, 0, 0, 0];
+  for (var i = 0; i < rs.length; i++) {
+    var n = Math.max(1, Math.min(5, rs[i].stars | 0));
+    sum += n; dist[n - 1]++;
+  }
+  return { count: rs.length, avg: rs.length ? sum / rs.length : 0, dist: dist };
+}
+
+function refreshFilterOptions() {
+  var cities = {}, cats = {};
+  for (var slug in state.biz) {
+    var b = state.biz[slug];
+    if (b.city) cities[b.city] = 1;
+    if (b.cat) cats[b.cat] = 1;
+  }
+  fillSelect($('f-city'), Object.keys(cities).sort(), 'Todas as cidades');
+  fillSelect($('f-cat'), Object.keys(cats).sort(), 'Todos os tipos');
+}
+function fillSelect(sel, values, allLabel) {
+  var current = sel.value;
+  sel.innerHTML = '<option value="">' + allLabel + '</option>' +
+    values.map(function (v) { return '<option value="' + esc(v) + '">' + esc(v) + '</option>'; }).join('');
+  if (values.indexOf(current) >= 0) sel.value = current;
+}
+
+// ───────── diretório ─────────
+function render() {
+  if (state.open) { renderBiz(); return; }
+  refreshFilterOptions();
+
+  var q = $('f-q').value.trim().toLowerCase();
+  var city = $('f-city').value, cat = $('f-cat').value;
+
+  var list = [];
+  for (var slug in state.biz) {
+    var b = state.biz[slug];
+    if (city && b.city !== city) continue;
+    if (cat && b.cat !== cat) continue;
+    if (q && (b.name + ' ' + (b.desc || '') + ' ' + (b.city || '')).toLowerCase().indexOf(q) < 0) continue;
+    list.push({ slug: slug, b: b, st: statsOf(slug), pics: photosOf(slug) });
+  }
+
+  if (state.sort === 'recentes') list.sort(function (x, y) { return (y.b.at || 0) - (x.b.at || 0); });
+  else if (state.sort === 'populares') list.sort(function (x, y) { return y.st.count - x.st.count; });
+  else list.sort(function (x, y) { return y.st.avg - x.st.avg || y.st.count - x.st.count; });
+
+  var empty = $('list-empty');
+  empty.style.display = list.length ? 'none' : 'block';
+  if (!list.length) {
+    var anyBiz = Object.keys(state.biz).length > 0;
+    empty.textContent = anyBiz ? 'Nenhum estabelecimento corresponde a esse filtro.'
+      : (client && client.connected ? 'Ainda não há estabelecimentos. Adicione o primeiro.'
+        : 'A carregar estabelecimentos da rede…');
+  }
+
+  $('grid').innerHTML = list.map(function (it) {
+    var cover = it.pics.length
+      ? '<img src="' + it.pics[0] + '" alt="">'
+      : '<div class="noimg">' + esc((it.b.name || '?').charAt(0).toUpperCase()) + '</div>';
+    var tag = it.b.cat ? '<span class="tag">' + esc(it.b.cat) + '</span>' : '';
+    var rating = it.st.count
+      ? '<span class="st">' + starRow(Math.round(it.st.avg)) + '</span><span class="cnt">' +
+        it.st.avg.toFixed(1) + ' · ' + it.st.count + '</span>'
+      : '<span class="cnt">sem avaliações ainda</span>';
+    var sub = [it.b.city, it.b.desc].filter(Boolean).join(' · ');
+    var seal = isVerified(it.slug) ? '<span class="seal">✓ Confirmado</span>' : '';
+    return '<div class="biz" data-slug="' + esc(it.slug) + '">' +
+      '<div class="cover">' + cover + tag + '</div>' +
+      '<div class="binfo"><div class="bn">' + esc(it.b.name) + seal + '</div>' +
+      '<div class="bd">' + esc(sub) + '</div>' +
+      '<div class="br">' + rating + '</div></div></div>';
+  }).join('');
+
+  [].forEach.call(document.querySelectorAll('.biz'), function (el) {
+    el.addEventListener('click', function () { openBiz(el.getAttribute('data-slug')); });
+  });
+}
+
+// ───────── página do estabelecimento ─────────
+function openBiz(slug) {
+  state.open = slug; state.stars = 0;
+  // Mantem o endereco na barra, para a pagina poder ser partilhada e para o
+  // botao de voltar do browser fazer o que se espera.
+  try { history.replaceState(null, '', '?b=' + encodeURIComponent(slug)); } catch (e) {}
+  $('view-list').className = 'hidden';
+  $('view-biz').className = '';
+  window.scrollTo(0, 0);
+  renderBiz();
+}
+
+function renderBiz() {
+  var b = state.biz[state.open];
+  if (!b) { back(); return; }
+  var st = statsOf(state.open), pics = photosOf(state.open);
+  var verified = isVerified(state.open);
+
+  // ── Cabeçalho: a primeira foto é a capa do site ──
+  var seal = verified ? '<span class="seal big">✓ Confirmado</span>' : '';
+  var rate = st.count
+    ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
+      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' avaliação' : ' avaliações') + '</span>'
+    : '<span class="cnt">ainda sem avaliações</span>';
+
+  $('b-hero').innerHTML =
+    (pics.length ? '<img src="' + pics[0] + '" alt="">' : '') +
+    '<div class="veil"></div><div class="inner">' +
+    (b.cat ? '<div class="site-kicker">' + esc(b.cat) + '</div>' : '') +
+    '<h3>' + esc(b.name || '') + seal + '</h3>' +
+    (b.desc ? '<div class="site-sub">' + esc(b.desc) + '</div>' : '') +
+    '<div class="hero-rate">' + rate + '</div></div>';
+
+  // ── Ações rápidas ──
+  var acts = [];
+  var where = [b.addr, b.city].filter(Boolean).join(', ');
+  if (where) {
+    acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/search?query=' +
+      encodeURIComponent(where) + '"><span class="ic">◎</span><span>' +
+      '<span class="t">Como chegar</span><span class="v">' + esc(where) + '</span></span></a>');
+  }
+  if (b.phone) {
+    acts.push('<a class="act" href="tel:' + esc(b.phone.replace(/[^+0-9]/g, '')) + '">' +
+      '<span class="ic">☎</span><span><span class="t">Telefone</span>' +
+      '<span class="v">' + esc(b.phone) + '</span></span></a>');
+  }
+  var site = safeUrl(b.site);
+  if (site) {
+    acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="' + esc(site) + '">' +
+      '<span class="ic">↗</span><span><span class="t">Website</span><span class="v">' +
+      esc(site.replace(/^https?:\/\//, '').replace(/\/$/, '')) + '</span></span></a>');
+  }
+  $('b-acts').innerHTML = acts.join('');
+  $('b-acts').style.display = acts.length ? 'grid' : 'none';
+
+  // ── Secções: escondidas quando o dono não preencheu, para não deixar buracos ──
+  function section(cardId, holderId, value, asHtml) {
+    var has = !!(value && String(value).trim());
+    $(cardId).style.display = has ? 'block' : 'none';
+    if (has) { if (asHtml) $(holderId).innerHTML = value; else $(holderId).textContent = value; }
+  }
+  section('b-about-card', 'b-about', b.about || b.desc || '');
+  section('b-hours-card', 'b-hours', b.hours || '');
+  var linhas = (b.menu || '').split(String.fromCharCode(10))
+    .map(function (l) { return l.trim(); })
+    .filter(function (l) { return l.length; });
+  section('b-menu-card', 'b-menu', linhas.map(function (l) {
+    return '<div class="menu-item">' + esc(l) + '</div>';
+  }).join(''), true);
+
+  // ── Avaliações ──
+  $('b-avg').textContent = st.count ? st.avg.toFixed(1) : '—';
+  $('b-stars').textContent = starRow(Math.round(st.avg));
+  $('b-cnt').textContent = st.count === 1 ? '1 avaliação' : st.count + ' avaliações';
+
+  var max = Math.max.apply(null, st.dist.concat([1])), bars = '';
+  for (var i = 5; i >= 1; i--) {
+    var v = st.dist[i - 1];
+    bars += '<div class="bar"><span class="bt">' + starRow(i).slice(0, i) + '</span>' +
+      '<span class="bo"><span class="bin" style="width:' + Math.round(v / max * 100) + '%"></span></span>' +
+      '<span class="bnum">' + v + '</span></div>';
+  }
+  $('b-dist').innerHTML = st.count ? bars : '<div class="cnt">Seja o primeiro a avaliar.</div>';
+
+  // ── Galeria: a capa já aparece no cabeçalho ──
+  $('b-gal-card').style.display = pics.length > 1 ? 'block' : 'none';
+  $('b-gal').innerHTML = pics.slice(1).map(function (p) {
+    return '<img src="' + p + '" alt="" data-full="' + p + '">';
+  }).join('');
+  [].forEach.call(document.querySelectorAll('[data-full]'), function (im) {
+    im.addEventListener('click', function () {
+      $('lb-img').src = im.getAttribute('data-full');
+      $('lb').className = 'lightbox on';
+    });
+  });
+
+  renderPayBox(b, verified);
+  renderAddrBox(state.open);
+
+  // ── Lista de avaliações ──
+  var rs = reviewsOf(state.open);
+  if (state.rsort === 'melhores') rs.sort(function (x, y) { return y.stars - x.stars || y.at - x.at; });
+  else if (state.rsort === 'piores') rs.sort(function (x, y) { return x.stars - y.stars || y.at - x.at; });
+  else rs.sort(function (x, y) { return (y.at || 0) - (x.at || 0); });
+
+  $('r-list').innerHTML = rs.length ? rs.map(function (r) {
+    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
+      '<span class="st">' + starRow(r.stars) + '</span></div>' +
+      '<div class="rd">' + when(r.at) + '</div>' +
+      '<div class="rc">' + esc(r.text) + '</div></div>';
+  }).join('') : '<div class="empty">Ainda ninguém avaliou. Seja o primeiro.</div>';
+
+  [].forEach.call($('pick').children, function (sp, k) { sp.className = k < state.stars ? 'on' : ''; });
+}
+
+/** O endereco .hidra do estabelecimento — e isto que vai gravado no cartao NFC. */
+function renderAddrBox(slug) {
+  var hidra = hidraAddr(slug);
+  var publico = PUBLIC_BASE + '/r/' + slug;
+
+  $('b-addr-box').innerHTML =
+    '<div style="width:100%">' +
+      '<div class="lbl">Link para o cartão NFC</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
+        '<span class="val" style="flex:1">' + esc(publico) + '</span>' +
+        '<button class="go ghost" id="addr-copy-pub">Copiar</button>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--mut);margin-top:7px;line-height:1.5">' +
+        'Grave <b>este</b> no cartão. Abre em qualquer telemóvel, sem instalar nada.' +
+      '</div>' +
+      '<div class="lbl" style="margin-top:14px">Endereço dentro da HidraNet</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
+        '<span class="val" style="flex:1">' + esc(hidra) + '</span>' +
+        '<button class="go ghost" id="addr-copy-hidra">Copiar</button>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--mut);margin-top:7px;line-height:1.5">' +
+        'Só funciona no navegador HidraNet — um telemóvel comum não resolve .hidra.' +
+      '</div>' +
+    '</div>';
+
+  function copiar(id, valor, nota) {
+    $(id).addEventListener('click', function () {
+      navigator.clipboard.writeText(valor).then(
+        function () { toast(nota); },
+        function () { toast('Não consegui copiar. Selecione o endereço à mão.'); }
+      );
+    });
+  }
+  copiar('addr-copy-pub', publico, 'Link copiado — grave-o no cartão NFC');
+  copiar('addr-copy-hidra', hidra, 'Endereço .hidra copiado');
+}
+
+/**
+ * Painel do selo. Se a cadeia ja confirmou, mostra o comprovativo; se nao,
+ * mostra o valor exato a pagar. O valor tem de ser exato porque e ele que
+ * identifica o estabelecimento — nao ha outro campo a ligar pagamento a ficha.
+ */
+function renderPayBox(b, verified) {
+  var box = $('b-pay');
+  if (verified) {
+    var hit = state.paidSats[b.sats];
+    box.innerHTML = '<div class="paybox">' +
+      '<div class="payrow"><span>Selo de estabelecimento confirmado</span>' +
+      '<span class="seal">✓ pago</span></div>' +
+      '<div class="payrow"><span>Transação</span></div>' +
+      '<div class="mono"><a href="https://blockstream.info/tx/' + esc(hit.txid) +
+      '" target="_blank" rel="noopener noreferrer">' + esc(hit.txid) + '</a></div>' +
+      '<div class="payrow" style="margin-top:8px;color:var(--mut);font-size:12px">' +
+      '<span>Confirma que alguém pagou pelo selo. Não é uma verificação de identidade.</span></div>' +
+      '</div>';
+    return;
+  }
+
+  if (!b.sats) { box.innerHTML = ''; return; }
+
+  box.innerHTML = '<div class="paybox">' +
+    '<div class="payrow"><span>Selo de confirmação</span><span>' +
+    (state.btcPrice ? '≈ US$' + (b.sats / 1e8 * state.btcPrice).toFixed(2) : 'US$' + BADGE_USD) +
+    ' em Bitcoin</span></div>' +
+    '<div class="payrow"><span>Valor exato (identifica este estabelecimento)</span>' +
+    '<span class="mono">' + fmtSats(b.sats) + '</span></div>' +
+    '<div class="payrow"><span>Carteira</span></div>' +
+    '<div class="mono">' + esc(BTC_ADDR) + '</div>' +
+    '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
+    '<button class="go ghost" id="pay-copy">Copiar endereço</button>' +
+    '<button class="go ghost" id="pay-check">Já paguei — verificar</button></div>' +
+    '<div class="payrow" style="margin-top:9px;color:var(--mut);font-size:12px">' +
+    '<span>Pague o valor exato acima. Outro valor não é reconhecido, porque é ele ' +
+    'que liga o pagamento a este estabelecimento. A confirmação aparece quando a ' +
+    'transação entrar num bloco.</span></div>' +
+    '<div class="msg" id="pay-msg"></div></div>';
+
+  $('pay-copy').addEventListener('click', function () {
+    navigator.clipboard.writeText(BTC_ADDR).then(function () { toast('Endereço copiado'); },
+      function () { say('pay-msg', 'Não consegui copiar. Selecione o endereço à mão.', 'err'); });
+  });
+  $('pay-check').addEventListener('click', async function () {
+    say('pay-msg', 'A consultar a blockchain…', 'work');
+    await loadPayments();
+    if (isVerified(state.open)) { toast('Selo confirmado'); renderBiz(); }
+    else say('pay-msg', 'Ainda não encontrei esse pagamento. Se acabou de enviar, ' +
+      'aguarde a primeira confirmação e tente de novo.', 'err');
+  });
+}
+
+
+function back() {
+  state.open = null;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  $('view-biz').className = 'hidden';
+  $('view-list').className = '';
+  render();
+}
+
+// ───────── interações ─────────
+$('back').addEventListener('click', back);
+$('lb').addEventListener('click', function () { this.className = 'lightbox'; });
+
+['f-q', 'f-city', 'f-cat'].forEach(function (id) {
+  $(id).addEventListener('input', render);
+  $(id).addEventListener('change', render);
+});
+
+[].forEach.call(document.querySelectorAll('[data-s]'), function (btn) {
+  btn.addEventListener('click', function () {
+    [].forEach.call(document.querySelectorAll('[data-s]'), function (b) { b.className = ''; });
+    btn.className = 'on';
+    state.sort = btn.getAttribute('data-s');
+    render();
+  });
+});
+
+[].forEach.call(document.querySelectorAll('[data-rs]'), function (btn) {
+  btn.addEventListener('click', function () {
+    [].forEach.call(document.querySelectorAll('[data-rs]'), function (b) { b.className = ''; });
+    btn.className = 'on';
+    state.rsort = btn.getAttribute('data-rs');
+    renderBiz();
+  });
+});
+
+$('pick').addEventListener('click', function (e) {
+  var v = e.target.getAttribute('data-v');
+  if (!v) return;
+  state.stars = parseInt(v, 10);
+  [].forEach.call($('pick').children, function (s, i) { s.className = i < state.stars ? 'on' : ''; });
+});
+
+$('btn-add').addEventListener('click', function () {
+  var f = $('add-form');
+  f.className = f.className.indexOf('hidden') >= 0 ? 'card' : 'card hidden';
+});
+$('n-cancel').addEventListener('click', function () { $('add-form').className = 'card hidden'; });
+
+$('n-save').addEventListener('click', async function () {
+  var name = $('n-name').value.trim();
+  var city = $('n-city').value.trim();
+  if (!name) { say('n-msg', 'Escreva o nome do estabelecimento.', 'err'); return; }
+  if (!city) { say('n-msg', 'Indique a cidade — é por ela que as pessoas procuram.', 'err'); return; }
+  if (!client || !client.connected) { say('n-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
+
+  // Nome único em toda a rede, não só na cidade: dois "Kimoa Beach Bar"
+  // tornariam o diretório impossível de confiar.
+  var taken = nameTaken(name);
+  if (taken) {
+    say('n-msg', 'Já existe "' + state.biz[taken].name + '" em ' +
+      (state.biz[taken].city || 'outra cidade') + '. Escolha outro nome.', 'err');
+    return;
+  }
+
+  var slug = slugify(name + '-' + city);
+  if (!slug) { say('n-msg', 'Esse nome não dá um endereço válido.', 'err'); return; }
+  if (state.biz[slug]) { say('n-msg', 'Já existe um estabelecimento nesse endereço.', 'err'); return; }
+
+  $('n-save').disabled = true;
+  say('n-msg', 'A publicar…', 'work');
+
+  // Fotos primeiro, cada uma no seu tópico: se a ficha aparecesse antes, os
+  // cartões piscavam sem imagem enquanto as fotos chegavam.
+  for (var i = 0; i < state.draft.length; i++) {
+    say('n-msg', 'A enviar foto ' + (i + 1) + ' de ' + state.draft.length + '…', 'work');
+    await publish('hreview/p/' + slug + '/' + rid(6), state.draft[i]);
+  }
+
+  // O valor do selo fica fixado aqui, derivado do slug: é o que liga um
+  // pagamento futuro a este estabelecimento e a mais nenhum.
+  var sats = 0;
+  try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* sem preço: fica sem selo */ }
+
+  var ok = await publish('hreview/b/' + slug, {
+    name: name,
+    sats: sats,
+    cat: $('n-cat').value,
+    desc: $('n-desc').value.trim(),
+    city: city,
+    addr: $('n-addr').value.trim(),
+    phone: $('n-phone').value.trim(),
+    site: safeUrl($('n-site').value),
+    hours: $('n-hours').value.trim(),
+    about: $('n-about').value.trim(),
+    menu: $('n-menu').value.trim(),
+    at: Date.now()
+  });
+  $('n-save').disabled = false;
+
+  if (!ok) { say('n-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
+  say('n-msg', 'Publicado em toda a rede.', 'ok');
+  ['n-name', 'n-desc', 'n-city', 'n-addr', 'n-phone', 'n-site', 'n-hours', 'n-about', 'n-menu'].forEach(function (id) { $(id).value = ''; });
+  state.draft = []; renderThumbs();
+  toast('Estabelecimento publicado');
+  setTimeout(function () { $('add-form').className = 'card hidden'; $('n-msg').className = 'msg'; }, 1600);
+});
+
+$('r-send').addEventListener('click', async function () {
+  if (!state.stars) { say('r-msg', 'Escolha de 1 a 5 estrelas.', 'err'); return; }
+  var text = $('r-text').value.trim();
+  if (!text) { say('r-msg', 'Escreva o seu comentário.', 'err'); return; }
+  if (!client || !client.connected) { say('r-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
+
+  $('r-send').disabled = true;
+  var ok = await publish('hreview/r/' + state.open + '/' + rid(8), {
+    stars: state.stars,
+    text: text,
+    name: $('r-name').value.trim(),
+    loc: $('r-loc').value.trim(),
+    at: Date.now()
+  });
+  $('r-send').disabled = false;
+
+  if (!ok) { say('r-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
+  say('r-msg', 'Avaliação publicada. Obrigado!', 'ok');
+  $('r-text').value = ''; state.stars = 0;
+  [].forEach.call($('pick').children, function (s) { s.className = ''; });
+  toast('A sua avaliação já está na rede');
+  setTimeout(function () { $('r-msg').className = 'msg'; }, 2600);
+});
+
+// Um endereco .hidra chega aqui como ?b=<slug>. O estabelecimento pode ainda
+// nao ter chegado da rede, por isso a abertura espera pelas mensagens retidas.
+var wanted = new URLSearchParams(location.search).get('b');
+if (wanted) {
+  var tries = 0;
+  var waitFor = setInterval(function () {
+    if (state.biz[wanted]) { clearInterval(waitFor); openBiz(wanted); }
+    else if (++tries > 12) {
+      clearInterval(waitFor);
+      $('list-empty').textContent = 'Não encontrei "' + wanted + '.hidra" na rede.';
+      $('list-empty').style.display = 'block';
+    }
+  }, 700);
+}
+
+connect();
+render();
+loadPayments();
+// O preco serve para mostrar quanto vale o pedido em dolares; sem ele o painel
+// cai no valor nominal e ninguem percebe o que esta a pagar.
+btcPrice().then(function () { if (state.open) renderBiz(); }).catch(function () {});
+// A cadeia muda devagar: de dois em dois minutos chega para apanhar uma
+// confirmação sem martelar a API pública.
+setInterval(loadPayments, 120000);
+</script>
+</body>
+</html>

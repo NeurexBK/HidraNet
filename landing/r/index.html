@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avaliações — HidraNet</title>
+<meta name="description" content="Deixe a sua avaliação deste estabelecimento na rede HidraNet.">
+<link rel="manifest" href="/r/manifest.webmanifest">
+<meta name="theme-color" content="#06060b">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HidraNet">
+<meta name="mobile-web-app-capable" content="yes">
+<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#06060b;--card:#10101c;--card2:#14142a;--line:#1a1a2e;--line2:#22223a;
+--txt:#e0e0e8;--dim:#8888a0;--mut:#555570;--acc:#00d4aa;--warn:#ffaa33;--dgr:#ff4466;--r:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);
+color:var(--txt);min-height:100vh;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:620px;margin:0 auto;padding:0 16px 56px}
+
+.brand{display:flex;align-items:center;gap:8px;padding:16px 0;font-weight:800;font-size:15px}
+.brand span{color:var(--acc)}
+
+.hero{position:relative;border-radius:var(--r);overflow:hidden;background:var(--card2);
+min-height:210px;display:flex;align-items:flex-end}
+.hero>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.hero .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,6,11,.1),rgba(6,6,11,.92))}
+.hero .inner{position:relative;padding:22px 20px 18px;width:100%}
+.kick{font-size:11px;color:var(--acc);text-transform:uppercase;letter-spacing:.14em;font-weight:700}
+.hero h1{font-size:27px;font-weight:800;line-height:1.15;margin-top:6px;letter-spacing:-.3px}
+.hero .sub{color:#c3c3d4;font-size:14px;margin-top:4px}
+.rate{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.rate .n{font-size:19px;font-weight:800;color:var(--acc)}
+.st{color:var(--warn);letter-spacing:1px}
+.cnt{color:var(--mut);font-size:12px}
+.seal{display:inline-flex;align-items:center;gap:4px;background:rgba(0,212,170,.14);
+border:1px solid rgba(0,212,170,.45);color:var(--acc);font-size:11px;font-weight:700;
+padding:2px 9px;border-radius:999px;margin-left:7px;vertical-align:middle}
+
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}
+.act{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--line);
+border-radius:10px;padding:12px;color:var(--txt);text-decoration:none}
+.act:active{border-color:var(--acc)}
+.act .ic{width:30px;height:30px;border-radius:8px;background:var(--card2);display:flex;
+align-items:center;justify-content:center;color:var(--acc);flex-shrink:0}
+.act>span:last-child{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.act .t{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.act .v{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-top:14px}
+.sect{font-size:11px;color:var(--acc);text-transform:uppercase;letter-spacing:.13em;font-weight:700;margin-bottom:9px}
+.about{white-space:pre-wrap;color:#c8c8d8;font-size:15px}
+.hours{color:#c8c8d8;font-size:14px;white-space:pre-wrap}
+.mi{padding:7px 0;border-bottom:1px solid var(--line);font-size:14px;color:#c8c8d8}
+.mi:last-child{border-bottom:none}
+.gal{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.gal img{width:100%;height:110px;object-fit:cover;border-radius:9px;border:1px solid var(--line)}
+
+label{display:block;font-size:13px;color:var(--dim);margin:12px 0 5px}
+input,textarea{width:100%;background:#0a0a16;border:1px solid var(--line);border-radius:9px;
+padding:12px;color:var(--txt);font-family:inherit;font-size:16px;outline:none}
+input:focus,textarea:focus{border-color:var(--acc)}
+textarea{resize:vertical;min-height:96px}
+.two{display:flex;gap:9px;flex-wrap:wrap}
+.two>div{flex:1;min-width:130px}
+button{width:100%;background:var(--acc);color:#00140a;border:none;border-radius:9px;padding:14px;
+font-weight:800;cursor:pointer;font-family:inherit;font-size:15px;margin-top:14px}
+button:disabled{opacity:.45}
+.pick{display:flex;gap:6px;margin-top:4px}
+.pick span{font-size:38px;cursor:pointer;color:#2a2a3a;line-height:1;user-select:none;
+-webkit-tap-highlight-color:transparent}
+.pick span.on{color:var(--warn)}
+
+.rev{border-top:1px solid var(--line);padding:14px 0}
+.rev:first-child{border-top:none;padding-top:4px}
+.rh{display:flex;justify-content:space-between;gap:9px;align-items:center;flex-wrap:wrap}
+.ra{font-weight:600;font-size:14px}
+.loc{color:var(--mut);font-weight:400;font-size:13px}
+.rc{margin-top:5px;white-space:pre-wrap;word-break:break-word;font-size:15px}
+.rd{font-size:12px;color:var(--mut)}
+
+.msg{padding:12px 14px;border-radius:9px;margin-top:12px;font-size:14px;display:none}
+.msg.ok{background:rgba(0,212,170,.12);color:var(--acc);display:block}
+.msg.err{background:rgba(255,68,102,.12);color:var(--dgr);display:block}
+.state{text-align:center;color:var(--mut);padding:42px 16px;font-size:15px}
+.foot{margin-top:26px;text-align:center;color:var(--mut);font-size:12px;line-height:1.7}
+.foot a{color:var(--acc);text-decoration:none}
+.foot code{color:var(--acc);font-family:Consolas,monospace}
+
+/* barra de marca com acesso rapido a instalacao */
+.brand{justify-content:space-between}
+.brand .bl{display:flex;align-items:center;gap:8px}
+.getbtn{background:rgba(0,212,170,.13);border:1px solid rgba(0,212,170,.42);color:var(--acc);
+font-size:12px;font-weight:700;padding:6px 13px;border-radius:999px;cursor:pointer;
+width:auto;margin:0;font-family:inherit;-webkit-tap-highlight-color:transparent}
+
+/* cartao "instalar a HidraNet" */
+.get{background:linear-gradient(160deg,#101a22,#10101c);border:1px solid rgba(0,212,170,.28)}
+.get .top{display:flex;gap:13px;align-items:center}
+.get .mark{width:52px;height:52px;border-radius:14px;flex-shrink:0;background:#070809;
+border:1px solid rgba(0,212,170,.3);display:flex;align-items:center;justify-content:center;
+color:#00ff88;font-weight:800;font-size:27px;line-height:1}
+.get h3{font-size:17px;font-weight:800;letter-spacing:-.2px}
+.get .why{color:var(--dim);font-size:13px;margin-top:2px}
+.get p{color:#c8c8d8;font-size:14px;margin-top:13px}
+.get ol{color:#c8c8d8;font-size:14px;margin:11px 0 0 19px}
+.get ol li{margin-bottom:7px}
+.get .key{display:inline-flex;align-items:center;gap:4px;background:var(--card2);
+border:1px solid var(--line2);border-radius:6px;padding:1px 7px;font-weight:600;color:var(--txt)}
+.dl{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.dl a{display:flex;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--line2);
+border-radius:10px;padding:12px 13px;color:var(--txt);text-decoration:none;font-size:14px;font-weight:600}
+.dl a:active{border-color:var(--acc)}
+.dl a .os{width:26px;text-align:center;color:var(--acc);font-size:17px}
+.dl a .sz{margin-left:auto;color:var(--mut);font-size:12px;font-weight:400}
+.note{color:var(--mut);font-size:12px;margin-top:13px;line-height:1.6}
+
+/* lista de estabelecimentos (a app, quando aberta sem NFC) */
+.dirhead{padding:22px 0 4px}
+.dirhead h1{font-size:25px;font-weight:800;letter-spacing:-.4px}
+.dirhead p{color:var(--dim);font-size:14px;margin-top:5px}
+#q{margin-top:14px}
+.biz{display:flex;gap:12px;align-items:center;padding:13px 0;border-top:1px solid var(--line);
+color:var(--txt);text-decoration:none}
+.biz:first-child{border-top:none}
+.biz .th{width:52px;height:52px;border-radius:10px;object-fit:cover;flex-shrink:0;
+background:var(--card2);border:1px solid var(--line2)}
+.biz .th.ph{display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:21px}
+.biz .nm{font-weight:700;font-size:15px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.biz .mt{color:var(--mut);font-size:12.5px;margin-top:2px}
+.biz .sc{margin-left:auto;text-align:right;flex-shrink:0}
+.biz .sc b{color:var(--acc);font-size:15px}
+.biz .sc div{color:var(--mut);font-size:11px}
+.tick{color:var(--acc);font-size:12px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <a class="bl" href="/r/" style="color:inherit;text-decoration:none">Hidra<span>Review</span></a>
+    <button class="getbtn hidden" id="get-pill">Instalar app</button>
+  </div>
+
+  <div id="loading" class="state">A carregar o estabelecimento…</div>
+
+  <div id="missing" class="state hidden">
+    <div style="font-size:36px;margin-bottom:10px">🔍</div>
+    <div id="missing-txt">Não encontrei este estabelecimento.</div>
+    <div style="margin-top:14px"><a href="/r/" style="color:var(--acc)">Ver todos os estabelecimentos →</a></div>
+  </div>
+
+  <div id="dir" class="hidden">
+    <div class="dirhead">
+      <h1>Estabelecimentos na HidraNet</h1>
+      <p>Avaliações reais, sem conta e sem rastreio. Toque num para ver ou avaliar.</p>
+    </div>
+    <input id="q" placeholder="Procurar por nome ou cidade…" autocomplete="off">
+    <div class="card" id="dir-card" style="margin-top:12px"><div id="dir-list">
+      <div class="cnt" style="color:var(--mut)">À procura de estabelecimentos…</div>
+    </div></div>
+    <div id="get-slot-dir"></div>
+  </div>
+
+  <div id="site" class="hidden">
+    <div class="hero" id="hero"></div>
+    <div class="acts" id="acts"></div>
+
+    <div class="card hidden" id="about-card">
+      <div class="sect">Sobre</div><div class="about" id="about"></div>
+    </div>
+    <div class="card hidden" id="menu-card">
+      <div class="sect">Especialidades</div><div id="menu"></div>
+    </div>
+    <div class="card hidden" id="hours-card">
+      <div class="sect">Horário</div><div class="hours" id="hours"></div>
+    </div>
+    <div class="card hidden" id="gal-card">
+      <div class="sect">Fotos</div><div class="gal" id="gal"></div>
+    </div>
+
+    <div class="card">
+      <div class="sect">Deixe a sua avaliação</div>
+      <div class="pick" id="pick">
+        <span data-v="1">★</span><span data-v="2">★</span><span data-v="3">★</span>
+        <span data-v="4">★</span><span data-v="5">★</span>
+      </div>
+      <div class="two">
+        <div><label for="rname">O seu nome</label><input id="rname" maxlength="36" placeholder="Anónimo"></div>
+        <div><label for="rloc">De onde é</label><input id="rloc" maxlength="50" placeholder="Lisboa"></div>
+      </div>
+      <label for="rtext">Como foi a sua experiência?</label>
+      <textarea id="rtext" maxlength="1200" placeholder="Conte o que achou…"></textarea>
+      <button id="send">Publicar avaliação</button>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="sect">Avaliações</div>
+      <div id="list"></div>
+    </div>
+    <div id="get-slot-site"></div>
+
+    <div class="foot">
+      Este estabelecimento também existe na rede HidraNet em<br>
+      <code id="hidra-addr"></code><br><br>
+      <a href="/r/">Ver outros estabelecimentos →</a>
+    </div>
+  </div>
+
+  <div class="card get hidden" id="get">
+    <div class="top">
+      <div class="mark">H</div>
+      <div>
+        <h3>Levar a HidraNet consigo</h3>
+        <div class="why" id="get-why">Funciona em iPhone e Android.</div>
+      </div>
+    </div>
+
+    <div id="get-android" class="hidden">
+      <p>Instale a app no telemóvel para abrir qualquer estabelecimento da rede
+         directamente do ecrã principal, sem passar por aqui.</p>
+      <button id="get-install">Instalar HidraNet</button>
+      <div id="get-android-manual" class="hidden">
+        <ol>
+          <li>Toque no menu <span class="key">⋮</span> no canto do navegador.</li>
+          <li>Escolha <span class="key">Instalar aplicação</span> ou <span class="key">Adicionar ao ecrã principal</span>.</li>
+        </ol>
+      </div>
+    </div>
+
+    <div id="get-ios" class="hidden">
+      <p>Adicione a HidraNet ao ecrã principal do iPhone — fica com ícone próprio,
+         abre em ecrã inteiro e não precisa da App Store.</p>
+      <ol>
+        <li>Toque em <span class="key"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><path d="M12 15V3"/><path d="M8 7l4-4 4 4"/>
+          <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> Partilhar</span>
+          na barra de baixo do Safari</li>
+        <li>Deslize e escolha <span class="key">Adicionar ao ecrã principal</span></li>
+        <li>Confirme em <span class="key">Adicionar</span></li>
+      </ol>
+      <div class="note" id="ios-safari-note"></div>
+    </div>
+
+    <div id="get-desktop" class="hidden">
+      <p>No computador existe o navegador HidraNet completo — com rede Tor,
+         endereços <code style="color:var(--acc)">.hidra</code> e correio anónimo.</p>
+      <div class="dl">
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Windows-x64.zip"><span class="os">⊞</span>Windows 64-bit<span class="sz">121 MB</span></a>
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-arm64.zip"><span class="os">🍎</span>macOS Apple Silicon<span class="sz">103 MB</span></a>
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-x64.zip"><span class="os">🍎</span>macOS Intel<span class="sz">107 MB</span></a>
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Linux-x64.zip"><span class="os">🐧</span>Linux 64-bit<span class="sz">107 MB</span></a>
+      </div>
+    </div>
+
+    <div id="get-installed" class="hidden">
+      <p>Já está instalada neste aparelho. Boas avaliações!</p>
+    </div>
+
+    <div class="note">
+      A app do telemóvel mostra e recebe as avaliações da rede. O navegador HidraNet
+      completo, com Tor e endereços <code style="color:var(--acc)">.hidra</code>, existe só para computador.
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+
+// O mesmo relay que o navegador HidraNet usa. É isto que permite a esta página,
+// num telemóvel qualquer, ver e escrever as mesmas avaliações — sem servidor.
+var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+var client = null, brokerIx = 0;
+var slug = '', biz = null, revs = {}, pics = {}, stars = 0, ready = false;
+var dirBiz = {}, dirRev = {}, drawTimer = null;
+
+function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
+function when(t) { try { return new Date(t).toLocaleDateString('pt-PT'); } catch (e) { return ''; } }
+function rid(n) {
+  var a = new Uint8Array(n || 8); crypto.getRandomValues(a);
+  return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+}
+function safeUrl(u) {
+  u = (u || '').trim(); if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  try { var p = new URL(u); return (p.protocol === 'http:' || p.protocol === 'https:') ? p.href : ''; }
+  catch (e) { return ''; }
+}
+
+/** O slug vem de /r/<slug> ou de ?b=<slug>. */
+function readSlug() {
+  var m = location.pathname.match(/\/r\/([^/?#]+)/);
+  if (m) return decodeURIComponent(m[1]);
+  return new URLSearchParams(location.search).get('b') || '';
+}
+
+function stats() {
+  var rs = Object.keys(revs).map(function (k) { return revs[k]; });
+  var sum = 0;
+  rs.forEach(function (r) { sum += Math.max(1, Math.min(5, r.stars | 0)); });
+  return { count: rs.length, avg: rs.length ? sum / rs.length : 0, list: rs };
+}
+
+function connect() {
+  client = mqtt.connect(BROKERS[brokerIx], {
+    clientId: 'hrweb_' + rid(6), clean: true, reconnectPeriod: 4000, keepalive: 30
+  });
+  client.on('connect', function () {
+    if (slug) {
+      client.subscribe('hreview/b/' + slug, { qos: 1 });
+      client.subscribe('hreview/r/' + slug + '/+', { qos: 1 });
+      client.subscribe('hreview/p/' + slug + '/+', { qos: 1 });
+    } else {
+      // Modo lista: só os registos e as avaliações. As fotos são pesadas
+      // e só valem a pena dentro da página do estabelecimento.
+      client.subscribe('hreview/b/+', { qos: 1 });
+      client.subscribe('hreview/r/+/+', { qos: 1 });
+    }
+    // As retidas chegam logo a seguir. Se nada chegar, o estabelecimento não existe.
+    setTimeout(function () { ready = true; draw(); }, 2500);
+  });
+  client.on('error', function () { brokerIx = (brokerIx + 1) % BROKERS.length; });
+  client.on('message', function (topic, payload) {
+    var s = payload.toString(), p = topic.split('/');
+    try {
+      if (!slug) {
+        if (p[1] === 'b') { if (!s) delete dirBiz[p[2]]; else dirBiz[p[2]] = JSON.parse(s); }
+        else if (p[1] === 'r') {
+          if (!dirRev[p[2]]) dirRev[p[2]] = {};
+          if (!s) delete dirRev[p[2]][p[3]]; else dirRev[p[2]][p[3]] = JSON.parse(s);
+        }
+      } else if (topic === 'hreview/b/' + slug) { biz = s ? JSON.parse(s) : null; }
+      else if (p[1] === 'r') { if (!s) delete revs[p[3]]; else revs[p[3]] = JSON.parse(s); }
+      else if (p[1] === 'p') { if (!s) delete pics[p[3]]; else pics[p[3]] = s; }
+      draw();
+    } catch (e) { /* mensagem de outro cliente malformada */ }
+  });
+}
+
+/* As retidas chegam todas de rajada — agrupa-as num só desenho. */
+function draw() {
+  if (drawTimer) return;
+  drawTimer = setTimeout(function () {
+    drawTimer = null;
+    if (slug) render(); else renderDir();
+  }, 60);
+}
+
+function render() {
+  if (!biz) {
+    if (ready) {
+      $('loading').className = 'state hidden';
+      $('missing').className = 'state';
+      // O cartão de instalação vive dentro de #site; se o estabelecimento não
+      // existe, #site fica escondido — tira-o de lá para continuar à vista.
+      if ($('get').parentNode === $('get-slot-site')) $('missing').parentNode.appendChild($('get'));
+    }
+    return;
+  }
+  $('loading').className = 'state hidden';
+  $('missing').className = 'state hidden';
+  $('site').className = '';
+
+  var photos = Object.keys(pics).map(function (k) { return pics[k]; });
+  var st = stats();
+
+  var rateHtml = st.count
+    ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
+      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' avaliação' : ' avaliações') + '</span>'
+    : '<span class="cnt">seja o primeiro a avaliar</span>';
+
+  $('hero').innerHTML =
+    (photos.length ? '<img src="' + photos[0] + '" alt="">' : '') +
+    '<div class="veil"></div><div class="inner">' +
+    (biz.cat ? '<div class="kick">' + esc(biz.cat) + '</div>' : '') +
+    '<h1>' + esc(biz.name || '') + '</h1>' +
+    (biz.desc ? '<div class="sub">' + esc(biz.desc) + '</div>' : '') +
+    '<div class="rate">' + rateHtml + '</div></div>';
+
+  document.title = (biz.name || 'Estabelecimento') + ' — avaliações';
+
+  var acts = [], where = [biz.addr, biz.city].filter(Boolean).join(', ');
+  if (where) acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/search?query=' +
+    encodeURIComponent(where) + '"><span class="ic">◎</span><span><span class="t">Como chegar</span>' +
+    '<span class="v">' + esc(where) + '</span></span></a>');
+  if (biz.phone) acts.push('<a class="act" href="tel:' + esc(biz.phone.replace(/[^+0-9]/g, '')) +
+    '"><span class="ic">☎</span><span><span class="t">Telefone</span><span class="v">' +
+    esc(biz.phone) + '</span></span></a>');
+  var site = safeUrl(biz.site);
+  if (site) acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="' + esc(site) +
+    '"><span class="ic">↗</span><span><span class="t">Website</span><span class="v">' +
+    esc(site.replace(/^https?:\/\//, '').replace(/\/$/, '')) + '</span></span></a>');
+  $('acts').innerHTML = acts.join('');
+  $('acts').style.display = acts.length ? 'grid' : 'none';
+
+  function sect(card, holder, value, html) {
+    var has = !!(value && String(value).trim());
+    $(card).className = has ? 'card' : 'card hidden';
+    if (has) { if (html) $(holder).innerHTML = value; else $(holder).textContent = value; }
+  }
+  sect('about-card', 'about', biz.about || biz.desc || '');
+  sect('hours-card', 'hours', biz.hours || '');
+  var linhas = (biz.menu || '').split(String.fromCharCode(10))
+    .map(function (l) { return l.trim(); }).filter(function (l) { return l.length; });
+  sect('menu-card', 'menu', linhas.map(function (l) {
+    return '<div class="mi">' + esc(l) + '</div>';
+  }).join(''), true);
+
+  $('gal-card').className = photos.length > 1 ? 'card' : 'card hidden';
+  $('gal').innerHTML = photos.slice(1).map(function (p) { return '<img src="' + p + '" alt="">'; }).join('');
+
+  st.list.sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+  $('list').innerHTML = st.list.length ? st.list.map(function (r) {
+    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
+      '<span class="st">' + starRow(r.stars) + '</span></div>' +
+      '<div class="rd">' + when(r.at) + '</div>' +
+      '<div class="rc">' + esc(r.text) + '</div></div>';
+  }).join('') : '<div class="cnt">Ainda ninguém avaliou.</div>';
+
+  $('hidra-addr').textContent = slug + '.hidra';
+}
+
+/* Lista de estabelecimentos — é isto que a app abre quando não veio de um NFC. */
+function renderDir() {
+  $('loading').className = 'state hidden';
+  $('dir').className = '';
+
+  var termo = ($('q').value || '').trim().toLowerCase();
+  var itens = Object.keys(dirBiz).map(function (s) {
+    var b = dirBiz[s] || {};
+    var rs = Object.keys(dirRev[s] || {}).map(function (k) { return dirRev[s][k]; });
+    var sum = 0;
+    rs.forEach(function (r) { sum += Math.max(1, Math.min(5, r.stars | 0)); });
+    return {
+      slug: s, name: b.name || s, city: b.city || '', cat: b.cat || '',
+      n: rs.length, avg: rs.length ? sum / rs.length : 0
+    };
+  }).filter(function (it) {
+    if (!termo) return true;
+    return (it.name + ' ' + it.city + ' ' + it.cat).toLowerCase().indexOf(termo) >= 0;
+  });
+
+  itens.sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name); });
+
+  if (!itens.length) {
+    $('dir-list').innerHTML = '<div class="cnt" style="color:var(--mut)">' +
+      (ready ? (termo ? 'Nada encontrado para essa procura.'
+                      : 'Ainda não há estabelecimentos publicados.')
+             : 'À procura de estabelecimentos…') + '</div>';
+    return;
+  }
+
+  $('dir-list').innerHTML = itens.map(function (it) {
+    var meta = [it.cat, it.city].filter(Boolean).join(' · ');
+    return '<a class="biz" href="/r/' + encodeURIComponent(it.slug) + '">' +
+      '<span class="th ph">' + esc((it.name[0] || '?').toUpperCase()) + '</span>' +
+      '<span style="min-width:0"><span class="nm">' + esc(it.name) + '</span>' +
+      (meta ? '<div class="mt">' + esc(meta) + '</div>' : '') + '</span>' +
+      '<span class="sc">' + (it.n
+        ? '<b>' + it.avg.toFixed(1) + '</b><div>' + it.n + (it.n === 1 ? ' aval.' : ' avals.') + '</div>'
+        : '<div>sem avaliações</div>') + '</span></a>';
+  }).join('');
+}
+
+$('pick').addEventListener('click', function (e) {
+  var v = e.target.getAttribute('data-v'); if (!v) return;
+  stars = parseInt(v, 10);
+  [].forEach.call($('pick').children, function (s, i) { s.className = i < stars ? 'on' : ''; });
+});
+
+$('send').addEventListener('click', function () {
+  var msg = $('msg');
+  function say(t, k) { msg.textContent = t; msg.className = 'msg ' + k; }
+
+  if (!stars) { say('Escolha de 1 a 5 estrelas.', 'err'); return; }
+  var text = $('rtext').value.trim();
+  if (!text) { say('Escreva o seu comentário.', 'err'); return; }
+  if (!client || !client.connected) { say('Sem ligação. Tente daqui a pouco.', 'err'); return; }
+
+  $('send').disabled = true;
+  client.publish('hreview/r/' + slug + '/' + rid(8), JSON.stringify({
+    stars: stars, text: text,
+    name: $('rname').value.trim(), loc: $('rloc').value.trim(), at: Date.now()
+  }), { qos: 1, retain: true }, function () {
+    $('send').disabled = false;
+    say('Obrigado! A sua avaliação já está publicada.', 'ok');
+    $('rtext').value = ''; stars = 0;
+    [].forEach.call($('pick').children, function (s) { s.className = ''; });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Levar a HidraNet para o telemóvel.
+ *
+ * O navegador HidraNet é um programa de computador — não existe na App
+ * Store nem na Play Store. O que se instala no telemóvel é esta app: o
+ * mesmo ícone no ecrã principal, a mesma rede de avaliações, sem loja e
+ * sem conta. Android instala com um toque; o iPhone faz o mesmo através
+ * de "Adicionar ao ecrã principal", que é o caminho que a Apple dá.
+ * ------------------------------------------------------------------ */
+var deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', function (e) {
+  e.preventDefault();
+  deferredPrompt = e;
+  var b = $('get-install');
+  if (b) { b.disabled = false; b.textContent = 'Instalar HidraNet'; }
+  $('get-android-manual').className = 'hidden';
+});
+
+function setupGet() {
+  var ua = navigator.userAgent || '';
+  var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var isAndroid = /Android/.test(ua);
+  var installed = navigator.standalone === true ||
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+
+  // O cartão vive onde faz sentido: no fim da página do estabelecimento,
+  // ou logo abaixo da lista quando a app abre sem NFC.
+  var slot = $(slug ? 'get-slot-site' : 'get-slot-dir');
+  slot.appendChild($('get'));
+  $('get').className = 'card get';
+
+  function mostra(id, porque) {
+    ['get-android', 'get-ios', 'get-desktop', 'get-installed'].forEach(function (k) {
+      $(k).className = k === id ? '' : 'hidden';
+    });
+    $('get-why').textContent = porque;
+  }
+
+  if (installed) {
+    mostra('get-installed', 'Instalada neste aparelho.');
+    return;
+  }
+
+  $('get-pill').className = 'getbtn';
+  $('get-pill').addEventListener('click', function () {
+    $('get').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+
+  if (isIOS) {
+    mostra('get-ios', 'iPhone e iPad — sem App Store.');
+    var safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+    $('ios-safari-note').textContent = safari ? '' :
+      'Está noutro navegador. Se não encontrar a opção, abra este mesmo endereço no Safari.';
+  } else if (isAndroid) {
+    mostra('get-android', 'Android — sem Play Store.');
+    var btn = $('get-install');
+    btn.addEventListener('click', function () {
+      if (!deferredPrompt) { $('get-android-manual').className = ''; return; }
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then(function () { deferredPrompt = null; });
+    });
+    // Se o navegador não oferecer a instalação automática, ensina o caminho à mão.
+    setTimeout(function () {
+      if (!deferredPrompt) {
+        btn.disabled = true;
+        btn.textContent = 'Instalação pelo menu do navegador';
+        $('get-android-manual').className = '';
+      }
+    }, 3000);
+  } else {
+    mostra('get-desktop', 'Está num computador — leve o navegador completo.');
+    $('get-pill').textContent = 'Descarregar';
+  }
+}
+
+window.addEventListener('appinstalled', function () {
+  ['get-android', 'get-ios', 'get-desktop'].forEach(function (k) { $(k).className = 'hidden'; });
+  $('get-installed').className = '';
+  $('get-why').textContent = 'Instalada neste aparelho.';
+  $('get-pill').className = 'getbtn hidden';
+});
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/r/sw.js', { scope: '/r/' })['catch'](function () {
+      /* sem service worker a página continua a funcionar — só não instala */
+    });
+  });
+}
+
+$('q').addEventListener('input', renderDir);
+
+slug = readSlug();
+if (!slug) $('loading').textContent = 'A procurar estabelecimentos…';
+connect();
+setupGet();
+</script>
+</body>
+</html>
