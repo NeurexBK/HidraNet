@@ -188,6 +188,26 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
 .orep-row{display:flex;gap:8px;margin-top:9px}
 .orep-row input{flex:1}
 .orow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+/* entrada / funil */
+.hero-home{background:linear-gradient(150deg,#0d2a24 0%,var(--card) 60%);border:1px solid var(--line);
+border-radius:16px;padding:34px 30px;text-align:center}
+.hh-badge{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--acc);
+background:rgba(0,212,170,.12);border:1px solid rgba(0,212,170,.3);border-radius:999px;padding:5px 13px;margin-bottom:16px}
+.hero-home h2{font-size:1.9em;line-height:1.2;letter-spacing:-.5px;max-width:640px;margin:0 auto}
+.hero-home p{color:var(--dim);font-size:1.02em;line-height:1.6;max-width:600px;margin:12px auto 0}
+.hh-cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:24px}
+.hh-cta .go{padding:13px 22px;font-size:15px}
+.hh-explore{display:inline-block;margin-top:18px;color:var(--dim);font-size:14px;cursor:pointer;text-decoration:none}
+.hh-explore:hover{color:var(--acc)}
+.offer{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+.oc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+.oc .oi{width:42px;height:42px;border-radius:11px;background:rgba(0,212,170,.1);display:flex;align-items:center;
+justify-content:center;font-size:20px;margin-bottom:12px}
+.oc h3{font-size:1.02em;margin-bottom:6px}
+.oc p{color:var(--mut);font-size:13px;line-height:1.55}
+.hh-foot{text-align:center;color:var(--mut);font-size:14px;margin-top:22px}
+.hh-foot a,.hero-home h1 span{color:var(--acc);cursor:pointer}
+.top h1{cursor:pointer}
 </style>
 </head>
 <body>
@@ -199,8 +219,31 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
   </div>
   <div class="sub">Avaliações de restaurantes e negócios, partilhadas por toda a rede HidraNet.</div>
 
+  <!-- ─── Entrada (o funil) ─── -->
+  <div id="view-home">
+    <div class="hero-home">
+      <div class="hh-badge">Rede HidraNet · sem servidores, sem contas</div>
+      <h2>Ponha o seu estabelecimento onde os clientes confiam.</h2>
+      <p>Avaliações reais partilhadas por toda a rede, uma página própria para o seu negócio e um endereço para gravar no cartão NFC — tudo dentro da HidraNet, cifrado e anónimo.</p>
+      <div class="hh-cta">
+        <button class="go" id="hh-register">Cadastrar o meu estabelecimento</button>
+        <button class="go ghost" id="hh-login">Entrar no meu painel</button>
+      </div>
+      <a class="hh-explore" id="hh-explore">Explorar estabelecimentos →</a>
+    </div>
+
+    <div class="offer">
+      <div class="oc"><div class="oi">⭐</div><h3>Avaliações reais</h3><p>Os clientes avaliam e comentam. Tudo aparece no diretório de toda a rede, sem intermediários.</p></div>
+      <div class="oc"><div class="oi">🔗</div><h3>Página + link para NFC</h3><p>Cada estabelecimento ganha uma página e um link que abre em qualquer telemóvel — grave-o no cartão NFC da mesa.</p></div>
+      <div class="oc"><div class="oi">📬</div><h3>Aviso a cada avaliação</h3><p>Recebe cada nova avaliação no seu Correio HidraMail, cifrada. Responda direto do seu painel.</p></div>
+      <div class="oc"><div class="oi">✓</div><h3>Selo de confirmado</h3><p>Prove que o negócio é seu e ganhe o selo verificado — confirmado na blockchain, ninguém o pode falsificar.</p></div>
+    </div>
+
+    <div class="hh-foot">Já tem um estabelecimento registado? <a id="hh-login2">Entre no seu painel</a>.</div>
+  </div>
+
   <!-- ─── Diretório ─── -->
-  <div id="view-list">
+  <div id="view-list" class="hidden">
     <div class="filters">
       <input id="f-q" placeholder="Procurar por nome…">
       <select id="f-city"><option value="">Todas as cidades</option></select>
@@ -842,6 +885,7 @@ function openBiz(slug) {
   // Mantem o endereco na barra, para a pagina poder ser partilhada e para o
   // botao de voltar do browser fazer o que se espera.
   try { history.replaceState(null, '', '?b=' + encodeURIComponent(slug)); } catch (e) {}
+  $('view-home').className = 'hidden';
   $('view-list').className = 'hidden';
   $('view-biz').className = '';
   window.scrollTo(0, 0);
@@ -1257,6 +1301,7 @@ $('o-back').addEventListener('click', function () { closeOwner(); });
 // senão, mostra o desbloqueio.
 function openOwner(preferSlug) {
   state.ownerOpen = true; state.open = null;
+  $('view-home').className = 'hidden';
   $('view-list').className = 'hidden';
   $('view-biz').className = 'hidden';
   $('view-owner').className = '';
@@ -1395,15 +1440,49 @@ function ownerEdit(slug) {
   $('add-form').scrollIntoView({ behavior: 'smooth' });
 }
 
+// ───────── Entrada (o funil) ─────────
+function showHome() {
+  state.open = null; state.ownerOpen = false;
+  $('view-owner').className = 'hidden';
+  $('view-biz').className = 'hidden';
+  $('view-list').className = 'hidden';
+  $('view-home').className = '';
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  window.scrollTo(0, 0);
+}
+function showList(openAdd) {
+  state.open = null; state.ownerOpen = false;
+  $('view-home').className = 'hidden';
+  $('view-owner').className = 'hidden';
+  $('view-biz').className = 'hidden';
+  $('view-list').className = '';
+  render();
+  if (openAdd) {
+    state.editSlug = null;
+    $('add-form').querySelector('h2').textContent = 'Registar o seu estabelecimento';
+    $('n-msg').className = 'msg';
+    $('add-form').className = 'card';
+    $('add-form').scrollIntoView({ behavior: 'smooth' });
+  }
+  window.scrollTo(0, 0);
+}
+$('hh-register').addEventListener('click', function () { showList(true); });
+$('hh-explore').addEventListener('click', function () { showList(false); });
+$('hh-login').addEventListener('click', function () { openOwner(null); });
+$('hh-login2').addEventListener('click', function () { openOwner(null); });
+document.querySelector('.top h1').addEventListener('click', function () { showHome(); });
+
 // Um endereco .hidra chega aqui como ?b=<slug>. O estabelecimento pode ainda
 // nao ter chegado da rede, por isso a abertura espera pelas mensagens retidas.
 var wanted = new URLSearchParams(location.search).get('b');
 if (wanted) {
+  $('view-home').className = 'hidden';   // veio de um link direto: nao mostra a entrada
   var tries = 0;
   var waitFor = setInterval(function () {
     if (state.biz[wanted]) { clearInterval(waitFor); openBiz(wanted); }
     else if (++tries > 12) {
       clearInterval(waitFor);
+      showList(false);
       $('list-empty').textContent = 'Não encontrei "' + wanted + '.hidra" na rede.';
       $('list-empty').style.display = 'block';
     }
