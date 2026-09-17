@@ -71,6 +71,8 @@ justify-content:center;z-index:80;padding:24px;cursor:zoom-out}
 .lightbox img{max-width:100%;max-height:100%;border-radius:10px}
 
 label{display:block;font-size:13px;color:var(--dim);margin:12px 0 5px}
+.hint{font-size:12px;color:var(--mut);line-height:1.55;margin-top:5px}
+.hint b{color:var(--dim)}
 input,textarea,select{width:100%;background:#0a0a16;border:1px solid var(--line);border-radius:8px;
 padding:10px 12px;color:var(--txt);font-family:inherit;font-size:14px;outline:none}
 input:focus,textarea:focus,select:focus{border-color:var(--acc)}
@@ -165,6 +167,27 @@ padding:2px 8px;border-radius:999px;vertical-align:middle;margin-left:6px}
 background:var(--card2);border:1px solid var(--acc);color:var(--txt);padding:11px 20px;
 border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all .25s;z-index:90}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.modal{position:fixed;inset:0;background:rgba(3,4,6,.9);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
+.modal.on{display:flex}
+.mbox{background:var(--card);border:1px solid var(--acc);border-radius:14px;padding:24px;max-width:460px;width:100%}
+.mbox h2{font-size:1.2em}
+.keybox{background:#0a0a16;border:1px dashed var(--acc);border-radius:8px;padding:14px;text-align:center}
+.keybox code{font-family:Consolas,monospace;font-size:17px;color:var(--acc);font-weight:700;letter-spacing:1px;word-break:break-all}
+.ostat{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin:6px 0 4px}
+.ostat .b{background:#0a0a16;border:1px solid var(--line);border-radius:10px;padding:12px;text-align:center}
+.ostat .b .v{font-size:1.7em;font-weight:800;color:var(--acc);line-height:1}
+.ostat .b .l{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-top:5px}
+.orev{border-top:1px solid var(--line);padding:13px 0}
+.orev:first-child{border-top:none}
+.orev .rh{display:flex;justify-content:space-between;gap:9px;align-items:center;flex-wrap:wrap}
+.orev .who{font-weight:600;font-size:14px}
+.orev .who .loc{color:var(--mut);font-weight:400}
+.orev .txt{margin-top:5px;white-space:pre-wrap;word-break:break-word;font-size:14px;color:#c8c8d8}
+.orev .reply{margin-top:9px;background:rgba(0,212,170,.07);border-left:2px solid var(--acc);border-radius:6px;padding:9px 12px;font-size:13px}
+.orev .reply .rl{font-size:11px;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.orep-row{display:flex;gap:8px;margin-top:9px}
+.orep-row input{flex:1}
+.orow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 </style>
 </head>
 <body>
@@ -183,6 +206,7 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
       <select id="f-city"><option value="">Todas as cidades</option></select>
       <select id="f-cat"><option value="">Todos os tipos</option></select>
       <button class="go ghost" id="btn-add">+ Adicionar</button>
+      <button class="go ghost" id="btn-owner">Painel do dono</button>
     </div>
 
     <div class="tools">
@@ -233,6 +257,10 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
           <input id="n-site" maxlength="200" placeholder="https://…">
         </div>
       </div>
+
+      <label for="n-mail">Endereço HidraMail do dono *</label>
+      <input id="n-mail" maxlength="60" placeholder="xxxxxxxxxxxxxxxx@hidra" autocomplete="off" spellcheck="false">
+      <div class="hint" id="n-mail-hint">É para aqui que cada avaliação é enviada, cifrada. Abra o app <b>Correio</b> na HidraNet, copie o seu endereço e cole aqui. (O Correio tem de ser aberto pelo menos uma vez para receber.)</div>
 
       <label for="n-hours">Horário</label>
       <input id="n-hours" maxlength="120" placeholder="Seg–Sáb, 12h–15h e 19h–23h">
@@ -312,8 +340,8 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
       </div>
       <div class="row">
         <div>
-          <label for="r-name">O seu nome (opcional)</label>
-          <input id="r-name" maxlength="36" placeholder="Anónimo">
+          <label for="r-name">O seu nome *</label>
+          <input id="r-name" maxlength="36" placeholder="Como quer assinar">
         </div>
         <div>
           <label for="r-loc">De onde é (opcional)</label>
@@ -337,6 +365,36 @@ border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:all 
     </div>
   </div>
 
+  <!-- ─── Painel do Dono ─── -->
+  <div id="view-owner" class="hidden">
+    <a class="back" id="o-back">← Voltar ao diretório</a>
+
+    <div class="card" id="o-lock">
+      <h2>Painel do Dono</h2>
+      <div class="hint" style="margin-bottom:6px">Entre com a chave que recebeu ao registar o estabelecimento. É ela que prova que o painel é seu — onde vê as avaliações, responde e recebe cada nova avaliação no seu Correio.</div>
+      <label for="o-slug">Estabelecimento</label>
+      <select id="o-slug"></select>
+      <label for="o-key">Chave de dono</label>
+      <input id="o-key" maxlength="40" placeholder="a sua chave secreta" autocomplete="off" spellcheck="false">
+      <div style="margin-top:14px"><button class="go" id="o-enter">Entrar</button></div>
+      <div class="msg" id="o-msg"></div>
+    </div>
+
+    <div id="o-dash" class="hidden"></div>
+  </div>
+
+</div>
+
+<!-- modal da chave de dono (mostrado uma vez, após registar) -->
+<div class="modal" id="okey">
+  <div class="mbox">
+    <h2>Estabelecimento publicado</h2>
+    <div class="hint" style="margin:8px 0 14px">Guarde a sua <b>chave de dono</b>. É a única forma de entrar no Painel do Dono para ver e responder às avaliações — e ninguém pode alterar a sua ficha sem ela. Não a partilhe.</div>
+    <div class="keybox"><code id="okey-val"></code></div>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="go ghost" id="okey-copy">Copiar chave</button></div>
+    <div id="okey-links" style="margin-top:14px"></div>
+    <div style="margin-top:16px"><button class="go" id="okey-done">Guardei — abrir o meu painel</button></div>
+  </div>
 </div>
 
 <div class="lightbox" id="lb"><img id="lb-img" alt=""></div>
@@ -369,8 +427,9 @@ var CHAIN_API = 'https://blockstream.info/api';
 var PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
 
 var client = null, brokerIx = 0;
-var state = { biz: {}, revs: {}, pics: {}, sort: 'melhores', rsort: 'recentes',
-  open: null, stars: 0, draft: [], paidSats: null, btcPrice: null };
+var state = { biz: {}, revs: {}, pics: {}, replies: {}, sort: 'melhores', rsort: 'recentes',
+  open: null, stars: 0, draft: [], paidSats: null, btcPrice: null,
+  ownerSlug: null, ownerSecret: null, ownerOpen: false, editSlug: null };
 
 function rid(n) {
   var a = new Uint8Array(n || 8);
@@ -480,6 +539,7 @@ function connect() {
     client.subscribe('hreview/b/+', { qos: 1 });
     client.subscribe('hreview/r/+/+', { qos: 1 });
     client.subscribe('hreview/p/+/+', { qos: 1 });
+    client.subscribe('hreview/reply/+/+', { qos: 1 });
     // As retidas chegam logo a seguir; sem isto, uma rede vazia ficaria presa
     // em "a carregar" para sempre.
     setTimeout(schedule, 1500);
@@ -499,6 +559,18 @@ function schedule() {
 
 function onMessage(topic, payload) {
   var s = payload.toString();
+  // Resposta do diretorio do correio a um pedido de notificacao ao dono.
+  if (topic.indexOf('hmaildir/') === 0) {
+    var cb = mailResolvers[topic];
+    if (cb) { delete mailResolvers[topic]; try { client.unsubscribe(topic); } catch (e) {} cb(s); }
+    return;
+  }
+  // Resposta do dono a uma avaliacao.
+  if (topic.indexOf('hreview/reply/') === 0) {
+    var rp = topic.split('/');
+    if (!s) delete state.replies[rp[3]]; else { try { state.replies[rp[3]] = JSON.parse(s); } catch (e) {} }
+    schedule(); return;
+  }
   try {
     if (topic.indexOf('hreview/b/') === 0) {
       var slug = topic.slice(10);
@@ -526,6 +598,66 @@ function publish(topic, value) {
     client.publish(topic, body, { qos: 1, retain: true }, function () { res(true); });
   });
 }
+
+// ───────── notificar o dono pelo HidraMail ─────────
+// Reaproveita o correio E2E da propria rede: quando alguem avalia, o dono
+// recebe uma mensagem cifrada no app Correio (mesmo offline, via retidas).
+// Nada sai para servicos externos — e o vosso proprio sistema.
+var subtle = crypto.subtle, te = new TextEncoder(), td = new TextDecoder();
+var mailResolvers = {};
+function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
+function b64e(u){var s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s);}
+function b64d(s){var r=atob(s),u=new Uint8Array(r.length);for(var i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u;}
+async function addrFromPub(pubRaw){ var h=new Uint8Array(await subtle.digest('SHA-256',pubRaw)); return b32(h.slice(0,10))+'@hidra'; }
+async function importPub(raw){ return subtle.importKey('raw',raw,{name:'ECDH',namedCurve:'P-256'},false,[]); }
+async function deriveAES(priv,pub){ var b=await subtle.deriveBits({name:'ECDH',public:pub},priv,256); return subtle.importKey('raw',b,{name:'AES-GCM'},false,['encrypt','decrypt']); }
+async function encryptTo(recipPubRaw,text){
+  var eph=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+  var aes=await deriveAES(eph.privateKey, await importPub(recipPubRaw));
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  var ct=new Uint8Array(await subtle.encrypt({name:'AES-GCM',iv},aes,te.encode(text)));
+  var ep=new Uint8Array(await subtle.exportKey('raw',eph.publicKey));
+  var out=new Uint8Array(ep.length+12+ct.length); out.set(ep,0); out.set(iv,ep.length); out.set(ct,ep.length+12);
+  return b64e(out);
+}
+async function mailInbox(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmail:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmail/'+s; }
+async function mailDir(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmaildir:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmaildir/'+s; }
+function normMail(a){ a=(a||'').trim().toLowerCase(); if(!a) return ''; if(a.indexOf('@hidra')<0) a=a.replace(/@.*/,'')+'@hidra'; return a; }
+function looksMail(a){ a=normMail(a); return /^[a-z2-7]{16}@hidra$/.test(a); }
+
+// Resolve a chave publica de um endereco @hidra no diretorio retido do correio.
+function dirResolve(addr){
+  return new Promise(async function(res){
+    if(!client||!client.connected) return res(null);
+    var t=await mailDir(addr), done=false;
+    mailResolvers[t]=function(p){ done=true; res(p); };
+    client.subscribe(t,{qos:0});
+    setTimeout(function(){ if(!done){ delete mailResolvers[t]; try{client.unsubscribe(t)}catch(e){} res(null); } },7000);
+  });
+}
+
+// Envia uma mensagem HidraMail para o dono. Best-effort: se o dono ainda nao
+// abriu o Correio, a chave dele nao esta publicada e a mensagem e saltada.
+async function notifyOwner(addr, subject, body){
+  try{
+    addr=normMail(addr); if(!looksMail(addr)) return false;
+    var pub64=await dirResolve(addr); if(!pub64) return false;
+    var pubRaw=b64d(pub64);
+    if(await addrFromPub(pubRaw)!==addr) return false;   // auto-certificado: a chave tem de bater com o endereco
+    var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
+    var payload={ mid:mid, from:'avaliacoes@hidra', subject:subject, body:body, date:Date.now() };
+    var ct=await encryptTo(pubRaw, JSON.stringify(payload));
+    if(ct.length>800000) return false;
+    var topic=await mailInbox(addr)+'/'+mid;
+    await new Promise(function(r){ client.publish(topic, ct, {qos:1, retain:true}, function(){ r(); }); });
+    return true;
+  }catch(e){ return false; }
+}
+
+async function sha256hex(s){ var b=await subtle.digest('SHA-256',te.encode(s)); return Array.from(new Uint8Array(b)).map(function(x){return('0'+x.toString(16)).slice(-2)}).join(''); }
+// A chave de dono nunca vai para a rede — so o seu hash. E o que protege a
+// ficha de ser reescrita e o que abre o Painel do Dono.
+function ownerHashOf(secret){ return sha256hex('hidra-owner-v1:' + secret); }
 
 
 // ───────── selo pago ─────────
@@ -652,6 +784,7 @@ function fillSelect(sel, values, allLabel) {
 
 // ───────── diretório ─────────
 function render() {
+  if (state.ownerOpen) { renderOwner(); return; }
   if (state.open) { renderBiz(); return; }
   refreshFilterOptions();
 
@@ -803,17 +936,19 @@ function renderBiz() {
   renderAddrBox(state.open);
 
   // ── Lista de avaliações ──
-  var rs = reviewsOf(state.open);
-  if (state.rsort === 'melhores') rs.sort(function (x, y) { return y.stars - x.stars || y.at - x.at; });
-  else if (state.rsort === 'piores') rs.sort(function (x, y) { return x.stars - y.stars || y.at - x.at; });
-  else rs.sort(function (x, y) { return (y.at || 0) - (x.at || 0); });
+  var rs = reviewsWithId(state.open);
+  var by = { melhores: function (x, y) { return y.r.stars - x.r.stars || y.r.at - x.r.at; },
+             piores: function (x, y) { return x.r.stars - y.r.stars || y.r.at - x.r.at; } };
+  rs.sort(by[state.rsort] || function (x, y) { return (y.r.at || 0) - (x.r.at || 0); });
 
-  $('r-list').innerHTML = rs.length ? rs.map(function (r) {
+  $('r-list').innerHTML = rs.length ? rs.map(function (it) {
+    var r = it.r, rep = state.replies[it.id];
     var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var reply = rep ? '<div class="orev"><div class="reply"><div class="rl">Resposta do estabelecimento</div>' + esc(rep.text) + '</div></div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
-      '<div class="rc">' + esc(r.text) + '</div></div>';
+      '<div class="rc">' + esc(r.text) + '</div>' + reply + '</div>';
   }).join('') : '<div class="empty">Ainda ninguém avaliou. Seja o primeiro.</div>';
 
   [].forEach.call($('pick').children, function (sp, k) { sp.className = k < state.stars ? 'on' : ''; });
@@ -954,29 +1089,50 @@ $('pick').addEventListener('click', function (e) {
 
 $('btn-add').addEventListener('click', function () {
   var f = $('add-form');
-  f.className = f.className.indexOf('hidden') >= 0 ? 'card' : 'card hidden';
+  var opening = f.className.indexOf('hidden') >= 0;
+  if (opening) {   // abrir sempre em modo "novo" (limpa um estado de edição anterior)
+    state.editSlug = null;
+    f.querySelector('h2').textContent = 'Registar o seu estabelecimento';
+    $('n-msg').className = 'msg';
+  }
+  f.className = opening ? 'card' : 'card hidden';
 });
-$('n-cancel').addEventListener('click', function () { $('add-form').className = 'card hidden'; });
+$('n-cancel').addEventListener('click', function () {
+  $('add-form').className = 'card hidden';
+  state.editSlug = null;
+  $('add-form').querySelector('h2').textContent = 'Registar o seu estabelecimento';
+  $('n-msg').className = 'msg';
+});
 
 $('n-save').addEventListener('click', async function () {
   var name = $('n-name').value.trim();
   var city = $('n-city').value.trim();
+  var mail = normMail($('n-mail').value);
+  var editing = !!state.editSlug;
   if (!name) { say('n-msg', 'Escreva o nome do estabelecimento.', 'err'); return; }
   if (!city) { say('n-msg', 'Indique a cidade — é por ela que as pessoas procuram.', 'err'); return; }
+  if (!looksMail(mail)) { say('n-msg', 'Cole o endereço HidraMail do dono (algo como xxxx@hidra). Copie-o no app Correio.', 'err'); return; }
   if (!client || !client.connected) { say('n-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
 
   // Nome único em toda a rede, não só na cidade: dois "Kimoa Beach Bar"
-  // tornariam o diretório impossível de confiar.
+  // tornariam o diretório impossível de confiar. (Ao editar, o próprio nome
+  // não conta como colisão.)
   var taken = nameTaken(name);
-  if (taken) {
+  if (taken && taken !== state.editSlug) {
     say('n-msg', 'Já existe "' + state.biz[taken].name + '" em ' +
       (state.biz[taken].city || 'outra cidade') + '. Escolha outro nome.', 'err');
     return;
   }
 
-  var slug = slugify(name + '-' + city);
+  var slug = editing ? state.editSlug : slugify(name + '-' + city);
   if (!slug) { say('n-msg', 'Esse nome não dá um endereço válido.', 'err'); return; }
-  if (state.biz[slug]) { say('n-msg', 'Já existe um estabelecimento nesse endereço.', 'err'); return; }
+  if (!editing && state.biz[slug]) { say('n-msg', 'Já existe um estabelecimento nesse endereço.', 'err'); return; }
+
+  // Chave de dono: no registo é criada nova; na edição reutiliza-se a da sessão
+  // aberta no Painel do Dono (que já provou ser o dono).
+  var secret = editing ? state.ownerSecret : rid(12);
+  var ownerHash = await ownerHashOf(secret);
+  var prev = state.biz[slug] || {};
 
   $('n-save').disabled = true;
   say('n-msg', 'A publicar…', 'work');
@@ -989,13 +1145,16 @@ $('n-save').addEventListener('click', async function () {
   }
 
   // O valor do selo fica fixado aqui, derivado do slug: é o que liga um
-  // pagamento futuro a este estabelecimento e a mais nenhum.
-  var sats = 0;
-  try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* sem preço: fica sem selo */ }
+  // pagamento futuro a este estabelecimento e a mais nenhum. Ao editar,
+  // mantém-se o valor já fixado para não perder um selo pago.
+  var sats = prev.sats || 0;
+  if (!sats) { try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* sem preço: fica sem selo */ } }
 
   var ok = await publish('hreview/b/' + slug, {
     name: name,
     sats: sats,
+    mail: mail,
+    ownerHash: ownerHash,
     cat: $('n-cat').value,
     desc: $('n-desc').value.trim(),
     city: city,
@@ -1005,41 +1164,236 @@ $('n-save').addEventListener('click', async function () {
     hours: $('n-hours').value.trim(),
     about: $('n-about').value.trim(),
     menu: $('n-menu').value.trim(),
-    at: Date.now()
+    at: prev.at || Date.now()
   });
   $('n-save').disabled = false;
 
   if (!ok) { say('n-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
+
+  if (editing) {
+    say('n-msg', 'Alterações guardadas.', 'ok');
+    toast('Ficha atualizada');
+    state.editSlug = null;
+    setTimeout(function () { $('add-form').className = 'card hidden'; $('n-msg').className = 'msg'; openOwner(slug); }, 1000);
+    return;
+  }
+
   say('n-msg', 'Publicado em toda a rede.', 'ok');
-  ['n-name', 'n-desc', 'n-city', 'n-addr', 'n-phone', 'n-site', 'n-hours', 'n-about', 'n-menu'].forEach(function (id) { $(id).value = ''; });
+  ['n-name', 'n-desc', 'n-city', 'n-addr', 'n-phone', 'n-site', 'n-hours', 'n-about', 'n-menu', 'n-mail'].forEach(function (id) { $(id).value = ''; });
   state.draft = []; renderThumbs();
-  toast('Estabelecimento publicado');
-  setTimeout(function () { $('add-form').className = 'card hidden'; $('n-msg').className = 'msg'; }, 1600);
+  // Entra logo como dono deste estabelecimento e mostra a chave (uma só vez).
+  state.ownerSlug = slug; state.ownerSecret = secret;
+  $('add-form').className = 'card hidden'; $('n-msg').className = 'msg';
+  showOwnerKey(slug, secret);
 });
 
 $('r-send').addEventListener('click', async function () {
   if (!state.stars) { say('r-msg', 'Escolha de 1 a 5 estrelas.', 'err'); return; }
+  var name = $('r-name').value.trim();
+  if (!name) { say('r-msg', 'Escreva o seu nome — é obrigatório para avaliar.', 'err'); return; }
   var text = $('r-text').value.trim();
   if (!text) { say('r-msg', 'Escreva o seu comentário.', 'err'); return; }
   if (!client || !client.connected) { say('r-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
 
+  var loc = $('r-loc').value.trim();
+  var stars = state.stars;
+  var b = state.biz[state.open] || {};
+
   $('r-send').disabled = true;
   var ok = await publish('hreview/r/' + state.open + '/' + rid(8), {
-    stars: state.stars,
-    text: text,
-    name: $('r-name').value.trim(),
-    loc: $('r-loc').value.trim(),
-    at: Date.now()
+    stars: stars, text: text, name: name, loc: loc, at: Date.now()
   });
   $('r-send').disabled = false;
 
   if (!ok) { say('r-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
   say('r-msg', 'Avaliação publicada. Obrigado!', 'ok');
-  $('r-text').value = ''; state.stars = 0;
+  $('r-text').value = ''; $('r-name').value = ''; $('r-loc').value = ''; state.stars = 0;
   [].forEach.call($('pick').children, function (s) { s.className = ''; });
   toast('A sua avaliação já está na rede');
   setTimeout(function () { $('r-msg').className = 'msg'; }, 2600);
+
+  // Dispara a notificação para o dono pelo HidraMail (best-effort).
+  if (b.mail) {
+    notifyOwner(b.mail,
+      'Nova avaliação (' + stars + '★) — ' + (b.name || ''),
+      name + (loc ? ' · ' + loc : '') + ' deu ' + stars + ' estrela' + (stars > 1 ? 's' : '') +
+      ' a ' + (b.name || 'seu estabelecimento') + ':\n\n"' + text + '"\n\n' +
+      'Veja e responda no Painel do Dono do HidraReview.');
+  }
 });
+
+// ───────── Painel do Dono (o funil: registar → gerir → responder) ─────────
+function reviewsWithId(slug) {
+  var out = [];
+  for (var k in state.revs) if (state.revs[k]._slug === slug) out.push({ id: k, r: state.revs[k] });
+  return out;
+}
+
+// Modal mostrado uma vez, logo após registar: entrega a chave e os links.
+function showOwnerKey(slug, secret) {
+  $('okey-val').textContent = secret;
+  var publico = PUBLIC_BASE + '/r/' + slug, hidra = hidraAddr(slug);
+  $('okey-links').innerHTML =
+    '<div class="lbl">Link para o cartão NFC</div>' +
+    '<div class="mono" style="margin:3px 0 10px">' + esc(publico) + '</div>' +
+    '<div class="lbl">Endereço dentro da HidraNet</div>' +
+    '<div class="mono" style="margin:3px 0 0">' + esc(hidra) + '</div>';
+  $('okey').className = 'modal on';
+}
+$('okey-copy').addEventListener('click', function () {
+  navigator.clipboard.writeText($('okey-val').textContent).then(
+    function () { toast('Chave copiada — guarde-a num lugar seguro'); },
+    function () { toast('Copie a chave à mão.'); });
+});
+$('okey-done').addEventListener('click', function () {
+  $('okey').className = 'modal';
+  openOwner(state.ownerSlug);
+});
+
+$('btn-owner').addEventListener('click', function () { openOwner(state.ownerSlug); });
+$('o-back').addEventListener('click', function () { closeOwner(); });
+
+// Abre o painel. Se já houver sessão de dono válida, mostra o dashboard;
+// senão, mostra o desbloqueio.
+function openOwner(preferSlug) {
+  state.ownerOpen = true; state.open = null;
+  $('view-list').className = 'hidden';
+  $('view-biz').className = 'hidden';
+  $('view-owner').className = '';
+  window.scrollTo(0, 0);
+
+  // preenche o seletor de estabelecimentos
+  var sel = $('o-slug'), slugs = Object.keys(state.biz).sort(function (a, b) {
+    return (state.biz[a].name || '').localeCompare(state.biz[b].name || '');
+  });
+  sel.innerHTML = slugs.map(function (s) {
+    return '<option value="' + esc(s) + '">' + esc(state.biz[s].name || s) + '</option>';
+  }).join('') || '<option value="">— nenhum estabelecimento na rede —</option>';
+  if (preferSlug && state.biz[preferSlug]) sel.value = preferSlug;
+
+  var unlocked = state.ownerSlug && state.ownerSecret && state.biz[state.ownerSlug];
+  if (unlocked) { $('o-lock').className = 'card hidden'; $('o-dash').className = ''; renderOwner(); }
+  else { $('o-lock').className = 'card'; $('o-dash').className = 'hidden'; $('o-msg').className = 'msg'; }
+}
+function closeOwner() {
+  state.ownerOpen = false;
+  $('view-owner').className = 'hidden';
+  $('view-list').className = '';
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  render();
+}
+
+$('o-enter').addEventListener('click', async function () {
+  var slug = $('o-slug').value;
+  var key = $('o-key').value.trim();
+  var b = state.biz[slug];
+  if (!b) { say('o-msg', 'Escolha um estabelecimento.', 'err'); return; }
+  if (!key) { say('o-msg', 'Escreva a sua chave de dono.', 'err'); return; }
+  if (!b.ownerHash) { say('o-msg', 'Este estabelecimento foi criado antes das chaves de dono e não tem painel. Contacte-nos.', 'err'); return; }
+  var h = await ownerHashOf(key);
+  if (h !== b.ownerHash) { say('o-msg', 'Chave errada para este estabelecimento.', 'err'); return; }
+  state.ownerSlug = slug; state.ownerSecret = key;
+  $('o-key').value = ''; $('o-msg').className = 'msg';
+  $('o-lock').className = 'card hidden'; $('o-dash').className = '';
+  renderOwner();
+});
+
+function renderOwner() {
+  var slug = state.ownerSlug, b = state.biz[slug];
+  if (!b) { $('o-dash').innerHTML = '<div class="empty">Estabelecimento não encontrado na rede.</div>'; return; }
+  var st = statsOf(slug), revs = reviewsWithId(slug);
+  revs.sort(function (x, y) { return (y.r.at || 0) - (x.r.at || 0); });
+  var verified = isVerified(slug);
+  var publico = PUBLIC_BASE + '/r/' + slug, hidra = hidraAddr(slug);
+
+  var head =
+    '<div class="card"><h2>' + esc(b.name || slug) +
+      (verified ? ' <span class="seal big">✓ Confirmado</span>' : '') + '</h2>' +
+      '<div class="hint" style="margin-top:4px">As avaliações chegam-lhe ao Correio: <b>' + esc(b.mail || '—') + '</b></div>' +
+      '<div class="ostat">' +
+        '<div class="b"><div class="v">' + (st.count ? st.avg.toFixed(1) : '—') + '</div><div class="l">Média</div></div>' +
+        '<div class="b"><div class="v">' + st.count + '</div><div class="l">Avaliações</div></div>' +
+        '<div class="b"><div class="v">' + (st.dist[4] || 0) + '</div><div class="l">5 estrelas</div></div>' +
+        '<div class="b"><div class="v">' + ((st.dist[0] || 0) + (st.dist[1] || 0)) + '</div><div class="l">1–2 estrelas</div></div>' +
+      '</div>' +
+      '<div class="orow">' +
+        '<button class="go ghost" id="o-edit">Editar ficha</button>' +
+        '<button class="go ghost" id="o-view">Ver página pública</button>' +
+        '<button class="go ghost" id="o-exit">Sair do painel</button>' +
+      '</div>' +
+    '</div>';
+
+  var links =
+    '<div class="card"><div class="sect-t">Links para o NFC</div>' +
+      '<div class="addrbox"><div style="width:100%">' +
+        '<div class="lbl">Cartão NFC (telemóvel)</div>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
+          '<span class="val" style="flex:1">' + esc(publico) + '</span>' +
+          '<button class="go ghost" id="o-cp-pub">Copiar</button></div>' +
+        '<div class="lbl" style="margin-top:14px">Dentro da HidraNet</div>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
+          '<span class="val" style="flex:1">' + esc(hidra) + '</span>' +
+          '<button class="go ghost" id="o-cp-hidra">Copiar</button></div>' +
+      '</div></div>' +
+    '</div>';
+
+  var listHtml = revs.length ? revs.map(function (it) {
+    var r = it.r, rep = state.replies[it.id];
+    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var replyBlock = rep
+      ? '<div class="reply"><div class="rl">A sua resposta</div>' + esc(rep.text) + '</div>'
+      : '<div class="orep-row"><input id="rep-' + esc(it.id) + '" maxlength="600" placeholder="Responder publicamente…">' +
+        '<button class="go" data-rep="' + esc(it.id) + '">Responder</button></div>';
+    return '<div class="orev"><div class="rh"><span class="who">' + who + '</span>' +
+      '<span class="st">' + starRow(r.stars) + '</span></div>' +
+      '<div class="txt">' + esc(r.text) + '</div>' + replyBlock + '</div>';
+  }).join('') : '<div class="empty">Ainda ninguém avaliou. Partilhe o seu cartão NFC.</div>';
+
+  var reviewsCard = '<div class="card"><h2>Avaliações & respostas</h2>' + listHtml + '</div>';
+
+  $('o-dash').innerHTML = head + links + reviewsCard;
+
+  // ligações dos botões
+  $('o-exit').addEventListener('click', function () {
+    state.ownerSlug = null; state.ownerSecret = null;
+    $('o-dash').className = 'hidden'; $('o-lock').className = 'card';
+  });
+  $('o-view').addEventListener('click', function () { closeOwner(); openBiz(slug); });
+  $('o-edit').addEventListener('click', function () { ownerEdit(slug); });
+  function cp(id, v, n) { $(id).addEventListener('click', function () { navigator.clipboard.writeText(v).then(function () { toast(n); }, function () { toast('Copie à mão.'); }); }); }
+  cp('o-cp-pub', publico, 'Link do NFC copiado');
+  cp('o-cp-hidra', hidra, 'Endereço .hidra copiado');
+
+  [].forEach.call($('o-dash').querySelectorAll('[data-rep]'), function (btn) {
+    btn.addEventListener('click', async function () {
+      var id = btn.getAttribute('data-rep');
+      var txt = ($('rep-' + id).value || '').trim();
+      if (!txt) { toast('Escreva a resposta.'); return; }
+      btn.disabled = true;
+      var ok = await publish('hreview/reply/' + slug + '/' + id, { text: txt, at: Date.now() });
+      btn.disabled = false;
+      if (ok) { state.replies[id] = { text: txt, at: Date.now() }; toast('Resposta publicada'); renderOwner(); }
+      else toast('Não foi possível publicar.');
+    });
+  });
+}
+
+// Editar ficha: reabre o formulário de registo já preenchido, em modo edição.
+function ownerEdit(slug) {
+  var b = state.biz[slug];
+  state.editSlug = slug;
+  closeOwner();
+  $('add-form').className = 'card';
+  $('n-name').value = b.name || ''; $('n-cat').value = b.cat || 'Restaurante';
+  $('n-desc').value = b.desc || ''; $('n-city').value = b.city || '';
+  $('n-addr').value = b.addr || ''; $('n-phone').value = b.phone || '';
+  $('n-site').value = b.site || ''; $('n-hours').value = b.hours || '';
+  $('n-about').value = b.about || ''; $('n-menu').value = b.menu || '';
+  $('n-mail').value = b.mail || '';
+  $('add-form').querySelector('h2').textContent = 'Editar ' + (b.name || 'estabelecimento');
+  say('n-msg', 'A editar. As fotos e o selo mantêm-se; guarde para publicar as alterações.', 'work');
+  $('add-form').scrollIntoView({ behavior: 'smooth' });
+}
 
 // Um endereco .hidra chega aqui como ?b=<slug>. O estabelecimento pode ainda
 // nao ter chegado da rede, por isso a abertura espera pelas mensagens retidas.

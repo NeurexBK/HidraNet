@@ -81,6 +81,8 @@ button:disabled{opacity:.45}
 .ra{font-weight:600;font-size:14px}
 .loc{color:var(--mut);font-weight:400;font-size:13px}
 .rc{margin-top:5px;white-space:pre-wrap;word-break:break-word;font-size:15px}
+.ownerreply{margin-top:9px;background:rgba(0,212,170,.08);border-left:3px solid var(--acc);border-radius:8px;padding:9px 12px;font-size:14px;color:#c8c8d8;white-space:pre-wrap;word-break:break-word}
+.orl{font-size:11px;color:var(--acc);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;font-weight:700}
 .rd{font-size:12px;color:var(--mut)}
 
 .msg{padding:12px 14px;border-radius:9px;margin-top:12px;font-size:14px;display:none}
@@ -190,7 +192,7 @@ background:var(--card2);border:1px solid var(--line2)}
         <span data-v="4">★</span><span data-v="5">★</span>
       </div>
       <div class="two">
-        <div><label for="rname">O seu nome</label><input id="rname" maxlength="36" placeholder="Anónimo"></div>
+        <div><label for="rname">O seu nome *</label><input id="rname" maxlength="36" placeholder="Como quer assinar"></div>
         <div><label for="rloc">De onde é</label><input id="rloc" maxlength="50" placeholder="Lisboa"></div>
       </div>
       <label for="rtext">Como foi a sua experiência?</label>
@@ -278,7 +280,7 @@ var $ = function (id) { return document.getElementById(id); };
 // num telemóvel qualquer, ver e escrever as mesmas avaliações — sem servidor.
 var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 var client = null, brokerIx = 0;
-var slug = '', biz = null, revs = {}, pics = {}, stars = 0, ready = false;
+var slug = '', biz = null, revs = {}, pics = {}, replies = {}, stars = 0, ready = false;
 var dirBiz = {}, dirRev = {}, drawTimer = null;
 
 function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
@@ -287,6 +289,56 @@ function when(t) { try { return new Date(t).toLocaleDateString('pt-PT'); } catch
 function rid(n) {
   var a = new Uint8Array(n || 8); crypto.getRandomValues(a);
   return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+}
+
+/* ---- Notificar o dono pelo HidraMail ----
+   O mesmo correio E2E da HidraNet. Quando alguém avalia aqui no telemóvel,
+   o dono recebe a avaliação cifrada na sua caixa (mesmo offline, via retidas).
+   Não há serviços externos: é o próprio sistema. */
+var subtle = crypto.subtle, te = new TextEncoder();
+var mailResolvers = {};
+function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
+function b64e(u){var s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s);}
+function b64d(s){var r=atob(s),u=new Uint8Array(r.length);for(var i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u;}
+function normMail(a){ a=(a||'').trim().toLowerCase(); if(!a) return ''; if(a.indexOf('@hidra')<0) a=a.replace(/@.*/,'')+'@hidra'; return a; }
+function looksMail(a){ a=normMail(a); return /^[a-z2-7]{16}@hidra$/.test(a); }
+async function addrFromPub(pubRaw){ var h=new Uint8Array(await subtle.digest('SHA-256',pubRaw)); return b32(h.slice(0,10))+'@hidra'; }
+async function importPub(raw){ return subtle.importKey('raw',raw,{name:'ECDH',namedCurve:'P-256'},false,[]); }
+async function deriveAES(priv,pub){ var b=await subtle.deriveBits({name:'ECDH',public:pub},priv,256); return subtle.importKey('raw',b,{name:'AES-GCM'},false,['encrypt','decrypt']); }
+async function encryptTo(recipPubRaw,text){
+  var eph=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+  var aes=await deriveAES(eph.privateKey, await importPub(recipPubRaw));
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  var ct=new Uint8Array(await subtle.encrypt({name:'AES-GCM',iv},aes,te.encode(text)));
+  var ep=new Uint8Array(await subtle.exportKey('raw',eph.publicKey));
+  var out=new Uint8Array(ep.length+12+ct.length); out.set(ep,0); out.set(iv,ep.length); out.set(ct,ep.length+12);
+  return b64e(out);
+}
+async function mailInbox(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmail:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmail/'+s; }
+async function mailDir(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmaildir:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmaildir/'+s; }
+function dirResolve(addr){
+  return new Promise(async function(res){
+    if(!client||!client.connected) return res(null);
+    var t=await mailDir(addr), done=false;
+    mailResolvers[t]=function(p){ done=true; res(p); };
+    client.subscribe(t,{qos:0});
+    setTimeout(function(){ if(!done){ delete mailResolvers[t]; try{client.unsubscribe(t)}catch(e){} res(null); } },7000);
+  });
+}
+async function notifyOwner(addr, subject, body){
+  try{
+    addr=normMail(addr); if(!looksMail(addr)) return false;
+    var pub64=await dirResolve(addr); if(!pub64) return false;
+    var pubRaw=b64d(pub64);
+    if(await addrFromPub(pubRaw)!==addr) return false;
+    var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
+    var payload={ mid:mid, from:'avaliacoes@hidra', subject:subject, body:body, date:Date.now() };
+    var ct=await encryptTo(pubRaw, JSON.stringify(payload));
+    if(ct.length>800000) return false;
+    var topic=(await mailInbox(addr))+'/'+mid;
+    await new Promise(function(r){ client.publish(topic, ct, {qos:1, retain:true}, function(){ r(); }); });
+    return true;
+  }catch(e){ return false; }
 }
 function safeUrl(u) {
   u = (u || '').trim(); if (!u) return '';
@@ -318,6 +370,7 @@ function connect() {
       client.subscribe('hreview/b/' + slug, { qos: 1 });
       client.subscribe('hreview/r/' + slug + '/+', { qos: 1 });
       client.subscribe('hreview/p/' + slug + '/+', { qos: 1 });
+      client.subscribe('hreview/reply/' + slug + '/+', { qos: 1 });
     } else {
       // Modo lista: só os registos e as avaliações. As fotos são pesadas
       // e só valem a pena dentro da página do estabelecimento.
@@ -330,8 +383,15 @@ function connect() {
   client.on('error', function () { brokerIx = (brokerIx + 1) % BROKERS.length; });
   client.on('message', function (topic, payload) {
     var s = payload.toString(), p = topic.split('/');
+    // Resposta do diretório do correio (pedido de notificação ao dono).
+    if (p[0] === 'hmaildir') {
+      var cb = mailResolvers[topic];
+      if (cb) { delete mailResolvers[topic]; try { client.unsubscribe(topic); } catch (e) {} cb(s); }
+      return;
+    }
     try {
-      if (!slug) {
+      if (p[1] === 'reply') { if (!s) delete replies[p[3]]; else replies[p[3]] = JSON.parse(s); }
+      else if (!slug) {
         if (p[1] === 'b') { if (!s) delete dirBiz[p[2]]; else dirBiz[p[2]] = JSON.parse(s); }
         else if (p[1] === 'r') {
           if (!dirRev[p[2]]) dirRev[p[2]] = {};
@@ -417,13 +477,15 @@ function render() {
   $('gal-card').className = photos.length > 1 ? 'card' : 'card hidden';
   $('gal').innerHTML = photos.slice(1).map(function (p) { return '<img src="' + p + '" alt="">'; }).join('');
 
-  st.list.sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
-  $('list').innerHTML = st.list.length ? st.list.map(function (r) {
+  var ids = Object.keys(revs).sort(function (a, b) { return (revs[b].at || 0) - (revs[a].at || 0); });
+  $('list').innerHTML = ids.length ? ids.map(function (id) {
+    var r = revs[id], rep = replies[id];
     var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var reply = rep ? '<div class="ownerreply"><div class="orl">Resposta do estabelecimento</div>' + esc(rep.text) + '</div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
-      '<div class="rc">' + esc(r.text) + '</div></div>';
+      '<div class="rc">' + esc(r.text) + '</div>' + reply + '</div>';
   }).join('') : '<div class="cnt">Ainda ninguém avaliou.</div>';
 
   $('hidra-addr').textContent = slug + '.hidra';
@@ -482,19 +544,30 @@ $('send').addEventListener('click', function () {
   function say(t, k) { msg.textContent = t; msg.className = 'msg ' + k; }
 
   if (!stars) { say('Escolha de 1 a 5 estrelas.', 'err'); return; }
+  var name = $('rname').value.trim();
+  if (!name) { say('Escreva o seu nome — é obrigatório para avaliar.', 'err'); return; }
   var text = $('rtext').value.trim();
   if (!text) { say('Escreva o seu comentário.', 'err'); return; }
   if (!client || !client.connected) { say('Sem ligação. Tente daqui a pouco.', 'err'); return; }
 
+  var loc = $('rloc').value.trim(), myStars = stars;
   $('send').disabled = true;
   client.publish('hreview/r/' + slug + '/' + rid(8), JSON.stringify({
-    stars: stars, text: text,
-    name: $('rname').value.trim(), loc: $('rloc').value.trim(), at: Date.now()
+    stars: myStars, text: text, name: name, loc: loc, at: Date.now()
   }), { qos: 1, retain: true }, function () {
     $('send').disabled = false;
     say('Obrigado! A sua avaliação já está publicada.', 'ok');
-    $('rtext').value = ''; stars = 0;
+    $('rtext').value = ''; $('rname').value = ''; $('rloc').value = ''; stars = 0;
     [].forEach.call($('pick').children, function (s) { s.className = ''; });
+
+    // Avisa o dono pelo HidraMail (best-effort).
+    if (biz && biz.mail) {
+      notifyOwner(biz.mail,
+        'Nova avaliação (' + myStars + '★) — ' + (biz.name || ''),
+        name + (loc ? ' · ' + loc : '') + ' deu ' + myStars + ' estrela' + (myStars > 1 ? 's' : '') +
+        ' a ' + (biz.name || 'seu estabelecimento') + ':\n\n"' + text + '"\n\n' +
+        'Veja e responda no Painel do Dono do HidraReview.');
+    }
   });
 });
 
