@@ -52,17 +52,54 @@ independente falhou — não trate a sessão como anónima até confirmar.
 
 ### macOS — primeira abertura
 
-O pacote não é assinado pela Apple. Na primeira execução:
+O pacote **não é assinado nem notarizado pela Apple**. Isto tem duas
+consequências, e a primeira é a que engana mais gente.
+
+**No Apple Silicon (M1–M4), o macOS diz que a app está danificada.**
 
 ```
-Clique direito na aplicação → Abrir → Abrir
+"HidraNet.app is damaged and can't be opened. You should move it to the Trash."
 ```
 
-Ou, no Terminal:
+O download não está corrompido. O que acontece é que o núcleo do macOS recusa
+carregar código arm64 sem assinatura válida, e a mensagem que a Apple escolheu
+mostrar é "danificado". É indistinguível, para quem lê, de um ficheiro
+corrompido — e é a razão pela qual utilizadores reportam isto como "não
+consegui descarregar".
+
+**Solução — duas ordens, no Terminal, na pasta extraída:**
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/HidraNet Browser.app"
+xattr -cr HidraNet.app
+codesign --force --deep --sign - HidraNet.app
+open HidraNet.app
 ```
+
+A segunda é a que resolve: aplica uma assinatura *ad-hoc* local, que é o que
+permite ao macOS carregar a app. Limpar a quarentena, por si só, **não basta**
+em Apple Silicon.
+
+Se o `codesign` não existir: `xcode-select --install`.
+
+O ZIP inclui `Start HidraNet.command`, que executa os dois passos, e
+`README-macOS.txt` com o procedimento completo.
+
+**Se o macOS continuar a bloquear:**
+
+Em **macOS 15 (Sequoia) e posterior**, o truque de clique direito → Abrir
+**deixou de funcionar** — a Apple removeu esse caminho. Em vez disso:
+
+1. Tente abrir a app uma vez (vai ser bloqueada)
+2. **Ajustes do Sistema → Privacidade e Segurança**
+3. Desça até à linha sobre a HidraNet ter sido bloqueada
+4. **Abrir Mesmo Assim**, e confirme com palavra-passe ou Touch ID
+
+Em macOS 14 e anteriores, clique direito na app → Abrir → Abrir também funciona.
+
+> **Nota para a equipa:** isto resolve-se definitivamente com uma conta Apple
+> Developer paga e notarização. Até lá, estas instruções são a alternativa
+> honesta — e devem estar visíveis no site, não escondidas num README dentro
+> do ZIP.
 
 ### Compilar a partir do código
 

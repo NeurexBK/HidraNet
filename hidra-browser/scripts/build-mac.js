@@ -298,6 +298,27 @@ async function buildArch(arch) {
     // skip default app
     if (name.indexOf('default_app.asar') !== -1) continue;
 
+    // Drop Apple's code signature.
+    //
+    // This bundle is a renamed Electron.app: the bundle directory, the main
+    // binary and Info.plist (CFBundleExecutable, bundle id, versions) all
+    // change above. Every one of those edits invalidates the signature Apple
+    // shipped with Electron — and on Apple Silicon an INVALID signature is
+    // worse than none at all. The kernel refuses to load the binary and macOS
+    // reports:
+    //
+    //   "HidraNet.app is damaged and can't be opened. You should move it to
+    //    the Trash."
+    //
+    // Which reads, to anyone who is not a developer, as a failed download.
+    // That is exactly how this bug was reported.
+    //
+    // Shipping cleanly unsigned lets the user ad-hoc sign it locally, which is
+    // the documented path until the project has an Apple Developer ID and can
+    // notarise properly. See README-macOS.txt, added to the zip below.
+    if (name.indexOf('/_CodeSignature/') !== -1
+        || name.indexOf('Contents/_CodeSignature') !== -1) continue;
+
     // patch Info.plist
     if (name === ePlist) {
       var raw   = e.method === 8 ? inflateRawSync(e.rawData) : e.rawData;
@@ -361,54 +382,133 @@ async function buildArch(arch) {
   }
 
   // ── Launcher script (0o755 → double-clickable on macOS) ──────────────────
+  //
+  // The codesign step is the one that matters and was missing. This bundle is
+  // an unsigned, renamed Electron.app, and on Apple Silicon the kernel refuses
+  // to load unsigned arm64 code — macOS reports the app as "damaged", which
+  // people reasonably read as a broken download. An ad-hoc signature (sign -)
+  // is what makes it loadable. Clearing quarantine alone is not enough.
   var launcher = [
     '#!/bin/bash',
-    '# HidraNet Browser — Iniciador macOS',
+    '# HidraNet Browser — macOS launcher',
+    'set -u',
     'DIR="$(cd "$(dirname "$0")" && pwd)"',
     'APP="$DIR/' + APP_NAME + '.app"',
-    'echo "Corrigindo permissões..."',
+    '',
+    'if [ ! -d "$APP" ]; then',
+    '  echo "Could not find ' + APP_NAME + '.app next to this script."',
+    '  echo "Extract the whole ZIP first, then run this again."',
+    '  read -n 1 -s -r -p "Press any key to close."',
+    '  exit 1',
+    'fi',
+    '',
+    'echo "Preparing ' + APP_NAME + ' ..."',
     'chmod -R 755 "$APP" 2>/dev/null',
-    'xattr -rd com.apple.quarantine "$APP" 2>/dev/null',
-    'echo "Abrindo HidraNet Browser..."',
-    'open "$APP"',
+    '',
+    '# 1. Remove the download quarantine flag.',
+    'xattr -cr "$APP" 2>/dev/null',
+    '',
+    '# 2. Ad-hoc sign. Required on Apple Silicon: unsigned arm64 code will not',
+    '#    load, and macOS calls it "damaged" rather than unsigned.',
+    'if command -v codesign >/dev/null 2>&1; then',
+    '  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \\',
+    '    && echo "Signed locally (ad-hoc)." \\',
+    '    || echo "Could not sign locally. See README-macOS.txt."',
+    'else',
+    '  echo "codesign not found — install Xcode Command Line Tools:"',
+    '  echo "  xcode-select --install"',
+    'fi',
+    '',
+    'echo "Opening ' + APP_NAME + ' ..."',
+    'open "$APP" || {',
+    '  echo',
+    '  echo "macOS blocked it. Open System Settings > Privacy & Security,"',
+    '  echo "scroll down, and click \'Open Anyway\'. See README-macOS.txt."',
+    '  read -n 1 -s -r -p "Press any key to close."',
+    '}',
     ''
   ].join('\n');
-  outEntries.push(mkFile('Iniciar HidraNet.command', Buffer.from(launcher, 'utf8'), 0o755));
+  outEntries.push(mkFile('Start HidraNet.command', Buffer.from(launcher, 'utf8'), 0o755));
 
   // ── README ────────────────────────────────────────────────────────────────
   var archNote = arch === 'arm64'
-    ? 'Apple Silicon (M1 / M2 / M3 / M4) — Macs de 2020 em diante'
-    : 'Intel — Macs anteriores a 2020';
+    ? 'Apple Silicon (M1 / M2 / M3 / M4) — Macs from 2020 onwards'
+    : 'Intel — Macs before 2020';
   var readme = [
     'HidraNet Browser ' + VERSION + ' — macOS ' + arch,
-    'Para: ' + archNote,
+    'For: ' + archNote,
     '',
-    'COMO INICIAR',
-    '─'.repeat(40),
+    'READ THIS FIRST',
+    '='.repeat(60),
     '',
-    'Opção A (mais simples):',
-    '  1. Extraia o ZIP',
-    '  2. Duplo clique em "Iniciar HidraNet.command"',
-    '     • Se bloqueado pelo macOS: clique direito → Abrir',
+    'This app is NOT signed with an Apple Developer ID and is NOT notarised.',
+    'We say so plainly because macOS will not, and because the message it does',
+    'show is misleading.',
     '',
-    'Opção B (Terminal):',
-    '  1. Abra o Terminal na pasta extraída',
-    '  2. Cole e execute:',
-    '       chmod -R 755 ' + APP_NAME + '.app',
-    '       xattr -rd com.apple.quarantine ' + APP_NAME + '.app',
-    '       open ' + APP_NAME + '.app',
+    'What you may see, and what it actually means:',
     '',
-    'NOTA — GATEKEEPER',
-    '─'.repeat(40),
-    'O macOS pode mostrar "não pode ser aberto porque o programador',
-    'não pode ser verificado". Isto é normal — a app não está assinada.',
+    '  "HidraNet.app is damaged and can\'t be opened."',
+    '      The download is fine. On Apple Silicon, macOS refuses to load code',
+    '      that is not signed, and reports it as damaged. Step 1 below fixes it.',
     '',
-    'Solução: clique com o botão DIREITO no HidraNet.app → "Abrir" → "Abrir".',
+    '  "cannot be opened because the developer cannot be verified."',
+    '      Expected: we have no Apple Developer ID. Step 2 below.',
     '',
-    '                              — Equipa HidraNet',
+    'HOW TO OPEN IT',
+    '='.repeat(60),
+    '',
+    'Easiest: extract the ZIP, then double-click "Start HidraNet.command".',
+    'It does both steps below for you.',
+    '',
+    'If you prefer to do it by hand, open Terminal in the extracted folder:',
+    '',
+    '  Step 1 — clear the quarantine flag and sign locally:',
+    '',
+    '      xattr -cr ' + APP_NAME + '.app',
+    '      codesign --force --deep --sign - ' + APP_NAME + '.app',
+    '',
+    '    The second command is the important one on Apple Silicon. It applies',
+    '    an ad-hoc signature, which is what lets macOS load the app at all.',
+    '    If codesign is missing:  xcode-select --install',
+    '',
+    '  Step 2 — open it:',
+    '',
+    '      open ' + APP_NAME + '.app',
+    '',
+    'IF macOS STILL BLOCKS IT',
+    '='.repeat(60),
+    '',
+    'On macOS 15 (Sequoia) and later, right-click > Open no longer works for',
+    'unsigned apps. Apple removed that path. Instead:',
+    '',
+    '  1. Try to open the app once (it will be blocked).',
+    '  2. Open  System Settings > Privacy & Security',
+    '  3. Scroll down. There is a line about HidraNet being blocked.',
+    '  4. Click "Open Anyway", then confirm with your password or Touch ID.',
+    '',
+    'On macOS 14 and earlier, right-click the app > Open > Open also works.',
+    '',
+    'VERIFY THE DOWNLOAD',
+    '='.repeat(60),
+    '',
+    'Check the file you downloaded against the published SHA-256:',
+    '',
+    '      shasum -a 256 HidraNet-Browser-' + VERSION + '-macOS-' + arch + '.zip',
+    '',
+    'The expected value is in SHA256SUMS.txt next to the download, and on the',
+    'release page. If it does not match, do not run the file.',
+    '',
+    'WHY NOT JUST SIGN IT PROPERLY',
+    '='.repeat(60),
+    '',
+    'Signing and notarising needs a paid Apple Developer account. Until the',
+    'project has one, these steps are the honest alternative. We would rather',
+    'explain the extra two commands than pretend the app is signed.',
+    '',
+    '                                                  — The HidraNet team',
     ''
   ].join('\n');
-  outEntries.push(mkFile('LEIA-ME.txt', Buffer.from(readme, 'utf8')));
+  outEntries.push(mkFile('README-macOS.txt', Buffer.from(readme, 'utf8')));
 
   // ── Write output ZIP ──────────────────────────────────────────────────────
   console.log('  Escrevendo ZIP (' + outEntries.length + ' entradas) ...');

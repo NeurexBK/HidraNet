@@ -1,0 +1,50 @@
+HidraBrowser v1.0.0 — SHA-256 checksums
+=======================================
+
+Verify before running.
+
+  macOS / Linux:   shasum -a 256 <file>
+  Windows:         Get-FileHash .\<file> -Algorithm SHA256
+
+If the value does not match, do not run the file.
+
+419973157750ecdc983edb41a97752735e26b20f2fab332815114290c4b512e8  HidraNet-Browser-1.0.0-macOS-arm64.zip
+afc755836eddc7604b84775530133ca783910e08a2fd5f0704621a80bfed3e43  HidraNet-Browser-1.0.0-macOS-x64.zip
+21bc8b4c2b7a00821afa2a73ab74b12d891a2737131233f594749b4a2ddbceb2  HidraNet-Browser-1.0.0-Linux-x64.zip
+79fcdd6eba376e4bcca19cdfe9023cbc318d0e7e8fd1871a01c5adeb26daa5d0  HidraNet-Browser-1.0.0-Windows-x64.zip
+
+Sizes, for reference:
+  macOS arm64    108,280,222 bytes  (103.3 MiB)
+  macOS x64      112,710,702 bytes  (107.5 MiB)
+  Linux x64      112,635,456 bytes  (107.4 MiB)
+  Windows x64    126,928,181 bytes  (121.0 MiB)
+
+Taken from the GitHub release asset digests:
+https://github.com/NeurexBK/HidraNet/releases/tag/v1.0.0
+
+-----------------------------------------------------------------------
+
+NOTE ON THE macOS BUILDS CURRENTLY PUBLISHED
+
+The two macOS archives above were produced before a packaging bug was
+fixed. They ship a stale Apple code signature that the packaging step
+invalidates, so macOS — particularly on Apple Silicon — refuses them
+with "HidraNet.app is damaged and can't be opened".
+
+The download is not corrupt. The signature is.
+
+Until they are rebuilt and re-uploaded, open them with:
+
+    xattr -cr HidraNet.app
+    codesign --force --deep --sign - HidraNet.app
+    open HidraNet.app
+
+Once rebuilt with the fixed packaging script, these two checksums change
+and this file has to be regenerated.
+
+NONE OF THESE BUILDS ARE SIGNED OR NOTARISED
+
+There is no Apple Developer ID and no Windows code-signing certificate
+behind this release. Verifying the checksum above tells you the file is
+the one we published; it does not tell you an operating system will
+accept it without complaint. See README-macOS.txt inside the macOS ZIP.

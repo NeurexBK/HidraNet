@@ -199,8 +199,24 @@ Há outra cópia do browser aberta. Feche-a e reinicie.
 **Um site bloqueia-me.**
 Alguns sites bloqueiam nós de saída conhecidos. Experimente **Trocar circuito**.
 
-**O macOS não deixa abrir a aplicação.**
-O pacote não é assinado pela Apple. Clique direito → Abrir → Abrir.
+**O macOS diz que a aplicação está danificada.**
+O download está bem. A app não é assinada pela Apple e, no Apple Silicon, o
+macOS recusa código sem assinatura válida e chama-lhe "danificado". No Terminal,
+na pasta extraída:
+
+```bash
+xattr -cr HidraNet.app
+codesign --force --deep --sign - HidraNet.app
+open HidraNet.app
+```
+
+A segunda ordem é a que resolve. O ZIP inclui `Start HidraNet.command`, que faz
+isto por si.
+
+**O macOS continua a bloquear.**
+Em macOS 15 (Sequoia) e posterior, clique direito → Abrir já não funciona.
+Vá a **Ajustes do Sistema → Privacidade e Segurança**, desça, e clique em
+**Abrir Mesmo Assim**.
 
 **Perdi tudo ao limpar os dados.**
 Os endereços e mensagens vivem no seu dispositivo. Sem cópia de segurança, não
