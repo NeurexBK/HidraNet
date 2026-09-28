@@ -67,21 +67,30 @@ mostrar é "danificado". É indistinguível, para quem lê, de um ficheiro
 corrompido — e é a razão pela qual utilizadores reportam isto como "não
 consegui descarregar".
 
-**Solução — duas ordens, no Terminal, na pasta extraída:**
+**Solução — no Terminal, na pasta extraída:**
 
 ```bash
 xattr -cr HidraNet.app
+codesign --force --sign - \
+  HidraNet.app/Contents/Resources/bin/tor/tor
 codesign --force --deep --sign - HidraNet.app
 open HidraNet.app
 ```
 
-A segunda é a que resolve: aplica uma assinatura *ad-hoc* local, que é o que
-permite ao macOS carregar a app. Limpar a quarentena, por si só, **não basta**
-em Apple Silicon.
+As ordens `codesign` são as que resolvem: aplicam assinaturas *ad-hoc* locais,
+que é o que permite ao macOS carregar o código. Limpar a quarentena, por si só,
+**não basta** em Apple Silicon.
+
+**O Tor tem de ser assinado à parte, e antes da app.** Vive em
+`Contents/Resources/bin/tor/tor`, e o `--deep` não chega lá — só desce para os
+locais padrão de código aninhado (`Frameworks`, `PlugIns`, `XPCServices`,
+`Helpers`). Se assinar apenas o bundle, a app abre, mas nada liga: o núcleo mata
+o Tor sem assinatura no instante em que o browser o lança, e o painel reporta
+`tor exited with code null`.
 
 Se o `codesign` não existir: `xcode-select --install`.
 
-O ZIP inclui `Start HidraNet.command`, que executa os dois passos, e
+O ZIP inclui `Start HidraNet.command`, que executa todos os passos, e
 `README-macOS.txt` com o procedimento completo.
 
 **Se o macOS continuar a bloquear:**

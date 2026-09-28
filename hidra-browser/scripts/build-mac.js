@@ -298,24 +298,20 @@ async function buildArch(arch) {
     // skip default app
     if (name.indexOf('default_app.asar') !== -1) continue;
 
-    // Drop Apple's code signature.
+    // Defensive: never carry a code signature through this rewriting.
     //
-    // This bundle is a renamed Electron.app: the bundle directory, the main
-    // binary and Info.plist (CFBundleExecutable, bundle id, versions) all
-    // change above. Every one of those edits invalidates the signature Apple
-    // shipped with Electron — and on Apple Silicon an INVALID signature is
-    // worse than none at all. The kernel refuses to load the binary and macOS
-    // reports:
+    // The bundle directory, the main binary and Info.plist all change above,
+    // and any signature covering them would be invalidated by those edits.
+    // The official Electron darwin zip happens to ship without one, so today
+    // this drops nothing — it is here so a future upstream change that starts
+    // shipping a signature cannot silently produce an invalidly-signed bundle,
+    // which macOS rejects harder than an unsigned one.
     //
-    //   "HidraNet.app is damaged and can't be opened. You should move it to
-    //    the Trash."
-    //
-    // Which reads, to anyone who is not a developer, as a failed download.
-    // That is exactly how this bug was reported.
-    //
-    // Shipping cleanly unsigned lets the user ad-hoc sign it locally, which is
-    // the documented path until the project has an Apple Developer ID and can
-    // notarise properly. See README-macOS.txt, added to the zip below.
+    // Being unsigned is itself enough to be refused on Apple Silicon: the
+    // kernel will not load unsigned arm64 code, and macOS reports it as
+    // "HidraNet.app is damaged and can't be opened" rather than as unsigned.
+    // The launcher below applies an ad-hoc signature, which is what actually
+    // makes the app loadable.
     if (name.indexOf('/_CodeSignature/') !== -1
         || name.indexOf('Contents/_CodeSignature') !== -1) continue;
 
@@ -416,9 +412,26 @@ async function buildArch(arch) {
     '',
     '# 2. Ad-hoc sign. Required on Apple Silicon: unsigned arm64 code will not',
     '#    load, and macOS calls it "damaged" rather than unsigned.',
+    '#',
+    '#    The bundled Tor is signed FIRST and on its own. It lives in',
+    '#    Contents/Resources/bin/tor/tor, and --deep does not reach there:',
+    '#    --deep only descends into the standard nested-code locations',
+    '#    (Frameworks, PlugIns, XPCServices, Helpers). A binary under',
+    '#    Resources is not one of them, so signing only the bundle leaves Tor',
+    '#    unsigned — the kernel then SIGKILLs it the moment the browser spawns',
+    '#    it, and the panel reports "tor exited with code null". The app opens,',
+    '#    and nothing can connect.',
     'if command -v codesign >/dev/null 2>&1; then',
+    '  TOR="$APP/Contents/Resources/bin/tor/tor"',
+    '  if [ -f "$TOR" ]; then',
+    '    codesign --force --sign - "$TOR" >/dev/null 2>&1 \\',
+    '      && echo "Signed the bundled Tor." \\',
+    '      || echo "Could not sign Tor — connecting will fail."',
+    '  else',
+    '    echo "WARNING: no Tor in this package. It provides no anonymity."',
+    '  fi',
     '  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \\',
-    '    && echo "Signed locally (ad-hoc)." \\',
+    '    && echo "Signed the app (ad-hoc)." \\',
     '    || echo "Could not sign locally. See README-macOS.txt."',
     'else',
     '  echo "codesign not found — install Xcode Command Line Tools:"',
@@ -471,10 +484,20 @@ async function buildArch(arch) {
     '  Step 1 — clear the quarantine flag and sign locally:',
     '',
     '      xattr -cr ' + APP_NAME + '.app',
+    '      codesign --force --sign - \\',
+    '        ' + APP_NAME + '.app/Contents/Resources/bin/tor/tor',
     '      codesign --force --deep --sign - ' + APP_NAME + '.app',
     '',
-    '    The second command is the important one on Apple Silicon. It applies',
-    '    an ad-hoc signature, which is what lets macOS load the app at all.',
+    '    Both codesign commands are needed on Apple Silicon. They apply ad-hoc',
+    '    signatures, which is what lets macOS load the code at all.',
+    '',
+    '    Tor has to be signed on its own, and BEFORE the app. It lives under',
+    '    Contents/Resources/, and --deep does not reach there (it only descends',
+    '    into Frameworks, PlugIns, XPCServices and Helpers). Sign only the app',
+    '    bundle and it will open fine, but nothing will connect: the kernel',
+    '    kills the unsigned Tor the moment the browser starts it, and the panel',
+    '    reports "tor exited with code null".',
+    '',
     '    If codesign is missing:  xcode-select --install',
     '',
     '  Step 2 — open it:',

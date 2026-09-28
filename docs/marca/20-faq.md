@@ -206,12 +206,17 @@ na pasta extraída:
 
 ```bash
 xattr -cr HidraNet.app
+codesign --force --sign - \
+  HidraNet.app/Contents/Resources/bin/tor/tor
 codesign --force --deep --sign - HidraNet.app
 open HidraNet.app
 ```
 
-A segunda ordem é a que resolve. O ZIP inclui `Start HidraNet.command`, que faz
-isto por si.
+As ordens `codesign` são as que resolvem. O Tor tem de ser assinado à parte e
+antes da app — o `--deep` não chega a binários dentro de `Resources/`. Sem essa
+linha a app abre mas não liga, e reporta `tor exited with code null`.
+
+O ZIP inclui `Start HidraNet.command`, que faz tudo isto por si.
 
 **O macOS continua a bloquear.**
 Em macOS 15 (Sequoia) e posterior, clique direito → Abrir já não funciona.

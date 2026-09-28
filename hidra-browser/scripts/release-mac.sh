@@ -122,9 +122,12 @@ if (plist) {
 }
 
 if (launcher) {
-  /codesign --force --deep --sign -/.test(launcher)
-    ? OK('launcher applies an ad-hoc signature')
-    : BAD('launcher does not codesign — the app will not open on Apple Silicon');
+  /codesign --force --deep --sign - "\$APP"/.test(launcher)
+    ? OK('launcher signs the app bundle')
+    : BAD('launcher does not sign the app — it will not open on Apple Silicon');
+  /codesign --force --sign - "\$TOR"/.test(launcher)
+    ? OK('launcher signs the bundled Tor separately')
+    : BAD('launcher does not sign Tor — the app opens but cannot connect');
   /xattr -cr/.test(launcher) ? OK('launcher clears quarantine') : BAD('launcher does not clear quarantine');
 }
 
@@ -154,11 +157,18 @@ if [ "$FAIL" -eq 0 ]; then
        lines change; Windows and Linux stay as they are).
     3. Test-launch one of them before announcing it:
          xattr -cr HidraNet.app
+         codesign --force --sign - \
+           HidraNet.app/Contents/Resources/bin/tor/tor
          codesign --force --deep --sign - HidraNet.app
          open HidraNet.app
 
+  Sign Tor first and on its own: --deep does not descend into Resources/,
+  so signing only the bundle leaves Tor unsigned. The app then opens but
+  cannot connect ("tor exited with code null").
+
   Step 3 matters. These checks confirm the package is built correctly;
-  only launching it confirms it runs.
+  only launching it -- and reaching 100% in the connection panel --
+  confirms it runs.
 
 TXT
 else

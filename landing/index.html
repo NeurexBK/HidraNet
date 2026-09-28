@@ -529,13 +529,21 @@
           HidraBrowser is not signed with an Apple Developer ID, so macOS blocks it
           on first launch. On Apple Silicon the message is
           <em>&ldquo;HidraNet.app is damaged and can&rsquo;t be opened&rdquo;</em> &mdash;
-          the download is fine; macOS says that about any unsigned app. Two commands fix it:
+          the download is fine; macOS says that about any unsigned app. Three commands fix it:
         </p>
         <pre><code>xattr -cr HidraNet.app
+codesign --force --sign - \
+  HidraNet.app/Contents/Resources/bin/tor/tor
 codesign --force --deep --sign - HidraNet.app</code></pre>
         <p>
-          The ZIP also contains <code>Start HidraNet.command</code>, which runs both for you,
-          and <code>README-macOS.txt</code> with the full walkthrough.
+          The bundled Tor has to be signed on its own, and before the app:
+          <code>--deep</code> does not reach binaries under <code>Resources/</code>.
+          Skip that line and the browser opens but cannot connect &mdash; it reports
+          <em>&ldquo;tor exited with code null&rdquo;</em>.
+        </p>
+        <p>
+          The ZIP also contains <code>Start HidraNet.command</code>, which runs all of them
+          for you, and <code>README-macOS.txt</code> with the full walkthrough.
         </p>
         <p>
           Still blocked? On <strong>macOS 15 (Sequoia) and later</strong>, right-click &rarr; Open
