@@ -330,7 +330,13 @@ async function buildArch(arch) {
                  '$1' + APP_NAME + '$2')
         .replace(/(<key>CFBundleName<\/key>\s*<string>)Electron(<\/string>)/g,
                  '$1' + APP_NAME + '$2')
-        .replace(/com\.github\.electron(?:\.Electron)?/g, APP_ID)
+        // Case-insensitive on purpose: the plist ships "com.github.Electron"
+        // with a capital E, so the lowercase-only pattern never matched and the
+        // bundle stayed identified as Electron to macOS. A wrong bundle id
+        // makes LaunchServices, TCC permissions, preferences and keychain items
+        // land under com.github.Electron, shared with every other Electron app
+        // that never changed its default.
+        .replace(/com\.github\.electron(?:\.electron)?/gi, APP_ID)
         .replace(/(<key>CFBundleShortVersionString<\/key>\s*<string>)[^<]*(<\/string>)/g,
                  '$1' + VERSION + '$2')
         .replace(/(<key>CFBundleVersion<\/key>\s*<string>)[^<]*(<\/string>)/g,
