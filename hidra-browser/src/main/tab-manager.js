@@ -12,9 +12,10 @@ const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
 const SEARCH_URL = `${APPS_ORIGIN}/search`;
 
 class TabManager {
-  constructor(parentWindow, proxyManager) {
+  constructor(parentWindow, proxyManager, networkLock) {
     this.window = parentWindow;
     this.proxyManager = proxyManager;
+    this.networkLock = networkLock;
     this.tabs = new Map();
     this.activeTabId = null;
     this.nextId = 1;
@@ -53,6 +54,18 @@ class TabManager {
     });
 
     await this._applyProxy(tabSession);
+
+    // O WebRTC consegue revelar o IP real por candidatos ICE, contornando o
+    // proxy. A pagina injetada apaga window.RTCPeerConnection, mas isso corre
+    // tarde e um iframe novo devolve um window limpo — a protecao em JavaScript
+    // e contornavel. Esta politica actua na pilha de rede do Chromium, onde nao
+    // e. Os switches 'disable-features=WebRTC' e '--disable-webrtc' em main.js
+    // nao correspondem a nada real no Chromium; esta e a medida que funciona.
+    try {
+      view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+    } catch (e) {
+      console.error('[tab] WebRTC IP handling policy:', e.message);
+    }
 
     this._injectFingerprint(view, fingerprint);
     this._bindShortcuts(view, tabId);
@@ -108,6 +121,33 @@ class TabManager {
         canGoBack: view.webContents.navigationHistory.canGoBack(),
         canGoForward: view.webContents.navigationHistory.canGoForward(),
       });
+    });
+
+    // Cancelar em onBeforeRequest devolve ERR_BLOCKED_BY_CLIENT (-20) e o
+    // utilizador via um ecra de erro do Chromium sem explicacao. Diz-lhe porque.
+    view.webContents.on('did-fail-load', (_e, errorCode, _desc, failedUrl, isMainFrame) => {
+      if (!isMainFrame || errorCode !== -20) return;
+      if (!this.networkLock || !this.networkLock.engaged) return;
+      const motivo = this.networkLock.reason || 'a ligação anónima não está pronta';
+      view.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+        `<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><style>
+          body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+               display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
+          .box{max-width:460px}
+          h1{font-size:19px;font-weight:700;color:#00d4aa;margin:0 0 12px}
+          p{font-size:14px;line-height:1.6;color:#9aa3bd;margin:0 0 10px}
+          code{font-family:'SF Mono',Consolas,monospace;font-size:12px;color:#e9ecf5;
+               background:#10131f;border:1px solid #1c2133;border-radius:6px;padding:2px 6px}
+        </style></head><body><div class="box">
+          <h1>Pedido bloqueado — ainda não está anónimo</h1>
+          <p>Nada saiu deste computador. A HidraNet bloqueia todo o tráfego até o
+             Tor estar a transportá-lo, para que nenhum pedido parta com o seu
+             endereço IP real.</p>
+          <p>Motivo: ${motivo}.</p>
+          <p>Quando o painel indicar um IP de saída confirmado, recarregue com
+             <code>Ctrl+R</code>.</p>
+        </div></body></html>`
+      )).catch(() => {});
     });
 
     view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
@@ -249,6 +289,10 @@ class TabManager {
     const partition = `tab-${tabId}-${crypto.randomBytes(8).toString('hex')}`;
     const tabSession = session.fromPartition(partition, { cache: false });
 
+    // Cada separador tem sessao propria, portanto cada uma precisa do filtro:
+    // uma sessao sem ele e um caminho directo para fora do kill switch.
+    if (this.networkLock) this.networkLock.protect(tabSession);
+
     // Without this every request advertises the real Electron user agent
     // ("HidraNet Browser/1.0.0 ... Electron/33"), which both identifies the
     // browser to every server and contradicts the spoofed navigator.userAgent.
@@ -292,10 +336,22 @@ class TabManager {
       callback({ requestHeaders: headers });
     });
 
+    // Allowlist, nao denylist. A lista negra anterior deixava passar tudo o que
+    // nao estivesse nela — incluindo permissoes que o Chromium acrescentou
+    // depois de ela ter sido escrita (serial, hid, usb, idle-detection,
+    // clipboard-read). Numa ferramenta de privacidade o default tem de ser negar.
+    const PERMITIDAS = new Set(['fullscreen', 'clipboard-sanitized-write']);
+
     tabSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      const blocked = ['geolocation', 'media', 'notifications', 'midi', 'pointerLock'];
-      callback(!blocked.includes(permission));
+      callback(PERMITIDAS.has(permission));
     });
+
+    // O caminho sincrono de verificacao nao passa pelo handler acima; sem isto,
+    // parte das permissoes era concedida sem nunca ser pedida.
+    tabSession.setPermissionCheckHandler((_wc, permission) => PERMITIDAS.has(permission));
+
+    // WebUSB, WebHID e Web Serial: nenhum dispositivo, em nenhuma circunstancia.
+    tabSession.setDevicePermissionHandler(() => false);
 
     return tabSession;
   }

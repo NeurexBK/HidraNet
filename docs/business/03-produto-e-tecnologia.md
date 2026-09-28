@@ -10,8 +10,30 @@ apresenta roadmap como produto existente não sobrevive à due diligence técnic
 
 ### 1.1 `hidra-node` — o motor, em Rust
 
-~17.000 linhas de Rust (edição 2024). Compila limpo (`cargo check --all-targets`,
-verificado em setembro de 2026).
+~17.000 linhas de Rust (edição 2024).
+
+> **Correção a uma versão anterior deste documento.** Estava aqui escrito que o
+> motor "compila limpo, verificado". **Era falso**, e a verificação foi mal
+> feita: confiou-se num código de saída em vez de se ler a saída. O que se
+> passava, apurado depois:
+>
+> - `disable_core_dumps()` está sob `#[cfg(target_os = "linux")]` e usa
+>   `libc::prctl`, mas `libc` não constava do `Cargo.toml`. **Em Linux o binário
+>   não compilava.** Em Windows e macOS entra a variante `cfg(not(linux))`, que
+>   é a razão pela qual passou despercebido — e pela qual o alvo `build:linux`
+>   nunca poderia ter funcionado.
+> - Os quatro ficheiros em `tests/` fazem `use hidra_node::…`, mas não existia
+>   alvo de biblioteca. **Nunca compilaram nem correram.**
+>
+> Ambos corrigidos: `libc` declarado como dependência só de Linux, e `src/lib.rs`
+> criado a expor a árvore de módulos que já existia em `src/`.
+>
+> **Estado atual, verificado lendo a saída:** `cargo build` e
+> `cargo check --all-targets` a zero erros; **`cargo test --all` com 71 testes,
+> todos a passar** (41 unitários + 30 de integração). `cargo clippy` continua a
+> falhar no binário — 26 avisos estilísticos que o `#![deny(warnings)]` do
+> `main.rs` transforma em erros; não são defeitos funcionais e estão listados
+> como dívida técnica.
 
 | Componente | Estado | Notas |
 |---|---|---|
@@ -23,7 +45,7 @@ verificado em setembro de 2026).
 | Relay / registry / router | Implementado | |
 | Sites `.hidra` (SevenNine) | Implementado | Construtor e alojamento de sites ocultos |
 | HidraChat / HidraMail (motor) | Implementado | |
-| Testes de integração | Presentes | `onion_routing`, `dht_discovery`, `key_agreement`, `integration` |
+| Testes de integração | **A passar** | 30 testes: `onion_routing`, `dht_discovery`, `key_agreement`, `integration` |
 
 **Diferenciador técnico real:** a combinação de encaminhamento em cebola com
 **Kyber1024** em produção. O Tor está a caminhar para pós-quântico mas a
@@ -51,7 +73,7 @@ conhecido com data. Ver [roadmap](08-roadmap.md), T1.
 | Remoção de client hints (`Sec-CH-UA-*`) | Implementado | |
 | Remoção de referer entre origens | Implementado | Mantém o same-origin, que é funcional |
 | Proteção contra DNS rebinding no servidor de apps | Implementado | Verificação de `Host` e `Origin` |
-| **Kill switch de rede** | **Em curso** | Ver 1.4 — lacuna de privacidade identificada e em correção |
+| **Kill switch de rede** | **Implementado** | Ver 1.4 |
 
 ### 1.3 Aplicações
 
@@ -78,9 +100,16 @@ pelo motor local — ou seja, **pelo IP real do utilizador** — enquanto o pain
 mostra "a iniciar o Tor". O mesmo acontecia se o Tor falhasse ou morresse a
 meio da sessão.
 
-**Correção:** um *kill switch* (`src/main/network-lock.js`) que arranca fechado
-e só abre quando o Tor atinge 100% de bootstrap e as regras estão aplicadas a
-todas as sessões. Tudo o que não seja loopback ou `file://` é bloqueado até lá.
+**Corrigido.** O *kill switch* (`src/main/network-lock.js`) arranca fechado e só
+abre quando o Tor atinge 100% de bootstrap e as regras estão aplicadas a todas as
+sessões — a sessão por omissão e a partição de cada separador. Volta a fechar ao
+desconectar e quando o Tor morre sem lhe ser pedido. Tudo o que não seja loopback,
+`file://`, `data:` ou `hidra://` é bloqueado até lá, e uma navegação bloqueada
+mostra ao utilizador o motivo em vez de um erro do Chromium.
+
+Verificado com a aplicação a correr e o Tor indisponível: a API de pesquisa
+responde `"A pesquisa está bloqueada até o Tor estar pronto"`, e as aplicações
+locais continuam a servir.
 
 **Porque é que isto está no deck:** um investidor com assessoria técnica vai
 procurar exatamente isto. Apresentar a falha já corrigida, com o raciocínio,

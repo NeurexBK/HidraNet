@@ -1,44 +1,65 @@
 ╔══════════════════════════════════════════════════════════════╗
-║   HidraNet — Monitor de Acessos (Painel de Controle)         ║
+║   HidraNet — Monitor de Presenças                            ║
 ╚══════════════════════════════════════════════════════════════╝
 
 O QUE É
-  Um painel separado para você acompanhar, em tempo real:
-    • Quantas pessoas estão acessando a HidraNet agora
-    • De quais países estão se conectando
-    • Quantas pessoas em cada servidor (sala)
-    • Um mapa mundial mostrando cada conexão
-  Dados 100% reais, ao vivo. Não vê mensagens, nomes nem senhas.
+  Um painel que conta quantos clientes HidraNet estão a emitir sinal
+  de presença neste momento.
 
 COMO ABRIR
   1. Extraia esta pasta.
-  2. Dê 2 cliques em "Abrir Painel.bat"
-     (ou abra "index.html" no Google Chrome ou Microsoft Edge).
-  3. Pronto — o painel conecta sozinho e começa a contar.
-     NÃO precisa de senha: ele já mostra TODA a rede HidraNet.
+  2. Dois cliques em "Abrir Painel.bat"
+     (ou abra "index.html" no Chrome ou no Edge).
 
 O QUE VOCÊ VÊ
-  • Número grande = pessoas online na HidraNet naquele momento.
-  • "Por país" = de onde estão se conectando (localização aproximada).
-  • "Por servidor" = quantas pessoas em cada sala (código anônimo).
-  • Mapa = cada pessoa plotada na sua cidade/país aproximado.
+  • Número grande = clientes a emitir sinal agora.
+  • Pico = o valor mais alto observado desde que abriu o painel.
+
+LEIA ISTO ANTES DE CONFIAR NO NÚMERO
+  Este painel NÃO é privado e o número NÃO é uma métrica fiável.
+  Preferimos dizê-lo do que deixá-lo assumir o contrário.
+
+  • O canal de presença está num broker MQTT PÚBLICO. Qualquer pessoa
+    no mundo o pode subscrever e contar o mesmo que você conta aqui.
+    Não há senha porque não há nada a proteger: o canal é aberto.
+
+  • Qualquer pessoa também lhe pode PUBLICAR sinais falsos. A contagem
+    pode ser inflacionada por quem quiser. Trate-a como indicativa.
+
+  • Conta clientes com a aplicação ABERTA, não utilizadores da rede.
+    Fechar a aplicação faz a contagem descer.
+
+O QUE FOI REMOVIDO, E PORQUÊ
+  Versões anteriores deste painel mostravam um mapa mundial, a
+  distribuição por país e a contagem por sala.
+
+  Funcionava porque o HidraChat obtinha a localização aproximada de
+  cada utilizador (por IP, através de um serviço externo) e publicava-a
+  no canal público, junto com o identificador da sala em que a pessoa
+  estava.
+
+  Isso significava que qualquer pessoa que observasse o canal conseguia
+  localizar cada utilizador ao nível da cidade e, agrupando pelo
+  identificador de sala, deduzir quem comunicava com quem — sem quebrar
+  cifra nenhuma. O conteúdo das mensagens estava protegido; os
+  metadados estavam à vista.
+
+  Numa ferramenta de privacidade isso é inaceitável, por isso:
+    • a recolha de localização foi removida por completo;
+    • o sinal passou a conter apenas um identificador efémero e um
+      instante;
+    • o mapa e as listas foram retirados, porque dependiam de dados
+      que deixámos de recolher — e que não devíamos ter recolhido.
+
+  Um painel mais pobre e utilizadores protegidos é a troca certa.
+
+O QUE O SINAL CONTÉM HOJE
+    { "cid": "<identificador efémero>", "t": <instante> }
+  E nada mais. Sem localização, sem sala, sem nome, sem mensagens.
 
 REQUISITOS
-  • Internet (para a rede de mensagens e o mapa).
-  • As pessoas precisam estar usando a versão ATUALIZADA do HidraNet
-    (o HidraNet.zip novo) para aparecerem no mapa e na contagem.
-
-COMO FUNCIONA (de verdade)
-  • Cada app da HidraNet emite um "sinal de presença" anônimo num
-    canal comum. O painel apenas conta esses sinais — não há servidor
-    central, não há cadastro.
-  • O sinal NÃO contém mensagens, nomes nem a senha das salas — só um
-    código temporário e a cidade aproximada (por IP).
-
-PRIVACIDADE
-  • A localização é APROXIMADA (país/cidade por IP), nunca GPS.
-  • Para o mapa funcionar, o app de chat das pessoas compartilha a
-    cidade aproximada delas. Avise seus amigos sobre isso.
+  • Ligação à internet.
+  • Os clientes precisam de ter a versão atual da HidraNet.
 
 ──────────────────────────────────────────────────────────────────
-  HidraNet — rede descentralizada · monitor de acessos
+  HidraNet — rede descentralizada · monitor de presenças

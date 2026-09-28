@@ -72,10 +72,10 @@ Três regras, que existem porque a alternativa é entregar o produto a terceiros
 3. Alteração de dependência exige revisão como qualquer outra alteração de
    código.
 
-> **Estado:** esta regra está em implementação. As aplicações carregam
-> atualmente bibliotecas de terceiros a partir de CDN pública sem verificação de
-> integridade, o que é incompatível com esta política. Item prioritário do plano
-> de robustecimento (§8).
+> **Estado: cumprida.** As aplicações carregavam `mqtt` de `unpkg.com` sem
+> verificação de integridade e com intervalo de versão (`@5`). Passaram a servir
+> `mqtt` 5.16.0 e `qrcode-generator` 1.4.4 do próprio pacote, com versões exatas
+> em `package.json`, servidos por uma rota de lista fixa.
 
 ### 4.3 Criptografia
 
@@ -192,11 +192,11 @@ Público, porque a credibilidade mede-se pelo que se promete corrigir e cumpre.
 
 | # | Item | Prioridade | Estado |
 |---|---|---|---|
-| 1 | Bloqueio de tráfego não-loopback até a camada de anonimato estar pronta | Crítica | Em curso |
-| 2 | Bibliotecas de terceiros incluídas localmente, com integridade verificada | Crítica | Planeado |
+| 1 | Bloqueio de tráfego não-loopback até a camada de anonimato estar pronta | Crítica | ✅ **Feito** |
+| 2 | Bibliotecas de terceiros incluídas localmente, com integridade verificada | Crítica | ✅ **Feito** |
 | 3 | Cifra em repouso do material de chave no dispositivo | Crítica | Planeado |
 | 4 | Autenticação do remetente no HidraMail | Alta | Planeado |
-| 5 | Bloqueio de WebRTC ao nível da rede | Alta | Planeado |
+| 5 | Bloqueio de WebRTC ao nível da rede | Alta | ✅ **Feito** |
 | 6 | Infraestrutura própria de transporte de mensagens | Alta | Planeado |
 | 7 | Injeção do perfil no arranque do documento, em todos os quadros | Alta | Planeado |
 | 8 | Argon2id com sal por contexto no HidraChat | Média | Planeado |

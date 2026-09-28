@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HidraNet — Secure Network</title>
-  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+  <script src="vendor/mqtt.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1310,44 +1310,28 @@
     var TOPIC = 'hidra/node/v1';
     var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
     var VER = '1.0.0';
+    // Identificador efemero, por sessao. Era guardado em localStorage, o que o
+    // tornava estavel entre arranques — uma impressao digital duravel desta
+    // instalacao, publicada num canal publico. Contar presencas nao exige
+    // reconhecer a mesma maquina amanha.
     var cid = '';
     try {
-      cid = localStorage.getItem('hidra_node_cid') || '';
-      if (!cid) {
-        var a = new Uint8Array(8); crypto.getRandomValues(a);
-        cid = Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
-        localStorage.setItem('hidra_node_cid', cid);
-      }
+      var a = new Uint8Array(8); crypto.getRandomValues(a);
+      cid = Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
     } catch (e) { cid = 'anon' + Math.floor(Math.random() * 1e9); }
+    // Limpa o identificador persistente que versoes anteriores deixaram no disco.
+    try { localStorage.removeItem('hidra_node_cid'); } catch (e) {}
 
-    var geo = null, cli = null, timer = null;
-
-    function grabGeo() {
-      // Segue o proxy da sessao (Tor quando ligado), como o resto da pagina.
-      fetch('https://ipwho.is/', { cache: 'no-store' })
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          if (d && typeof d.latitude === 'number') {
-            geo = { lat: d.latitude, lon: d.longitude, city: d.city || '', country: d.country || '' };
-          }
-        }).catch(function () {});
-    }
-
-    async function torOn() {
-      try {
-        if (!(window.hidra && window.hidra.proxy)) return null;
-        var s = await window.hidra.proxy.status();
-        if (!s || !s.connected) return false;
-        return (s.mode === 'tor' || s.mode === 'full');
-      } catch (e) { return null; }
-    }
+    var cli = null, timer = null;
 
     async function beat() {
       if (!cli || !cli.connected) return;
-      var tor = await torOn();
-      var msg = { cid: cid, room: 'lobby', ver: VER, t: Date.now() };
-      if (geo) msg.geo = geo;
-      if (typeof tor === 'boolean') msg.tor = tor;
+      // O canal e publico. O sinal levava a localizacao aproximada, um
+      // identificador estavel e o estado do Tor — ou seja, anunciava a quem
+      // observasse que aquela maquina, naquela cidade, estava naquele momento
+      // SEM protecao (tor: false). Era um sinal de alvo. Agora leva apenas um
+      // identificador efemero, a versao e um instante.
+      var msg = { cid: cid, ver: VER, t: Date.now() };
       try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
     }
 

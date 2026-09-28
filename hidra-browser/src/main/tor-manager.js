@@ -26,6 +26,10 @@ class TorManager {
     this.lastError = null;
     this.exitIp = null;
     this._stopping = false;
+    // Definido pelo processo principal. Chamado quando o Tor morre sem lhe termos
+    // pedido — o momento em que o trafego deixa de estar protegido e o kill
+    // switch tem de voltar a fechar.
+    this.onUnexpectedExit = null;
   }
 
   isRunning() {
@@ -230,6 +234,9 @@ class TorManager {
           // Died on its own after having worked.
           this.state = 'failed';
           this.lastError = this.lastError || 'o Tor encerrou inesperadamente';
+          if (typeof this.onUnexpectedExit === 'function') {
+            try { this.onUnexpectedExit(this.lastError); } catch (e) {}
+          }
           return;
         }
 

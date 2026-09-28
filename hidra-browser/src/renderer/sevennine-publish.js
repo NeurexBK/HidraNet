@@ -15,7 +15,18 @@
   async function siteTopic(a){ var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a)); var u=new Uint8Array(b),h=''; for(var i=0;i<16;i++) h+=u[i].toString(16).padStart(2,'0'); return 'hsite/'+h; }
   async function E(k,t){ var iv=crypto.getRandomValues(new Uint8Array(12)); var c=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},k,enc.encode(t)); var o=new Uint8Array(12+c.byteLength); o.set(iv); o.set(new Uint8Array(c),12); var s=''; for(var i=0;i<o.length;i++) s+=String.fromCharCode(o[i]); return btoa(s); }
 
-  function loadMqtt(cb){ if(window.mqtt) return cb(); var s=document.createElement('script'); s.src='https://unpkg.com/mqtt@5/dist/mqtt.min.js'; s.onload=cb; s.onerror=function(){ var s2=document.createElement('script'); s2.src='https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js'; s2.onload=cb; document.head.appendChild(s2); }; document.head.appendChild(s); }
+  // Servido pelo proprio browser em 127.0.0.1:8090/vendor/, nao por CDN: este
+  // script e injetado numa pagina que publica sites, e uma biblioteca vinda de
+  // terceiro sem verificacao de integridade seria um caminho directo para
+  // adulterar o que e publicado.
+  function loadMqtt(cb){
+    if(window.mqtt) return cb();
+    var s=document.createElement('script');
+    s.src='http://127.0.0.1:8090/vendor/mqtt.min.js';
+    s.onload=cb;
+    s.onerror=function(){ console.error('[sevennine] mqtt local indisponivel'); };
+    document.head.appendChild(s);
+  }
   function mqttConnect(){ try{ client=mqtt.connect(BROKER,{clientId:'hnetsn_'+Math.floor(Math.random()*1e9),clean:true,reconnectPeriod:4000,keepalive:30}); client.on('connect',function(){ ready=true; republishAll(); }); }catch(e){} }
 
   function getAddrs(){ try{ return JSON.parse(localStorage.getItem('hnet_site_addrs')||'{}'); }catch(e){ return {}; } }

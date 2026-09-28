@@ -801,6 +801,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "http",
+ "libc",
  "pqc_kyber",
  "rand",
  "rand_core",

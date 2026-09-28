@@ -200,6 +200,36 @@ palavra-passe, de modo que o transporte não revela o nome da sala.
 **Limitação declarada:** os parâmetros de derivação atuais estão abaixo da
 orientação corrente. O reforço para Argon2id com sal por sala consta de §9.
 
+### 4.5 Sinal de presença — fuga de metadados corrigida
+
+Declarado por ser relevante para o modelo de ameaça.
+
+O HidraChat publicava num canal MQTT **público** (`hidra/presence/v1`), para
+efeitos de contagem de utilizadores, um objeto que incluía a **localização
+aproximada obtida por IP** (latitude, longitude, cidade, país) e o **identificador
+do tópico da sala** em que a pessoa estava.
+
+Como o broker é público, qualquer pessoa podia subscrever esse canal e, sem
+quebrar cifra nenhuma:
+
+- enumerar os utilizadores ativos;
+- localizar cada um ao nível da cidade;
+- agrupar por identificador de sala e **inferir quem comunicava com quem**.
+
+O conteúdo permanecia cifrado. Os metadados estavam abertos — e metadados de
+co-presença mais localização são, em muitos contextos, mais reveladores do que o
+conteúdo.
+
+**Corrigido.** A obtenção de geolocalização foi removida (deixou de haver chamada
+a serviço externo de IP), e o sinal passou a conter apenas um identificador
+efémero e um instante. O painel de monitorização deixou de pedir e de mostrar
+localização e sala.
+
+**Limitação que permanece:** o canal continua público, portanto a contagem é
+observável por terceiros e pode ser inflacionada com sinais falsos. Está
+documentado no próprio painel. A contagem deve ser tratada como indicativa, não
+como métrica.
+
 ### 4.4 Sites `.hidra`
 
 O endereço de um serviço deriva da sua chave pública, em base32. Como no
@@ -281,10 +311,11 @@ Medidas implementadas:
 ## 8. Estado da implementação
 
 **Implementado e testado:**
-- Motor em Rust, ~17 000 linhas, compilação limpa
+- Motor em Rust, ~17 000 linhas; `cargo build` e `cargo check --all-targets` sem erros
 - Circuitos em cebola, DHT Kademlia, relay, proxy SOCKS5
 - Kyber-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2
-- Testes de integração: `onion_routing`, `dht_discovery`, `key_agreement`
+- **71 testes a passar** (41 unitários + 30 de integração: `onion_routing`,
+  `dht_discovery`, `key_agreement`, `integration`)
 - Browser com Tor embutido, isolamento por separador, anti-fingerprint
 - Seis aplicações funcionais
 
@@ -306,18 +337,19 @@ pelo que promete corrigir e cumpre.
 
 | # | Item | Prioridade |
 |---|---|---|
-| 1 | *Kill switch* de rede: bloquear tráfego não-loopback até o Tor estar pronto | Crítica |
-| 2 | Bibliotecas de terceiros servidas localmente, com integridade verificada | Crítica |
-| 3 | Cifra em repouso do material de chave no dispositivo | Crítica |
-| 4 | Assinatura do remetente no HidraMail (§4.2) | Alta |
-| 5 | WebRTC bloqueado ao nível da rede, não só em JavaScript | Alta |
-| 6 | Transporte de mensagens em infraestrutura própria | Alta |
-| 7 | Injeção do perfil no arranque do documento, em todos os quadros | Alta |
-| 8 | Argon2id com sal por sala no HidraChat (§4.3) | Média |
-| 9 | Programa de relays de voluntários | Média |
-| 10 | **Auditoria de segurança externa independente**, com publicação do relatório | Alta |
+| 1 | ~~*Kill switch* de rede~~ | ✅ **Feito** |
+| 2 | ~~Bibliotecas de terceiros servidas localmente~~ | ✅ **Feito** — mqtt 5.16.0 e qrcode-generator 1.4.4 incluídos no pacote, versões exatas |
+| 3 | Cifra em repouso do material de chave no dispositivo | Crítica — **em aberto**, exige decisão de interface (frase-passe) |
+| 4 | Assinatura do remetente no HidraMail (§4.2) | Alta — **em aberto**, altera o formato em trânsito |
+| 5 | ~~WebRTC bloqueado ao nível da rede~~ | ✅ **Feito** — `setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` por separador |
+| 6 | Transporte de mensagens em infraestrutura própria | Alta — **em aberto** |
+| 7 | Injeção do perfil no arranque do documento, em todos os quadros | Alta — **em aberto** |
+| 8 | Argon2id com sal por sala no HidraChat (§4.3) | Média — **em aberto**, quebra salas existentes |
+| 9 | ~~Sinal de presença sem metadados~~ | ✅ **Feito** — ver §4.5 |
+| 10 | Programa de relays de voluntários | Média |
+| 11 | **Auditoria de segurança externa independente**, com publicação do relatório | Alta |
 
-O item 10 é condição para divulgação pública ampla do browser. Não anunciamos
+O item 11 é condição para divulgação pública ampla do browser. Não anunciamos
 uma ferramenta de privacidade a um público alargado antes de alguém de fora a
 ter tentado partir.
 

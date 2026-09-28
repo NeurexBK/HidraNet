@@ -217,8 +217,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 
 <div class="copied-toast" id="toast">Copiado!</div>
 
-<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script src="vendor/mqtt.min.js"></script>
 <script>
 (function(){
 'use strict';
@@ -236,21 +235,18 @@ var typingUsers={}, soundEnabled=true;
 var mode='ws';                 // 'ws' = servidor direto/LAN | 'relay' = rede pública (MQTT)
 var mqttClient=null, relayTopic='', relayReconn=0;
 var myCid='', myColor='', peers={}, presenceTimer=null, startTime=0;
-var myGeo=null;  // localizacao aproximada (geo por IP) p/ o painel de monitoramento
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
-var PRESENCE_TOPIC='hidra/presence/v1';  // canal global p/ contar usuarios da HidraNet (anonimo)
+// Canal publico de contagem. O broker e publico, portanto qualquer pessoa pode
+// subscrever isto — por isso o sinal leva apenas um identificador efemero e um
+// instante, e nada mais. Ja levou a localizacao aproximada (por IP) e o topico
+// da sala: quem observasse o canal conseguia localizar cada utilizador ao nivel
+// da cidade e, agrupando pelo topico, deduzir quem falava com quem, sem quebrar
+// cifra nenhuma. O conteudo estava cifrado; os metadados estavam abertos.
+var PRESENCE_TOPIC='hidra/presence/v1';
 function gpub(obj){ if(mqttClient){ try{ mqttClient.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }catch(e){} } }
 var PALETTE=['#00d4aa','#ff6b6b','#4ecdc4','#45b7d1','#f9ca24','#fd79a8','#6c5ce7','#e17055','#0984e3','#00b894','#e84393','#00cec9','#fdcb6e','#a29bfe','#74b9ff'];
 function colorFor(s){var h=0;s=s||'';for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return PALETTE[h%PALETTE.length];}
 function genCid(){var a=crypto.getRandomValues(new Uint8Array(8)),s='';for(var i=0;i<8;i++)s+=a[i].toString(16).padStart(2,'0');return s;}
-function fetchGeo(){
-  fetch('https://ipwho.is/',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
-    if(d&&d.success&&typeof d.latitude==='number'){
-      myGeo={lat:d.latitude,lon:d.longitude,city:d.city||'',country:d.country||''};
-      if(mode==='relay'&&mqttClient){ relayPublish({k:'presence',nick:nick,color:myColor,cid:myCid,t:Date.now(),geo:myGeo}); gpub({cid:myCid,room:relayTopic,t:Date.now(),geo:myGeo}); }
-    }
-  }).catch(function(){});
-}
 
 var $=function(id){return document.getElementById(id)};
 var messagesEl=$('messages'), msgInput=$('msgInput');
@@ -298,7 +294,6 @@ function connectRelay(){
   addSys('🔒 Sala criptografada de ponta a ponta. Encontro pela senha na rede HidraNet.');
   relayOpen();
   startPresence();
-  fetchGeo();
   window.addEventListener('beforeunload',function(){try{relayPublish({k:'leave',nick:nick,cid:myCid});gpub({cid:myCid,leave:1})}catch(e){}});
 }
 
@@ -322,8 +317,8 @@ function relayOpen(){
     $('connStatus').textContent='Conectado (rede HidraNet)';
     $('connStatus').className='status on';
     mqttClient.subscribe(topic,{qos:0});
-    relayPublish({k:'join',nick:nick,color:myColor,cid:myCid,t:Date.now(),geo:myGeo});
-    gpub({cid:myCid,room:relayTopic,t:Date.now(),geo:myGeo});
+    relayPublish({k:'join',nick:nick,color:myColor,cid:myCid,t:Date.now()});
+    gpub({cid:myCid,t:Date.now()});
   });
   mqttClient.on('reconnect',function(){
     $('connStatus').textContent='Reconectando...';$('connStatus').className='status';
@@ -370,8 +365,8 @@ function startPresence(){
   if(presenceTimer) clearInterval(presenceTimer);
   presenceTimer=setInterval(function(){
     peers[myCid]={nick:nick,color:myColor,last:Date.now()};
-    relayPublish({k:'presence',nick:nick,color:myColor,cid:myCid,t:Date.now(),geo:myGeo});
-    gpub({cid:myCid,room:relayTopic,t:Date.now(),geo:myGeo});
+    relayPublish({k:'presence',nick:nick,color:myColor,cid:myCid,t:Date.now()});
+    gpub({cid:myCid,t:Date.now()});
     updatePresence();
   },25000);
 }

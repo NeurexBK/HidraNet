@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraNet — Monitor de Acessos</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<script src="vendor/mqtt.min.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -35,10 +33,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .grid{display:grid;grid-template-columns:1fr 330px;gap:18px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden}
 .card h3{font-size:.72em;color:var(--txt3);text-transform:uppercase;letter-spacing:1.4px;padding:15px 18px 0;font-weight:700}
-#map{width:100%;height:480px;background:#0a0c14}
-.leaflet-container{background:#0a0c14}
-.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--card);color:var(--txt);border:1px solid var(--border)}
-.leaflet-popup-content{margin:9px 12px;font-size:.85em}
 .pp-c{font-weight:700;color:var(--accent)}
 .pp-r{color:var(--txt2);margin-top:2px}
 
@@ -65,22 +59,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
   <div class="kpis">
     <div class="kpi hero"><div class="v" id="k-online">0</div><div class="l">Pessoas online na HidraNet</div><div class="live"><span class="d"></span>Ao vivo</div></div>
-    <div class="kpi"><div class="v" id="k-countries">0</div><div class="l">Países</div></div>
-    <div class="kpi"><div class="v" id="k-servers">0</div><div class="l">Servidores ativos</div></div>
     <div class="kpi"><div class="v" id="k-peak">0</div><div class="l">Pico na sessão</div></div>
   </div>
 
-  <div class="grid">
-    <div class="card"><h3>Mapa de conexões em tempo real</h3><div id="map"></div></div>
-    <div class="side">
-      <div class="card"><h3>Por país</h3><div class="list" id="countries"><div class="empty">Aguardando…</div></div></div>
-      <div class="card"><h3>Por servidor</h3><div class="list" id="servers"><div class="empty">Aguardando…</div></div></div>
-    </div>
-  </div>
-
   <div class="foot">
-    Conta sinais de presença anônimos da HidraNet em tempo real (não vê mensagens, nomes nem senhas).<br>
-    Localização aproximada por IP (nível de país/cidade). Cada "servidor" é uma sala, com código anônimo.
+    Conta sinais de presença da HidraNet: um identificador efémero e um instante, nada mais.<br>
+    Não vê mensagens, nomes, senhas, salas nem localização — deixámos de as recolher.<br>
+    <strong>O canal de presença é público:</strong> qualquer pessoa o pode contar, e qualquer
+    pessoa lhe pode publicar sinais falsos. Trate este número como indicativo, não como métrica.
   </div>
 </div>
 
@@ -90,14 +76,9 @@ var $=function(id){return document.getElementById(id)};
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var PRESENCE_TOPIC='hidra/presence/v1';
 var TTL=70000;
-var presence={};   // cid -> {room,last,geo}
-var peak=0, map=null, markers=null, mqttClient=null;
+var presence={};   // cid -> {last}
+var peak=0, mqttClient=null;
 
-function initMap(){
-  map=L.map('map',{worldCopyJump:true,attributionControl:false}).setView([20,0],2);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:18,subdomains:'abcd'}).addTo(map);
-  markers=L.layerGroup().addTo(map);
-}
 function connect(){
   mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidracount_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
   mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Conectado (rede HidraNet)'; mqttClient.subscribe(PRESENCE_TOPIC,{qos:0}); });
@@ -107,9 +88,10 @@ function connect(){
     var o; try{o=JSON.parse(payload.toString())}catch(e){return}
     if(!o||!o.cid) return;
     if(o.leave){ delete presence[o.cid]; refresh(); return; }
-    var p=presence[o.cid]||{}; p.room=o.room||p.room||'?'; p.last=Date.now();
-    if(o.geo&&typeof o.geo.lat==='number') p.geo={lat:o.geo.lat,lon:o.geo.lon,city:o.geo.city||'',country:o.geo.country||''};
-    presence[o.cid]=p; refresh();
+    // Le apenas o identificador. Campos antigos (geo, room) sao ignorados de
+    // proposito: um cliente desatualizado pode continuar a enviá-los, e este
+    // painel nao os deve guardar nem mostrar.
+    presence[o.cid]={last:Date.now()}; refresh();
   });
 }
 function active(){ var now=Date.now(),a=[]; Object.keys(presence).forEach(function(c){ if(now-presence[c].last<=TTL)a.push(c); else delete presence[c]; }); return a; }
@@ -119,41 +101,9 @@ function refresh(){
   var a=active(), n=a.length;
   $('k-online').textContent=n;
   if(n>peak){ peak=n; $('k-peak').textContent=peak; }
-  var countries={},servers={};
-  a.forEach(function(c){
-    var p=presence[c];
-    if(p.geo&&p.geo.country) countries[p.geo.country]=(countries[p.geo.country]||0)+1;
-    servers[p.room]=(servers[p.room]||0)+1;
-  });
-  $('k-countries').textContent=Object.keys(countries).length;
-  $('k-servers').textContent=Object.keys(servers).length;
-
-  var ck=Object.keys(countries).sort(function(x,y){return countries[y]-countries[x]});
-  $('countries').innerHTML=ck.length?ck.map(function(co){
-    return '<div class="row"><div class="nm"><span class="ico">🌍</span><span class="t">'+esc(co)+'</span></div><div class="ct">'+countries[co]+'</div></div>';
-  }).join(''):'<div class="empty">Nenhuma localização ainda.</div>';
-
-  var sk=Object.keys(servers).sort(function(x,y){return servers[y]-servers[x]});
-  $('servers').innerHTML=sk.length?sk.map(function(r){
-    var code=(r&&r.indexOf('hidra-')===0)?r.slice(6,12):(r||'?').slice(0,6);
-    return '<div class="row"><div class="nm"><span class="ico">🔒</span><span>Servidor <code>#'+esc(code)+'</code></span></div><div class="ct">'+servers[r]+'</div></div>';
-  }).join(''):'<div class="empty">Nenhum servidor ativo.</div>';
-
-  if(markers){
-    markers.clearLayers();
-    var seen={};
-    a.forEach(function(c){
-      var p=presence[c]; if(!p.geo||typeof p.geo.lat!=='number')return;
-      var key=p.geo.lat.toFixed(2)+','+p.geo.lon.toFixed(2);
-      var jit=seen[key]?(seen[key]*0.06):0; seen[key]=(seen[key]||0)+1;
-      var m=L.circleMarker([p.geo.lat+jit,p.geo.lon+jit],{radius:8,color:'#fff',weight:1.4,fillColor:'#00d4aa',fillOpacity:.85});
-      m.bindPopup('<div class="pp-c">'+esc((p.geo.city?p.geo.city+', ':'')+(p.geo.country||''))+'</div><div class="pp-r">1 pessoa conectada</div>');
-      markers.addLayer(m);
-    });
-  }
 }
 setInterval(refresh,3000);
-initMap(); connect(); refresh();
+connect(); refresh();
 </script>
 </body>
 </html>
