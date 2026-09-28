@@ -26,9 +26,9 @@ class TorManager {
     this.lastError = null;
     this.exitIp = null;
     this._stopping = false;
-    // Definido pelo processo principal. Chamado quando o Tor morre sem lhe termos
-    // pedido — o momento em que o trafego deixa de estar protegido e o kill
-    // switch tem de voltar a fechar.
+    // Set by the main process. Called when Tor dies without us having
+    // asked — the moment traffic stops being protected and the kill
+    // switch has to close again.
     this.onUnexpectedExit = null;
   }
 
@@ -97,13 +97,13 @@ class TorManager {
     const torPath = this.findBinary();
     if (!torPath) {
       this.state = 'failed';
-      this.lastError = 'binário do Tor não encontrado — rode: node scripts/fetch-tor.js';
+      this.lastError = 'Tor binary not found — run: node scripts/fetch-tor.js';
       return { ok: false, error: this.lastError };
     }
 
     if (!(await this._portFree())) {
       this.state = 'failed';
-      this.lastError = `a porta ${this.socksPort} já está ocupada`;
+      this.lastError = `port ${this.socksPort} is already in use`;
       return { ok: false, error: this.lastError };
     }
 
@@ -112,7 +112,7 @@ class TorManager {
       fs.mkdirSync(torData, { recursive: true });
     } catch (e) {
       this.state = 'failed';
-      this.lastError = `não consegui criar ${torData}: ${e.message}`;
+      this.lastError = `could not create ${torData}: ${e.message}`;
       return { ok: false, error: this.lastError };
     }
 
@@ -167,7 +167,7 @@ class TorManager {
 
       const timer = setTimeout(() => {
         this.state = 'failed';
-        this.lastError = `o Tor não completou o bootstrap em 120s (parou em ${this.bootstrapPercent}%)`;
+        this.lastError = `Tor did not finish bootstrapping in 120s (stalled at ${this.bootstrapPercent}%)`;
         finish({ ok: false, error: this.lastError });
       }, 120000);
 
@@ -218,11 +218,11 @@ class TorManager {
       });
 
       this.process.on('close', (code) => {
-        console.log('[tor] processo terminou, código', code);
+        console.log('[tor] process exited, code', code);
         this.process = null;
 
         // A stop() we asked for is not a failure — without this the panel showed
-        // "failed" right after the user pressed Desconectar.
+        // "failed" right after the user pressed Disconnect.
         if (this._stopping) {
           this._stopping = false;
           this.state = 'stopped';
@@ -233,7 +233,7 @@ class TorManager {
         if (this.state === 'ready') {
           // Died on its own after having worked.
           this.state = 'failed';
-          this.lastError = this.lastError || 'o Tor encerrou inesperadamente';
+          this.lastError = this.lastError || 'Tor exited unexpectedly';
           if (typeof this.onUnexpectedExit === 'function') {
             try { this.onUnexpectedExit(this.lastError); } catch (e) {}
           }
@@ -242,7 +242,7 @@ class TorManager {
 
         this.state = 'failed';
         if (!this.lastError) {
-          this.lastError = logTail.trim().split('\n').pop() || `tor saiu com código ${code}`;
+          this.lastError = logTail.trim().split('\n').pop() || `tor exited with code ${code}`;
         }
         finish({ ok: false, error: this.lastError });
       });
@@ -257,7 +257,7 @@ class TorManager {
       try {
         cookie = fs.readFileSync(path.join(this.dataDir, 'control_auth_cookie')).toString('hex');
       } catch (e) {
-        return reject(new Error('não consegui ler o cookie de controle do Tor'));
+        return reject(new Error('could not read the Tor control cookie'));
       }
 
       const socket = new net.Socket();
@@ -279,7 +279,7 @@ class TorManager {
         if (step === 'auth') {
           if (!buffer.startsWith('250')) {
             socket.destroy();
-            return reject(new Error('autenticação no control port recusada'));
+            return reject(new Error('control port authentication refused'));
           }
           step = 'cmd';
           buffer = '';
@@ -292,14 +292,14 @@ class TorManager {
         reply.startsWith('250') ? resolve(reply) : reject(new Error(reply));
       });
 
-      socket.on('timeout', () => { socket.destroy(); reject(new Error('timeout no control port')); });
+      socket.on('timeout', () => { socket.destroy(); reject(new Error('control port timeout')); });
       socket.on('error', reject);
       socket.connect(this.controlPort, '127.0.0.1', () => socket.write(`AUTHENTICATE ${cookie}\r\n`));
     });
   }
 
   async newIdentity() {
-    if (!this.isRunning()) return { ok: false, error: 'o Tor não está conectado' };
+    if (!this.isRunning()) return { ok: false, error: 'Tor is not connected' };
     try {
       await this._control('SIGNAL NEWNYM');
       this.exitIp = null;
@@ -322,8 +322,8 @@ class TorManager {
     this.bootstrapPercent = 0;
     this.exitIp = null;
 
-    // Wait for the port to actually be released, otherwise pressing Conectar
-    // right after Desconectar hits "a porta 9052 já está ocupada".
+    // Wait for the port to actually be released, otherwise pressing Connect
+    // right after Disconnect hits "port 9052 is already in use".
     await new Promise((resolve) => {
       let settled = false;
       const done = () => { if (!settled) { settled = true; resolve(); } };

@@ -5671,9 +5671,9 @@ mod apps {
                 ) {
                     Ok(pt) => match serde_json::from_slice::<MailContent>(&pt) {
                         Ok(c) => c.subject,
-                        Err(_) => "[erro]".into(),
+                        Err(_) => "[error]".into(),
                     },
-                    Err(_) => "[criptografado]".into(),
+                    Err(_) => "[encrypted]".into(),
                 }
             }
         }
@@ -6261,7 +6261,7 @@ mod apps {
                 <li class="nav-item compose-btn" id="nav-compose" onclick="showCompose()">&#9998; Compor</li>
             </ul>
             <div class="sidebar-footer">
-                <div class="crypto-info">&#128274; E2E criptografado</div>
+                <div class="crypto-info">&#128274; E2E encrypted</div>
                 <div class="crypto-info">X25519 + ChaCha20-Poly1305</div>
             </div>
         </nav>
@@ -6642,7 +6642,7 @@ body {
             myPubkey = identity.pubkey;
             document.getElementById('myAddress').textContent = myAddress;
         } catch(e) {
-            document.getElementById('myAddress').textContent = 'erro ao carregar';
+            document.getElementById('myAddress').textContent = 'failed to load';
         }
         showInbox();
     }
@@ -6663,7 +6663,7 @@ body {
             var mails = await api('/api/inbox');
             renderMailList(mails, 'Caixa de Entrada');
         } catch(e) {
-            content.innerHTML = '<div class="empty-state"><p>Erro ao carregar.</p></div>';
+            content.innerHTML = '<div class="empty-state"><p>Failed to load.</p></div>';
         }
     };
 
@@ -6675,7 +6675,7 @@ body {
             var mails = await api('/api/sent');
             renderMailList(mails, 'Enviados');
         } catch(e) {
-            content.innerHTML = '<div class="empty-state"><p>Erro ao carregar.</p></div>';
+            content.innerHTML = '<div class="empty-state"><p>Failed to load.</p></div>';
         }
     };
 
@@ -6695,13 +6695,13 @@ body {
             '</div>' +
             '<div class="form-group">' +
                 '<label>Mensagem:</label>' +
-                '<textarea id="composeBody" rows="12" placeholder="Escreva sua mensagem..."></textarea>' +
+                '<textarea id="composeBody" rows="12" placeholder="Write your message..."></textarea>' +
             '</div>' +
             '<div class="form-group">' +
-                '<label>Endereço direto (testes locais):</label>' +
-                '<input type="text" id="composeDirectAddr" placeholder="127.0.0.1:8081 (obrigatório por enquanto)">' +
+                '<label>Direct address (local testing):</label>' +
+                '<input type="text" id="composeDirectAddr" placeholder="127.0.0.1:8081 (required for now)">' +
             '</div>' +
-            '<button onclick="doSend()">Enviar</button>' +
+            '<button onclick="doSend()">Send</button>' +
             '<div id="sendStatus"></div>' +
             '</div>';
     };
@@ -6719,7 +6719,7 @@ body {
             return;
         }
         if (!directAddr) {
-            status.textContent = 'Endereço direto obrigatório (entrega via SOCKS5 em breve).';
+            status.textContent = 'Direct address required (SOCKS5 delivery coming).';
             status.style.color = '#ff4757';
             return;
         }
@@ -6742,11 +6742,11 @@ body {
                 document.getElementById('composeSubject').value = '';
                 document.getElementById('composeBody').value = '';
             } else {
-                status.textContent = 'Erro: ' + (result.error || 'falha');
+                status.textContent = 'Error: ' + (result.error || 'failed');
                 status.style.color = '#ff4757';
             }
         } catch(e) {
-            status.textContent = 'Erro de conexão: ' + e;
+            status.textContent = 'Connection error: ' + e;
             status.style.color = '#ff4757';
         }
     };
@@ -6754,7 +6754,7 @@ body {
     function renderMailList(mails, title) {
         var content = document.getElementById('content');
         if (!mails || mails.length === 0) {
-            content.innerHTML = '<div class="empty-state"><h2>' + esc(title) + '</h2><p>Nenhum e-mail.</p></div>';
+            content.innerHTML = '<div class="empty-state"><h2>' + esc(title) + '</h2><p>No mail.</p></div>';
             return;
         }
         var html = '<div class="mail-list-header">' + esc(title) + ' (' + mails.length + ')</div>';
@@ -6778,17 +6778,17 @@ body {
         try {
             var mail = await api('/api/mail/' + id);
             if (mail.error) {
-                content.innerHTML = '<div class="empty-state"><p>Erro: ' + esc(mail.error) + '</p></div>';
+                content.innerHTML = '<div class="empty-state"><p>Error: ' + esc(mail.error) + '</p></div>';
                 return;
             }
             var date = new Date(mail.timestamp).toLocaleString('pt-BR');
-            var vIcon = mail.verified ? '✓ Assinatura verificada' : '✗ Assinatura inválida';
+            var vIcon = mail.verified ? '✓ Signature verified' : '✗ Invalid signature';
             var vClass = mail.verified ? 'verified' : 'unverified';
             content.innerHTML =
                 '<div class="mail-read">' +
                     '<div class="mail-actions">' +
-                        '<button onclick="showInbox()">← Voltar</button>' +
-                        '<button class="danger" onclick="deleteMail(\'' + esc(mail.id) + '\')">Excluir</button>' +
+                        '<button onclick="showInbox()">← Back</button>' +
+                        '<button class="danger" onclick="deleteMail(\'' + esc(mail.id) + '\')">Delete</button>' +
                     '</div>' +
                     '<h2>' + esc(mail.subject) + '</h2>' +
                     '<div class="mail-meta">' +
@@ -6801,7 +6801,7 @@ body {
                     '<div class="crypto-badge">\u{0001f512} Descriptografado localmente — X25519 + ChaCha20-Poly1305</div>' +
                 '</div>';
         } catch(e) {
-            content.innerHTML = '<div class="empty-state"><p>Erro: ' + e + '</p></div>';
+            content.innerHTML = '<div class="empty-state"><p>Error: ' + e + '</p></div>';
         }
     };
 
@@ -7024,10 +7024,10 @@ mod search {
 
             for (name, base_url) in &search_engines {
                 results.push(SearchResult {
-                    title: format!("Buscar \"{}\" no {}", query, name),
+                    title: format!("Search \"{}\" on {}", query, name),
                     url: format!("{}{}", base_url, encoded_q),
                     snippet: format!(
-                        "Clique para buscar '{}' de forma anônima via {}. Sua pesquisa será roteada pelo circuito onion da HidraNet.",
+                        "Click to search for '{}' anonymously via {}. Your query is routed through the HidraNet onion circuit.",
                         query, name
                     ),
                     source: name.to_string(),
@@ -7036,10 +7036,10 @@ mod search {
 
             if q.contains("filme") || q.contains("movie") || q.contains("assistir") || q.contains("watch") {
                 let sites = [
-                    ("Internet Archive — Filmes", "https://archive.org/details/movies", "Acervo público e gratuito de filmes clássicos e domínio público."),
+                    ("Internet Archive — Films", "https://archive.org/details/movies", "A free public archive of classic and public-domain films."),
                     ("Open Culture — Free Movies", "https://www.openculture.com/freemoviesonline", "Mais de 1.000 filmes gratuitos legais para assistir online."),
                     ("YouTube Movies", "https://www.youtube.com/feed/storefront?bp=ogUCKAQ%3D", "Filmes gratuitos e pagos no YouTube."),
-                    ("Tubi TV", "https://tubitv.com", "Streaming gratuito com milhares de filmes e séries."),
+                    ("Tubi TV", "https://tubitv.com", "Free streaming with thousands of films and series."),
                     ("Pluto TV", "https://pluto.tv", "TV online gratuita com canais de filmes 24h."),
                 ];
                 for (title, url, snippet) in &sites {
@@ -7056,16 +7056,16 @@ mod search {
                 results.push(SearchResult {
                     title: "Busca de Torrents — via HidraNet".into(),
                     url: format!("https://btdig.com/search?q={}", encoded_q),
-                    snippet: "Busca descentralizada de torrents. Conexão roteada pelo circuito cebola.".into(),
+                    snippet: "Decentralised torrent search. Connection routed through the onion circuit.".into(),
                     source: "HidraSearch".into(),
                 });
             }
 
             if q.contains("notic") || q.contains("news") || q.contains("jornal") {
                 let news = [
-                    ("Reuters", "https://www.reuters.com/search/news?query=", "Agência de notícias internacional — sem viés editorial."),
-                    ("Associated Press", "https://apnews.com/search?q=", "Agência de notícias independente e apartidária."),
-                    ("Ground News", "https://ground.news/find?query=", "Compare a cobertura de notícias de múltiplas fontes."),
+                    ("Reuters", "https://www.reuters.com/search/news?query=", "International news agency."),
+                    ("Associated Press", "https://apnews.com/search?q=", "Independent, non-partisan news agency."),
+                    ("Ground News", "https://ground.news/find?query=", "Compare news coverage across multiple sources."),
                 ];
                 for (title, base, snippet) in &news {
                     results.push(SearchResult {
@@ -7079,9 +7079,9 @@ mod search {
 
             if q.contains(".hidra") {
                 results.push(SearchResult {
-                    title: format!("Serviço oculto: {}", query),
+                    title: format!("Hidden service: {}", query),
                     url: format!("http://{}", query),
-                    snippet: "Serviço .hidra na rede HidraNet — acesso via roteamento cebola.".into(),
+                    snippet: ".hidra service on the HidraNet network — reached by onion routing.".into(),
                     source: "HidraNet DHT".into(),
                 });
             }
@@ -7089,14 +7089,14 @@ mod search {
             results.push(SearchResult {
                 title: format!("{} — Wikipedia", query),
                 url: format!("https://pt.wikipedia.org/wiki/Special:Search?search={}", encoded_q),
-                snippet: format!("Enciclopédia livre — buscar '{}' na Wikipedia.", query),
+                snippet: format!("Free encyclopedia — search Wikipedia for '{}'.", query),
                 source: "Wikipedia".into(),
             });
 
             results.push(SearchResult {
                 title: format!("{} — Reddit", query),
                 url: format!("https://www.reddit.com/search/?q={}", encoded_q),
-                snippet: format!("Discussões sobre '{}' no Reddit — comunidades e fóruns.", query),
+                snippet: format!("Discussions about '{}' on Reddit — communities and forums.", query),
                 source: "Reddit".into(),
             });
 
@@ -7127,7 +7127,7 @@ mod search {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HidraSearch — Busca Anônima</title>
+<title>HidraSearch — Anonymous Search</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -7206,10 +7206,10 @@ a:hover{color:var(--link-hover);text-decoration:underline}
 <div class="home-view" id="homeView">
   <div class="logo-area">
     <div class="logo-text"><span class="hi">Hidra</span><span class="dra"></span><span class="search">Search</span></div>
-    <div class="logo-sub">Busca Anônima &amp; Criptografada</div>
+    <div class="logo-sub">Anonymous &amp; Encrypted Search</div>
   </div>
   <div class="search-box">
-    <input type="text" class="search-input" id="homeInput" placeholder="Pesquisar qualquer coisa de forma anônima..." autofocus>
+    <input type="text" class="search-input" id="homeInput" placeholder="Search anything, anonymously..." autofocus>
     <button class="search-btn" onclick="doSearch()">
       <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
     </button>
@@ -7217,7 +7217,7 @@ a:hover{color:var(--link-hover);text-decoration:underline}
   <div class="badges">
     <div class="badge"><span class="dot"></span> Roteamento Onion</div>
     <div class="badge"><span class="dot"></span> Zero Logs</div>
-    <div class="badge"><span class="dot"></span> Criptografia E2E</div>
+    <div class="badge"><span class="dot"></span> E2E encryption</div>
     <div class="badge"><span class="dot"></span> Sem Censura</div>
     <div class="badge"><span class="dot"></span> IP Oculto</div>
   </div>
@@ -7227,7 +7227,7 @@ a:hover{color:var(--link-hover);text-decoration:underline}
   <div class="top-bar">
     <div class="top-logo" onclick="goHome()"><span class="hi">Hidra</span>Search</div>
     <div class="top-search search-box">
-      <input type="text" class="search-input" id="topInput" placeholder="Buscar...">
+      <input type="text" class="search-input" id="topInput" placeholder="Search...">
       <button class="search-btn" onclick="doSearch()">
         <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       </button>
@@ -7240,19 +7240,19 @@ a:hover{color:var(--link-hover);text-decoration:underline}
     <div class="categories">
       <span class="cat-btn active" onclick="filterCat('all',this)">Todos</span>
       <span class="cat-btn" onclick="filterCat('web',this)">Web</span>
-      <span class="cat-btn" onclick="filterCat('video',this)">Vídeos</span>
-      <span class="cat-btn" onclick="filterCat('news',this)">Notícias</span>
+      <span class="cat-btn" onclick="filterCat('video',this)">Videos</span>
+      <span class="cat-btn" onclick="filterCat('news',this)">News</span>
       <span class="cat-btn" onclick="filterCat('hidra',this)">Rede .hidra</span>
     </div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
-      <div class="loading-text">Buscando através do circuito onion criptografado...</div>
+      <div class="loading-text">Searching through the encrypted onion circuit...</div>
     </div>
     <div id="resultsList"></div>
   </div>
 
   <div class="privacy-footer">
-    <p>Sua pesquisa foi roteada por 3 nós criptografados. Nenhum dado foi armazenado.</p>
+    <p>Your query was routed through 3 encrypted nodes. No data was stored.</p>
     <div class="shields">
       <span class="shield">ChaCha20-Poly1305</span>
       <span class="shield">Kyber-1024</span>
@@ -7300,17 +7300,17 @@ function doSearch() {
     .catch(err => {
       document.getElementById('loading').classList.remove('active');
       document.getElementById('resultsList').innerHTML =
-        '<div class="no-results"><h3>Erro na busca</h3><p>' + err.message + '</p></div>';
+        '<div class="no-results"><h3>Search error</h3><p>' + err.message + '</p></div>';
     });
 }
 
 function renderResults(data) {
   const stats = document.getElementById('resultsStats');
-  stats.textContent = 'Aproximadamente ' + (data.total_estimated || 0) + ' resultados para "' + data.query + '" — criptografia ativa, zero logs';
+  stats.textContent = 'About ' + (data.total_estimated || 0) + ' results for "' + data.query + '" — encryption active, zero logs';
 
   const list = document.getElementById('resultsList');
   if (!data.results || data.results.length === 0) {
-    list.innerHTML = '<div class="no-results"><h3>Nenhum resultado</h3><p>Tente outra pesquisa.</p></div>';
+    list.innerHTML = '<div class="no-results"><h3>No results</h3><p>Try a different search.</p></div>';
     return;
   }
 
@@ -7793,21 +7793,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="dashboard">
   <div class="header">
     <h1>HidraNet Analytics</h1>
-    <div class="live"><span class="dot"></span> Atualização em tempo real</div>
+    <div class="live"><span class="dot"></span> Live updates</div>
   </div>
 
   <div class="stats-grid">
-    <div class="stat-card"><div class="label">Usuários Ativos</div><div class="value accent" id="s-users">—</div><div class="delta" id="d-users"></div></div>
+    <div class="stat-card"><div class="label">Active users</div><div class="value accent" id="s-users">—</div><div class="delta" id="d-users"></div></div>
     <div class="stat-card"><div class="label">Relays Ativos</div><div class="value" id="s-relays">—</div><div class="delta" id="d-relays"></div></div>
     <div class="stat-card"><div class="label">Circuitos/seg</div><div class="value" id="s-circuits">—</div></div>
-    <div class="stat-card"><div class="label">Latência Média</div><div class="value" id="s-latency">—</div></div>
-    <div class="stat-card"><div class="label">Tráfego (GB/dia)</div><div class="value" id="s-traffic">—</div></div>
-    <div class="stat-card"><div class="label">Países</div><div class="value" id="s-countries">—</div></div>
+    <div class="stat-card"><div class="label">Average latency</div><div class="value" id="s-latency">—</div></div>
+    <div class="stat-card"><div class="label">Traffic (GB/day)</div><div class="value" id="s-traffic">—</div></div>
+    <div class="stat-card"><div class="label">Countries</div><div class="value" id="s-countries">—</div></div>
   </div>
 
   <div class="charts-row">
     <div class="chart-card">
-      <h3>Tráfego da Rede</h3>
+      <h3>Network traffic</h3>
       <div class="time-filter">
         <button class="time-btn active" data-range="24h">24h</button>
         <button class="time-btn" data-range="7d">7 dias</button>
@@ -7816,13 +7816,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="chart-wrap"><canvas id="trafficChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <h3>Usuários por Região</h3>
+      <h3>Users by region</h3>
       <div class="chart-wrap"><canvas id="geoChart"></canvas></div>
     </div>
   </div>
 
   <div class="geo-section">
-    <h3>Distribuição Geográfica</h3>
+    <h3>Geographic distribution</h3>
     <div class="geo-grid" id="geoGrid"></div>
   </div>
 
@@ -7831,7 +7831,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script>
 const FLAGS={AF:'🇦🇫',AL:'🇦🇱',DZ:'🇩🇿',AR:'🇦🇷',AU:'🇦🇺',AT:'🇦🇹',BE:'🇧🇪',BR:'🇧🇷',CA:'🇨🇦',CL:'🇨🇱',CN:'🇨🇳',CO:'🇨🇴',CZ:'🇨🇿',DK:'🇩🇰',EG:'🇪🇬',FI:'🇫🇮',FR:'🇫🇷',DE:'🇩🇪',GR:'🇬🇷',HK:'🇭🇰',HU:'🇭🇺',IN:'🇮🇳',ID:'🇮🇩',IE:'🇮🇪',IL:'🇮🇱',IT:'🇮🇹',JP:'🇯🇵',KR:'🇰🇷',MY:'🇲🇾',MX:'🇲🇽',NL:'🇳🇱',NZ:'🇳🇿',NG:'🇳🇬',NO:'🇳🇴',PK:'🇵🇰',PE:'🇵🇪',PH:'🇵🇭',PL:'🇵🇱',PT:'🇵🇹',RO:'🇷🇴',RU:'🇷🇺',SA:'🇸🇦',SG:'🇸🇬',ZA:'🇿🇦',ES:'🇪🇸',SE:'🇸🇪',CH:'🇨🇭',TW:'🇹🇼',TH:'🇹🇭',TR:'🇹🇷',UA:'🇺🇦',AE:'🇦🇪',GB:'🇬🇧',US:'🇺🇸',VN:'🇻🇳'};
-const NAMES={BR:'Brasil',US:'EUA',DE:'Alemanha',FR:'França',GB:'Reino Unido',JP:'Japão',CA:'Canadá',NL:'Holanda',AU:'Austrália',KR:'Coreia do Sul',IN:'Índia',SE:'Suécia',CH:'Suíça',PL:'Polônia',ES:'Espanha',PT:'Portugal',IT:'Itália',RU:'Rússia',AR:'Argentina',MX:'México'};
+const NAMES={BR:'Brazil',US:'USA',DE:'Germany',FR:'France',GB:'United Kingdom',JP:'Japan',CA:'Canada',NL:'Netherlands',AU:'Australia',KR:'South Korea',IN:'India',SE:'Sweden',CH:'Switzerland',PL:'Poland',ES:'Spain',PT:'Portugal',IT:'Italy',RU:'Russia',AR:'Argentina',MX:'Mexico'};
 
 let trafficChart, geoChart;
 let prevStats = null;
@@ -7870,7 +7870,7 @@ function setDelta(id,curr,prev){
   const diff=curr-prev;
   if(diff>0){el.textContent='▲ +'+diff;el.className='delta up'}
   else if(diff<0){el.textContent='▼ '+diff;el.className='delta down'}
-  else{el.textContent='— estável';el.className='delta'}
+  else{el.textContent='— steady';el.className='delta'}
 }
 
 async function fetchTraffic(){
@@ -7902,7 +7902,7 @@ async function fetchGeo(){
       return '<div class="geo-item">'
         +'<span class="geo-flag">'+(FLAGS[g.country_code]||'🌍')+'</span>'
         +'<div class="geo-info"><div class="country">'+(NAMES[g.country_code]||g.country_code)+'</div>'
-        +'<div class="count">'+g.user_count+' usuários</div></div>'
+        +'<div class="count">'+g.user_count+' users</div></div>'
         +'<div class="geo-bar"><div class="geo-bar-fill" style="width:'+pct+'%"></div></div>'
         +'</div>';
     }).join('');
@@ -8812,7 +8812,7 @@ async fn run_apps_standalone(
     info!("║  HidraChat:     http://0.0.0.0:{chat_port}                        ║");
     info!("║  HidraSearch:   http://127.0.0.1:{search_port}                      ║");
     info!("║  SevenNine:     http://0.0.0.0:{sevennine_port}                      ║");
-    info!("║  Endereço:      {}", mail_addr_str);
+    info!("║  Address:       {}", mail_addr_str);
     info!("╚══════════════════════════════════════════════════════════════╝");
 
     tokio::select! {
@@ -8928,7 +8928,7 @@ async fn run_mail_standalone(
 
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║  HidraMail standalone: http://127.0.0.1:{}", local_port);
-    info!("║  Endereço: {}", mail_addr);
+    info!("║  Address: {}", mail_addr);
     info!("║  Modo local (sem rede cebola) — para testes");
     info!("╚══════════════════════════════════════════════════════════════╝");
 
@@ -9055,8 +9055,8 @@ async fn run_server_mode(
             }
         });
         info!("╔══════════════════════════════════════════════════════════════╗");
-        info!("║  HidraChat está disponível em: http://{}", hidra_address);
-        info!("║  Sala de chat criptografada — porta local: {}", local_port);
+        info!("║  HidraChat is available at: http://{}", hidra_address);
+        info!("║  Encrypted chat room — local port: {}", local_port);
         info!("╚══════════════════════════════════════════════════════════════╝");
     } else if app_name == Some("hidramail") {
         let mail_sock: SocketAddr = format!("127.0.0.1:{local_port}").parse()?;
@@ -9084,8 +9084,8 @@ async fn run_server_mode(
             }
         });
         info!("╔══════════════════════════════════════════════════════════════╗");
-        info!("║  HidraMail está disponível em: http://{}", hidra_address);
-        info!("║  Endereço: {}", mail_addr);
+        info!("║  HidraMail is available at: http://{}", hidra_address);
+        info!("║  Address: {}", mail_addr);
         info!("║  Porta local: {}", local_port);
         info!("╚══════════════════════════════════════════════════════════════╝");
     } else if app_name == Some("sevennine") {
@@ -9119,9 +9119,9 @@ async fn run_server_mode(
         });
         info!("╔══════════════════════════════════════════════════════════════╗");
         info!("║  SevenNine.hidra — Criador de Sites Descentralizado        ║");
-        info!("║  Endereço:   http://{}", hidra_address);
+        info!("║  Address:    http://{}", hidra_address);
         info!("║  Local:      http://127.0.0.1:{}", local_port);
-        info!("║  Cada site criado é publicado na DHT automaticamente       ║");
+        info!("║  Every site created is published to the DHT automatically  ║");
         info!("╚══════════════════════════════════════════════════════════════╝");
 
         // Process DHT announcements from SevenNine in the service loop
@@ -9142,7 +9142,7 @@ async fn run_server_mode(
         });
     } else {
         info!("╔══════════════════════════════════════════════════════════════╗");
-        info!("║  Seu site está disponível em: http://{}", hidra_address);
+        info!("║  Your site is available at: http://{}", hidra_address);
         info!("║  Porta local: {}", local_port);
         info!("╚══════════════════════════════════════════════════════════════╝");
     }

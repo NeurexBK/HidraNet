@@ -90,7 +90,7 @@ class ProxyManager {
     }
 
     // This used to pass "--apps", which starts HidraMail and HidraChat — not a
-    // proxy — and which the older release build rejected outright, so Conectar
+    // proxy — and which the older release build rejected outright, so Connect
     // failed either way. "--proxy" is the browser gateway: it opens the SOCKS5
     // port that this manager then points every session at.
     const configPath = configFile || this._findConfig(hidraPath);
@@ -153,7 +153,7 @@ class ProxyManager {
       }, 250);
 
       readyTimeout = setTimeout(() => {
-        finish(false, 'o motor não abriu a porta SOCKS5 a tempo');
+        finish(false, 'the engine did not open the SOCKS5 port in time');
       }, 20000);
 
       this.hidraProcess.stdout.on('data', (data) => {
@@ -203,13 +203,13 @@ class ProxyManager {
 
   // SevenNine is the engine's .hidra site builder. It is a separate mode from
   // the proxy — "--sevennine" serves it on 8084 and opens no SOCKS port — so it
-  // gets its own process rather than riding on Conectar.
+  // gets its own process rather than riding on Connect.
   async startSevenNine() {
     return this._startEngineApp('sevenNineProcess', '--sevennine', SEVENNINE_PORT, 'sevennine');
   }
 
-  /// A prontidao e sempre a porta abrir, nunca uma linha de log — foi a licao
-  /// do arranque do proxy.
+  /// Readiness is always the port opening, never a log line — the lesson
+  /// learned from starting the proxy.
   async _startEngineApp(field, flag, port, label) {
     if (this[field]) return { ok: true, alreadyRunning: true };
 
@@ -219,7 +219,7 @@ class ProxyManager {
 
     const hidraPath = this._findHidraNode();
     if (!hidraPath) {
-      return { ok: false, error: 'binário do hidra-node não encontrado' };
+      return { ok: false, error: 'hidra-node binary not found' };
     }
 
     const configPath = this._findConfig(hidraPath);
@@ -255,7 +255,7 @@ class ProxyManager {
       }, 300);
 
       const readyTimeout = setTimeout(() => {
-        finish({ ok: false, error: `o SevenNine não abriu a porta ${port} a tempo` });
+        finish({ ok: false, error: `SevenNine did not open port ${port} in time` });
       }, 20000);
 
       proc.stdout.on('data', (d) => console.log('[' + label + ']', d.toString().trimEnd()));
@@ -399,8 +399,8 @@ class ProxyManager {
       .map(l => l.trim())
       .filter(Boolean);
 
-    const failure = lines.filter(l => /error|erro|panic|failed|unexpected/i.test(l)).pop();
-    return failure || lines.pop() || `hidra-node saiu com código ${code}`;
+    const failure = lines.filter(l => /error|panic|failed|unexpected/i.test(l)).pop();
+    return failure || lines.pop() || `hidra-node exited with code ${code}`;
   }
 
   // The engine defaults to "config.toml" in its working directory. In the
@@ -443,7 +443,7 @@ class ProxyManager {
     // Source tree: release and debug drift apart, and only the newer one
     // matches the current source. Picking a profile by position is how the
     // browser ended up launching a build that predated the flags it was
-    // written against, which made every Conectar fail.
+    // written against, which made every Connect fail.
     const devRoot = path.join(__dirname, '..', '..', '..', 'hidra-node', 'target');
     const builds = ['release', 'debug']
       .map((profile) => path.join(devRoot, profile, bin))

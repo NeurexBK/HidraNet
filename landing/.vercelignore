@@ -1,7 +1,7 @@
-# Binarios grandes ficam no GitHub Releases — nao subir pro Vercel
+# Large binaries live in GitHub Releases — do not upload to Vercel
 downloads/
 
-# Docs internas — nao precisam ir pro site publico
-SEGURANCA.md
+# Internal docs — no need to ship them on the public site
+SECURITY.md
 _headers
 assets/README.txt

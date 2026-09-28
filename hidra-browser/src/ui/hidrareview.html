@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HidraReview — avaliações de estabelecimentos</title>
+<title>HidraReview — business reviews</title>
 <script src="vendor/mqtt.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -117,7 +117,7 @@ justify-content:center;cursor:pointer;font-weight:700;line-height:1}
 .msg.err{background:rgba(255,68,102,.12);color:var(--dgr);display:block}
 .msg.work{background:rgba(255,170,51,.12);color:var(--warn);display:block}
 
-/* ── Site do estabelecimento ── */
+/* ── Business page ── */
 .site-hero{position:relative;border-radius:var(--r);overflow:hidden;margin-bottom:16px;
 background:var(--card2);min-height:230px;display:flex;align-items:flex-end}
 .site-hero>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
@@ -217,71 +217,71 @@ justify-content:center;font-size:20px;margin-bottom:12px}
     <h1>Hidra<span>Review</span></h1>
     <span class="dot" id="cdot"></span><span class="conn" id="ctxt">a ligar…</span>
   </div>
-  <div class="sub">Avaliações de restaurantes e negócios, partilhadas por toda a rede HidraNet.</div>
+  <div class="sub">Reviews of restaurants and local businesses, shared across the HidraNet network.</div>
 
   <!-- ─── Entrada (o funil) ─── -->
   <div id="view-home">
     <div class="hero-home">
       <div class="hh-badge">Rede HidraNet · sem servidores, sem contas</div>
-      <h2>Ponha o seu estabelecimento onde os clientes confiam.</h2>
-      <p>Avaliações reais partilhadas por toda a rede, uma página própria para o seu negócio e um endereço para gravar no cartão NFC — tudo dentro da HidraNet, cifrado e anónimo.</p>
+      <h2>Put your business where customers trust it.</h2>
+      <p>Real reviews shared across the whole network, a page of your own for your business, and an address to write onto an NFC card — all inside HidraNet, encrypted and anonymous.</p>
       <div class="hh-cta">
-        <button class="go" id="hh-register">Cadastrar o meu estabelecimento</button>
-        <button class="go ghost" id="hh-login">Entrar no meu painel</button>
+        <button class="go" id="hh-register">Register my business</button>
+        <button class="go ghost" id="hh-login">Sign in to my panel</button>
       </div>
-      <a class="hh-explore" id="hh-explore">Explorar estabelecimentos →</a>
+      <a class="hh-explore" id="hh-explore">Browse businesses →</a>
     </div>
 
     <div class="offer">
-      <div class="oc"><div class="oi">⭐</div><h3>Avaliações reais</h3><p>Os clientes avaliam e comentam. Tudo aparece no diretório de toda a rede, sem intermediários.</p></div>
-      <div class="oc"><div class="oi">🔗</div><h3>Página + link para NFC</h3><p>Cada estabelecimento ganha uma página e um link que abre em qualquer telemóvel — grave-o no cartão NFC da mesa.</p></div>
-      <div class="oc"><div class="oi">📬</div><h3>Aviso a cada avaliação</h3><p>Recebe cada nova avaliação no seu Correio HidraMail, cifrada. Responda direto do seu painel.</p></div>
-      <div class="oc"><div class="oi">✓</div><h3>Selo de confirmado</h3><p>Prove que o negócio é seu e ganhe o selo verificado — confirmado na blockchain, ninguém o pode falsificar.</p></div>
+      <div class="oc"><div class="oi">⭐</div><h3>Real reviews</h3><p>Customers rate and comment. Everything shows up in the network-wide directory, with no middleman.</p></div>
+      <div class="oc"><div class="oi">🔗</div><h3>Page + NFC link</h3><p>Every business gets a page and a link that opens on any phone — write it onto the NFC card on the table.</p></div>
+      <div class="oc"><div class="oi">📬</div><h3>Alert on every review</h3><p>Each new review arrives in your HidraMail inbox, encrypted. Reply straight from your panel.</p></div>
+      <div class="oc"><div class="oi">✓</div><h3>Confirmed badge</h3><p>Prove the business is yours and earn the verified badge — confirmed on-chain, so nobody can forge it.</p></div>
     </div>
 
-    <div class="hh-foot">Já tem um estabelecimento registado? <a id="hh-login2">Entre no seu painel</a>.</div>
+    <div class="hh-foot">Already registered a business? <a id="hh-login2">Sign in to your panel</a>.</div>
   </div>
 
-  <!-- ─── Diretório ─── -->
+  <!-- ─── Directory ─── -->
   <div id="view-list" class="hidden">
     <div class="filters">
-      <input id="f-q" placeholder="Procurar por nome…">
+      <input id="f-q" placeholder="Search by name…">
       <select id="f-city"><option value="">Todas as cidades</option></select>
       <select id="f-cat"><option value="">Todos os tipos</option></select>
       <button class="go ghost" id="btn-add">+ Adicionar</button>
-      <button class="go ghost" id="btn-owner">Painel do dono</button>
+      <button class="go ghost" id="btn-owner">Owner panel</button>
     </div>
 
     <div class="tools">
-      <button class="on" data-s="melhores">Melhor avaliados</button>
-      <button data-s="recentes">Mais recentes</button>
-      <button data-s="populares">Mais avaliados</button>
+      <button class="on" data-s="best">Top rated</button>
+      <button data-s="newest">Newest</button>
+      <button data-s="popular">Most reviewed</button>
     </div>
 
     <div id="add-form" class="card hidden">
-      <h2>Registar o seu estabelecimento</h2>
+      <h2>Register your business</h2>
 
       <div class="row">
         <div>
-          <label for="n-name">Nome do estabelecimento *</label>
+          <label for="n-name">Business name *</label>
           <input id="n-name" maxlength="70" placeholder="Tasca do Bacalhau">
         </div>
         <div>
           <label for="n-cat">Tipo</label>
           <select id="n-cat">
-            <option>Restaurante</option><option>Café</option><option>Bar</option>
+            <option>Restaurant</option><option>Cafe</option><option>Bar</option>
             <option>Padaria</option><option>Hotel</option><option>Loja</option>
-            <option>Serviço</option><option>Outro</option>
+            <option>Service</option><option>Other</option>
           </select>
         </div>
       </div>
 
-      <label for="n-desc">Descrição curta</label>
+      <label for="n-desc">Short description</label>
       <input id="n-desc" maxlength="140" placeholder="Comida tradicional portuguesa, forno a lenha">
 
       <div class="row">
         <div>
-          <label for="n-city">Cidade *</label>
+          <label for="n-city">City *</label>
           <input id="n-city" maxlength="50" placeholder="Lisboa">
         </div>
         <div>
@@ -301,38 +301,38 @@ justify-content:center;font-size:20px;margin-bottom:12px}
         </div>
       </div>
 
-      <label for="n-mail">Endereço HidraMail do dono *</label>
+      <label for="n-mail">Owner HidraMail address *</label>
       <input id="n-mail" maxlength="60" placeholder="xxxxxxxxxxxxxxxx@hidra" autocomplete="off" spellcheck="false">
-      <div class="hint" id="n-mail-hint">É para aqui que cada avaliação é enviada, cifrada. Abra o app <b>Correio</b> na HidraNet, copie o seu endereço e cole aqui. (O Correio tem de ser aberto pelo menos uma vez para receber.)</div>
+      <div class="hint" id="n-mail-hint">This is where every review is sent, encrypted. Open the <b>Mail</b> app in HidraNet, copy your address and paste it here. (Mail has to be opened at least once to receive.)</div>
 
-      <label for="n-hours">Horário</label>
-      <input id="n-hours" maxlength="120" placeholder="Seg–Sáb, 12h–15h e 19h–23h">
+      <label for="n-hours">Opening hours</label>
+      <input id="n-hours" maxlength="120" placeholder="Mon–Sat, 12–3pm and 7–11pm">
 
-      <label for="n-about">Sobre o estabelecimento (aparece no site)</label>
-      <textarea id="n-about" maxlength="900" placeholder="Conte a história da casa, o que a torna diferente, quem cozinha…"></textarea>
+      <label for="n-about">About the business (shown on the page)</label>
+      <textarea id="n-about" maxlength="900" placeholder="Tell the story of the place, what makes it different, who cooks…"></textarea>
 
       <label for="n-menu">Especialidades — uma por linha</label>
-      <textarea id="n-menu" maxlength="600" placeholder="Bacalhau à Brás&#10;Arroz de marisco&#10;Pastéis de nata da casa"></textarea>
+      <textarea id="n-menu" maxlength="600" placeholder="House salad&#10;Seafood rice&#10;Custard tarts"></textarea>
 
       <label>Fotos</label>
-      <div class="drop" id="n-drop">Clique para escolher fotos — são reduzidas antes de publicar</div>
+      <div class="drop" id="n-drop">Click to choose photos — they are downscaled before publishing</div>
       <input type="file" id="n-files" accept="image/*" multiple style="display:none">
       <div class="thumbs" id="n-thumbs"></div>
 
       <div style="margin-top:16px;display:flex;gap:8px">
-        <button class="go" id="n-save">Publicar estabelecimento</button>
+        <button class="go" id="n-save">Publish business</button>
         <button class="go ghost" id="n-cancel">Cancelar</button>
       </div>
       <div class="msg" id="n-msg"></div>
     </div>
 
     <div class="grid" id="grid"></div>
-    <div class="empty" id="list-empty">A carregar estabelecimentos da rede…</div>
+    <div class="empty" id="list-empty">Loading businesses from the network…</div>
   </div>
 
-  <!-- ─── Página de um estabelecimento ─── -->
+  <!-- ─── Business page ─── -->
   <div id="view-biz" class="hidden">
-    <a class="back" id="back">← Todos os estabelecimentos</a>
+    <a class="back" id="back">← All businesses</a>
 
     <div class="site-hero" id="b-hero"></div>
     <div class="acts" id="b-acts"></div>
@@ -350,11 +350,11 @@ justify-content:center;font-size:20px;margin-bottom:12px}
       </div>
       <div>
         <div class="card" id="b-hours-card">
-          <div class="sect-t">Horário</div>
+          <div class="sect-t">Opening hours</div>
           <div class="hours" id="b-hours"></div>
         </div>
         <div class="card">
-          <div class="sect-t">Avaliações</div>
+          <div class="sect-t">Reviews</div>
           <div class="avg"><span class="avgn" id="b-avg">—</span>
             <span class="st" id="b-stars">☆☆☆☆☆</span></div>
           <div class="cnt" id="b-cnt" style="margin-bottom:10px"></div>
@@ -369,57 +369,57 @@ justify-content:center;font-size:20px;margin-bottom:12px}
     </div>
 
     <div class="card">
-      <div class="sect-t">Para o proprietário</div>
+      <div class="sect-t">For the owner</div>
       <div class="addrbox" id="b-addr-box"></div>
       <div id="b-pay"></div>
     </div>
 
     <div class="card">
-      <h2>Deixe o seu feedback</h2>
-      <label>A sua nota</label>
+      <h2>Leave your feedback</h2>
+      <label>Your rating</label>
       <div class="pick" id="pick">
         <span data-v="1">★</span><span data-v="2">★</span><span data-v="3">★</span>
         <span data-v="4">★</span><span data-v="5">★</span>
       </div>
       <div class="row">
         <div>
-          <label for="r-name">O seu nome *</label>
+          <label for="r-name">Your name *</label>
           <input id="r-name" maxlength="36" placeholder="Como quer assinar">
         </div>
         <div>
-          <label for="r-loc">De onde é (opcional)</label>
+          <label for="r-loc">Where you are from (optional)</label>
           <input id="r-loc" maxlength="50" placeholder="Lisboa">
         </div>
       </div>
-      <label for="r-text">Como foi a sua experiência?</label>
+      <label for="r-text">How was your experience?</label>
       <textarea id="r-text" maxlength="1200" placeholder="Conte o que achou…"></textarea>
-      <div style="margin-top:14px"><button class="go" id="r-send">Publicar avaliação</button></div>
+      <div style="margin-top:14px"><button class="go" id="r-send">Post review</button></div>
       <div class="msg" id="r-msg"></div>
     </div>
 
     <div class="card">
-      <h2>Avaliações</h2>
+      <h2>Reviews</h2>
       <div class="tools">
-        <button class="on" data-rs="recentes">Mais recentes</button>
-        <button data-rs="melhores">Melhores</button>
-        <button data-rs="piores">Piores</button>
+        <button class="on" data-rs="newest">Newest</button>
+        <button data-rs="best">Best</button>
+        <button data-rs="worst">Worst</button>
       </div>
       <div id="r-list"></div>
     </div>
   </div>
 
-  <!-- ─── Painel do Dono ─── -->
+  <!-- ─── Owner panel ─── -->
   <div id="view-owner" class="hidden">
-    <a class="back" id="o-back">← Voltar ao diretório</a>
+    <a class="back" id="o-back">← Back to the directory</a>
 
     <div class="card" id="o-lock">
-      <h2>Painel do Dono</h2>
-      <div class="hint" style="margin-bottom:6px">Entre com a chave que recebeu ao registar o estabelecimento. É ela que prova que o painel é seu — onde vê as avaliações, responde e recebe cada nova avaliação no seu Correio.</div>
-      <label for="o-slug">Estabelecimento</label>
+      <h2>Owner panel</h2>
+      <div class="hint" style="margin-bottom:6px">Sign in with the key you received when registering the business. It is what proves the panel is yours — where you see reviews, reply to them, and receive each new one in your Mail.</div>
+      <label for="o-slug">Business</label>
       <select id="o-slug"></select>
-      <label for="o-key">Chave de dono</label>
-      <input id="o-key" maxlength="40" placeholder="a sua chave secreta" autocomplete="off" spellcheck="false">
-      <div style="margin-top:14px"><button class="go" id="o-enter">Entrar</button></div>
+      <label for="o-key">Owner key</label>
+      <input id="o-key" maxlength="40" placeholder="your secret key" autocomplete="off" spellcheck="false">
+      <div style="margin-top:14px"><button class="go" id="o-enter">Sign in</button></div>
       <div class="msg" id="o-msg"></div>
     </div>
 
@@ -428,15 +428,15 @@ justify-content:center;font-size:20px;margin-bottom:12px}
 
 </div>
 
-<!-- modal da chave de dono (mostrado uma vez, após registar) -->
+<!-- owner key modal (shown once, after registering) -->
 <div class="modal" id="okey">
   <div class="mbox">
-    <h2>Estabelecimento publicado</h2>
-    <div class="hint" style="margin:8px 0 14px">Guarde a sua <b>chave de dono</b>. É a única forma de entrar no Painel do Dono para ver e responder às avaliações — e ninguém pode alterar a sua ficha sem ela. Não a partilhe.</div>
+    <h2>Business published</h2>
+    <div class="hint" style="margin:8px 0 14px">Keep your <b>owner key</b> safe. It is the only way into the Owner panel to see and answer reviews — and nobody can change your listing without it. Do not share it.</div>
     <div class="keybox"><code id="okey-val"></code></div>
     <div style="display:flex;gap:8px;margin-top:10px"><button class="go ghost" id="okey-copy">Copiar chave</button></div>
     <div id="okey-links" style="margin-top:14px"></div>
-    <div style="margin-top:16px"><button class="go" id="okey-done">Guardei — abrir o meu painel</button></div>
+    <div style="margin-top:16px"><button class="go" id="okey-done">Saved — open the meu painel</button></div>
   </div>
 </div>
 
@@ -447,30 +447,30 @@ justify-content:center;font-size:20px;margin-bottom:12px}
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
 
-// Mesmo relay do chat, mail e fórum. Tudo é publicado como retido, por isso
-// quem abrir amanhã recebe o que já foi escrito — não há servidor a guardar.
+// Same relay as chat, mail and forum. Everything is published retained, so
+// whoever opens it tomorrow gets what was already written — no server stores it.
 var MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 
-// O broker recusa cargas grandes, por isso cada foto vai no seu próprio tópico
-// e é reduzida antes de sair daqui.
+// The broker refuses large payloads, so each photo goes on its own topic
+// and is downscaled before it leaves here.
 var MAX_PHOTO_BYTES = 170000;
 var MAX_PHOTOS = 6;
 
-// Selo de estabelecimento confirmado. O pagamento é verificado na blockchain
+// Confirmed business badge. The payment is verified on-chain
 // por cada cliente — nunca acreditamos numa mensagem que diga "sou verificado",
-// porque qualquer pessoa pode publicar uma.
+// because anyone can publish one.
 var BTC_ADDR = 'bc1ql68lqgkcurm7mv5zjdnprq6ya5ydq4a7pwuvsx';
 var BADGE_USD = 10;
 
 // Endereco publico da landing. E ESTE que vai no cartao NFC: ".hidra" so
-// resolve dentro do navegador HidraNet, e o telemovel de um cliente cai na
-// busca do Google. Trocar aqui se o dominio mudar.
+// resolves inside the HidraNet browser, and a customer's phone lands on a
+// Google search instead. Change it here if the domain changes.
 var PUBLIC_BASE = 'https://ladingpage-hidra.vercel.app';
 var CHAIN_API = 'https://blockstream.info/api';
 var PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
 
 var client = null, brokerIx = 0;
-var state = { biz: {}, revs: {}, pics: {}, replies: {}, sort: 'melhores', rsort: 'recentes',
+var state = { biz: {}, revs: {}, pics: {}, replies: {}, sort: 'best', rsort: 'newest',
   open: null, stars: 0, draft: [], paidSats: null, btcPrice: null,
   ownerSlug: null, ownerSecret: null, ownerOpen: false, editSlug: null };
 
@@ -494,7 +494,7 @@ function slugify(s) {
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 44);
 }
 
-/** Aceita um link http(s) — o resto é descartado para não abrir porta a javascript:. */
+/** Accepts an http(s) link — anything else is dropped, so javascript: cannot get through. */
 function safeUrl(u) {
   u = (u || '').trim();
   if (!u) return '';
@@ -506,17 +506,17 @@ function safeUrl(u) {
 // ───────── fotos ─────────
 
 /**
- * Reduz a imagem até caber no limite do broker. Vai baixando a qualidade e,
- * se ainda assim não couber, a resolução — uma foto de telemóvel tem 3-6 MB e
- * nunca passaria como está.
+ * Shrinks the image until it fits the broker limit. Drops quality first and,
+ * and if it still does not fit, the resolution — a phone photo is 3-6 MB and
+ * would never pass as it is.
  */
 function shrink(file) {
   return new Promise(function (resolve, reject) {
     var reader = new FileReader();
-    reader.onerror = function () { reject(new Error('não consegui ler o ficheiro')); };
+    reader.onerror = function () { reject(new Error('could not read the file')); };
     reader.onload = function () {
       var img = new Image();
-      img.onerror = function () { reject(new Error('ficheiro não é uma imagem válida')); };
+      img.onerror = function () { reject(new Error('file is not a valid image')); };
       img.onload = function () {
         var side = 1000;
         for (var attempt = 0; attempt < 5; attempt++) {
@@ -532,7 +532,7 @@ function shrink(file) {
           }
           side = Math.round(side * 0.75);
         }
-        reject(new Error('imagem grande demais mesmo depois de reduzir'));
+        reject(new Error('image too large even after resizing'));
       };
       img.src = reader.result;
     };
@@ -557,7 +557,7 @@ $('n-files').addEventListener('change', async function () {
   var files = Array.prototype.slice.call(this.files || []);
   this.value = '';
   for (var i = 0; i < files.length; i++) {
-    if (state.draft.length >= MAX_PHOTOS) { say('n-msg', 'Máximo de ' + MAX_PHOTOS + ' fotos.', 'err'); break; }
+    if (state.draft.length >= MAX_PHOTOS) { say('n-msg', 'Maximum of ' + MAX_PHOTOS + ' photos.', 'err'); break; }
     say('n-msg', 'A reduzir ' + files[i].name + '…', 'work');
     try {
       state.draft.push(await shrink(files[i]));
@@ -569,7 +569,7 @@ $('n-files').addEventListener('change', async function () {
   }
 });
 
-// ───────── ligação ─────────
+// ───────── connection ─────────
 function connect() {
   $('ctxt').textContent = 'a ligar…';
   client = mqtt.connect(MQTT_BROKERS[brokerIx], {
@@ -584,7 +584,7 @@ function connect() {
     client.subscribe('hreview/p/+/+', { qos: 1 });
     client.subscribe('hreview/reply/+/+', { qos: 1 });
     // As retidas chegam logo a seguir; sem isto, uma rede vazia ficaria presa
-    // em "a carregar" para sempre.
+    // stuck on "loading" forever.
     setTimeout(schedule, 1500);
   });
   client.on('reconnect', function () { $('cdot').className = 'dot'; $('ctxt').textContent = 'a religar…'; });
@@ -602,13 +602,13 @@ function schedule() {
 
 function onMessage(topic, payload) {
   var s = payload.toString();
-  // Resposta do diretorio do correio a um pedido de notificacao ao dono.
+  // Mail directory answering a request to notify the owner.
   if (topic.indexOf('hmaildir/') === 0) {
     var cb = mailResolvers[topic];
     if (cb) { delete mailResolvers[topic]; try { client.unsubscribe(topic); } catch (e) {} cb(s); }
     return;
   }
-  // Resposta do dono a uma avaliacao.
+  // Owner replying to a review.
   if (topic.indexOf('hreview/reply/') === 0) {
     var rp = topic.split('/');
     if (!s) delete state.replies[rp[3]]; else { try { state.replies[rp[3]] = JSON.parse(s); } catch (e) {} }
@@ -642,10 +642,10 @@ function publish(topic, value) {
   });
 }
 
-// ───────── notificar o dono pelo HidraMail ─────────
-// Reaproveita o correio E2E da propria rede: quando alguem avalia, o dono
+// ───────── notify the owner over HidraMail ─────────
+// Reuses the network's own E2E mail: when someone reviews, the owner
 // recebe uma mensagem cifrada no app Correio (mesmo offline, via retidas).
-// Nada sai para servicos externos — e o vosso proprio sistema.
+// Nothing goes out to external services — it is your own system.
 var subtle = crypto.subtle, te = new TextEncoder(), td = new TextDecoder();
 var mailResolvers = {};
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
@@ -679,8 +679,8 @@ function dirResolve(addr){
   });
 }
 
-// Envia uma mensagem HidraMail para o dono. Best-effort: se o dono ainda nao
-// abriu o Correio, a chave dele nao esta publicada e a mensagem e saltada.
+// Sends a HidraMail message to the owner. Best-effort: if the owner has not
+// opened Mail, their key is not published and the message is skipped.
 async function notifyOwner(addr, subject, body){
   try{
     addr=normMail(addr); if(!looksMail(addr)) return false;
@@ -698,14 +698,14 @@ async function notifyOwner(addr, subject, body){
 }
 
 async function sha256hex(s){ var b=await subtle.digest('SHA-256',te.encode(s)); return Array.from(new Uint8Array(b)).map(function(x){return('0'+x.toString(16)).slice(-2)}).join(''); }
-// A chave de dono nunca vai para a rede — so o seu hash. E o que protege a
-// ficha de ser reescrita e o que abre o Painel do Dono.
+// The owner key never reaches the network — only its hash. That is what protects the
+// listing from being rewritten, and what opens the Owner panel.
 function ownerHashOf(secret){ return sha256hex('hidra-owner-v1:' + secret); }
 
 
 // ───────── selo pago ─────────
 
-/** Nome normalizado, para comparar "Kimoa Beach Bar" com "kimoa  beach-bar". */
+/** Normalised name, to compare "Kimoa Beach Bar" with "kimoa  beach-bar". */
 function normName(n) {
   var map = { 'á':'a','à':'a','â':'a','ã':'a','é':'e','ê':'e','í':'i','ó':'o','ô':'o','õ':'o','ú':'u','ç':'c' };
   return (n || '').toLowerCase().replace(/[áàâãéêíóôõúç]/g, function (c) { return map[c] || c; })
@@ -719,8 +719,8 @@ function nameTaken(name) {
 }
 
 /**
- * Sal de 4 dígitos derivado do slug. É o que liga um pagamento a um
- * estabelecimento: dois negócios nunca pedem o mesmo valor, por isso ninguém
+ * A 4-digit salt derived from the slug. It is what links a payment to a
+ * business: no two businesses ask for the same amount, so nobody
  * consegue reclamar o pagamento de outro.
  */
 function saltOf(slug) {
@@ -742,10 +742,10 @@ async function btcPrice() {
 }
 
 /**
- * Valor exato a pagar por este estabelecimento. O sal ocupa os ultimos 3
+ * Exact amount payable for this business. The salt occupies the last 3
  * digitos e o resto e o equivalente a 10 dolares arredondado ao milhar mais
  * proximo — com o BTC na casa das dezenas de milhares, 10 dolares sao apenas
- * ~13 mil satoshis, por isso um sal maior distorceria o preco (a primeira
+ * ~13 thousand satoshis, so a larger salt would distort the price (the first
  * versao pedia 8,86 em vez de 10).
  */
 function satsFor(slug, price) {
@@ -754,9 +754,9 @@ function satsFor(slug, price) {
 }
 
 /**
- * Lê da blockchain todos os valores já recebidos nesta carteira. Um
- * estabelecimento fica com selo se existir um pagamento com o valor exato que
- * lhe corresponde — verificado aqui, não acreditado de uma mensagem.
+ * Reads from the chain every amount already received by this wallet. A
+ * business gets a badge only if a payment exists for the exact amount that
+ * corresponds to it — verified here, not taken on trust from a message.
  */
 async function loadPayments() {
   try {
@@ -774,21 +774,21 @@ async function loadPayments() {
     state.paidSats = seen;
     schedule();
   } catch (e) {
-    // Sem rede ou API em baixo: os selos simplesmente não aparecem.
+    // No network, or the API is down: badges simply do not appear.
   }
 }
 
-/** Um selo só existe se a cadeia o confirmar. */
+/** A badge only exists if the chain confirms it. */
 function isVerified(slug) {
   var b = state.biz[slug];
   if (!b || !b.sats || !state.paidSats) return false;
-  // O valor tem de corresponder ao sal deste slug, senão é pagamento de outro.
+  // The amount must match this slug's salt, otherwise it is someone else's payment.
   if (b.sats % 1000 !== saltOf(slug) % 1000) return false;
   var hit = state.paidSats[b.sats];
   return !!(hit && hit.confirmed);
 }
 
-// ───────── cálculos ─────────
+// ───────── calculations ─────────
 function reviewsOf(slug) {
   var out = [];
   for (var k in state.revs) if (state.revs[k]._slug === slug) out.push(state.revs[k]);
@@ -825,7 +825,7 @@ function fillSelect(sel, values, allLabel) {
   if (values.indexOf(current) >= 0) sel.value = current;
 }
 
-// ───────── diretório ─────────
+// ───────── directory ─────────
 function render() {
   if (state.ownerOpen) { renderOwner(); return; }
   if (state.open) { renderBiz(); return; }
@@ -843,17 +843,17 @@ function render() {
     list.push({ slug: slug, b: b, st: statsOf(slug), pics: photosOf(slug) });
   }
 
-  if (state.sort === 'recentes') list.sort(function (x, y) { return (y.b.at || 0) - (x.b.at || 0); });
-  else if (state.sort === 'populares') list.sort(function (x, y) { return y.st.count - x.st.count; });
+  if (state.sort === 'newest') list.sort(function (x, y) { return (y.b.at || 0) - (x.b.at || 0); });
+  else if (state.sort === 'popular') list.sort(function (x, y) { return y.st.count - x.st.count; });
   else list.sort(function (x, y) { return y.st.avg - x.st.avg || y.st.count - x.st.count; });
 
   var empty = $('list-empty');
   empty.style.display = list.length ? 'none' : 'block';
   if (!list.length) {
     var anyBiz = Object.keys(state.biz).length > 0;
-    empty.textContent = anyBiz ? 'Nenhum estabelecimento corresponde a esse filtro.'
-      : (client && client.connected ? 'Ainda não há estabelecimentos. Adicione o primeiro.'
-        : 'A carregar estabelecimentos da rede…');
+    empty.textContent = anyBiz ? 'No business matches that filter.'
+      : (client && client.connected ? 'No businesses yet. Add the first one.'
+        : 'Loading businesses from the network…');
   }
 
   $('grid').innerHTML = list.map(function (it) {
@@ -864,7 +864,7 @@ function render() {
     var rating = it.st.count
       ? '<span class="st">' + starRow(Math.round(it.st.avg)) + '</span><span class="cnt">' +
         it.st.avg.toFixed(1) + ' · ' + it.st.count + '</span>'
-      : '<span class="cnt">sem avaliações ainda</span>';
+      : '<span class="cnt">no reviews yet</span>';
     var sub = [it.b.city, it.b.desc].filter(Boolean).join(' · ');
     var seal = isVerified(it.slug) ? '<span class="seal">✓ Confirmado</span>' : '';
     return '<div class="biz" data-slug="' + esc(it.slug) + '">' +
@@ -879,11 +879,11 @@ function render() {
   });
 }
 
-// ───────── página do estabelecimento ─────────
+// ───────── business page ─────────
 function openBiz(slug) {
   state.open = slug; state.stars = 0;
-  // Mantem o endereco na barra, para a pagina poder ser partilhada e para o
-  // botao de voltar do browser fazer o que se espera.
+  // Keeps the address in the bar, so the page can be shared and so the
+  // browser's back button do what people expect.
   try { history.replaceState(null, '', '?b=' + encodeURIComponent(slug)); } catch (e) {}
   $('view-home').className = 'hidden';
   $('view-list').className = 'hidden';
@@ -898,12 +898,12 @@ function renderBiz() {
   var st = statsOf(state.open), pics = photosOf(state.open);
   var verified = isVerified(state.open);
 
-  // ── Cabeçalho: a primeira foto é a capa do site ──
+  // ── Header: the first photo is the page cover ──
   var seal = verified ? '<span class="seal big">✓ Confirmado</span>' : '';
   var rate = st.count
     ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
-      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' avaliação' : ' avaliações') + '</span>'
-    : '<span class="cnt">ainda sem avaliações</span>';
+      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' review' : ' reviews') + '</span>'
+    : '<span class="cnt">no reviews yet</span>';
 
   $('b-hero').innerHTML =
     (pics.length ? '<img src="' + pics[0] + '" alt="">' : '') +
@@ -913,7 +913,7 @@ function renderBiz() {
     (b.desc ? '<div class="site-sub">' + esc(b.desc) + '</div>' : '') +
     '<div class="hero-rate">' + rate + '</div></div>';
 
-  // ── Ações rápidas ──
+  // ── Quick actions ──
   var acts = [];
   var where = [b.addr, b.city].filter(Boolean).join(', ');
   if (where) {
@@ -935,7 +935,7 @@ function renderBiz() {
   $('b-acts').innerHTML = acts.join('');
   $('b-acts').style.display = acts.length ? 'grid' : 'none';
 
-  // ── Secções: escondidas quando o dono não preencheu, para não deixar buracos ──
+  // ── Sections: hidden when the owner left them empty, so there are no gaps ──
   function section(cardId, holderId, value, asHtml) {
     var has = !!(value && String(value).trim());
     $(cardId).style.display = has ? 'block' : 'none';
@@ -950,10 +950,10 @@ function renderBiz() {
     return '<div class="menu-item">' + esc(l) + '</div>';
   }).join(''), true);
 
-  // ── Avaliações ──
+  // ── Reviews ──
   $('b-avg').textContent = st.count ? st.avg.toFixed(1) : '—';
   $('b-stars').textContent = starRow(Math.round(st.avg));
-  $('b-cnt').textContent = st.count === 1 ? '1 avaliação' : st.count + ' avaliações';
+  $('b-cnt').textContent = st.count === 1 ? '1 review' : st.count + ' reviews';
 
   var max = Math.max.apply(null, st.dist.concat([1])), bars = '';
   for (var i = 5; i >= 1; i--) {
@@ -964,7 +964,7 @@ function renderBiz() {
   }
   $('b-dist').innerHTML = st.count ? bars : '<div class="cnt">Seja o primeiro a avaliar.</div>';
 
-  // ── Galeria: a capa já aparece no cabeçalho ──
+  // ── Gallery: the cover already appears in the header ──
   $('b-gal-card').style.display = pics.length > 1 ? 'block' : 'none';
   $('b-gal').innerHTML = pics.slice(1).map(function (p) {
     return '<img src="' + p + '" alt="" data-full="' + p + '">';
@@ -979,47 +979,47 @@ function renderBiz() {
   renderPayBox(b, verified);
   renderAddrBox(state.open);
 
-  // ── Lista de avaliações ──
+  // ── Review list ──
   var rs = reviewsWithId(state.open);
-  var by = { melhores: function (x, y) { return y.r.stars - x.r.stars || y.r.at - x.r.at; },
-             piores: function (x, y) { return x.r.stars - y.r.stars || y.r.at - x.r.at; } };
+  var by = { best: function (x, y) { return y.r.stars - x.r.stars || y.r.at - x.r.at; },
+             worst: function (x, y) { return x.r.stars - y.r.stars || y.r.at - x.r.at; } };
   rs.sort(by[state.rsort] || function (x, y) { return (y.r.at || 0) - (x.r.at || 0); });
 
   $('r-list').innerHTML = rs.length ? rs.map(function (it) {
     var r = it.r, rep = state.replies[it.id];
-    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
-    var reply = rep ? '<div class="orev"><div class="reply"><div class="rl">Resposta do estabelecimento</div>' + esc(rep.text) + '</div></div>' : '';
+    var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var reply = rep ? '<div class="orev"><div class="reply"><div class="rl">Reply from the business</div>' + esc(rep.text) + '</div></div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
       '<div class="rc">' + esc(r.text) + '</div>' + reply + '</div>';
-  }).join('') : '<div class="empty">Ainda ninguém avaliou. Seja o primeiro.</div>';
+  }).join('') : '<div class="empty">Nobody has reviewed yet. Be the first.</div>';
 
   [].forEach.call($('pick').children, function (sp, k) { sp.className = k < state.stars ? 'on' : ''; });
 }
 
-/** O endereco .hidra do estabelecimento — e isto que vai gravado no cartao NFC. */
+/** The business's .hidra address — this is what gets written onto the NFC card. */
 function renderAddrBox(slug) {
   var hidra = hidraAddr(slug);
   var publico = PUBLIC_BASE + '/r/' + slug;
 
   $('b-addr-box').innerHTML =
     '<div style="width:100%">' +
-      '<div class="lbl">Link para o cartão NFC</div>' +
+      '<div class="lbl">Link for the NFC card</div>' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
         '<span class="val" style="flex:1">' + esc(publico) + '</span>' +
         '<button class="go ghost" id="addr-copy-pub">Copiar</button>' +
       '</div>' +
       '<div style="font-size:12px;color:var(--mut);margin-top:7px;line-height:1.5">' +
-        'Grave <b>este</b> no cartão. Abre em qualquer telemóvel, sem instalar nada.' +
+        'Write <b>this one</b> to the card. It opens on any phone, with nothing to install.' +
       '</div>' +
-      '<div class="lbl" style="margin-top:14px">Endereço dentro da HidraNet</div>' +
+      '<div class="lbl" style="margin-top:14px">Address inside HidraNet</div>' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
         '<span class="val" style="flex:1">' + esc(hidra) + '</span>' +
         '<button class="go ghost" id="addr-copy-hidra">Copiar</button>' +
       '</div>' +
       '<div style="font-size:12px;color:var(--mut);margin-top:7px;line-height:1.5">' +
-        'Só funciona no navegador HidraNet — um telemóvel comum não resolve .hidra.' +
+        'Only works in the HidraNet browser — an ordinary phone cannot resolve .hidra.' +
       '</div>' +
     '</div>';
 
@@ -1027,31 +1027,31 @@ function renderAddrBox(slug) {
     $(id).addEventListener('click', function () {
       navigator.clipboard.writeText(valor).then(
         function () { toast(nota); },
-        function () { toast('Não consegui copiar. Selecione o endereço à mão.'); }
+        function () { toast('Could not copy. Select the address by hand.'); }
       );
     });
   }
-  copiar('addr-copy-pub', publico, 'Link copiado — grave-o no cartão NFC');
-  copiar('addr-copy-hidra', hidra, 'Endereço .hidra copiado');
+  copiar('addr-copy-pub', publico, 'Link copied — write it to the NFC card');
+  copiar('addr-copy-hidra', hidra, '.hidra address copied');
 }
 
 /**
- * Painel do selo. Se a cadeia ja confirmou, mostra o comprovativo; se nao,
+ * Badge panel. If the chain has confirmed, show the proof; if not,
  * mostra o valor exato a pagar. O valor tem de ser exato porque e ele que
- * identifica o estabelecimento — nao ha outro campo a ligar pagamento a ficha.
+ * identifies the business — no other field links a payment to a listing.
  */
 function renderPayBox(b, verified) {
   var box = $('b-pay');
   if (verified) {
     var hit = state.paidSats[b.sats];
     box.innerHTML = '<div class="paybox">' +
-      '<div class="payrow"><span>Selo de estabelecimento confirmado</span>' +
+      '<div class="payrow"><span>Confirmed business badge</span>' +
       '<span class="seal">✓ pago</span></div>' +
-      '<div class="payrow"><span>Transação</span></div>' +
+      '<div class="payrow"><span>Transaction</span></div>' +
       '<div class="mono"><a href="https://blockstream.info/tx/' + esc(hit.txid) +
       '" target="_blank" rel="noopener noreferrer">' + esc(hit.txid) + '</a></div>' +
       '<div class="payrow" style="margin-top:8px;color:var(--mut);font-size:12px">' +
-      '<span>Confirma que alguém pagou pelo selo. Não é uma verificação de identidade.</span></div>' +
+      '<span>Confirms someone paid for the badge. It is not an identity check.</span></div>' +
       '</div>';
     return;
   }
@@ -1059,32 +1059,32 @@ function renderPayBox(b, verified) {
   if (!b.sats) { box.innerHTML = ''; return; }
 
   box.innerHTML = '<div class="paybox">' +
-    '<div class="payrow"><span>Selo de confirmação</span><span>' +
+    '<div class="payrow"><span>Confirmation badge</span><span>' +
     (state.btcPrice ? '≈ US$' + (b.sats / 1e8 * state.btcPrice).toFixed(2) : 'US$' + BADGE_USD) +
     ' em Bitcoin</span></div>' +
-    '<div class="payrow"><span>Valor exato (identifica este estabelecimento)</span>' +
+    '<div class="payrow"><span>Exact amount (identifies this business)</span>' +
     '<span class="mono">' + fmtSats(b.sats) + '</span></div>' +
     '<div class="payrow"><span>Carteira</span></div>' +
     '<div class="mono">' + esc(BTC_ADDR) + '</div>' +
     '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
-    '<button class="go ghost" id="pay-copy">Copiar endereço</button>' +
-    '<button class="go ghost" id="pay-check">Já paguei — verificar</button></div>' +
+    '<button class="go ghost" id="pay-copy">Copy address</button>' +
+    '<button class="go ghost" id="pay-check">I have paid — check</button></div>' +
     '<div class="payrow" style="margin-top:9px;color:var(--mut);font-size:12px">' +
-    '<span>Pague o valor exato acima. Outro valor não é reconhecido, porque é ele ' +
-    'que liga o pagamento a este estabelecimento. A confirmação aparece quando a ' +
-    'transação entrar num bloco.</span></div>' +
+    '<span>Pay exactly the amount above. Any other amount is not recognised, because it is what ' +
+    'links the payment to this business. Confirmation appears once the ' +
+    'transaction lands in a block.</span></div>' +
     '<div class="msg" id="pay-msg"></div></div>';
 
   $('pay-copy').addEventListener('click', function () {
-    navigator.clipboard.writeText(BTC_ADDR).then(function () { toast('Endereço copiado'); },
-      function () { say('pay-msg', 'Não consegui copiar. Selecione o endereço à mão.', 'err'); });
+    navigator.clipboard.writeText(BTC_ADDR).then(function () { toast('Address copied'); },
+      function () { say('pay-msg', 'Could not copy. Select the address by hand.', 'err'); });
   });
   $('pay-check').addEventListener('click', async function () {
     say('pay-msg', 'A consultar a blockchain…', 'work');
     await loadPayments();
-    if (isVerified(state.open)) { toast('Selo confirmado'); renderBiz(); }
-    else say('pay-msg', 'Ainda não encontrei esse pagamento. Se acabou de enviar, ' +
-      'aguarde a primeira confirmação e tente de novo.', 'err');
+    if (isVerified(state.open)) { toast('Badge confirmed'); renderBiz(); }
+    else say('pay-msg', 'I have not found that payment yet. If you just sent it, ' +
+      'wait for the first confirmation and try again.', 'err');
   });
 }
 
@@ -1097,7 +1097,7 @@ function back() {
   render();
 }
 
-// ───────── interações ─────────
+// ───────── interactions ─────────
 $('back').addEventListener('click', back);
 $('lb').addEventListener('click', function () { this.className = 'lightbox'; });
 
@@ -1134,9 +1134,9 @@ $('pick').addEventListener('click', function (e) {
 $('btn-add').addEventListener('click', function () {
   var f = $('add-form');
   var opening = f.className.indexOf('hidden') >= 0;
-  if (opening) {   // abrir sempre em modo "novo" (limpa um estado de edição anterior)
+  if (opening) {   // always open in "new" mode (clears any previous editing state)
     state.editSlug = null;
-    f.querySelector('h2').textContent = 'Registar o seu estabelecimento';
+    f.querySelector('h2').textContent = 'Register your business';
     $('n-msg').className = 'msg';
   }
   f.className = opening ? 'card' : 'card hidden';
@@ -1144,7 +1144,7 @@ $('btn-add').addEventListener('click', function () {
 $('n-cancel').addEventListener('click', function () {
   $('add-form').className = 'card hidden';
   state.editSlug = null;
-  $('add-form').querySelector('h2').textContent = 'Registar o seu estabelecimento';
+  $('add-form').querySelector('h2').textContent = 'Register your business';
   $('n-msg').className = 'msg';
 });
 
@@ -1153,46 +1153,46 @@ $('n-save').addEventListener('click', async function () {
   var city = $('n-city').value.trim();
   var mail = normMail($('n-mail').value);
   var editing = !!state.editSlug;
-  if (!name) { say('n-msg', 'Escreva o nome do estabelecimento.', 'err'); return; }
-  if (!city) { say('n-msg', 'Indique a cidade — é por ela que as pessoas procuram.', 'err'); return; }
-  if (!looksMail(mail)) { say('n-msg', 'Cole o endereço HidraMail do dono (algo como xxxx@hidra). Copie-o no app Correio.', 'err'); return; }
-  if (!client || !client.connected) { say('n-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
+  if (!name) { say('n-msg', 'Enter the business name.', 'err'); return; }
+  if (!city) { say('n-msg', 'Give the city — it is how people search.', 'err'); return; }
+  if (!looksMail(mail)) { say('n-msg', 'Paste the owner HidraMail address (something like xxxx@hidra). Copy it from the Mail app.', 'err'); return; }
+  if (!client || !client.connected) { say('n-msg', 'No connection to the network. Try again shortly.', 'err'); return; }
 
-  // Nome único em toda a rede, não só na cidade: dois "Kimoa Beach Bar"
-  // tornariam o diretório impossível de confiar. (Ao editar, o próprio nome
-  // não conta como colisão.)
+  // Name unique across the whole network, not just the city: two "Kimoa Beach Bar"
+  // would make the directory impossible to trust. (When editing, the name
+  // does not count as a collision.)
   var taken = nameTaken(name);
   if (taken && taken !== state.editSlug) {
-    say('n-msg', 'Já existe "' + state.biz[taken].name + '" em ' +
-      (state.biz[taken].city || 'outra cidade') + '. Escolha outro nome.', 'err');
+    say('n-msg', '"' + state.biz[taken].name + '" already exists in ' +
+      (state.biz[taken].city || 'another city') + '. Choose a different name.', 'err');
     return;
   }
 
   var slug = editing ? state.editSlug : slugify(name + '-' + city);
-  if (!slug) { say('n-msg', 'Esse nome não dá um endereço válido.', 'err'); return; }
-  if (!editing && state.biz[slug]) { say('n-msg', 'Já existe um estabelecimento nesse endereço.', 'err'); return; }
+  if (!slug) { say('n-msg', 'That name does not produce a valid address.', 'err'); return; }
+  if (!editing && state.biz[slug]) { say('n-msg', 'A business already exists at that address.', 'err'); return; }
 
-  // Chave de dono: no registo é criada nova; na edição reutiliza-se a da sessão
-  // aberta no Painel do Dono (que já provou ser o dono).
+  // Owner key: a new one on registration; when editing, reuse the one from the
+  // session opened in the Owner panel (which already proved ownership).
   var secret = editing ? state.ownerSecret : rid(12);
   var ownerHash = await ownerHashOf(secret);
   var prev = state.biz[slug] || {};
 
   $('n-save').disabled = true;
-  say('n-msg', 'A publicar…', 'work');
+  say('n-msg', 'Publishing…', 'work');
 
-  // Fotos primeiro, cada uma no seu tópico: se a ficha aparecesse antes, os
-  // cartões piscavam sem imagem enquanto as fotos chegavam.
+  // Photos first, each on its own topic: if the listing appeared first, other
+  // cards flickered without an image while the photos were arriving.
   for (var i = 0; i < state.draft.length; i++) {
-    say('n-msg', 'A enviar foto ' + (i + 1) + ' de ' + state.draft.length + '…', 'work');
+    say('n-msg', 'Uploading photo ' + (i + 1) + ' of ' + state.draft.length + '…', 'work');
     await publish('hreview/p/' + slug + '/' + rid(6), state.draft[i]);
   }
 
-  // O valor do selo fica fixado aqui, derivado do slug: é o que liga um
-  // pagamento futuro a este estabelecimento e a mais nenhum. Ao editar,
-  // mantém-se o valor já fixado para não perder um selo pago.
+  // The badge amount is fixed here, derived from the slug: it is what links a
+  // future payment to this business and no other. When editing,
+  // the already-fixed amount is kept so a paid badge is not lost.
   var sats = prev.sats || 0;
-  if (!sats) { try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* sem preço: fica sem selo */ } }
+  if (!sats) { try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* no price: no badge */ } }
 
   var ok = await publish('hreview/b/' + slug, {
     name: name,
@@ -1212,11 +1212,11 @@ $('n-save').addEventListener('click', async function () {
   });
   $('n-save').disabled = false;
 
-  if (!ok) { say('n-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
+  if (!ok) { say('n-msg', 'Could not publish. Check your connection.', 'err'); return; }
 
   if (editing) {
-    say('n-msg', 'Alterações guardadas.', 'ok');
-    toast('Ficha atualizada');
+    say('n-msg', 'Changes saved.', 'ok');
+    toast('Listing updated');
     state.editSlug = null;
     setTimeout(function () { $('add-form').className = 'card hidden'; $('n-msg').className = 'msg'; openOwner(slug); }, 1000);
     return;
@@ -1225,19 +1225,19 @@ $('n-save').addEventListener('click', async function () {
   say('n-msg', 'Publicado em toda a rede.', 'ok');
   ['n-name', 'n-desc', 'n-city', 'n-addr', 'n-phone', 'n-site', 'n-hours', 'n-about', 'n-menu', 'n-mail'].forEach(function (id) { $(id).value = ''; });
   state.draft = []; renderThumbs();
-  // Entra logo como dono deste estabelecimento e mostra a chave (uma só vez).
+  // Sign straight in as owner of this business and show the key (once only).
   state.ownerSlug = slug; state.ownerSecret = secret;
   $('add-form').className = 'card hidden'; $('n-msg').className = 'msg';
   showOwnerKey(slug, secret);
 });
 
 $('r-send').addEventListener('click', async function () {
-  if (!state.stars) { say('r-msg', 'Escolha de 1 a 5 estrelas.', 'err'); return; }
+  if (!state.stars) { say('r-msg', 'Choose 1 to 5 stars.', 'err'); return; }
   var name = $('r-name').value.trim();
-  if (!name) { say('r-msg', 'Escreva o seu nome — é obrigatório para avaliar.', 'err'); return; }
+  if (!name) { say('r-msg', 'Enter your name — it is required to review.', 'err'); return; }
   var text = $('r-text').value.trim();
-  if (!text) { say('r-msg', 'Escreva o seu comentário.', 'err'); return; }
-  if (!client || !client.connected) { say('r-msg', 'Sem ligação à rede. Tente daqui a pouco.', 'err'); return; }
+  if (!text) { say('r-msg', 'Write your comment.', 'err'); return; }
+  if (!client || !client.connected) { say('r-msg', 'No connection to the network. Try again shortly.', 'err'); return; }
 
   var loc = $('r-loc').value.trim();
   var stars = state.stars;
@@ -1249,45 +1249,45 @@ $('r-send').addEventListener('click', async function () {
   });
   $('r-send').disabled = false;
 
-  if (!ok) { say('r-msg', 'Não foi possível publicar. Verifique a ligação.', 'err'); return; }
-  say('r-msg', 'Avaliação publicada. Obrigado!', 'ok');
+  if (!ok) { say('r-msg', 'Could not publish. Check your connection.', 'err'); return; }
+  say('r-msg', 'Review posted. Thank you.', 'ok');
   $('r-text').value = ''; $('r-name').value = ''; $('r-loc').value = ''; state.stars = 0;
   [].forEach.call($('pick').children, function (s) { s.className = ''; });
-  toast('A sua avaliação já está na rede');
+  toast('Your review is on the network');
   setTimeout(function () { $('r-msg').className = 'msg'; }, 2600);
 
-  // Dispara a notificação para o dono pelo HidraMail (best-effort).
+  // Fire the owner notification over HidraMail (best-effort).
   if (b.mail) {
     notifyOwner(b.mail,
-      'Nova avaliação (' + stars + '★) — ' + (b.name || ''),
+      'New review (' + stars + '★) — ' + (b.name || ''),
       name + (loc ? ' · ' + loc : '') + ' deu ' + stars + ' estrela' + (stars > 1 ? 's' : '') +
-      ' a ' + (b.name || 'seu estabelecimento') + ':\n\n"' + text + '"\n\n' +
-      'Veja e responda no Painel do Dono do HidraReview.');
+      ' to ' + (b.name || 'your business') + ':\n\n"' + text + '"\n\n' +
+      'View and reply in the HidraReview Owner panel.');
   }
 });
 
-// ───────── Painel do Dono (o funil: registar → gerir → responder) ─────────
+// ───────── Owner panel (the funnel: register → manage → reply) ─────────
 function reviewsWithId(slug) {
   var out = [];
   for (var k in state.revs) if (state.revs[k]._slug === slug) out.push({ id: k, r: state.revs[k] });
   return out;
 }
 
-// Modal mostrado uma vez, logo após registar: entrega a chave e os links.
+// Modal shown once, right after registering: hands over the key and links.
 function showOwnerKey(slug, secret) {
   $('okey-val').textContent = secret;
   var publico = PUBLIC_BASE + '/r/' + slug, hidra = hidraAddr(slug);
   $('okey-links').innerHTML =
-    '<div class="lbl">Link para o cartão NFC</div>' +
+    '<div class="lbl">Link for the NFC card</div>' +
     '<div class="mono" style="margin:3px 0 10px">' + esc(publico) + '</div>' +
-    '<div class="lbl">Endereço dentro da HidraNet</div>' +
+    '<div class="lbl">Address inside HidraNet</div>' +
     '<div class="mono" style="margin:3px 0 0">' + esc(hidra) + '</div>';
   $('okey').className = 'modal on';
 }
 $('okey-copy').addEventListener('click', function () {
   navigator.clipboard.writeText($('okey-val').textContent).then(
-    function () { toast('Chave copiada — guarde-a num lugar seguro'); },
-    function () { toast('Copie a chave à mão.'); });
+    function () { toast('Key copied — keep it somewhere safe'); },
+    function () { toast('Copy the key by hand.'); });
 });
 $('okey-done').addEventListener('click', function () {
   $('okey').className = 'modal';
@@ -1297,8 +1297,8 @@ $('okey-done').addEventListener('click', function () {
 $('btn-owner').addEventListener('click', function () { openOwner(state.ownerSlug); });
 $('o-back').addEventListener('click', function () { closeOwner(); });
 
-// Abre o painel. Se já houver sessão de dono válida, mostra o dashboard;
-// senão, mostra o desbloqueio.
+// Opens the panel. If a valid owner session exists, show the dashboard;
+// otherwise show the unlock screen.
 function openOwner(preferSlug) {
   state.ownerOpen = true; state.open = null;
   $('view-home').className = 'hidden';
@@ -1307,13 +1307,13 @@ function openOwner(preferSlug) {
   $('view-owner').className = '';
   window.scrollTo(0, 0);
 
-  // preenche o seletor de estabelecimentos
+  // fill the business selector
   var sel = $('o-slug'), slugs = Object.keys(state.biz).sort(function (a, b) {
     return (state.biz[a].name || '').localeCompare(state.biz[b].name || '');
   });
   sel.innerHTML = slugs.map(function (s) {
     return '<option value="' + esc(s) + '">' + esc(state.biz[s].name || s) + '</option>';
-  }).join('') || '<option value="">— nenhum estabelecimento na rede —</option>';
+  }).join('') || '<option value="">— no business on the network —</option>';
   if (preferSlug && state.biz[preferSlug]) sel.value = preferSlug;
 
   var unlocked = state.ownerSlug && state.ownerSecret && state.biz[state.ownerSlug];
@@ -1332,11 +1332,11 @@ $('o-enter').addEventListener('click', async function () {
   var slug = $('o-slug').value;
   var key = $('o-key').value.trim();
   var b = state.biz[slug];
-  if (!b) { say('o-msg', 'Escolha um estabelecimento.', 'err'); return; }
-  if (!key) { say('o-msg', 'Escreva a sua chave de dono.', 'err'); return; }
-  if (!b.ownerHash) { say('o-msg', 'Este estabelecimento foi criado antes das chaves de dono e não tem painel. Contacte-nos.', 'err'); return; }
+  if (!b) { say('o-msg', 'Choose a business.', 'err'); return; }
+  if (!key) { say('o-msg', 'Enter your owner key.', 'err'); return; }
+  if (!b.ownerHash) { say('o-msg', 'This business was created before owner keys existed and has no panel. Get in touch.', 'err'); return; }
   var h = await ownerHashOf(key);
-  if (h !== b.ownerHash) { say('o-msg', 'Chave errada para este estabelecimento.', 'err'); return; }
+  if (h !== b.ownerHash) { say('o-msg', 'Wrong key for this business.', 'err'); return; }
   state.ownerSlug = slug; state.ownerSecret = key;
   $('o-key').value = ''; $('o-msg').className = 'msg';
   $('o-lock').className = 'card hidden'; $('o-dash').className = '';
@@ -1345,7 +1345,7 @@ $('o-enter').addEventListener('click', async function () {
 
 function renderOwner() {
   var slug = state.ownerSlug, b = state.biz[slug];
-  if (!b) { $('o-dash').innerHTML = '<div class="empty">Estabelecimento não encontrado na rede.</div>'; return; }
+  if (!b) { $('o-dash').innerHTML = '<div class="empty">Business not found on the network.</div>'; return; }
   var st = statsOf(slug), revs = reviewsWithId(slug);
   revs.sort(function (x, y) { return (y.r.at || 0) - (x.r.at || 0); });
   var verified = isVerified(slug);
@@ -1354,16 +1354,16 @@ function renderOwner() {
   var head =
     '<div class="card"><h2>' + esc(b.name || slug) +
       (verified ? ' <span class="seal big">✓ Confirmado</span>' : '') + '</h2>' +
-      '<div class="hint" style="margin-top:4px">As avaliações chegam-lhe ao Correio: <b>' + esc(b.mail || '—') + '</b></div>' +
+      '<div class="hint" style="margin-top:4px">Reviews reach you by Mail: <b>' + esc(b.mail || '—') + '</b></div>' +
       '<div class="ostat">' +
-        '<div class="b"><div class="v">' + (st.count ? st.avg.toFixed(1) : '—') + '</div><div class="l">Média</div></div>' +
-        '<div class="b"><div class="v">' + st.count + '</div><div class="l">Avaliações</div></div>' +
+        '<div class="b"><div class="v">' + (st.count ? st.avg.toFixed(1) : '—') + '</div><div class="l">Average</div></div>' +
+        '<div class="b"><div class="v">' + st.count + '</div><div class="l">Reviews</div></div>' +
         '<div class="b"><div class="v">' + (st.dist[4] || 0) + '</div><div class="l">5 estrelas</div></div>' +
         '<div class="b"><div class="v">' + ((st.dist[0] || 0) + (st.dist[1] || 0)) + '</div><div class="l">1–2 estrelas</div></div>' +
       '</div>' +
       '<div class="orow">' +
-        '<button class="go ghost" id="o-edit">Editar ficha</button>' +
-        '<button class="go ghost" id="o-view">Ver página pública</button>' +
+        '<button class="go ghost" id="o-edit">Edit listing</button>' +
+        '<button class="go ghost" id="o-view">View public page</button>' +
         '<button class="go ghost" id="o-exit">Sair do painel</button>' +
       '</div>' +
     '</div>';
@@ -1371,7 +1371,7 @@ function renderOwner() {
   var links =
     '<div class="card"><div class="sect-t">Links para o NFC</div>' +
       '<div class="addrbox"><div style="width:100%">' +
-        '<div class="lbl">Cartão NFC (telemóvel)</div>' +
+        '<div class="lbl">NFC card (phone)</div>' +
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
           '<span class="val" style="flex:1">' + esc(publico) + '</span>' +
           '<button class="go ghost" id="o-cp-pub">Copiar</button></div>' +
@@ -1384,46 +1384,46 @@ function renderOwner() {
 
   var listHtml = revs.length ? revs.map(function (it) {
     var r = it.r, rep = state.replies[it.id];
-    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
     var replyBlock = rep
-      ? '<div class="reply"><div class="rl">A sua resposta</div>' + esc(rep.text) + '</div>'
+      ? '<div class="reply"><div class="rl">Your reply</div>' + esc(rep.text) + '</div>'
       : '<div class="orep-row"><input id="rep-' + esc(it.id) + '" maxlength="600" placeholder="Responder publicamente…">' +
         '<button class="go" data-rep="' + esc(it.id) + '">Responder</button></div>';
     return '<div class="orev"><div class="rh"><span class="who">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="txt">' + esc(r.text) + '</div>' + replyBlock + '</div>';
-  }).join('') : '<div class="empty">Ainda ninguém avaliou. Partilhe o seu cartão NFC.</div>';
+  }).join('') : '<div class="empty">Nobody has reviewed yet. Share your NFC card.</div>';
 
-  var reviewsCard = '<div class="card"><h2>Avaliações & respostas</h2>' + listHtml + '</div>';
+  var reviewsCard = '<div class="card"><h2>Reviews &amp; replies</h2>' + listHtml + '</div>';
 
   $('o-dash').innerHTML = head + links + reviewsCard;
 
-  // ligações dos botões
+  // button wiring
   $('o-exit').addEventListener('click', function () {
     state.ownerSlug = null; state.ownerSecret = null;
     $('o-dash').className = 'hidden'; $('o-lock').className = 'card';
   });
   $('o-view').addEventListener('click', function () { closeOwner(); openBiz(slug); });
   $('o-edit').addEventListener('click', function () { ownerEdit(slug); });
-  function cp(id, v, n) { $(id).addEventListener('click', function () { navigator.clipboard.writeText(v).then(function () { toast(n); }, function () { toast('Copie à mão.'); }); }); }
+  function cp(id, v, n) { $(id).addEventListener('click', function () { navigator.clipboard.writeText(v).then(function () { toast(n); }, function () { toast('Copy it by hand.'); }); }); }
   cp('o-cp-pub', publico, 'Link do NFC copiado');
-  cp('o-cp-hidra', hidra, 'Endereço .hidra copiado');
+  cp('o-cp-hidra', hidra, '.hidra address copied');
 
   [].forEach.call($('o-dash').querySelectorAll('[data-rep]'), function (btn) {
     btn.addEventListener('click', async function () {
       var id = btn.getAttribute('data-rep');
       var txt = ($('rep-' + id).value || '').trim();
-      if (!txt) { toast('Escreva a resposta.'); return; }
+      if (!txt) { toast('Write the reply.'); return; }
       btn.disabled = true;
       var ok = await publish('hreview/reply/' + slug + '/' + id, { text: txt, at: Date.now() });
       btn.disabled = false;
       if (ok) { state.replies[id] = { text: txt, at: Date.now() }; toast('Resposta publicada'); renderOwner(); }
-      else toast('Não foi possível publicar.');
+      else toast('Could not publish.');
     });
   });
 }
 
-// Editar ficha: reabre o formulário de registo já preenchido, em modo edição.
+// Edit listing: reopens the registration form pre-filled, in editing mode.
 function ownerEdit(slug) {
   var b = state.biz[slug];
   state.editSlug = slug;
@@ -1435,8 +1435,8 @@ function ownerEdit(slug) {
   $('n-site').value = b.site || ''; $('n-hours').value = b.hours || '';
   $('n-about').value = b.about || ''; $('n-menu').value = b.menu || '';
   $('n-mail').value = b.mail || '';
-  $('add-form').querySelector('h2').textContent = 'Editar ' + (b.name || 'estabelecimento');
-  say('n-msg', 'A editar. As fotos e o selo mantêm-se; guarde para publicar as alterações.', 'work');
+  $('add-form').querySelector('h2').textContent = 'Edit ' + (b.name || 'business');
+  say('n-msg', 'Editing. Photos and the badge are kept; save to publish the changes.', 'work');
   $('add-form').scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -1459,7 +1459,7 @@ function showList(openAdd) {
   render();
   if (openAdd) {
     state.editSlug = null;
-    $('add-form').querySelector('h2').textContent = 'Registar o seu estabelecimento';
+    $('add-form').querySelector('h2').textContent = 'Register your business';
     $('n-msg').className = 'msg';
     $('add-form').className = 'card';
     $('add-form').scrollIntoView({ behavior: 'smooth' });
@@ -1472,18 +1472,18 @@ $('hh-login').addEventListener('click', function () { openOwner(null); });
 $('hh-login2').addEventListener('click', function () { openOwner(null); });
 document.querySelector('.top h1').addEventListener('click', function () { showHome(); });
 
-// Um endereco .hidra chega aqui como ?b=<slug>. O estabelecimento pode ainda
-// nao ter chegado da rede, por isso a abertura espera pelas mensagens retidas.
+// A .hidra address arrives here as ?b=<slug>. The business may not have
+// arrived from the network yet, so opening waits for the retained messages.
 var wanted = new URLSearchParams(location.search).get('b');
 if (wanted) {
-  $('view-home').className = 'hidden';   // veio de um link direto: nao mostra a entrada
+  $('view-home').className = 'hidden';   // came from a direct link: skip the landing view
   var tries = 0;
   var waitFor = setInterval(function () {
     if (state.biz[wanted]) { clearInterval(waitFor); openBiz(wanted); }
     else if (++tries > 12) {
       clearInterval(waitFor);
       showList(false);
-      $('list-empty').textContent = 'Não encontrei "' + wanted + '.hidra" na rede.';
+      $('list-empty').textContent = 'Could not find "' + wanted + '.hidra" on the network.';
       $('list-empty').style.display = 'block';
     }
   }, 700);
@@ -1492,11 +1492,11 @@ if (wanted) {
 connect();
 render();
 loadPayments();
-// O preco serve para mostrar quanto vale o pedido em dolares; sem ele o painel
-// cai no valor nominal e ninguem percebe o que esta a pagar.
+// The price is only used to show the request in dollars; without it the panel
+// falls back to the nominal amount and nobody can tell what they are paying.
 btcPrice().then(function () { if (state.open) renderBiz(); }).catch(function () {});
 // A cadeia muda devagar: de dois em dois minutos chega para apanhar uma
-// confirmação sem martelar a API pública.
+// confirmation without hammering the public API.
 setInterval(loadPayments, 120000);
 </script>
 </body>

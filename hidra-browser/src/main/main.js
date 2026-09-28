@@ -50,7 +50,7 @@ let tabManager = null;
 let proxyManager = null;
 let torManager = null;
 let chatServer = null;
-// Fechado ate o Tor confirmar que esta a transportar o trafego. Ver network-lock.js.
+// Closed until Tor confirms it is carrying the traffic. See network-lock.js.
 let networkLock = new NetworkLock();
 // Whether the apps server actually got its port. A silent failure here
 // costs chat, mail, forum and search with no sign in the interface.
@@ -75,30 +75,30 @@ async function applyProxyEverywhere(proxyRules) {
   }
 }
 
-// Shared by the Conectar button and the automatic connect at startup, so both
+// Shared by the Connect button and the automatic connect at startup, so both
 // paths route traffic and verify the exit the same way.
 async function connectTor() {
   const started = await torManager.start(app.getPath('userData'));
   if (!started.ok) {
-    // Continua fechado: um Tor que nao arrancou nao deve deixar sair trafego.
-    networkLock.engage('o Tor não arrancou — ' + (started.error || 'motivo desconhecido'));
-    return { ok: false, msg: started.error || 'não foi possível iniciar o Tor' };
+    // Stays closed: a Tor that did not start must not let traffic out.
+    networkLock.engage('Tor did not start — ' + (started.error || 'reason unknown'));
+    return { ok: false, msg: started.error || 'could not start Tor' };
   }
 
   const rules = torManager.getStatus().proxyRules;
   await applyProxyEverywhere(rules);
 
-  // O Tor chegou aos 100% e as regras estao aplicadas a todas as sessoes: o
-  // trafego passa fisicamente pelo SOCKS dele. E este o momento de abrir — nao
-  // o da verificacao do IP, que depende de um site externo estar de pe. Se a
-  // verificacao falhar dizemos ao utilizador, mas nao o deixamos sem rede.
+  // Tor reached 100% and the rules are applied to every session: the
+  // traffic physically goes through its SOCKS port. This is the moment to open —
+  // not the IP check, which depends on an external site being up. If that check
+  // fails we tell the user, but we do not leave them without a network.
   networkLock.release();
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
 
   if (exit && exit.isTor && exit.ip) {
-    return { ok: true, msg: `Anônimo — saindo por ${exit.ip}`, exitIp: exit.ip, isTor: true };
+    return { ok: true, msg: `Anonymous — exiting via ${exit.ip}`, exitIp: exit.ip, isTor: true };
   }
 
   // Tor bootstrapped but the check could not confirm it. Stay connected and say
@@ -106,8 +106,8 @@ async function connectTor() {
   return {
     ok: true,
     msg: exit && exit.ip
-      ? `Conectado, mas a verificação não confirmou o Tor (saída ${exit.ip})`
-      : 'Conectado ao Tor — não consegui confirmar o IP de saída',
+      ? `Connected, but the check could not confirm Tor (exit ${exit.ip})`
+      : 'Connected to Tor — could not confirm the exit IP',
     exitIp: exit ? exit.ip : null,
     isTor: false,
   };
@@ -119,8 +119,8 @@ function detectExitIp(proxyRules) {
   return new Promise((resolve) => {
     // Uma particao fixa, reutilizada. Antes era 'exit-ip-' + Date.now(), o que
     // criava uma sessao nova por verificacao — cinco por cada nova identidade —
-    // e o Electron nunca as liberta. Nao passa pelo lock: precisa de sair pelo
-    // Tor exatamente para poder confirmar que o Tor esta a funcionar.
+    // and Electron never frees them. It bypasses the lock: it has to go out via
+    // Tor precisely so it can confirm that Tor is working.
     const probe = session.fromPartition('hidra-exit-check');
     probe.closeAllConnections().catch(() => {});
     probe.setProxy({ proxyRules, proxyBypassRules: '<local>' }).then(() => {
@@ -416,7 +416,7 @@ async function performSearch(query, page, searchLang) {
   const fallback = await searchSearxng(query, pageNo, lang);
   if (fallback.length > 0) return fallback;
 
-  throw new Error('Nenhum mecanismo de busca respondeu');
+  throw new Error('No search engine responded');
 }
 
 // ─── End HidraSearch helpers ──────────────────────────────────────────────────
@@ -429,7 +429,7 @@ function startChatServer(attempt) {
   attempt = attempt || 0;
   const load = (f) => {
     try { return fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8'); }
-    catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' não encontrado</h1>'; }
+    catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' not found</h1>'; }
   };
   const pages = { chat: load('hidrachat.html'), publish: load('sitepub.html'), site: load('siteload.html'), mail: load('hidramail.html'), forum: load('forum.html'), donate: load('donate.html'), search: load('hidrasearch.html'), reviews: load('hidrareview.html') };
   chatServer = http.createServer(async (req, res) => {
@@ -469,16 +469,16 @@ function startChatServer(attempt) {
       return;
     }
 
-    // Bibliotecas de terceiros, servidas do pacote da aplicação.
+    // Third-party libraries, served from the application bundle.
     //
-    // Estas páginas carregavam o mqtt de unpkg.com, sem verificação de
-    // integridade e com um intervalo de versão (@5) que serve o que estiver
-    // mais recente. São as mesmas páginas que geram chaves e cifram correio:
-    // quem controlasse aquela resposta lia o texto em claro de tudo. Agora o
-    // ficheiro vem do disco, com a versão que foi revista.
+    // These pages used to load mqtt from unpkg.com, with no integrity
+    // check and on a version range (@5) that serves whatever is
+    // newest. They are the same pages that generate keys and encrypt mail:
+    // anyone controlling that response read everything in plaintext. Now the
+    // file comes from disk, at the version that was reviewed.
     //
-    // A lista é fixa de propósito — sem concatenar o caminho do pedido, não há
-    // travessia de diretórios possível.
+    // The list is fixed on purpose — nothing concatenates the request path, so
+    // directory traversal is not possible.
     if (p.indexOf('/vendor/') === 0) {
       const VENDOR = {
         '/vendor/mqtt.min.js': 'mqtt.min.js',
@@ -500,7 +500,7 @@ function startChatServer(attempt) {
       } catch (e) {
         console.error('[srv] vendor', name, e.message);
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('erro ao ler ' + name);
+        res.end('could not read ' + name);
       }
       return;
     }
@@ -513,14 +513,14 @@ function startChatServer(attempt) {
       const lang = params.get('lang') || userPrefs.searchLang || 'all';
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       if (!q) { res.end(JSON.stringify({ results: [], total: 0 })); return; }
-      // net.request pode nao passar pelos filtros de webRequest, dependendo da
-      // versao do Electron. A consulta de pesquisa e a coisa mais reveladora que
-      // este browser manuseia, por isso e verificada aqui de forma explicita em
-      // vez de se confiar no filtro.
+      // net.request may bypass webRequest filters depending on the Electron
+      // version. A search query is the most revealing thing this browser
+      // handles, so it is checked explicitly here rather than trusting the
+      // filter.
       if (networkLock.engaged) {
         res.end(JSON.stringify({
           results: [],
-          error: 'A pesquisa está bloqueada até o Tor estar pronto ('
+          error: 'Search is blocked until Tor is ready ('
             + networkLock.reason + ').',
           query: q,
         }));
@@ -555,7 +555,7 @@ function startChatServer(attempt) {
     // for a few seconds. Retry before giving up, and record why if we do —
     // otherwise the apps just read "Offline" forever with no explanation.
     if (e.code === 'EADDRINUSE' && attempt < 5) {
-      appsServer = { listening: false, error: 'porta ' + CHAT_PORT + ' ocupada, a tentar de novo' };
+      appsServer = { listening: false, error: 'port ' + CHAT_PORT + ' busy, retrying' };
       setTimeout(() => startChatServer(attempt + 1), 2000);
       return;
     }
@@ -563,8 +563,8 @@ function startChatServer(attempt) {
     appsServer = {
       listening: false,
       error: e.code === 'EADDRINUSE'
-        ? 'a porta ' + CHAT_PORT + ' está ocupada por outro programa — feche a outra janela da HidraNet e reinicie'
-        : 'falha ao abrir a porta ' + CHAT_PORT + ': ' + e.message,
+        ? 'port ' + CHAT_PORT + ' is held by another program — close the other HidraNet window and restart'
+        : 'could not open port ' + CHAT_PORT + ': ' + e.message,
     };
   });
 
@@ -574,8 +574,8 @@ function startChatServer(attempt) {
   });
 }
 
-// 'disable-features=WebRTC' e '--disable-webrtc' nao correspondem a nada no
-// Chromium: 'WebRTC' nao e um base::Feature e o switch nao existe. Estavam aqui
+// 'disable-features=WebRTC' and '--disable-webrtc' correspond to nothing in
+// Chromium: 'WebRTC' is not a base::Feature and the switch does not exist. They
 // a dar a impressao de protecao sem a dar. O que fecha a fuga por candidatos ICE
 // e setWebRTCIPHandlingPolicy('disable_non_proxied_udp'), aplicada a cada
 // separador em tab-manager.js, mais o shim em fingerprint/engine.js.
@@ -601,7 +601,7 @@ app.whenReady().then(async () => {
   networkLock.protect(session.defaultSession);
 
   // Um Tor que morre a meio da sessao deixava o proxy a cair para directo e a
-  // navegacao continuava, sem aviso. Agora volta a fechar.
+  // browsing carried on, with no warning. Now it closes again.
   torManager.onUnexpectedExit = (reason) => {
     networkLock.engage('o Tor terminou inesperadamente' + (reason ? ' — ' + reason : ''));
     applyProxyEverywhere(null).catch(() => {});
@@ -611,7 +611,7 @@ app.whenReady().then(async () => {
   if (proxyReady) {
     console.log('SOCKS5 proxy detected — connected');
   } else {
-    console.log('Waiting for user to click Conectar');
+    console.log('Waiting for user to click Connect');
   }
 
   mainWindow = createMainWindow();
@@ -624,12 +624,12 @@ app.whenReady().then(async () => {
     await tabManager.createTab('hidra://newtab');
 
     // Start anonymising immediately instead of waiting for the user to press
-    // Conectar. The new tab page watches proxy:status and shows the bootstrap
+    // Connect. The new tab page watches proxy:status and shows the bootstrap
     // climbing, so this is visible rather than silent.
     if (userPrefs.autoConnect !== false) {
       connectTor()
-        .then((r) => console.log('[tor] auto-connect:', r.ok ? r.msg : 'falhou — ' + r.msg))
-        .catch((e) => console.error('[tor] auto-connect erro:', e.message));
+        .then((r) => console.log('[tor] auto-connect:', r.ok ? r.msg : 'failed — ' + r.msg))
+        .catch((e) => console.error('[tor] auto-connect error:', e.message));
     }
   });
 });
@@ -753,7 +753,7 @@ function setupIPC(tabs, proxy) {
     torManager.exitIp = exit && exit.ip ? exit.ip : null;
 
     if (!exit || !exit.ip) {
-      return { ok: false, msg: 'não consegui confirmar o novo IP de saída' };
+      return { ok: false, msg: 'could not confirm the new exit IP' };
     }
 
     return {
@@ -764,8 +764,8 @@ function setupIPC(tabs, proxy) {
       // implying a change that did not happen.
       changed: exit.ip !== previous,
       msg: exit.ip === previous
-        ? `O Tor devolveu o mesmo nó de saída (${exit.ip}) — tente de novo em alguns segundos`
-        : `Novo IP de saída: ${exit.ip}`,
+        ? `Tor returned the same exit node (${exit.ip}) — try again in a few seconds`
+        : `New exit IP: ${exit.ip}`,
     };
   });
 
@@ -776,7 +776,7 @@ function setupIPC(tabs, proxy) {
 
   ipcMain.handle('proxy:disconnect', async () => {
     await torManager.stop();
-    networkLock.engage('desconectado por opção do utilizador');
+    networkLock.engage('disconnected by the user');
     await applyProxyEverywhere(null);
     await proxy.shutdown(null);
     return { ok: true, msg: 'desconectado' };

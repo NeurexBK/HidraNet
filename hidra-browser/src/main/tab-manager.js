@@ -56,11 +56,11 @@ class TabManager {
     await this._applyProxy(tabSession);
 
     // O WebRTC consegue revelar o IP real por candidatos ICE, contornando o
-    // proxy. A pagina injetada apaga window.RTCPeerConnection, mas isso corre
+    // proxy. The injected page deletes window.RTCPeerConnection, but that runs
     // tarde e um iframe novo devolve um window limpo — a protecao em JavaScript
-    // e contornavel. Esta politica actua na pilha de rede do Chromium, onde nao
+    // is bypassable. This policy acts in the Chromium network stack, where it is
     // e. Os switches 'disable-features=WebRTC' e '--disable-webrtc' em main.js
-    // nao correspondem a nada real no Chromium; esta e a medida que funciona.
+    // correspond to anything real in Chromium; this is the measure that works.
     try {
       view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     } catch (e) {
@@ -70,7 +70,7 @@ class TabManager {
     this._injectFingerprint(view, fingerprint);
     this._bindShortcuts(view, tabId);
 
-    // Inject the "Publicar na rede" feature into the SevenNine page (no engine rebuild)
+    // Inject the "Publish to the network" feature into the SevenNine page (no engine rebuild)
     view.webContents.on('did-finish-load', () => {
       try {
         const u = view.webContents.getURL();
@@ -124,11 +124,11 @@ class TabManager {
     });
 
     // Cancelar em onBeforeRequest devolve ERR_BLOCKED_BY_CLIENT (-20) e o
-    // utilizador via um ecra de erro do Chromium sem explicacao. Diz-lhe porque.
+    // user saw a Chromium error screen with no explanation. Tell them why.
     view.webContents.on('did-fail-load', (_e, errorCode, _desc, failedUrl, isMainFrame) => {
       if (!isMainFrame || errorCode !== -20) return;
       if (!this.networkLock || !this.networkLock.engaged) return;
-      const motivo = this.networkLock.reason || 'a ligação anónima não está pronta';
+      const reason = this.networkLock.reason || 'the anonymous connection is not ready';
       view.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
         `<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><style>
           body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -139,12 +139,11 @@ class TabManager {
           code{font-family:'SF Mono',Consolas,monospace;font-size:12px;color:#e9ecf5;
                background:#10131f;border:1px solid #1c2133;border-radius:6px;padding:2px 6px}
         </style></head><body><div class="box">
-          <h1>Pedido bloqueado — ainda não está anónimo</h1>
-          <p>Nada saiu deste computador. A HidraNet bloqueia todo o tráfego até o
-             Tor estar a transportá-lo, para que nenhum pedido parta com o seu
-             endereço IP real.</p>
-          <p>Motivo: ${motivo}.</p>
-          <p>Quando o painel indicar um IP de saída confirmado, recarregue com
+          <h1>Request blocked — you are not anonymous yet</h1>
+          <p>Nothing left this computer. HidraNet blocks all traffic until Tor
+             is carrying it, so no request goes out with your real IP address.</p>
+          <p>Reason: ${reason}.</p>
+          <p>Once the panel shows a confirmed exit IP, reload with
              <code>Ctrl+R</code>.</p>
         </div></body></html>`
       )).catch(() => {});
@@ -336,8 +335,8 @@ class TabManager {
       callback({ requestHeaders: headers });
     });
 
-    // Allowlist, nao denylist. A lista negra anterior deixava passar tudo o que
-    // nao estivesse nela — incluindo permissoes que o Chromium acrescentou
+    // Allowlist, not denylist. The previous blocklist let through everything that
+    // was not in it — including permissions Chromium added after it was
     // depois de ela ter sido escrita (serial, hid, usb, idle-detection,
     // clipboard-read). Numa ferramenta de privacidade o default tem de ser negar.
     const PERMITIDAS = new Set(['fullscreen', 'clipboard-sanitized-write']);
@@ -346,11 +345,11 @@ class TabManager {
       callback(PERMITIDAS.has(permission));
     });
 
-    // O caminho sincrono de verificacao nao passa pelo handler acima; sem isto,
+    // The synchronous check path does not go through the handler above; without
     // parte das permissoes era concedida sem nunca ser pedida.
     tabSession.setPermissionCheckHandler((_wc, permission) => PERMITIDAS.has(permission));
 
-    // WebUSB, WebHID e Web Serial: nenhum dispositivo, em nenhuma circunstancia.
+    // WebUSB, WebHID and Web Serial: no device, under any circumstances.
     tabSession.setDevicePermissionHandler(() => false);
 
     return tabSession;
@@ -470,14 +469,14 @@ class TabManager {
           }
         }
       } catch {
-        // serviço indisponível — tenta o próximo
+        // service unavailable — try the next one
       }
     }
 
-    // Ultimo recurso: o HidraReview. Cada estabelecimento tem um endereco
-    // <slug>.hidra para gravar em cartoes NFC, e a pagina resolve-o contra a
-    // rede — se nao existir, mostra-o com um caminho de volta ao diretorio,
-    // em vez de um beco sem saida.
+    // Last resort: HidraReview. Every business has a
+    // <slug>.hidra address to write onto NFC cards, and the page resolves it
+    // against the network — if it does not exist, it says so with a way back
+    // to the directory, instead of a dead end.
     tab.view.webContents.loadURL(
       `${APPS_ORIGIN}/reviews?b=${encodeURIComponent(siteName)}`
     );

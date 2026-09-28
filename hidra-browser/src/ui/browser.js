@@ -123,16 +123,16 @@ document.getElementById('panel-new-identity').addEventListener('click', async (e
   const btn = e.currentTarget;
   const label = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Trocando…';
+  btn.textContent = 'Switching…';
   try {
     const r = await window.hidra.tor.newIdentity();
     if (r && r.ok) {
-      btn.textContent = r.changed ? r.exitIp : 'Mesmo nó — repita';
+      btn.textContent = r.changed ? r.exitIp : 'Same node — try again';
     } else {
-      btn.textContent = 'Falhou';
+      btn.textContent = 'Failed';
     }
   } catch (err) {
-    btn.textContent = 'Falhou';
+    btn.textContent = 'Failed';
   }
   setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 4000);
   refreshProxyStatus();
@@ -144,20 +144,20 @@ async function refreshProxyStatus() {
   const panelStatus = document.getElementById('panel-status');
   if (status.connected && (status.mode === 'tor' || status.mode === 'full')) {
     const exit = status.tor && status.tor.exitIp;
-    panelStatus.textContent = exit ? `Anônimo — ${exit}` : 'Anônimo (Tor)';
+    panelStatus.textContent = exit ? `Anonymous — ${exit}` : 'Anonymous (Tor)';
     panelStatus.style.color = '#00d4aa';
     proxyDot.className = 'connected';
-    proxyLabel.textContent = 'Anônimo';
+    proxyLabel.textContent = 'Anonymous';
   } else if (status.connected) {
-    panelStatus.textContent = 'Conectado — Local';
+    panelStatus.textContent = 'Connected — Local';
     panelStatus.style.color = '#00d4aa';
     proxyDot.className = 'connected';
-    proxyLabel.textContent = 'Modo Local';
+    proxyLabel.textContent = 'Local mode';
   } else {
-    panelStatus.textContent = 'Desconectado';
+    panelStatus.textContent = 'Disconnected';
     panelStatus.style.color = '#ff4466';
     proxyDot.className = 'disconnected';
-    proxyLabel.textContent = 'Desconectado';
+    proxyLabel.textContent = 'Disconnected';
   }
 
   document.getElementById('panel-proxy').textContent =

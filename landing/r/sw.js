@@ -1,7 +1,7 @@
-/* HidraNet — service worker mínimo.
-   Só existe para a app poder ser instalada no telemóvel e para o ecrã
-   abrir mesmo sem rede. As avaliações vêm sempre do relay ao vivo,
-   nunca são guardadas aqui. */
+/* HidraNet — minimal service worker.
+   It exists only so the app can be installed on a phone and so the shell
+   opens even without a connection. Reviews always come from the live relay;
+   they are never cached here. */
 'use strict';
 
 var CACHE = 'hidranet-v1';
@@ -31,7 +31,7 @@ self.addEventListener('fetch', function (e) {
   try { url = new URL(req.url); } catch (err) { return; }
   if (url.origin !== self.location.origin) return;
 
-  // Páginas: rede primeiro (para ver avaliações novas), cache só se estiver offline.
+  // Pages: network first (so new reviews show), cache only when offline.
   if (req.mode === 'navigate') {
     e.respondWith(
       fetch(req).then(function (r) {
@@ -40,14 +40,14 @@ self.addEventListener('fetch', function (e) {
         return r;
       }).catch(function () {
         return caches.match('/r/').then(function (r) {
-          return r || new Response('Sem ligação.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+          return r || new Response('No connection.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
         });
       })
     );
     return;
   }
 
-  // Ícones e estáticos: cache primeiro.
+  // Icons and static assets: cache first.
   e.respondWith(
     caches.match(req).then(function (hit) {
       return hit || fetch(req).then(function (r) {

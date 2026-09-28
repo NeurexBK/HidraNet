@@ -699,24 +699,24 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
   <div class="wc">
     <div class="logo-big">🐍</div>
     <h2>HidraChat</h2>
-    <p class="sub">Chat criptografado de ponta a ponta na rede HidraNet</p>
-    <input type="text" id="inNick" placeholder="Seu apelido" maxlength="24" autofocus>
+    <p class="sub">End-to-end encrypted chat on the HidraNet network</p>
+    <input type="text" id="inNick" placeholder="Your nickname" maxlength="24" autofocus>
     <div class="pass-row">
-      <input type="text" id="inPass" placeholder="Senha da sala (combine com os amigos)" maxlength="128" autocomplete="off" spellcheck="false">
-      <button id="btnGen" class="mini" title="Gerar senha forte">🎲</button>
-      <button id="btnCopyPass" class="mini" title="Copiar senha">⧉</button>
+      <input type="text" id="inPass" placeholder="Room password (agree it with your friends)" maxlength="128" autocomplete="off" spellcheck="false">
+      <button id="btnGen" class="mini" title="Generate a strong password">🎲</button>
+      <button id="btnCopyPass" class="mini" title="Copy password">⧉</button>
     </div>
     <button id="btnJoin">Entrar na Sala 🔒</button>
-    <p class="hint"><b>Mesma senha = mesma sala.</b> Funciona de qualquer lugar — redes e IPs diferentes. Combine uma senha com seus amigos: todos que digitarem a mesma senha caem na mesma sala. O conteúdo é criptografado de ponta a ponta; ninguém no meio lê.</p>
+    <p class="hint"><b>Same password = same room.</b> It works from anywhere, across different networks and IPs. Agree a password with your friends: everyone who types the same one lands in the same room. The content is end-to-end encrypted, so nobody in between can read it.</p>
     <div id="recentBox" class="recent hidden">
-      <div class="recent-t">Salas recentes (clique para reentrar)</div>
+      <div class="recent-t">Recent rooms (click to rejoin)</div>
       <div id="recentList"></div>
     </div>
-    <div id="advToggle" class="adv-toggle">⚙ Opções avançadas</div>
+    <div id="advToggle" class="adv-toggle">⚙ Advanced options</div>
     <div id="advBox" class="adv hidden">
-      <input type="text" id="inServer" placeholder="(opcional) Servidor próprio — ex.: meuhub.com:8081" maxlength="80" autocomplete="off" spellcheck="false">
-      <p class="hint" style="margin-top:6px"><b>Deixe vazio</b> para usar a rede pública da HidraNet (recomendado — funciona entre redes diferentes). Preencha só se você tiver um servidor/hub próprio na sua rede.</p>
-      <div id="myAddr" class="my-addr hidden">Para hospedar na sua rede, seus amigos usam:<br><span id="myAddrVal" title="Clique para copiar">—</span></div>
+      <input type="text" id="inServer" placeholder="(optional) Your own server — e.g. myhub.com:8081" maxlength="80" autocomplete="off" spellcheck="false">
+      <p class="hint" style="margin-top:6px"><b>Leave it empty</b> to use the public HidraNet relay (recommended — it works across networks). Fill it in only if you run your own server or hub on your network.</p>
+      <div id="myAddr" class="my-addr hidden">To host on your own network, your friends use:<br><span id="myAddrVal" title="Click to copy">—</span></div>
     </div>
   </div>
 </div>
@@ -727,7 +727,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       <button class="sidebar-toggle" id="sidebarBtn">☰</button>
       <span class="logo">🐍</span>
       <h1>HidraChat</h1>
-      <span class="room-tag" id="roomTag" title="Clique para copiar">—</span>
+      <span class="room-tag" id="roomTag" title="Click to copy">—</span>
     </div>
     <div class="h-right">
       <span class="status" id="connStatus">Conectando...</span>
@@ -741,10 +741,10 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
         <div id="userList"></div>
       </div>
       <div class="room-info">
-        <div class="label">Código da sala</div>
+        <div class="label">Room code</div>
         <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copiar</button></div>
         <div class="encryption-badge" id="encBadge">🔒 E2E: AES-256-GCM</div>
-        <div class="share-hint">Compartilhe a senha com amigos. Quem usar a mesma senha entra na mesma sala criptografada.</div>
+        <div class="share-hint">Share the password with your friends. Anyone using the same password joins the same encrypted room.</div>
       </div>
     </aside>
     <div class="chat-col">
@@ -752,10 +752,10 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       <div class="typing-bar" id="typingBar"></div>
       <footer>
         <div class="input-row">
-          <input type="text" id="msgInput" placeholder="Digite sua mensagem..." maxlength="2000" autocomplete="off">
-          <button id="sendBtn">Enviar</button>
+          <input type="text" id="msgInput" placeholder="Type your message..." maxlength="2000" autocomplete="off">
+          <button id="sendBtn">Send</button>
         </div>
-        <div class="footer-badge">🔒 Criptografia de ponta a ponta ativa — servidor nunca vê suas mensagens</div>
+        <div class="footer-badge">🔒 End-to-end encryption active — the server never sees your messages</div>
       </footer>
     </div>
   </div>
@@ -769,9 +769,9 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 (function(){
 'use strict';
 
-// DEFAULT_HUB: endereço de um servidor sempre-ligado que TODOS os apps usam
-// por padrão. Quando preenchido, basta a senha igual para amigos em redes
-// diferentes caírem na mesma sala. Vazio = modo "hospede você mesmo" (LAN).
+// DEFAULT_HUB: address of an always-on server that ALL apps use by
+// default. When filled in, the same password is enough for friends on
+// different networks to land in the same room. Empty = "host it yourself" (LAN).
 var DEFAULT_HUB='';
 
 var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='';
@@ -779,7 +779,7 @@ var reconnAttempts=0, MAX_RECONN=15, typingTimeout=null, myTyping=false;
 var typingUsers={}, soundEnabled=true;
 
 // ── Relay (public hub) mode state ──
-var mode='ws';                 // 'ws' = servidor direto/LAN | 'relay' = rede pública (MQTT)
+var mode='ws';                 // 'ws' = direct/LAN server | 'relay' = public relay (MQTT)
 var mqttClient=null, relayTopic='', relayReconn=0;
 var myCid='', myColor='', peers={}, presenceTimer=null, startTime=0;
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
@@ -811,7 +811,7 @@ async function computeRoom(pass){
   return hex;
 }
 
-// Topic público derivado da senha (hash, não revela a senha)
+// Public topic derived from the password (a hash — it does not reveal it)
 async function computeTopic(pass){
   var enc=new TextEncoder();
   var buf=await crypto.subtle.digest('SHA-256',enc.encode('hidra-topic-v1:'+pass));
@@ -820,7 +820,7 @@ async function computeTopic(pass){
   return 'hidra-'+hex;
 }
 
-// ── Relay público (ntfy.sh): encontro por senha, conteúdo cifrado E2E ──
+// ── Public relay: discovery by password, content encrypted end to end ──
 
 function connectRelay(){
   mode='relay';
@@ -830,7 +830,7 @@ function connectRelay(){
   peers={};
   peers[myCid]={nick:nick,color:myColor,last:Date.now()};
   updatePresence();
-  addSys('🔒 Sala criptografada de ponta a ponta. Encontro pela senha na rede HidraNet.');
+  addSys('🔒 Room is end-to-end encrypted. Discovery happens by password on the HidraNet network.');
   relayOpen();
   startPresence();
   window.addEventListener('beforeunload',function(){try{relayPublish({k:'leave',nick:nick,cid:myCid})}catch(e){}});
@@ -839,7 +839,7 @@ function connectRelay(){
 function relayOpen(){
   if(typeof mqtt==='undefined'){
     $('connStatus').textContent='Sem rede';$('connStatus').className='status';
-    addSys('⚠️ Não foi possível carregar a rede de mensagens. Verifique a internet e recarregue a página (↻).');
+    addSys('⚠️ Could not load the messaging layer. Check your connection and reload the page (↻).');
     return;
   }
   var topic='hidra/'+relayTopic;
@@ -850,7 +850,7 @@ function relayOpen(){
       clean:true, connectTimeout:9000, reconnectPeriod:4000, keepalive:30
     });
   }catch(e){
-    $('connStatus').textContent='Falha na conexão';$('connStatus').className='status';return;
+    $('connStatus').textContent='Connection failed';$('connStatus').className='status';return;
   }
   mqttClient.on('connect',function(){
     $('connStatus').textContent='Conectado (rede HidraNet)';
@@ -874,7 +874,7 @@ async function relayPublish(obj){
 
 async function onRelayMessage(ciphertext){
   var plain=await decryptMsg(ciphertext);
-  if(plain===null) return;               // mensagem de outra sala/senha
+  if(plain===null) return;               // message from a different room/password
   var o;try{o=JSON.parse(plain)}catch(e){return}
   if(!o||!o.k) return;
   if(o.cid&&o.cid!==myCid){
@@ -888,10 +888,10 @@ async function onRelayMessage(ciphertext){
       beep();
       break;
     case 'join':
-      if(o.cid!==myCid) addSys((o.nick||'Alguém')+' entrou na sala');
+      if(o.cid!==myCid) addSys((o.nick||'Someone')+' joined the room');
       break;
     case 'leave':
-      if(o.cid){delete peers[o.cid];updatePresence();addSys((o.nick||'Alguém')+' saiu da sala')}
+      if(o.cid){delete peers[o.cid];updatePresence();addSys((o.nick||'Someone')+' left the room')}
       break;
     case 'typing':
       if(o.cid!==myCid) setTyping(o.nick,o.state);
@@ -971,7 +971,7 @@ async function doJoin(){
       roomId=await computeRoom(pass);
       e2e=true;
     }catch(e){
-      alert('Erro ao derivar chave de criptografia');
+      alert('Could not derive the encryption key');
       return;
     }
   }else{
@@ -984,18 +984,18 @@ async function doJoin(){
   $('roomTag').textContent='#'+roomId;
   $('roomCode').textContent=roomId;
   if(!e2e){
-    $('encBadge').innerHTML='⚠️ Sem E2E — use uma senha';
+    $('encBadge').innerHTML='⚠️ No E2E — set a password';
     $('encBadge').style.color='var(--muted)';
-    document.querySelector('.footer-badge').textContent='⚠️ Sem criptografia E2E — defina uma senha para criptografar';
+    document.querySelector('.footer-badge').textContent='⚠️ No E2E encryption — set a password to encrypt';
   }
   msgInput.focus();
   if(serverAddr){
     connectWS();                          // servidor direto / LAN / hub fixo
   }else if(e2e){
     relayTopic=await computeTopic(pass);
-    connectRelay();                       // rede pública por senha (ntfy)
+    connectRelay();                       // public relay, keyed by password
   }else{
-    connectWS();                          // sem senha e sem servidor: hospeda localmente
+    connectWS();                          // no password and no server: host locally
   }
 }
 
@@ -1009,7 +1009,7 @@ $('sidebarBtn').onclick=function(){$('sidebar').classList.toggle('open')};
 $('advToggle').onclick=function(){$('advBox').classList.toggle('hidden')};
 if(DEFAULT_HUB){ inServer.value=DEFAULT_HUB; }
 
-// ── Gerar senha / copiar ──
+// ── Generate / copy password ──
 var GENWORDS=['tigre','vento','lua','rio','pedra','fogo','neve','onda','raio','folha','ouro','prata','noite','sol','mar','flor','gelo','trem','nuvem','pinha','aguia','lobo','vale','monte','chama'];
 function genPassword(){
   var w=function(){return GENWORDS[Math.floor(Math.random()*GENWORDS.length)];};
@@ -1021,7 +1021,7 @@ function copyText(s){ if(s&&navigator.clipboard){ navigator.clipboard.writeText(
 $('btnGen').onclick=function(){ inPass.value=genPassword(); inPass.focus(); };
 $('btnCopyPass').onclick=function(){ copyText(inPass.value); };
 
-// ── Salas recentes (ultimas 5 senhas, no proprio dispositivo) ──
+// ── Recent rooms (last 5 passwords, kept on this device only) ──
 function saveRecent(pass, nk){
   try{
     var list=JSON.parse(localStorage.getItem('hidra_recent')||'[]');
@@ -1077,7 +1077,7 @@ function connectWS(){
   try{
     ws=new WebSocket(proto+'//'+host+'/ws');
   }catch(e){
-    $('connStatus').textContent='Endereço inválido';
+    $('connStatus').textContent='Invalid address';
     $('connStatus').className='status';
     return;
   }
@@ -1113,8 +1113,8 @@ function handleMsg(m){
         m.history.forEach(function(h){if(h.type==='msg') renderChatMsg(h)});
         scrollBottom();
       }
-      if(e2e) addSys('🔒 E2E ativo — mensagens criptografadas com AES-256-GCM (PBKDF2 100k)');
-      else addSys('Conectado à sala #'+roomId+' — mensagens em texto claro');
+      if(e2e) addSys('🔒 E2E active — messages encrypted with AES-256-GCM (PBKDF2 100k)');
+      else addSys('Connected to room #'+roomId+' — messages are in plaintext');
       break;
     case 'joined':
       addSys(m.nick+' entrou na sala');
@@ -1163,7 +1163,7 @@ async function renderChatMsg(m){
   var nickHtml=isOwn?'':'<span class="bubble-nick" style="color:'+(m.color||'var(--accent)')+'">'+esc(m.nick)+'</span>';
   var bodyHtml;
   if(text===null){
-    bodyHtml='<div class="bubble-text encrypted">🔒 Mensagem criptografada — senha incorreta ou ausente</div>';
+    bodyHtml='<div class="bubble-text encrypted">🔒 Encrypted message — wrong or missing password</div>';
   }else{
     bodyHtml='<div class="bubble-text">'+esc(text)+'</div>';
   }
@@ -1221,8 +1221,8 @@ function renderTyping(){
   var bar=$('typingBar');
   if(names.length===0){bar.innerHTML='';return}
   var dots='<span class="dots"><span></span><span></span><span></span></span>';
-  if(names.length===1) bar.innerHTML=esc(names[0])+' está digitando'+dots;
-  else if(names.length===2) bar.innerHTML=esc(names[0])+' e '+esc(names[1])+' estão digitando'+dots;
+  if(names.length===1) bar.innerHTML=esc(names[0])+' is typing'+dots;
+  else if(names.length===2) bar.innerHTML=esc(names[0])+' and '+esc(names[1])+' are typing'+dots;
   else bar.innerHTML=names.length+' pessoas digitando'+dots;
 }
 
@@ -1252,7 +1252,7 @@ async function sendMessage(){
   var payload={type:'msg'};
   if(e2e){
     var enc=await encryptMsg(text);
-    if(!enc){addSys('Erro ao criptografar');return}
+    if(!enc){addSys('Encryption failed');return}
     payload.enc=enc;
   }else{
     payload.text=text;

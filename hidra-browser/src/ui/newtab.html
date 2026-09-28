@@ -435,7 +435,7 @@
         <svg class="search-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <input type="text" id="newtab-search" placeholder="Pesquisar com HidraSearch — anônimo e criptografado..." autocomplete="off" spellcheck="false">
+        <input type="text" id="newtab-search" placeholder="Search with HidraSearch — anonymous and encrypted..." autocomplete="off" spellcheck="false">
       </div>
     </div>
 
@@ -461,7 +461,7 @@
               </svg>
             </div>
             <span class="app-name">HidraMail</span>
-            <span class="app-desc">Email criptografado E2E</span>
+            <span class="app-desc">E2E encrypted email</span>
             <span class="app-badge online">Pronto</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090" id="app-chat">
@@ -471,8 +471,8 @@
               </svg>
             </div>
             <span class="app-name">HidraChat</span>
-            <span class="app-desc">Chat anônimo em tempo real</span>
-            <span class="app-badge" id="chat-badge">Verificando...</span>
+            <span class="app-desc">Anonymous real-time chat</span>
+            <span class="app-badge" id="chat-badge">Checking…</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/forum" id="app-forum">
             <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: #fff;">
@@ -481,8 +481,8 @@
                 <line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/>
               </svg>
             </div>
-            <span class="app-name">Fórum Hidra</span>
-            <span class="app-desc">Comunidade anônima</span>
+            <span class="app-name">Hidra Forum</span>
+            <span class="app-desc">Anonymous community</span>
             <span class="app-badge online">Pronto</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/donate" id="app-donate">
@@ -495,7 +495,7 @@
               </svg>
             </div>
             <span class="app-name">Apoiar</span>
-            <span class="app-desc">Doe Bitcoin para a HidraNet</span>
+            <span class="app-desc">Donate Bitcoin to HidraNet</span>
             <span class="app-badge online">BTC</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/search">
@@ -506,8 +506,8 @@
               </svg>
             </div>
             <span class="app-name">HidraSearch</span>
-            <span class="app-desc">Busca anônima e criptografada</span>
-            <span class="app-badge online">Disponível</span>
+            <span class="app-desc">Anonymous, encrypted search</span>
+            <span class="app-badge online">Available</span>
           </a>
           <a class="app-shortcut" href="#" id="app-sevennine" data-url="http://127.0.0.1:8084">
             <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); border-color: rgba(108, 92, 231, 0.3);">
@@ -519,7 +519,7 @@
               </svg>
             </div>
             <span class="app-name">SevenNine</span>
-            <span class="app-desc">Criador de sites .hidra</span>
+            <span class="app-desc">.hidra site builder</span>
             <span class="app-badge" id="sevennine-badge">Offline</span>
           </a>
           <a class="app-shortcut" href="#" id="app-hidrareview" data-url="http://127.0.0.1:8090/reviews">
@@ -529,8 +529,8 @@
               </svg>
             </div>
             <span class="app-name">HidraReview</span>
-            <span class="app-desc">Avaliações de negócios .hidra</span>
-            <span class="app-badge online" id="hidrareview-badge">Disponível</span>
+            <span class="app-desc">.hidra business reviews</span>
+            <span class="app-badge online" id="hidrareview-badge">Available</span>
           </a>
         </div>
       </div>
@@ -545,14 +545,14 @@
         </div>
         <div class="connect-section">
           <div class="connect-info">
-            <span class="connect-title" id="connect-title">HidraNet Desconectada</span>
-            <span class="connect-desc" id="connect-desc">Clique para iniciar o nó e conectar todos os serviços (Chat, Mail, Search)</span>
+            <span class="connect-title" id="connect-title">HidraNet disconnected</span>
+            <span class="connect-desc" id="connect-desc">Click to start the node and connect every service (Chat, Mail, Search)</span>
           </div>
           <button class="connect-btn off" id="connectBtn" onclick="toggleConnection()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
-            <span id="connectBtnText">Conectar</span>
+            <span id="connectBtnText">Connect</span>
           </button>
         </div>
         <div class="status-indicator">
@@ -574,7 +574,7 @@
           </div>
           <div class="stat">
             <span class="stat-value" id="stat-exit">—</span>
-            <span class="stat-label">IP de saída</span>
+            <span class="stat-label">Exit IP</span>
           </div>
         </div>
       </div>
@@ -660,9 +660,9 @@
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">Nova Identidade</span>
-              <span class="setting-desc" id="identity-desc">Troca seu circuito — o IP de saída muda</span>
+              <span class="setting-desc" id="identity-desc">Switches your circuit — the exit IP changes</span>
             </div>
-            <button id="btn-new-identity" class="setting-select" type="button">Trocar circuito</button>
+            <button id="btn-new-identity" class="setting-select" type="button">New circuit</button>
           </div>
           <div class="setting-row">
             <div class="setting-info">
@@ -723,17 +723,17 @@
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
           </svg>
-          <h2>Preferências</h2>
+          <h2>Preferences</h2>
         </div>
 
         <!-- Color Theme -->
         <div class="pref-section">
-          <div class="pref-label">Tema de cores</div>
+          <div class="pref-label">Colour theme</div>
           <div class="theme-grid" id="themeGrid">
             <div class="theme-swatch active" data-theme="teal"    style="background:linear-gradient(135deg,#00d4aa,#00a888)" title="Teal"><span class="check">✓</span></div>
             <div class="theme-swatch"        data-theme="cyber"   style="background:linear-gradient(135deg,#c026d3,#7c3aed)" title="Ciberpunk"><span class="check">✓</span></div>
             <div class="theme-swatch"        data-theme="ocean"   style="background:linear-gradient(135deg,#0ea5e9,#0284c7)" title="Oceano"><span class="check">✓</span></div>
-            <div class="theme-swatch"        data-theme="sunset"  style="background:linear-gradient(135deg,#f97316,#dc2626)" title="Pôr do Sol"><span class="check">✓</span></div>
+            <div class="theme-swatch"        data-theme="sunset"  style="background:linear-gradient(135deg,#f97316,#dc2626)" title="Sunset"><span class="check">✓</span></div>
             <div class="theme-swatch"        data-theme="rose"    style="background:linear-gradient(135deg,#ec4899,#be185d)" title="Rosa"><span class="check">✓</span></div>
             <div class="theme-swatch"        data-theme="matrix"  style="background:linear-gradient(135deg,#22c55e,#15803d)" title="Matrix"><span class="check">✓</span></div>
             <div class="theme-swatch"        data-theme="gold"    style="background:linear-gradient(135deg,#eab308,#ca8a04)" title="Dourado"><span class="check">✓</span></div>
@@ -743,156 +743,156 @@
 
         <!-- Search Language -->
         <div class="pref-section">
-          <div class="pref-label">Idioma da busca</div>
+          <div class="pref-label">Search language</div>
           <select class="lang-select" id="langSelect">
-            <option value="all">🌐 Todos os idiomas</option>
+            <option value="all">🌐 All languages</option>
             <optgroup label="── Mais usados ──">
-              <option value="pt-BR">🇧🇷 Português (Brasil)</option>
-              <option value="pt-PT">🇵🇹 Português (Portugal)</option>
-              <option value="en-US">🇺🇸 Inglês (EUA)</option>
-              <option value="en-GB">🇬🇧 Inglês (Reino Unido)</option>
-              <option value="es">🇪🇸 Espanhol</option>
-              <option value="fr">🇫🇷 Francês</option>
-              <option value="de">🇩🇪 Alemão</option>
-              <option value="it">🇮🇹 Italiano</option>
-              <option value="ja">🇯🇵 Japonês</option>
-              <option value="zh-CN">🇨🇳 Chinês (Simplificado)</option>
-              <option value="ru">🇷🇺 Russo</option>
-              <option value="ar">🇸🇦 Árabe</option>
+              <option value="pt-BR">🇧🇷 Portuguese (Brazil)</option>
+              <option value="pt-PT">🇵🇹 Portuguese (Portugal)</option>
+              <option value="en-US">🇺🇸 English (US)</option>
+              <option value="en-GB">🇬🇧 English (UK)</option>
+              <option value="es">🇪🇸 Spanish</option>
+              <option value="fr">🇫🇷 French</option>
+              <option value="de">🇩🇪 German</option>
+              <option value="it">🇮🇹 Italian</option>
+              <option value="ja">🇯🇵 Japanese</option>
+              <option value="zh-CN">🇨🇳 Chinese (Simplified)</option>
+              <option value="ru">🇷🇺 Russian</option>
+              <option value="ar">🇸🇦 Arabic</option>
             </optgroup>
             <optgroup label="── A ──">
               <option value="af">Afrikaans</option>
-              <option value="sq">Albanês</option>
-              <option value="am">Amárico</option>
-              <option value="hy">Armênio</option>
-              <option value="az">Azerbaijano</option>
+              <option value="sq">Albanian</option>
+              <option value="am">Amharic</option>
+              <option value="hy">Armenian</option>
+              <option value="az">Azerbaijani</option>
             </optgroup>
             <optgroup label="── B ──">
-              <option value="eu">Basco</option>
-              <option value="be">Bielorrusso</option>
+              <option value="eu">Basque</option>
+              <option value="be">Belarusian</option>
               <option value="bn">Bengali</option>
-              <option value="bs">Bósnio</option>
-              <option value="bg">Búlgaro</option>
+              <option value="bs">Bosnian</option>
+              <option value="bg">Bulgarian</option>
             </optgroup>
             <optgroup label="── C ──">
-              <option value="ca">Catalão</option>
+              <option value="ca">Catalan</option>
               <option value="ceb">Cebuano</option>
               <option value="ny">Chichewa</option>
-              <option value="zh-TW">Chinês (Tradicional)</option>
-              <option value="co">Córsico</option>
-              <option value="hr">Croata</option>
-              <option value="cs">Tcheco</option>
+              <option value="zh-TW">Chinese (Traditional)</option>
+              <option value="co">Corsican</option>
+              <option value="hr">Croatian</option>
+              <option value="cs">Czech</option>
             </optgroup>
             <optgroup label="── D ──">
-              <option value="da">Dinamarquês</option>
-              <option value="nl">Holandês</option>
+              <option value="da">Danish</option>
+              <option value="nl">Dutch</option>
             </optgroup>
             <optgroup label="── E ──">
               <option value="eo">Esperanto</option>
-              <option value="et">Estoniano</option>
+              <option value="et">Estonian</option>
             </optgroup>
             <optgroup label="── F ──">
               <option value="tl">Filipino</option>
-              <option value="fi">Finlandês</option>
-              <option value="fy">Frísio Ocidental</option>
+              <option value="fi">Finnish</option>
+              <option value="fy">West Frisian</option>
             </optgroup>
             <optgroup label="── G ──">
-              <option value="gl">Galego</option>
-              <option value="cy">Galês</option>
-              <option value="ka">Georgiano</option>
-              <option value="el">Grego</option>
-              <option value="gu">Guzerate</option>
+              <option value="gl">Galician</option>
+              <option value="cy">Welsh</option>
+              <option value="ka">Georgian</option>
+              <option value="el">Greek</option>
+              <option value="gu">Gujarati</option>
             </optgroup>
             <optgroup label="── H ──">
-              <option value="ht">Haitiano</option>
-              <option value="ha">Hauçá</option>
-              <option value="haw">Havaiano</option>
-              <option value="he">Hebraico</option>
+              <option value="ht">Haitian Creole</option>
+              <option value="ha">Hausa</option>
+              <option value="haw">Hawaiian</option>
+              <option value="he">Hebrew</option>
               <option value="hi">Hindi</option>
-              <option value="hu">Húngaro</option>
+              <option value="hu">Hungarian</option>
             </optgroup>
             <optgroup label="── I ──">
-              <option value="is">Islandês</option>
+              <option value="is">Icelandic</option>
               <option value="ig">Igbo</option>
-              <option value="id">Indonésio</option>
-              <option value="ga">Irlandês</option>
+              <option value="id">Indonesian</option>
+              <option value="ga">Irish</option>
             </optgroup>
             <optgroup label="── J ──">
-              <option value="jw">Javanês</option>
+              <option value="jw">Javanese</option>
             </optgroup>
             <optgroup label="── K ──">
-              <option value="kn">Canarês</option>
-              <option value="kk">Cazaque</option>
+              <option value="kn">Kannada</option>
+              <option value="kk">Kazakh</option>
               <option value="km">Khmer</option>
-              <option value="ko">Coreano</option>
-              <option value="ku">Curdo</option>
-              <option value="ky">Quirguiz</option>
+              <option value="ko">Korean</option>
+              <option value="ku">Kurdish</option>
+              <option value="ky">Kyrgyz</option>
             </optgroup>
             <optgroup label="── L ──">
               <option value="lo">Laociano</option>
-              <option value="la">Latim</option>
-              <option value="lv">Letão</option>
-              <option value="lt">Lituano</option>
-              <option value="lb">Luxemburguês</option>
+              <option value="la">Latin</option>
+              <option value="lv">Latvian</option>
+              <option value="lt">Lithuanian</option>
+              <option value="lb">Luxembourgish</option>
             </optgroup>
             <optgroup label="── M ──">
-              <option value="mk">Macedônio</option>
-              <option value="mg">Malgaxe</option>
-              <option value="ms">Malaio</option>
-              <option value="ml">Malaiala</option>
-              <option value="mt">Maltês</option>
+              <option value="mk">Macedonian</option>
+              <option value="mg">Malagasy</option>
+              <option value="ms">Malay</option>
+              <option value="ml">Malayalam</option>
+              <option value="mt">Maltese</option>
               <option value="mi">Maori</option>
-              <option value="mr">Marata</option>
-              <option value="mn">Mongol</option>
-              <option value="my">Birmanês</option>
+              <option value="mr">Marathi</option>
+              <option value="mn">Mongolian</option>
+              <option value="my">Burmese</option>
             </optgroup>
             <optgroup label="── N ──">
               <option value="ne">Nepali</option>
-              <option value="no">Norueguês</option>
+              <option value="no">Norwegian</option>
             </optgroup>
             <optgroup label="── P ──">
               <option value="ps">Pachto</option>
-              <option value="fa">Persa</option>
-              <option value="pl">Polonês</option>
+              <option value="fa">Persian</option>
+              <option value="pl">Polish</option>
               <option value="pa">Punjabi</option>
             </optgroup>
             <optgroup label="── R ──">
-              <option value="ro">Romeno</option>
+              <option value="ro">Romanian</option>
             </optgroup>
             <optgroup label="── S ──">
-              <option value="sm">Samoano</option>
-              <option value="gd">Gaélico Escocês</option>
-              <option value="sr">Sérvio</option>
-              <option value="st">Sesoto</option>
+              <option value="sm">Samoan</option>
+              <option value="gd">Scottish Gaelic</option>
+              <option value="sr">Serbian</option>
+              <option value="st">Sesotho</option>
               <option value="sn">Shona</option>
-              <option value="sd">Sindi</option>
-              <option value="si">Cingalês</option>
-              <option value="sk">Eslovaco</option>
-              <option value="sl">Esloveno</option>
+              <option value="sd">Sindhi</option>
+              <option value="si">Sinhala</option>
+              <option value="sk">Slovak</option>
+              <option value="sl">Slovenian</option>
               <option value="so">Somali</option>
-              <option value="su">Sundanês</option>
-              <option value="sw">Suaíli</option>
-              <option value="sv">Sueco</option>
+              <option value="su">Sundanese</option>
+              <option value="sw">Swahili</option>
+              <option value="sv">Swedish</option>
             </optgroup>
             <optgroup label="── T ──">
-              <option value="tg">Tadjique</option>
-              <option value="ta">Tâmil</option>
-              <option value="te">Télugo</option>
-              <option value="th">Tailandês</option>
-              <option value="tr">Turco</option>
+              <option value="tg">Tajik</option>
+              <option value="ta">Tamil</option>
+              <option value="te">Telugu</option>
+              <option value="th">Thai</option>
+              <option value="tr">Turkish</option>
             </optgroup>
             <optgroup label="── U ──">
-              <option value="uk">Ucraniano</option>
+              <option value="uk">Ukrainian</option>
               <option value="ur">Urdu</option>
               <option value="uz">Usbeque</option>
             </optgroup>
             <optgroup label="── V ──">
-              <option value="vi">Vietnamita</option>
+              <option value="vi">Vietnamese</option>
             </optgroup>
             <optgroup label="── X Y Z ──">
               <option value="xh">Xhosa</option>
-              <option value="yi">Iídiche</option>
-              <option value="yo">Iorubá</option>
+              <option value="yi">Yiddish</option>
+              <option value="yo">Yoruba</option>
               <option value="zu">Zulu</option>
             </optgroup>
           </select>
@@ -968,7 +968,7 @@
 
       var hrBadge = document.getElementById('hidrareview-badge');
       if (hrBadge) {
-        hrBadge.textContent = status.hidrareview ? 'Disponível' : 'Offline';
+        hrBadge.textContent = status.hidrareview ? 'Available' : 'Offline';
         hrBadge.className = 'app-badge ' + (status.hidrareview ? 'online' : 'offline');
       }
 
@@ -1001,10 +1001,10 @@
           if (!(window.hidra && window.hidra.proxy)) return;
           var s = await window.hidra.proxy.status();
           var pct = (s && s.tor) ? (s.tor.bootstrapPercent || 0) : 0;
-          document.getElementById('connect-title').textContent = 'Iniciando o Tor — ' + pct + '%';
+          document.getElementById('connect-title').textContent = 'Starting Tor — ' + pct + '%';
           document.getElementById('connect-desc').textContent = pct < 100
-            ? 'Construindo um circuito anônimo pela rede Tor'
-            : 'Circuito pronto — confirmando o IP de saída';
+            ? 'Building an anonymous circuit through the Tor network'
+            : 'Circuit ready — confirming the exit IP';
         } catch (e) {}
       }, 700);
     }
@@ -1021,25 +1021,25 @@
 
       if (state === 'connecting') {
         btn.className = 'connect-btn loading';
-        btnText.textContent = 'Conectando...';
+        btnText.textContent = 'Connecting…';
         btn.querySelector('svg').innerHTML = '<circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="10" class="spinner"/>';
-        title.textContent = 'Iniciando o Tor…';
+        title.textContent = 'Starting Tor…';
         title.style.color = 'var(--warning)';
-        desc.textContent = 'Construindo um circuito anônimo — costuma levar 20 a 40 segundos';
+        desc.textContent = 'Building an anonymous circuit — usually takes 20 to 40 seconds';
       } else if (state === 'connected') {
         btn.className = 'connect-btn on';
-        btnText.textContent = 'Desconectar';
+        btnText.textContent = 'Disconnect';
         btn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
-        title.textContent = 'Conectado — Tráfego Anônimo';
+        title.textContent = 'Connected — traffic is anonymous';
         title.style.color = 'var(--accent)';
-        desc.textContent = lastExitDetail || 'Navegação saindo pela rede Tor';
+        desc.textContent = lastExitDetail || 'Browsing exits through the Tor network';
       } else {
         btn.className = 'connect-btn off';
-        btnText.textContent = 'Conectar';
+        btnText.textContent = 'Connect';
         btn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
-        title.textContent = 'HidraNet Desconectada';
+        title.textContent = 'HidraNet disconnected';
         title.style.color = 'var(--text-primary)';
-        desc.textContent = 'Sua navegação está saindo pelo seu próprio IP. Clique para conectar pela rede Tor.';
+        desc.textContent = 'Your browsing is going out through your own IP. Click to connect through the Tor network.';
       }
     }
 
@@ -1074,21 +1074,21 @@
           } else {
             updateConnectUI('disconnected');
             var title = document.getElementById('connect-title');
-            title.textContent = 'Falha ao conectar';
+            title.textContent = 'Could not connect';
             title.style.color = 'var(--danger)';
             var desc = document.getElementById('connect-desc');
-            desc.textContent = (result && result.msg) || 'Não foi possível iniciar o hidra-node — verifique se o binário existe';
+            desc.textContent = (result && result.msg) || 'Could not start hidra-node — check that the binary exists';
           }
         } else {
           updateConnectUI('disconnected');
           var t2 = document.getElementById('connect-title');
-          t2.textContent = 'API não disponível';
+          t2.textContent = 'API unavailable';
           t2.style.color = 'var(--danger)';
         }
       } catch(e) {
         updateConnectUI('disconnected');
         var t3 = document.getElementById('connect-title');
-        t3.textContent = 'Erro: ' + (e.message || 'falha desconhecida');
+        t3.textContent = 'Error: ' + (e.message || 'unknown failure');
         t3.style.color = 'var(--danger)';
       } finally {
         stopBootstrapWatch();
@@ -1134,22 +1134,22 @@
       // The badges below are about which apps are reachable; they must not
       // decide the network state. Chat, mail, forum and search are served by
       // the browser itself, so they are always up and were making this panel
-      // claim "HidraNet Conectada" while nothing was actually connected.
+      // claim "HidraNet connected" while nothing was actually connected.
       detectApps();
 
       if (connected && (mode === 'tor' || mode === 'full')) {
         dot.className = 'dot connected';
-        text.textContent = 'Conectado — Tráfego Anônimo (Tor)';
+        text.textContent = 'Connected — traffic is anonymous (Tor)';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
       } else if (connected) {
         dot.className = 'dot connected';
-        text.textContent = 'Conectado — Modo Local';
+        text.textContent = 'Connected — local mode';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
       } else {
         dot.className = 'dot disconnected';
-        text.textContent = 'Desconectado';
+        text.textContent = 'Disconnected';
         text.style.color = '#ff4466';
         if (!isConnecting) updateConnectUI('disconnected');
       }
@@ -1186,13 +1186,13 @@
         if (svc && window.hidra && window.hidra[svc.api]) {
           var badge = document.getElementById(svc.badge);
           if (!badge || badge.textContent !== 'Online') {
-            if (badge) { badge.textContent = 'Iniciando…'; badge.className = 'app-badge'; }
+            if (badge) { badge.textContent = 'Starting…'; badge.className = 'app-badge'; }
             var r = await window.hidra[svc.api].start();
             if (!r || !r.ok) {
               if (badge) {
-                badge.textContent = 'Falhou';
+                badge.textContent = 'Failed';
                 badge.className = 'app-badge offline';
-                badge.title = (r && r.msg) || 'não foi possível iniciar';
+                badge.title = (r && r.msg) || 'could not start';
               }
               return;
             }
@@ -1212,19 +1212,19 @@
       var antes = document.getElementById('stat-exit').textContent;
       // The Tor daemon rate-limits this signal, so confirming the new exit can
       // take a few seconds. Keep the button held rather than looking stuck.
-      desc.textContent = 'Trocando circuito… pode levar alguns segundos';
+      desc.textContent = 'Switching circuit… this can take a few seconds';
       try {
         var r = await window.hidra.tor.newIdentity();
         if (r && r.ok) {
           document.getElementById('stat-exit').textContent = r.exitIp;
           desc.textContent = r.changed
-            ? 'IP de saída: ' + antes + ' → ' + r.exitIp
-            : (r.msg || 'mesmo nó de saída — tente de novo');
+            ? 'Exit IP: ' + antes + ' → ' + r.exitIp
+            : (r.msg || 'same exit node — try again');
         } else {
-          desc.textContent = (r && r.msg) || 'não foi possível trocar';
+          desc.textContent = (r && r.msg) || 'could not switch';
         }
       } catch (e) {
-        desc.textContent = 'erro: ' + (e.message || e);
+        desc.textContent = 'error: ' + (e.message || e);
       }
       btn.disabled = false;
     });
@@ -1299,12 +1299,12 @@
 
   <script>
   /* ---- Beacon de no da HidraNet ----
-     Anuncia, de forma anonima, que esta instalacao esta ativa, para o
-     painel de operacao contar nos, salas e localizacao. Nao envia nome,
-     mensagens nem palavras-passe: so um codigo aleatorio, o pais/cidade
-     aproximado por IP e se esta a sair por Tor. Quando o Tor esta ligado,
+     Announces anonymously that this installation is active, for the
+     operations panel can count nodes. It sends no name,
+     messages nor passwords: only a random code and a
+     approximate location by IP and whether it exits via Tor. When Tor is on,
      este sinal tambem sai por Tor — logo a localizacao e a do no de saida,
-     nao a da pessoa (e o que mantem o utilizador anonimo). */
+     not the person's (which is what keeps the user anonymous). */
   (function () {
     'use strict';
     var TOPIC = 'hidra/node/v1';
@@ -1312,7 +1312,7 @@
     var VER = '1.0.0';
     // Identificador efemero, por sessao. Era guardado em localStorage, o que o
     // tornava estavel entre arranques — uma impressao digital duravel desta
-    // instalacao, publicada num canal publico. Contar presencas nao exige
+    // installation, published on a public channel. Counting presence does not require
     // reconhecer a mesma maquina amanha.
     var cid = '';
     try {
@@ -1328,7 +1328,7 @@
       if (!cli || !cli.connected) return;
       // O canal e publico. O sinal levava a localizacao aproximada, um
       // identificador estavel e o estado do Tor — ou seja, anunciava a quem
-      // observasse que aquela maquina, naquela cidade, estava naquele momento
+      // watching that that machine, in that city, was at that moment
       // SEM protecao (tor: false). Era um sinal de alvo. Agora leva apenas um
       // identificador efemero, a versao e um instante.
       var msg = { cid: cid, ver: VER, t: Date.now() };

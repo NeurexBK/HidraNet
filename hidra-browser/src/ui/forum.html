@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fórum Hidra</title>
+<title>Hidra Forum</title>
 <script src="vendor/mqtt.min.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c;--warn:#f5a623}
@@ -123,81 +123,81 @@ svg{display:block}
   <div class="topbar">
     <div class="brand">
       <div class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg></div>
-      <div><h1>Fórum Hidra</h1><div class="sub">ANÔNIMO · DESCENTRALIZADO</div></div>
+      <div><h1>Hidra Forum</h1><div class="sub">ANONYMOUS · DECENTRALISED</div></div>
     </div>
     <div class="me">
       <span class="conn"><span class="dot" id="cdot"></span><span id="ctxt">conectando…</span></span>
-      <span class="who" id="me-who" title="Alterar apelido"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><b id="me-nick">—</b><span class="tag" id="me-tag"></span></span>
-      <button class="iconbtn" id="btn-mod" title="Moderação"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></button>
+      <span class="who" id="me-who" title="Change nickname"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><b id="me-nick">—</b><span class="tag" id="me-tag"></span></span>
+      <button class="iconbtn" id="btn-mod" title="Moderation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></button>
     </div>
   </div>
   <div class="main">
     <aside class="col side">
-      <button class="btn-new" id="btn-new"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Novo tópico</button>
+      <button class="btn-new" id="btn-new"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New topic</button>
       <div class="side-t">Categorias</div>
       <div id="cats"></div>
       <div class="side-sep"></div>
       <div class="side-t">Rede</div>
-      <div class="stat-mini">Tópicos <b id="s-topics">0</b></div>
+      <div class="stat-mini">Topics <b id="s-topics">0</b></div>
       <div class="stat-mini">Respostas <b id="s-replies">0</b></div>
-      <div class="stat-mini">Seu papel <b id="s-role">leitor</b></div>
+      <div class="stat-mini">Your role <b id="s-role">reader</b></div>
     </aside>
 
     <section class="col listcol">
-      <div class="search"><div class="wrap"><span class="si"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span><input type="text" id="search" placeholder="Buscar tópicos…"></div></div>
-      <div id="list"><div class="empty">Carregando a rede…</div></div>
+      <div class="search"><div class="wrap"><span class="si"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span><input type="text" id="search" placeholder="Search topics…"></div></div>
+      <div id="list"><div class="empty">Loading the network…</div></div>
       <div class="pager" id="pager"></div>
     </section>
 
     <section class="view" id="view">
       <div class="center-msg">
         <svg class="big" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
-        <div>Selecione um tópico para ler<div class="sub">ou crie uma nova discussão no botão "Novo tópico".</div></div>
+        <div>Select a topic to read<div class="sub">or start a new discussion with the "New topic" button.</div></div>
       </div>
     </section>
   </div>
 </div>
 
-<!-- Novo tópico -->
+<!-- New topic -->
 <div class="modal hidden" id="m-new">
   <div class="box">
-    <div class="b-head"><h3>Novo tópico</h3><button class="iconbtn" onclick="closeM('m-new')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="b-head"><h3>New topic</h3><button class="iconbtn" onclick="closeM('m-new')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
       <label>Categoria</label>
       <select id="n-cat"></select>
-      <label>Título</label>
-      <input type="text" id="n-title" maxlength="140" placeholder="Sobre o que você quer falar?">
+      <label>Title</label>
+      <input type="text" id="n-title" maxlength="140" placeholder="What do you want to talk about?">
       <label>Mensagem</label>
-      <textarea id="n-body" placeholder="Escreva aqui. Suporta **negrito**, *itálico*, `código`, [link](url) e ![imagem](url)."></textarea>
+      <textarea id="n-body" placeholder="Write here. Supports **bold**, *italic*, `code`, [link](url) and ![image](url)."></textarea>
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="btn-post">Publicar tópico</button><span class="stat">Anônimo · só o seu apelido aparece</span></div>
+    <div class="b-foot"><button class="btn btn-p" id="btn-post">Post topic</button><span class="stat">Anonymous · only your nickname is shown</span></div>
   </div>
 </div>
 
 <!-- Apelido -->
 <div class="modal hidden" id="m-nick">
   <div class="box sm">
-    <div class="b-head"><h3>Seu apelido</h3><button class="iconbtn" id="nick-x" onclick="closeM('m-nick')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="b-head"><h3>Your nickname</h3><button class="iconbtn" id="nick-x" onclick="closeM('m-nick')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
-      <div class="muted">Sem cadastro, sem e-mail, sem senha. Escolha um apelido — um token secreto é gerado e guardado só neste navegador para provar que as mensagens são suas.</div>
+      <div class="muted">No sign-up, no email, no password. Pick a nickname — a secret token is generated and kept only in this browser, to prove the posts are yours.</div>
       <label>Apelido</label>
-      <input type="text" id="nick-in" maxlength="24" placeholder="Ex.: João Anônimo">
+      <input type="text" id="nick-in" maxlength="24" placeholder="e.g. Anonymous Reader">
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="nick-save">Salvar</button></div>
+    <div class="b-foot"><button class="btn btn-p" id="nick-save">Save</button></div>
   </div>
 </div>
 
-<!-- Moderação -->
+<!-- Moderation -->
 <div class="modal hidden" id="m-mod">
   <div class="box sm">
-    <div class="b-head"><h3>Moderação</h3><button class="iconbtn" onclick="closeM('m-mod')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="b-head"><h3>Moderation</h3><button class="iconbtn" onclick="closeM('m-mod')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
-      <div class="muted">O moderador pode ocultar tópicos e respostas para todos. A senha é definida pela primeira pessoa que a registrar (você, dono do fórum). Guarde-a — quem a tiver pode moderar.</div>
-      <label>Senha de moderador</label>
-      <input type="password" id="mod-pass" placeholder="Senha de moderador">
+      <div class="muted">A moderator can hide topics and replies for everyone. The password is set by the first person to register one — keep it, because anyone holding it can moderate.</div>
+      <label>Moderator password</label>
+      <input type="password" id="mod-pass" placeholder="Moderator password">
       <div id="mod-state"></div>
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="mod-enter">Entrar como moderador</button></div>
+    <div class="b-foot"><button class="btn btn-p" id="mod-enter">Sign in as moderator</button></div>
   </div>
 </div>
 
@@ -215,7 +215,7 @@ var client=null;
 var state={ topics:{}, replies:{}, reports:{}, hidden:{}, adminHash:null,
             me:null, mod:false, cat:'all', page:0, sel:null, rpage:0, search:'' };
 
-// ───────── ícones (SVG, sem emojis) ─────────
+// ───────── icons (SVG, no emoji) ─────────
 function svg(p,sz){ sz=sz||15; return '<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>'; }
 var IC={
   comment:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
@@ -247,7 +247,7 @@ function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); c
 function loadMe(){ try{ state.me=JSON.parse(localStorage.getItem('hforum_me')||'null'); }catch(e){} }
 async function setNick(nick){
   nick=(nick||'').trim().slice(0,24); if(!nick) return false;
-  // trocar de apelido = nova identidade anônima (novo token); re-salvar o mesmo apelido mantém o token
+  // changing nickname = a new anonymous identity (new token); re-saving the same nickname keeps the token
   var token = (state.me&&state.me.nick===nick&&state.me.token) || b32(crypto.getRandomValues(new Uint8Array(16)));
   var tokenHash=(await sha('hforum-tok:'+token)).slice(0,12);
   state.me={ nick:nick, token:token, tokenHash:tokenHash };
@@ -306,16 +306,16 @@ function onMessage(topic,payload){
 function repliesOf(tid){ var a=[]; for(var k in state.replies){ if(state.replies[k].topicId===tid) a.push(state.replies[k]); } a.sort(function(x,y){return x.ts-y.ts;}); return a; }
 function lastActivity(t){ var m=t.ts, rs=repliesOf(t.id); if(rs.length) m=Math.max(m, rs[rs.length-1].ts); return m; }
 
-// ───────── publicar ─────────
+// ───────── publishing ─────────
 function publishRetained(topic,obj){ return new Promise(function(r){ client.publish(topic, JSON.stringify(obj), {qos:1,retain:true}, function(){r();}); }); }
 async function postTopic(cat,title,body){
-  if(!client||!client.connected){ toast('Sem conexão com a rede.'); return; }
+  if(!client||!client.connected){ toast('No connection to the network.'); return; }
   var id=rid('t'); var o={ id:id, cat:cat, title:title, body:body, nick:state.me.nick, tag:state.me.tokenHash, ts:Date.now() };
   state.topics[id]=o; o._t='hforum/t/'+id; await publishRetained('hforum/t/'+id, o);
-  state.sel=id; state.cat=cat; renderAll(); openTopic(id); toast('Tópico publicado.');
+  state.sel=id; state.cat=cat; renderAll(); openTopic(id); toast('Topic posted.');
 }
 async function postReply(tid,body){
-  if(!client||!client.connected){ toast('Sem conexão.'); return; }
+  if(!client||!client.connected){ toast('No connection.'); return; }
   var id=rid('r'); var r={ id:id, topicId:tid, body:body, nick:state.me.nick, tag:state.me.tokenHash, ts:Date.now() };
   state.replies[id]=r; r._t='hforum/r/'+tid+'/'+id; await publishRetained('hforum/r/'+tid+'/'+id, r);
   renderAll(); openTopic(tid); setTimeout(function(){ var v=$('view'); v.scrollTop=v.scrollHeight; },60);
@@ -324,37 +324,37 @@ async function report(itemTopic,itemId){
   var t='hforum/rep/'+itemId+'/'+state.me.tokenHash;
   client.publish(t,'1',{qos:0,retain:true});
   if(!state.reports[itemId])state.reports[itemId]={}; state.reports[itemId][state.me.tokenHash]=1;
-  toast('Denúncia enviada aos moderadores.'); renderAll();
+  toast('Report sent to the moderators.'); renderAll();
 }
 async function delOwn(kind,id,tid){
-  // apaga de verdade a mensagem retida (so o autor, que tem o token, ve este botao)
+  // really deletes the retained message (only the author, who holds the token, sees this button)
   var topic = kind==='t' ? 'hforum/t/'+id : 'hforum/r/'+tid+'/'+id;
   client.publish(topic,'',{qos:1,retain:true});
   if(kind==='t'){ delete state.topics[id]; state.sel=null; $('view').innerHTML=centerMsg(); }
   else delete state.replies[id];
-  renderAll(); toast('Excluído.');
+  renderAll(); toast('Deleted.');
 }
 async function modHide(id){
   if(!state.mod){ toast('Apenas moderadores.'); return; }
   client.publish('hforum/mod/'+id,'1',{qos:1,retain:true}); state.hidden[id]=1; renderAll(); toast('Ocultado para todos.');
 }
 
-// ───────── moderador ─────────
-function refreshRole(){ $('s-role').textContent=state.mod?'moderador':'leitor'; $('s-role').style.color=state.mod?'var(--accent)':''; }
+// ───────── moderation ─────────
+function refreshRole(){ $('s-role').textContent=state.mod?'moderator':'reader'; $('s-role').style.color=state.mod?'var(--accent)':''; }
 async function enterMod(pass){
   if(!pass){ return; }
   var h=await sha('hforum-admin:'+pass);
-  if(!state.adminHash){ // ninguem reivindicou ainda -> voce vira o dono
+  if(!state.adminHash){ // nobody has claimed it yet -> you become the owner
     await new Promise(function(r){ client.publish('hforum/admin',h,{qos:1,retain:true},function(){r();}); });
     state.adminHash=h; state.mod=true; sessionStorage.setItem('hforum_mod',h);
-    $('mod-state').innerHTML='<span class="ok">Você registrou a senha de moderador deste fórum.</span>'; refreshRole(); renderAll(); return;
+    $('mod-state').innerHTML='<span class="ok">You registered the moderator password for this forum.</span>'; refreshRole(); renderAll(); return;
   }
-  if(h===state.adminHash){ state.mod=true; sessionStorage.setItem('hforum_mod',h); $('mod-state').innerHTML='<span class="ok">Entrou como moderador.</span>'; refreshRole(); renderAll(); }
-  else { $('mod-state').innerHTML='<span class="err">Senha incorreta.</span>'; }
+  if(h===state.adminHash){ state.mod=true; sessionStorage.setItem('hforum_mod',h); $('mod-state').innerHTML='<span class="ok">Signed in as moderator.</span>'; refreshRole(); renderAll(); }
+  else { $('mod-state').innerHTML='<span class="err">Wrong password.</span>'; }
 }
 
 // ───────── render ─────────
-function centerMsg(){ return '<div class="center-msg"><svg class="big" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'+IC.comment+'</svg><div>Selecione um tópico.</div></div>'; }
+function centerMsg(){ return '<div class="center-msg"><svg class="big" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'+IC.comment+'</svg><div>Select a topic.</div></div>'; }
 function renderAll(){ renderCats(); renderList(); renderStats(); if(state.sel&&state.topics[state.sel]) renderTopicView(state.sel); }
 function visibleTopics(){ var a=[]; for(var k in state.topics){ var t=state.topics[k]; if(state.hidden[t.id])continue; a.push(t); } return a; }
 function renderStats(){ $('s-topics').textContent=visibleTopics().length; var rc=0; for(var k in state.replies){ if(!state.hidden[state.replies[k].id]) rc++; } $('s-replies').textContent=rc; }
@@ -377,7 +377,7 @@ function renderList(){
   if(state.page>=pages)state.page=pages-1;
   var arr=all.slice(state.page*PER_PAGE,(state.page+1)*PER_PAGE);
   var el=$('list');
-  if(!all.length){ el.innerHTML='<div class="empty">Nenhum tópico nesta área ainda.<br>Crie o primeiro no botão "Novo tópico".</div>'; $('pager').innerHTML=''; return; }
+  if(!all.length){ el.innerHTML='<div class="empty">No topics in this area yet.<br>Create the first one with the "New topic" button.</div>'; $('pager').innerHTML=''; return; }
   el.innerHTML=arr.map(function(t){
     var rs=repliesOf(t.id).filter(function(r){return !state.hidden[r.id];});
     var flagged=state.reports[t.id]&&Object.keys(state.reports[t.id]).length;
@@ -387,7 +387,7 @@ function renderList(){
       '<div class="ti-meta"><span class="who-n">'+esc(t.nick)+'</span><span>·</span><span>'+fmtDate(lastActivity(t))+'</span><span class="rc">'+svg(IC.comment,13)+rs.length+'</span></div></div>';
   }).join('');
   Array.prototype.forEach.call(el.querySelectorAll('.topic-item'),function(it){ it.onclick=function(){ openTopic(it.getAttribute('data-id')); }; });
-  $('pager').innerHTML='<button '+(state.page<=0?'disabled':'')+' id="pg-prev">Anterior</button><span>'+(state.page+1)+' de '+pages+'</span><button '+(state.page>=pages-1?'disabled':'')+' id="pg-next">Próximo</button>';
+  $('pager').innerHTML='<button '+(state.page<=0?'disabled':'')+' id="pg-prev">Previous</button><span>'+(state.page+1)+' de '+pages+'</span><button '+(state.page>=pages-1?'disabled':'')+' id="pg-next">Next</button>';
   if($('pg-prev'))$('pg-prev').onclick=function(){ if(state.page>0){state.page--;renderList();} };
   if($('pg-next'))$('pg-next').onclick=function(){ if(state.page<pages-1){state.page++;renderList();} };
 }
@@ -397,10 +397,10 @@ function postHTML(p,isOp,kind,tid){
   var foot='';
   foot+='<a onclick="report(\''+(p._t||'')+'\',\''+p.id+'\')">'+svg(IC.flag,14)+'Denunciar</a>';
   if(state.mod) foot+='<a class="del" onclick="modHide(\''+p.id+'\')">'+svg(IC.eye,14)+'Ocultar</a>';
-  if(mine) foot+='<a class="del" onclick="delOwn(\''+kind+'\',\''+p.id+'\',\''+(tid||'')+'\')">'+svg(IC.trash,14)+'Excluir</a>';
+  if(mine) foot+='<a class="del" onclick="delOwn(\''+kind+'\',\''+p.id+'\',\''+(tid||'')+'\')">'+svg(IC.trash,14)+'Delete</a>';
   return '<div class="post'+(isOp?' op':'')+'">'+
     '<div class="p-head"><div class="p-av" style="background:'+avColor(p.tag||'')+'">'+esc((p.nick||'?').slice(0,1).toUpperCase())+'</div>'+
-    '<div><div class="p-nick">'+esc(p.nick||'anônimo')+(isOp?'<span class="op-badge">autor</span>':'')+'</div><div class="p-tag">#'+esc((p.tag||'').slice(0,6))+'</div></div>'+
+    '<div><div class="p-nick">'+esc(p.nick||'anonymous')+(isOp?'<span class="op-badge">author</span>':'')+'</div><div class="p-tag">#'+esc((p.tag||'').slice(0,6))+'</div></div>'+
     '<div class="p-date">'+fmtDate(p.ts)+'</div></div>'+
     '<div class="p-body">'+md(p.body||'')+'</div>'+
     '<div class="p-foot">'+foot+'</div></div>';
@@ -414,12 +414,12 @@ function renderTopicView(id){
   h+=postHTML(t,true,'t','');
   h+='<div class="reply-count">'+rs.length+' resposta'+(rs.length===1?'':'s')+'</div>';
   h+=pr.map(function(r){ return postHTML(r,false,'r',id); }).join('');
-  if(pages>1) h+='<div class="pager"><button '+(state.rpage<=0?'disabled':'')+' id="rp-prev">Anterior</button><span>'+(state.rpage+1)+' de '+pages+'</span><button '+(state.rpage>=pages-1?'disabled':'')+' id="rp-next">Próximo</button></div>';
-  h+='<div class="reply-box"><textarea id="reply-in" placeholder="Escreva uma resposta…"></textarea><div class="row"><button class="btn btn-p" id="btn-reply">Responder</button><span class="mdhint">Suporta **negrito** · *itálico* · `código` · [link](url) · ![imagem](url)</span></div></div>';
+  if(pages>1) h+='<div class="pager"><button '+(state.rpage<=0?'disabled':'')+' id="rp-prev">Previous</button><span>'+(state.rpage+1)+' de '+pages+'</span><button '+(state.rpage>=pages-1?'disabled':'')+' id="rp-next">Next</button></div>';
+  h+='<div class="reply-box"><textarea id="reply-in" placeholder="Write a reply…"></textarea><div class="row"><button class="btn btn-p" id="btn-reply">Reply</button><span class="mdhint">Supports **bold** · *italic* · `code` · [link](url) · ![image](url)</span></div></div>';
   $('view').innerHTML=h;
   if($('rp-prev'))$('rp-prev').onclick=function(){ if(state.rpage>0){state.rpage--;renderTopicView(id);} };
   if($('rp-next'))$('rp-next').onclick=function(){ if(state.rpage<pages-1){state.rpage++;renderTopicView(id);} };
-  $('btn-reply').onclick=function(){ var b=$('reply-in').value.trim(); if(!b){toast('Escreva algo.');return;} if(!ensureNick())return; postReply(id,b); };
+  $('btn-reply').onclick=function(){ var b=$('reply-in').value.trim(); if(!b){toast('Write something.');return;} if(!ensureNick())return; postReply(id,b); };
 }
 
 // ───────── modais ─────────
@@ -435,11 +435,11 @@ loadMe();
   $('n-cat').innerHTML=CATS.map(function(c){return '<option>'+esc(c)+'</option>';}).join('');
   if(state.me){ $('me-nick').textContent=state.me.nick; $('me-tag').textContent='#'+state.me.tokenHash.slice(0,6); }
   $('me-who').onclick=function(){ openNick(false); };
-  $('btn-mod').onclick=function(){ $('mod-state').innerHTML=state.mod?'<span class="ok">Você já é moderador nesta sessão.</span>':'<span class="muted">'+(state.adminHash?'Já existe um moderador registrado. Digite a senha.':'Ninguém registrou senha ainda — a primeira senha vira a do dono.')+'</span>'; openM('m-mod'); };
+  $('btn-mod').onclick=function(){ $('mod-state').innerHTML=state.mod?'<span class="ok">You are already a moderator in this session.</span>':'<span class="muted">'+(state.adminHash?'A moderator is already registered. Enter the password.':'Nobody has registered a password yet — the first one becomes the owner password.')+'</span>'; openM('m-mod'); };
   $('mod-enter').onclick=function(){ enterMod($('mod-pass').value); };
   $('nick-save').onclick=async function(){ if(await setNick($('nick-in').value)){ closeM('m-nick'); renderAll(); toast('Apelido salvo.'); } };
   $('btn-new').onclick=function(){ if(!ensureNick())return; $('n-title').value='';$('n-body').value=''; if(state.cat!=='all')$('n-cat').value=state.cat; openM('m-new'); setTimeout(function(){$('n-title').focus();},50); };
-  $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Dê um título.');return;} if(!bo){toast('Escreva a mensagem.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };
+  $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Give it a title.');return;} if(!bo){toast('Write the message.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };
   $('search').oninput=function(){ state.search=this.value; state.page=0; renderList(); };
   renderAll(); refreshRole();
   connect();

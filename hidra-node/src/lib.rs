@@ -1,21 +1,20 @@
-//! HidraNet — biblioteca do motor.
+//! HidraNet — engine library.
 //!
-//! O binário (`main.rs`) mantém a sua própria cópia dos módulos embutida, por
-//! razões históricas. Esta biblioteca expõe a árvore de módulos que já existia
-//! em `src/` como ficheiros separados, e que sem um alvo de biblioteca não era
-//! compilada por ninguém.
+//! The binary (`main.rs`) keeps its own copy of these modules inlined, for
+//! historical reasons. This library exposes the module tree that already
+//! existed in `src/` as separate files and which, without a library target,
+//! nothing was compiling.
 //!
-//! Isto não é cosmético: os quatro ficheiros em `tests/` fazem
-//! `use hidra_node::…` e, sem `lib.rs`, falhavam a compilar com
-//! "unresolved crate `hidra_node`". Estavam no repositório sem nunca terem
-//! corrido. Com este alvo passam a correr — 30 testes de integração, além dos
-//! 41 unitários dos próprios módulos.
+//! This is not cosmetic: the four files in `tests/` do `use hidra_node::…` and,
+//! with no `lib.rs`, failed to compile with "unresolved crate `hidra_node`".
+//! They sat in the repository having never run. With this target they run —
+//! 30 integration tests, on top of the 41 unit tests in the modules themselves.
 //!
-//! A duplicação entre `main.rs` e esta árvore continua a ser dívida técnica a
-//! resolver: o binário deve passar a consumir esta biblioteca em vez de manter
-//! módulos paralelos. Enquanto isso não acontecer, uma correção feita num dos
-//! lados tem de ser replicada no outro — e é exatamente por isso que a
-//! duplicação é um problema, não uma conveniência.
+//! The duplication between `main.rs` and this tree remains technical debt to
+//! pay off: the binary should consume this library instead of keeping parallel
+//! modules. Until that happens, a fix made on one side has to be mirrored on
+//! the other — which is precisely why the duplication is a problem rather than
+//! a convenience.
 
 pub mod error;
 pub mod logging;

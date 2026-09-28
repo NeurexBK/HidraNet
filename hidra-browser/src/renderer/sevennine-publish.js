@@ -1,5 +1,5 @@
 // Injected into the SevenNine page (127.0.0.1:8084) by the HidraNet browser.
-// Adds a "Publicar na rede" button to each site, encrypting + storing the site
+// Adds a "Publish to the network" button to each site, encrypting + storing the site
 // on the public relay (MQTT retained) so it's reachable from any network by its
 // secret .hidra address. Runs in the trusted browser process — no engine rebuild.
 (function(){
@@ -15,16 +15,16 @@
   async function siteTopic(a){ var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a)); var u=new Uint8Array(b),h=''; for(var i=0;i<16;i++) h+=u[i].toString(16).padStart(2,'0'); return 'hsite/'+h; }
   async function E(k,t){ var iv=crypto.getRandomValues(new Uint8Array(12)); var c=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},k,enc.encode(t)); var o=new Uint8Array(12+c.byteLength); o.set(iv); o.set(new Uint8Array(c),12); var s=''; for(var i=0;i<o.length;i++) s+=String.fromCharCode(o[i]); return btoa(s); }
 
-  // Servido pelo proprio browser em 127.0.0.1:8090/vendor/, nao por CDN: este
-  // script e injetado numa pagina que publica sites, e uma biblioteca vinda de
-  // terceiro sem verificacao de integridade seria um caminho directo para
-  // adulterar o que e publicado.
+  // Served by the browser itself at 127.0.0.1:8090/vendor/, not by a CDN: this
+  // script is injected into a page that publishes sites, and a library from a
+  // third party with no integrity check would be a direct route to tampering
+  // with what gets published.
   function loadMqtt(cb){
     if(window.mqtt) return cb();
     var s=document.createElement('script');
     s.src='http://127.0.0.1:8090/vendor/mqtt.min.js';
     s.onload=cb;
-    s.onerror=function(){ console.error('[sevennine] mqtt local indisponivel'); };
+    s.onerror=function(){ console.error('[sevennine] local mqtt unavailable'); };
     document.head.appendChild(s);
   }
   function mqttConnect(){ try{ client=mqtt.connect(BROKER,{clientId:'hnetsn_'+Math.floor(Math.random()*1e9),clean:true,reconnectPeriod:4000,keepalive:30}); client.on('connect',function(){ ready=true; republishAll(); }); }catch(e){} }
@@ -43,12 +43,12 @@
     return bundle;
   }
   async function publish(name){
-    if(!ready){ showResult(null,'Conectando à rede… aguarde alguns segundos e tente de novo.'); return; }
+    if(!ready){ showResult(null,'Connecting to the network… wait a few seconds and try again.'); return; }
     var addrs=getAddrs(); var addr=addrs[name]||newAddr();
     var bundle=await fetchBundle(name);
     var key=await deriveKey(addr), top=await siteTopic(addr);
     var ct=await E(key, JSON.stringify(bundle));
-    if(ct.length>900000){ showResult(null,'Este site é grande demais para a rede pública (máx ~600 KB). Reduza imagens/conteúdo.'); return; }
+    if(ct.length>900000){ showResult(null,'This site is too large for the public relay (max ~600 KB). Reduce images or content.'); return; }
     client.publish(top, ct, {qos:0, retain:true});
     setAddr(name, addr);
     showResult(addr, null);
@@ -59,7 +59,7 @@
   }
   setInterval(function(){ if(ready) republishAll(); }, 60000);
 
-  // ── injeta o botão por site ──
+  // ── inject the per-site button ──
   function siteNameOf(item){
     var b=item.querySelector('[onclick^="openEditor"]');
     if(b){ var m=/openEditor\(['"]([^'"]+)['"]/.exec(b.getAttribute('onclick')); if(m) return m[1]; }
@@ -74,7 +74,7 @@
       (function(name){
         var btn=document.createElement('button');
         btn.className='btn btn-primary btn-sm hnet-pub'; btn.type='button';
-        btn.textContent='🌐 Publicar na rede';
+        btn.textContent='🌐 Publish to the network';
         btn.onclick=function(e){ e.preventDefault(); btn.disabled=true; var t=btn.textContent; btn.textContent='⏳ Publicando…';
           Promise.resolve(publish(name)).catch(function(){}).then(function(){ btn.disabled=false; btn.textContent=t; }); };
         actions.insertBefore(btn, actions.firstChild);
@@ -92,12 +92,12 @@
     if(addr){
       var url='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
       inner='<div style="font-size:1.15em;font-weight:800;color:#00d4aa;margin-bottom:8px">🌐 Site publicado na rede!</div>'+
-        '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Compartilhe este endereço secreto. Qualquer pessoa, em qualquer rede, acessa digitando ele na barra do HidraNet. O conteúdo vai criptografado.</div>'+
+        '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Share this secret address. Anyone who has it can open the site.quer pessoa, em quaopen the site from any network by typing it into the HidraNet address bar. The content travels encrypted.</div>'+
         '<div style="display:flex;gap:8px;align-items:center;background:#0a0d16;border:1px solid #1c2133;border-radius:9px;padding:12px 14px;margin-bottom:14px"><code id="hnet-addr" style="flex:1;color:#00d4aa;word-break:break-all;font-size:.95em;font-family:monospace">'+addr+'</code><button id="hnet-copy" style="background:none;border:none;color:#9aa3bd;cursor:pointer;font-size:1.15em">⧉</button></div>'+
-        '<div style="display:flex;gap:8px"><a href="'+url+'" target="_blank" style="flex:1;text-align:center;background:#00d4aa;color:#04120e;padding:11px;border-radius:9px;text-decoration:none;font-weight:700">Abrir o site</a><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:11px 20px;border-radius:9px;cursor:pointer">Fechar</button></div>'+
-        '<div style="color:#5b6480;font-size:.75em;margin-top:13px;line-height:1.5">⚠️ Deixe o HidraNet aberto pra manter o site no ar — ele é re-publicado sozinho a cada minuto.</div>';
+        '<div style="display:flex;gap:8px"><a href="'+url+'" target="_blank" style="flex:1;text-align:center;background:#00d4aa;color:#04120e;padding:11px;border-radius:9px;text-decoration:none;font-weight:700">Open the site</a><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:11px 20px;border-radius:9px;cursor:pointer">Close</button></div>'+
+        '<div style="color:#5b6480;font-size:.75em;margin-top:13px;line-height:1.5">⚠️ Keep HidraNet open to keep the site online — it republishes itself every minute.</div>';
     } else {
-      inner='<div style="font-size:1.05em;font-weight:700;color:#ff5c6c;margin-bottom:10px">Atenção</div><div style="color:#9aa3bd;font-size:.9em;margin-bottom:16px;line-height:1.5">'+(errMsg||'Erro ao publicar.')+'</div><div style="text-align:right"><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:10px 18px;border-radius:8px;cursor:pointer">Fechar</button></div>';
+      inner='<div style="font-size:1.05em;font-weight:700;color:#ff5c6c;margin-bottom:10px">Warning</div><div style="color:#9aa3bd;font-size:.9em;margin-bottom:16px;line-height:1.5">'+(errMsg||'Could not publish.')+'</div><div style="text-align:right"><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:10px 18px;border-radius:8px;cursor:pointer">Close</button></div>';
     }
     var box=document.createElement('div'); box.style.cssText='background:#10131f;border:1px solid #1c2133;border-radius:16px;padding:26px;max-width:470px;width:90%;box-shadow:0 24px 70px rgba(0,0,0,.55)'; box.innerHTML=inner;
     m.appendChild(box); document.body.appendChild(m);

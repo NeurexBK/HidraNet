@@ -198,16 +198,16 @@ impl SiteManager {
         let name = name.trim().to_lowercase();
 
         if name.is_empty() || name.len() > 32 {
-            return Err("Nome deve ter entre 1 e 32 caracteres".into());
+            return Err("Name deve ter entre 1 e 32 caracteres".into());
         }
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err("Nome pode conter apenas letras, números, - e _".into());
+            return Err("Name may contain only letters, numbers, - and _".into());
         }
 
         {
             let sites = self.sites.read().await;
             if sites.contains_key(&name) {
-                return Err(format!("O nome '{}' já está em uso", name));
+                return Err(format!("The name '{}' is already taken", name));
             }
         }
 
@@ -227,11 +227,11 @@ impl SiteManager {
         let public_key_b64 = base64::engine::general_purpose::STANDARD.encode(pub_bytes);
 
         let site_dir = self.base_dir.join("sites").join(&name);
-        std::fs::create_dir_all(&site_dir).map_err(|e| format!("Erro ao criar pasta: {}", e))?;
+        std::fs::create_dir_all(&site_dir).map_err(|e| format!("Could not create folder: {}", e))?;
 
         let default_html = generate_default_page(&name);
         std::fs::write(site_dir.join("index.html"), default_html.as_bytes())
-            .map_err(|e| format!("Erro ao salvar index.html: {}", e))?;
+            .map_err(|e| format!("Could not save index.html: {}", e))?;
 
         let info = SiteInfo {
             name: name.clone(),
@@ -288,20 +288,20 @@ impl SiteManager {
         let safe_name = Path::new(filename)
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or("Nome de arquivo inválido")?
+            .ok_or("Invalid file name")?
             .to_string();
 
         if safe_name.starts_with('.') {
-            return Err("Arquivos ocultos não são permitidos".into());
+            return Err("Hidden files are not allowed".into());
         }
 
         let site_dir = self.base_dir.join("sites").join(&site_name);
         if !site_dir.exists() {
-            return Err(format!("Site '{}' não existe", site_name));
+            return Err(format!("Site '{}' does not exist", site_name));
         }
 
         std::fs::write(site_dir.join(&safe_name), content)
-            .map_err(|e| format!("Erro ao salvar arquivo: {}", e))?;
+            .map_err(|e| format!("Could not save file: {}", e))?;
 
         let mut total_size: u64 = 0;
         let mut file_list = Vec::new();
@@ -328,7 +328,7 @@ impl SiteManager {
             }
         }
 
-        Err("Site não encontrado".into())
+        Err("Site not found".into())
     }
 
     pub async fn delete_site(&self, name: &str) -> Result<(), String> {
@@ -341,7 +341,7 @@ impl SiteManager {
         }
 
         if site_dir.exists() {
-            std::fs::remove_dir_all(&site_dir).map_err(|e| format!("Erro ao remover: {}", e))?;
+            std::fs::remove_dir_all(&site_dir).map_err(|e| format!("Could not remove: {}", e))?;
         }
 
         tracing::info!("site deleted: {}", name);
@@ -368,14 +368,14 @@ impl SiteManager {
         let site_name = site_name.trim().to_lowercase();
         let site_dir = self.base_dir.join("sites").join(&site_name);
         if !site_dir.exists() {
-            return Err(format!("Site '{}' não existe", site_name));
+            return Err(format!("Site '{}' does not exist", site_name));
         }
         if html.len() > 2_000_000 {
-            return Err("Página muito grande (máx. 2 MB)".into());
+            return Err("Page too large (max 2 MB)".into());
         }
 
         std::fs::write(site_dir.join("index.html"), html.as_bytes())
-            .map_err(|e| format!("Erro ao salvar página: {}", e))?;
+            .map_err(|e| format!("Could not save page: {}", e))?;
 
         // Persist the editable source so the page can be re-opened in the editor
         let src = serde_json::to_string(source).unwrap_or_default();
@@ -403,7 +403,7 @@ impl SiteManager {
                 return Ok(record.info.clone());
             }
         }
-        Err("Site não encontrado".into())
+        Err("Site not found".into())
     }
 
     pub async fn publish_site(
@@ -415,15 +415,15 @@ impl SiteManager {
         let site_name = site_name.trim().to_lowercase();
         let site_dir = self.base_dir.join("sites").join(&site_name);
         if !site_dir.exists() {
-            return Err(format!("Site '{}' não existe", site_name));
+            return Err(format!("Site '{}' does not exist", site_name));
         }
 
         let total: usize = files.iter().map(|(_, h)| h.len()).sum();
         if total > 5_000_000 {
-            return Err("Site muito grande (máx. 5 MB no total)".into());
+            return Err("Site too large (max 5 MB in total)".into());
         }
         if files.is_empty() {
-            return Err("Nenhuma página para publicar".into());
+            return Err("No page to publish".into());
         }
 
         // Remove old generated .html pages so renamed/deleted pages don't linger
@@ -446,11 +446,11 @@ impl SiteManager {
                 continue;
             }
             std::fs::write(site_dir.join(&safe), html.as_bytes())
-                .map_err(|e| format!("Erro ao salvar {}: {}", safe, e))?;
+                .map_err(|e| format!("Could not save {}: {}", safe, e))?;
             written += 1;
         }
         if written == 0 {
-            return Err("Nenhuma página válida (.html)".into());
+            return Err("No valid page (.html)".into());
         }
 
         let src = serde_json::to_string(source).unwrap_or_default();
@@ -478,7 +478,7 @@ impl SiteManager {
                 return Ok(record.info.clone());
             }
         }
-        Err("Site não encontrado".into())
+        Err("Site not found".into())
     }
 
     pub fn load_page(&self, name: &str) -> Option<String> {
@@ -600,7 +600,7 @@ fn generate_default_page(site_name: &str) -> String {
   <div class="container">
     <h1>{name}.hidra</h1>
     <p>Este site foi criado na plataforma <strong>SevenNine.hidra</strong><br>
-    e está hospedado na rede descentralizada <strong>HidraNet</strong>.</p>
+    and is hosted on the decentralised <strong>HidraNet</strong> network.</p>
     <div class="badge">Powered by HidraNet</div>
   </div>
 </body>
@@ -699,7 +699,7 @@ async fn handle_connection(
                     }
                 }
                 Err(_) => {
-                    let resp = ApiResponse { ok: false, msg: Some("JSON inválido. Use: {\"name\": \"meusite\"}".into()), site: None, sites: None };
+                    let resp = ApiResponse { ok: false, msg: Some("Invalid JSON. Use: {\"name\": \"mysite\"}".into()), site: None, sites: None };
                     send_json(&mut stream, 400, &resp).await;
                 }
             }
@@ -727,7 +727,7 @@ async fn handle_connection(
                     }
                 },
                 Err(_) => {
-                    let resp = ApiResponse { ok: false, msg: Some("JSON inválido".into()), site: None, sites: None };
+                    let resp = ApiResponse { ok: false, msg: Some("Invalid JSON".into()), site: None, sites: None };
                     send_json(&mut stream, 400, &resp).await;
                 }
             }
@@ -761,7 +761,7 @@ async fn handle_connection(
                     }
                 }
                 Err(_) => {
-                    let resp = ApiResponse { ok: false, msg: Some("JSON inválido".into()), site: None, sites: None };
+                    let resp = ApiResponse { ok: false, msg: Some("Invalid JSON".into()), site: None, sites: None };
                     send_json(&mut stream, 400, &resp).await;
                 }
             }
@@ -821,7 +821,7 @@ async fn handle_connection(
                     }
                 }
             } else {
-                let resp = ApiResponse { ok: false, msg: Some("Upload inválido".into()), site: None, sites: None };
+                let resp = ApiResponse { ok: false, msg: Some("Invalid upload".into()), site: None, sites: None };
                 send_json(&mut stream, 400, &resp).await;
             }
         }
@@ -838,7 +838,7 @@ async fn handle_connection(
                     send_response(&mut stream, 200, &mime, &content).await;
                 }
                 None => {
-                    send_response(&mut stream, 404, "text/plain", b"Arquivo nao encontrado").await;
+                    send_response(&mut stream, 404, "text/plain", b"File not found").await;
                 }
             }
         }
@@ -1041,17 +1041,17 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
 
     <!-- Create Section -->
     <section class="card create-card">
-      <h2><span class="icon">+</span> Criar Novo Site</h2>
+      <h2><span class="icon">+</span> Create a new site</h2>
       <div class="create-form">
         <div class="name-input-group">
-          <input type="text" id="site-name" placeholder="meusite" maxlength="32" autocomplete="off" spellcheck="false">
+          <input type="text" id="site-name" placeholder="mysite" maxlength="32" autocomplete="off" spellcheck="false">
           <span class="domain-suffix">.hidra</span>
         </div>
         <button class="btn btn-primary" id="create-btn" onclick="createSite()">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 5v14M5 12h14"/>
           </svg>
-          Criar Site
+          Create site
         </button>
       </div>
       <div id="create-msg" class="msg hidden"></div>
@@ -1075,7 +1075,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
         <div class="success-actions">
           <a id="open-local-link" href="#" target="_blank" class="btn btn-primary">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            Abrir Site
+            Open site
           </a>
           <button class="btn btn-ghost" onclick="hideSuccess()">Continuar</button>
         </div>
@@ -1092,8 +1092,8 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
           <line x1="32" y1="28" x2="32" y2="48"/>
           <path d="M20,16 V12 a4,4 0 0,1 4,-4 h16 a4,4 0 0,1 4,4 v4"/>
         </svg>
-        <p>Arraste arquivos aqui ou <label class="upload-link" for="file-input">clique para selecionar</label></p>
-        <p class="hint">HTML, CSS, JS, imagens &mdash; ate 5 MB por arquivo</p>
+        <p>Drag files here, or <label class="upload-link" for="file-input">click to choose</label></p>
+        <p class="hint">HTML, CSS, JS, images &mdash; up to 5 MB per file</p>
         <input type="file" id="file-input" multiple hidden>
       </div>
       <div id="file-list" class="file-list"></div>
@@ -1103,7 +1103,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/>
           </svg>
-          Publicar na HidraNet
+          Publish to HidraNet
         </button>
       </div>
     </section>
@@ -1112,7 +1112,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
     <section class="card sites-card">
       <h2><span class="icon">&#9776;</span> Meus Sites</h2>
       <div id="sites-list" class="sites-list">
-        <div class="empty-state">Nenhum site criado ainda. Crie o seu primeiro acima!</div>
+        <div class="empty-state">No sites created yet. Create your first one above.</div>
       </div>
     </section>
 
@@ -1169,15 +1169,15 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
   <div id="editor" class="editor hidden">
     <div class="ed-top">
       <div class="ed-top-left">
-        <button class="btn btn-ghost btn-sm" onclick="closeEditor()">&larr; Voltar</button>
+        <button class="btn btn-ghost btn-sm" onclick="closeEditor()">&larr; Back</button>
         <span class="ed-editing">Editando <span id="ed-site-name" class="accent">site.hidra</span></span>
       </div>
       <div class="ed-top-right">
-        <button class="btn btn-ghost btn-sm" id="ed-devtoggle" onclick="toggleDevice()" title="Alternar visualizacao">🖥 Desktop</button>
+        <button class="btn btn-ghost btn-sm" id="ed-devtoggle" onclick="toggleDevice()" title="Alternar preview">🖥 Desktop</button>
         <a id="ed-open" href="#" target="_blank" class="btn btn-ghost btn-sm">Ver site</a>
         <button class="btn btn-primary btn-sm" id="ed-publish" onclick="publishEditor()">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
-          Publicar
+          Publish
         </button>
       </div>
     </div>
@@ -1185,7 +1185,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
       <aside class="ed-side">
         <div class="ed-block">
           <div class="ed-block-title">Marca</div>
-          <label class="ed-label">Nome / Logo (aparece no menu)</label>
+          <label class="ed-label">Name / logo (appears in the menu)</label>
           <input type="text" id="ed-brand" class="ed-input" placeholder="Minha Marca" oninput="setMeta('brand', this.value)">
         </div>
         <div class="ed-block">
@@ -1222,7 +1222,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
 
       <section class="ed-preview">
         <div class="ed-preview-head">
-          <span>Pre-visualizacao &mdash; clique no texto para editar &#9998;</span>
+          <span>Preview &mdash; click the text to edit &#9998;</span>
           <span class="ed-preview-dot" id="ed-preview-dot"></span>
         </div>
         <div class="ed-frame-wrap" id="ed-frame-wrap">
@@ -1232,10 +1232,10 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Modal proprio (prompt/confirm nao funcionam no Electron) -->
+  <!-- Own modal (prompt/confirm do not work in Electron) -->
   <div id="s9-modal" class="s9-modal hidden">
     <div class="s9-modal-box">
-      <div class="s9-modal-title" id="s9-modal-title">Titulo</div>
+      <div class="s9-modal-title" id="s9-modal-title">Title</div>
       <div class="s9-modal-msg" id="s9-modal-msg"></div>
       <input type="text" id="s9-modal-input" class="ed-input" autocomplete="off" spellcheck="false">
       <div class="s9-modal-actions">
@@ -1597,7 +1597,7 @@ document.addEventListener('DOMContentLoaded', () => {
 async function createSite() {
   const nameInput = document.getElementById('site-name');
   const name = nameInput.value.trim().toLowerCase();
-  if (!name) { showMsg('create-msg', 'Digite um nome para o site', 'error'); return; }
+  if (!name) { showMsg('create-msg', 'Enter a name for the site', 'error'); return; }
 
   const btn = document.getElementById('create-btn');
   btn.disabled = true;
@@ -1615,16 +1615,16 @@ async function createSite() {
       currentSite = data.site.name;
       nameInput.value = '';
       loadSites();
-      openEditor(data.site.name);          // abre o editor visual com pagina inicial
+      openEditor(data.site.name);          // opens the visual editor on the home page
     } else {
-      showMsg('create-msg', data.msg || 'Erro ao criar site', 'error');
+      showMsg('create-msg', data.msg || 'Could not create site', 'error');
     }
   } catch (e) {
-    showMsg('create-msg', 'Erro de conexao: ' + e.message, 'error');
+    showMsg('create-msg', 'Connection error: ' + e.message, 'error');
   }
 
   btn.disabled = false;
-  btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Criar Site';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Create site';
 }
 
 // ── Upload ──
@@ -1654,7 +1654,7 @@ function setupDragDrop() {
 function handleFiles(fileList) {
   for (const file of fileList) {
     if (file.size > 5 * 1024 * 1024) {
-      toast('Arquivo ' + file.name + ' excede 5 MB');
+      toast('File ' + file.name + ' exceeds 5 MB');
       continue;
     }
     pendingFiles.push(file);
@@ -1669,7 +1669,7 @@ function renderFileList() {
       '<span class="fname">' + escapeHtml(f.name) + '</span>' +
       '<div style="display:flex;align-items:center;gap:8px">' +
         '<span class="fsize">' + formatSize(f.size) + '</span>' +
-        '<button class="file-remove" onclick="removeFile(' + i + ')" title="Remover">&times;</button>' +
+        '<button class="file-remove" onclick="removeFile(' + i + ')" title="Remove">&times;</button>' +
       '</div>' +
     '</div>'
   ).join('');
@@ -1682,7 +1682,7 @@ function removeFile(index) {
 
 async function publishSite() {
   if (!currentSite) return;
-  if (pendingFiles.length === 0) { showMsg('create-msg', 'Adicione pelo menos um arquivo', 'error'); return; }
+  if (pendingFiles.length === 0) { showMsg('create-msg', 'Add at least one file', 'error'); return; }
 
   const btn = document.getElementById('publish-btn');
   btn.disabled = true;
@@ -1707,7 +1707,7 @@ async function publishSite() {
       if (data.ok && data.site) lastSite = data.site;
       uploaded++;
     } catch (e) {
-      showMsg('create-msg', 'Erro ao enviar ' + file.name + ': ' + e.message, 'error');
+      showMsg('create-msg', 'Could not upload ' + file.name + ': ' + e.message, 'error');
     }
   }
 
@@ -1717,7 +1717,7 @@ async function publishSite() {
   pendingFiles = [];
   document.getElementById('file-list').innerHTML = '';
   btn.disabled = false;
-  btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg> Publicar na HidraNet';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg> Publish to HidraNet';
 
   showSuccess(currentSite);
   loadSites();
@@ -1768,7 +1768,7 @@ async function loadSites() {
 function renderSites(sites) {
   const container = document.getElementById('sites-list');
   if (sites.length === 0) {
-    container.innerHTML = '<div class="empty-state">Nenhum site criado ainda. Crie o seu primeiro acima!</div>';
+    container.innerHTML = '<div class="empty-state">No sites created yet. Create your first one above.</div>';
     return;
   }
 
@@ -1777,15 +1777,15 @@ function renderSites(sites) {
       '<div class="site-info">' +
         '<div class="site-name">' + escapeHtml(s.hidra_address) + '</div>' +
         '<div class="site-meta">' +
-          s.files.length + ' arquivo(s) &middot; ' + formatSize(s.size_bytes) + ' &middot; ' +
+          s.files.length + ' file(s) &middot; ' + formatSize(s.size_bytes) + ' &middot; ' +
           s.visits + ' visita(s) &middot; ' + new Date(s.created_at).toLocaleDateString('pt-BR') +
         '</div>' +
       '</div>' +
       '<div class="site-actions">' +
-        '<button class="btn btn-primary btn-sm" onclick="openEditor(\'' + escapeHtml(s.name) + '\')">Editar</button>' +
-        '<a href="/sites/' + escapeHtml(s.name) + '/" target="_blank" class="btn btn-ghost btn-sm">Abrir</a>' +
+        '<button class="btn btn-primary btn-sm" onclick="openEditor(\'' + escapeHtml(s.name) + '\')">Edit</button>' +
+        '<a href="/sites/' + escapeHtml(s.name) + '/" target="_blank" class="btn btn-ghost btn-sm">Open</a>' +
         '<button class="btn btn-ghost btn-sm" onclick="uploadTo(\'' + escapeHtml(s.name) + '\')">Upload</button>' +
-        '<button class="btn btn-danger btn-sm" onclick="deleteSite(\'' + escapeHtml(s.name) + '\')">Excluir</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteSite(\'' + escapeHtml(s.name) + '\')">Delete</button>' +
       '</div>' +
     '</div>'
   ).join('');
@@ -1798,20 +1798,20 @@ function uploadTo(name) {
 }
 
 async function deleteSite(name) {
-  if (!await askConfirm('Excluir o site "' + name + '.hidra"? Esta acao e irreversivel.')) return;
+  if (!await askConfirm('Delete the site "' + name + '.hidra"? This cannot be undone.')) return;
 
   try {
     await fetch(API + '/api/sites/' + name, { method: 'DELETE' });
     loadSites();
     toast('Site excluido.');
   } catch (e) {
-    toast('Erro: ' + e.message);
+    toast('Error: ' + e.message);
   }
 }
 
 // ── Templates: criam o site e abrem o editor ja preenchido ──
 async function useTemplate(type) {
-  const name = await askText({ title: 'Criar site com template', msg: 'Escolha um nome — sera o endereco .hidra do seu site.', placeholder: 'meusite', ok: 'Criar e editar' });
+  const name = await askText({ title: 'Create a site from a template', msg: 'Choose a name — it becomes your site\'s .hidra address.', placeholder: 'mysite', ok: 'Create and edit' });
   if (!name) return;
   const clean = name.trim().toLowerCase();
   if (!clean) return;
@@ -1827,10 +1827,10 @@ async function useTemplate(type) {
       loadSites();
       openEditor(data.site.name, type);   // abre o editor com os blocos do template
     } else {
-      showMsg('create-msg', data.msg || 'Erro ao criar site', 'error');
+      showMsg('create-msg', data.msg || 'Could not create site', 'error');
     }
   } catch (e) {
-    showMsg('create-msg', 'Erro de conexao: ' + e.message, 'error');
+    showMsg('create-msg', 'Connection error: ' + e.message, 'error');
   }
 }
 
@@ -1864,7 +1864,7 @@ function curBlocks(){ return curPage().blocks; }
 function newPage(id,name,blocks){ return { id:id, name:name, blocks:blocks }; }
 function fileFor(p){ return p.id==='index' ? 'index.html' : p.id+'.html'; }
 function slugify(s){ s=(s||'').toLowerCase(); try{ s=s.normalize('NFD').replace(/[̀-ͯ]/g,''); }catch(e){} return s.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,''); }
-function uniquePageId(base){ if(!base||base==='index') base='pagina'; var id=base,n=2,ids=ed.pages.map(function(p){return p.id;}); while(ids.indexOf(id)>=0){ id=base+'-'+n; n++; } return id; }
+function uniquePageId(base){ if(!base||base==='index') base='page'; var id=base,n=2,ids=ed.pages.map(function(p){return p.id;}); while(ids.indexOf(id)>=0){ id=base+'-'+n; n++; } return id; }
 function isListBlock(t){ return ['features','products','articles','pricing','testimonials','gallery'].indexOf(t)>=0; }
 
 var THEMES = {
@@ -1886,11 +1886,11 @@ var FONTS = {
 };
 
 var PALETTE_BLOCKS = [
-  { type:'hero',         label:'Capa',        icon:'★' },
-  { type:'heading',      label:'Titulo',      icon:'H' },
-  { type:'text',         label:'Texto',       icon:'¶' },
-  { type:'image',        label:'Imagem',      icon:'▣' },
-  { type:'button',       label:'Botao',       icon:'▭' },
+  { type:'hero',         label:'Cover',        icon:'★' },
+  { type:'heading',      label:'Title',      icon:'H' },
+  { type:'text',         label:'Text',       icon:'¶' },
+  { type:'image',        label:'Image',      icon:'▣' },
+  { type:'button',       label:'Button',       icon:'▭' },
   { type:'features',     label:'Destaques',   icon:'⊞' },
   { type:'products',     label:'Produtos',    icon:'🛍' },
   { type:'articles',     label:'Noticias',    icon:'📰' },
@@ -1904,31 +1904,31 @@ var PALETTE_BLOCKS = [
 
 function defaultItem(type){
   if(type==='features') return {icon:'✦',title:'Recurso',text:'Descricao do recurso'};
-  if(type==='products') return {img:'',name:'Produto',price:'99,90',desc:'Descricao do produto.',url:'#',label:'Comprar'};
-  if(type==='articles') return {img:'',cat:'Geral',title:'Titulo da noticia',date:'Hoje',excerpt:'Resumo da noticia em uma ou duas linhas.',url:'#'};
-  if(type==='pricing') return {plan:'Plano',price:'0',period:'/mes',feats:'Recurso incluso\nOutro recurso',button:'Escolher',url:'#',featured:false};
+  if(type==='products') return {img:'',name:'Product',price:'99,90',desc:'Descricao do product.',url:'#',label:'Comprar'};
+  if(type==='articles') return {img:'',cat:'General',title:'Story headline',date:'Today',excerpt:'A one or two line summary of the story.',url:'#'};
+  if(type==='pricing') return {plan:'Plan',price:'0',period:'/mes',feats:'Recurso incluso\nOutro recurso',button:'Escolher',url:'#',featured:false};
   if(type==='testimonials') return {quote:'Servico excelente, recomendo muito!',author:'Cliente',role:'Cargo'};
   if(type==='gallery') return {url:''};
   return {};
 }
 function itemName(type){
-  return {features:'Destaque',products:'Produto',articles:'Noticia',pricing:'Plano',testimonials:'Depoimento',gallery:'Imagem'}[type] || 'Item';
+  return {features:'Feature',products:'Product',articles:'Story',pricing:'Plan',testimonials:'Testimonial',gallery:'Image'}[type] || 'Item';
 }
 
 function defaultBlock(type) {
   switch(type) {
     case 'hero': return { type:type, title:'Bem-vindo ao meu site', subtitle:'Hospedado na rede descentralizada HidraNet.', button:'Saiba mais', url:'#' };
-    case 'heading': return { type:type, text:'Um titulo de secao' };
-    case 'text': return { type:type, text:'Escreva aqui o seu conteudo. Conte sobre voce, seu projeto ou suas ideias.' };
-    case 'image': return { type:type, url:'', alt:'Descricao da imagem' };
-    case 'button': return { type:type, text:'Clique aqui', url:'#' };
-    case 'features': return { type:type, title:'', items:[ {icon:'🔒',title:'Seguro',text:'Criptografia de ponta a ponta'}, {icon:'🕵',title:'Anonimo',text:'Sem rastreamento'}, {icon:'🌐',title:'Descentralizado',text:'Sem servidor central'} ] };
-    case 'products': return { type:type, title:'Nossos Produtos', currency:'R$', items:[ {img:'',name:'Produto 1',price:'99,90',desc:'Otimo produto com qualidade garantida.',url:'#',label:'Comprar'}, {img:'',name:'Produto 2',price:'149,90',desc:'Mais vendido da loja.',url:'#',label:'Comprar'}, {img:'',name:'Produto 3',price:'199,90',desc:'Edicao especial.',url:'#',label:'Comprar'} ] };
-    case 'articles': return { type:type, title:'Ultimas Noticias', items:[ {img:'',cat:'Destaque',title:'Primeira manchete do portal',date:'Hoje',excerpt:'Um resumo curto da noticia para atrair o leitor.',url:'#'}, {img:'',cat:'Geral',title:'Segunda noticia importante',date:'Ontem',excerpt:'Outro resumo informativo aqui.',url:'#'} ] };
+    case 'heading': return { type:type, text:'Um title de secao' };
+    case 'text': return { type:type, text:'Write your content here. Tell people about you, your project or your ideas.' };
+    case 'image': return { type:type, url:'', alt:'Descricao da image' };
+    case 'button': return { type:type, text:'Click here', url:'#' };
+    case 'features': return { type:type, title:'', items:[ {icon:'🔒',title:'Secure',text:'End-to-end encryption'}, {icon:'🕵',title:'Anonymous',text:'No tracking'}, {icon:'🌐',title:'Decentralised',text:'No central server'} ] };
+    case 'products': return { type:type, title:'Nossos Produtos', currency:'R$', items:[ {img:'',name:'Product 1',price:'99,90',desc:'Otimo product com qualidade garantida.',url:'#',label:'Comprar'}, {img:'',name:'Product 2',price:'149,90',desc:'Mais vendido da loja.',url:'#',label:'Comprar'}, {img:'',name:'Product 3',price:'199,90',desc:'Edicao especial.',url:'#',label:'Comprar'} ] };
+    case 'articles': return { type:type, title:'Latest news', items:[ {img:'',cat:'Featured',title:'Lead story headline',date:'Today',excerpt:'A short summary of the story to draw the reader in.',url:'#'}, {img:'',cat:'General',title:'Second important story',date:'Yesterday',excerpt:'Another informative summary here.',url:'#'} ] };
     case 'pricing': return { type:type, title:'Planos', items:[ {plan:'Basico',price:'29',period:'/mes',feats:'1 site\nSuporte por email\nDominio .hidra',button:'Comecar',url:'#',featured:false}, {plan:'Pro',price:'79',period:'/mes',feats:'Sites ilimitados\nSuporte prioritario\nEstatisticas',button:'Assinar',url:'#',featured:true} ] };
     case 'testimonials': return { type:type, title:'O que dizem', items:[ {quote:'Melhor decisao que tomei. Recomendo!',author:'Maria S.',role:'Empreendedora'}, {quote:'Rapido, seguro e facil de usar.',author:'Joao P.',role:'Desenvolvedor'} ] };
     case 'gallery': return { type:type, title:'Galeria', items:[ {url:''},{url:''},{url:''} ] };
-    case 'cta': return { type:type, title:'Pronto para comecar?', text:'Junte-se a nos hoje mesmo e faca parte da rede.', button:'Comecar agora', url:'#' };
+    case 'cta': return { type:type, title:'Pronto para comecar?', text:'Junte-se a nos today mesmo e faca parte da rede.', button:'Comecar agora', url:'#' };
     case 'contact': return { type:type, title:'Fale Conosco', email:'contato@exemplo.hidra', phone:'', whatsapp:'', address:'' };
     case 'divider': return { type:type };
     default: return { type:'text', text:'' };
@@ -1999,30 +1999,30 @@ function setSocial(key, val) { ed.social[key] = val; schedulePreview(); }
 function renderPageTabs() {
   var el = document.getElementById('ed-pages');
   var tabs = ed.pages.map(function(p, i){
-    var del = (i===0) ? '' : '<span class="pg-edit" title="Excluir" onclick="event.stopPropagation();deletePage('+i+')">&times;</span>';
+    var del = (i===0) ? '' : '<span class="pg-edit" title="Delete" onclick="event.stopPropagation();deletePage('+i+')">&times;</span>';
     return '<div class="ed-page-tab'+(i===ed.cur?' active':'')+'" onclick="switchPage('+i+')">' +
       '<span>'+esc(p.name)+'</span>' +
       '<span class="pg-edit" title="Renomear" onclick="event.stopPropagation();renamePage('+i+')">&#9998;</span>' + del + '</div>';
   }).join('');
-  el.innerHTML = tabs + '<div class="ed-page-add" onclick="addPage()">+ Pagina</div>';
+  el.innerHTML = tabs + '<div class="ed-page-add" onclick="addPage()">+ Page</div>';
 }
 function switchPage(i){ ed.cur=i; renderPageTabs(); renderCanvas(); updatePreview(); }
 async function addPage(){
-  var name = await askText({ title: 'Nova pagina', msg: 'Ex.: Loja, Produtos, Sobre, Contato.', placeholder: 'Loja', ok: 'Criar pagina' }); if(!name) return;
+  var name = await askText({ title: 'New page', msg: 'e.g. Shop, Products, About, Contact.', placeholder: 'Shop', ok: 'Create page' }); if(!name) return;
   name = name.trim(); if(!name) return;
-  var id = uniquePageId(slugify(name) || 'pagina');
+  var id = uniquePageId(slugify(name) || 'page');
   ed.pages.push(newPage(id, name, [ defaultBlock('heading'), defaultBlock('text') ]));
   ed.cur = ed.pages.length - 1;
   renderPageTabs(); renderCanvas(); updatePreview();
 }
 async function renamePage(i){
-  var name = await askText({ title: 'Renomear pagina', value: ed.pages[i].name, ok: 'Salvar' }); if(!name) return;
+  var name = await askText({ title: 'Rename page', value: ed.pages[i].name, ok: 'Save' }); if(!name) return;
   ed.pages[i].name = name.trim() || ed.pages[i].name;
   renderPageTabs(); updatePreview();
 }
 async function deletePage(i){
-  if(i===0){ toast('A pagina inicial nao pode ser excluida.'); return; }
-  if(!await askConfirm('Excluir a pagina "'+ed.pages[i].name+'"?')) return;
+  if(i===0){ toast('The home page cannot be deleted.'); return; }
+  if(!await askConfirm('Delete the page "'+ed.pages[i].name+'"?')) return;
   ed.pages.splice(i,1);
   if(ed.cur>=ed.pages.length) ed.cur=ed.pages.length-1;
   renderPageTabs(); renderCanvas(); updatePreview();
@@ -2043,31 +2043,31 @@ function renderPalette() {
 }
 
 function blockLabel(type){
-  var m = {hero:'Capa', heading:'Titulo', text:'Texto', image:'Imagem', button:'Botao', features:'Destaques', products:'Produtos', articles:'Noticias', pricing:'Precos', testimonials:'Depoimentos', gallery:'Galeria', cta:'Chamada', contact:'Contato', divider:'Divisor'};
+  var m = {hero:'Cover', heading:'Title', text:'Text', image:'Image', button:'Button', features:'Destaques', products:'Produtos', articles:'Noticias', pricing:'Precos', testimonials:'Depoimentos', gallery:'Galeria', cta:'Chamada', contact:'Contato', divider:'Divisor'};
   return m[type] || type;
 }
 
 function renderCanvas() {
   var el = document.getElementById('ed-canvas');
   var blocks = curBlocks();
-  if (blocks.length === 0) { el.innerHTML = '<div class="ed-canvas-empty">Pagina vazia. Adicione blocos no painel a esquerda.</div>'; return; }
+  if (blocks.length === 0) { el.innerHTML = '<div class="ed-canvas-empty">Empty page. Add blocks from the panel a esquerda.</div>'; return; }
   el.innerHTML = blocks.map(function(b, i){ return blockCard(b, i); }).join('');
 }
 
 function blockCard(b, i) {
   var body = '';
   if (b.type === 'hero') {
-    body = field('Titulo', b.title, i, 'title') + field('Subtitulo', b.subtitle, i, 'subtitle') +
-      '<div class="row2">' + field('Texto do botao', b.button, i, 'button') + field('Link do botao', b.url, i, 'url') + '</div>';
-  } else if (b.type === 'heading') { body = field('Titulo', b.text, i, 'text'); }
-  else if (b.type === 'text') { body = area('Texto', b.text, i, 'text'); }
-  else if (b.type === 'image') { body = field('URL da imagem (https://...)', b.url, i, 'url') + field('Descricao', b.alt, i, 'alt'); }
-  else if (b.type === 'button') { body = '<div class="row2">' + field('Texto', b.text, i, 'text') + field('Link', b.url, i, 'url') + '</div>'; }
+    body = field('Title', b.title, i, 'title') + field('Subtitulo', b.subtitle, i, 'subtitle') +
+      '<div class="row2">' + field('Button text', b.button, i, 'button') + field('Button link', b.url, i, 'url') + '</div>';
+  } else if (b.type === 'heading') { body = field('Title', b.text, i, 'text'); }
+  else if (b.type === 'text') { body = area('Text', b.text, i, 'text'); }
+  else if (b.type === 'image') { body = field('URL da image (https://...)', b.url, i, 'url') + field('Descricao', b.alt, i, 'alt'); }
+  else if (b.type === 'button') { body = '<div class="row2">' + field('Text', b.text, i, 'text') + field('Link', b.url, i, 'url') + '</div>'; }
   else if (b.type === 'cta') {
-    body = field('Titulo', b.title, i, 'title') + area('Texto', b.text, i, 'text') +
-      '<div class="row2">' + field('Texto do botao', b.button, i, 'button') + field('Link', b.url, i, 'url') + '</div>';
+    body = field('Title', b.title, i, 'title') + area('Text', b.text, i, 'text') +
+      '<div class="row2">' + field('Button text', b.button, i, 'button') + field('Link', b.url, i, 'url') + '</div>';
   } else if (b.type === 'contact') {
-    body = field('Titulo', b.title, i, 'title') +
+    body = field('Title', b.title, i, 'title') +
       '<div class="row2">' + field('E-mail', b.email, i, 'email') + field('Telefone', b.phone, i, 'phone') + '</div>' +
       '<div class="row2">' + field('WhatsApp (numero)', b.whatsapp, i, 'whatsapp') + field('Endereco', b.address, i, 'address') + '</div>';
   } else if (b.type === 'divider') { body = '<div style="color:var(--text3);font-size:0.85em">Linha divisoria (sem opcoes)</div>'; }
@@ -2077,29 +2077,29 @@ function blockCard(b, i) {
       '<div class="ed-card-tools">' +
         '<button class="ed-tool" onclick="moveBlock('+i+',-1)" title="Subir">&uarr;</button>' +
         '<button class="ed-tool" onclick="moveBlock('+i+',1)" title="Descer">&darr;</button>' +
-        '<button class="ed-tool del" onclick="delBlock('+i+')" title="Remover">&#128465;</button>' +
+        '<button class="ed-tool del" onclick="delBlock('+i+')" title="Remove">&#128465;</button>' +
       '</div></div>' +
     '<div class="ed-card-body">'+body+'</div></div>';
 }
 
 function listBlockBody(b, i) {
   var head = '';
-  if (b.type === 'products') head = field('Titulo da secao', b.title, i, 'title') + field('Moeda (R$, US$...)', b.currency, i, 'currency');
-  else if (b.type !== 'features') head = field('Titulo da secao', b.title, i, 'title');
+  if (b.type === 'products') head = field('Title da secao', b.title, i, 'title') + field('Moeda (R$, US$...)', b.currency, i, 'currency');
+  else if (b.type !== 'features') head = field('Title da secao', b.title, i, 'title');
   var items = (b.items||[]).map(function(it, j){
-    return '<div class="ed-item"><button class="ed-item-rm" onclick="rmItem('+i+','+j+')" title="Remover">&times;</button>' +
+    return '<div class="ed-item"><button class="ed-item-rm" onclick="rmItem('+i+','+j+')" title="Remove">&times;</button>' +
       '<div class="ed-item-n">'+itemName(b.type)+' '+(j+1)+'</div>' + itemFields(b.type, it, i, j) + '</div>';
   }).join('');
   return head + '<div class="ed-items">'+items+'</div><button class="ed-mini-btn" onclick="addItem('+i+')">+ Adicionar '+itemName(b.type)+'</button>';
 }
 
 function itemFields(type, it, bi, ii) {
-  if (type === 'features') return iField('Icone (emoji)', it.icon, bi, ii, 'icon') + iField('Titulo', it.title, bi, ii, 'title') + iField('Texto', it.text, bi, ii, 'text');
-  if (type === 'products') return iField('URL da imagem', it.img, bi, ii, 'img') + iField('Nome', it.name, bi, ii, 'name') + '<div class="row2">' + iField('Preco', it.price, bi, ii, 'price') + iField('Texto do botao', it.label, bi, ii, 'label') + '</div>' + iField('Descricao', it.desc, bi, ii, 'desc') + iField('Link de compra', it.url, bi, ii, 'url');
-  if (type === 'articles') return iField('URL da imagem', it.img, bi, ii, 'img') + '<div class="row2">' + iField('Categoria', it.cat, bi, ii, 'cat') + iField('Data', it.date, bi, ii, 'date') + '</div>' + iField('Titulo', it.title, bi, ii, 'title') + iArea('Resumo', it.excerpt, bi, ii, 'excerpt') + iField('Link', it.url, bi, ii, 'url');
-  if (type === 'pricing') return iField('Plano', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Preco', it.price, bi, ii, 'price') + iField('Periodo', it.period, bi, ii, 'period') + '</div>' + iArea('Recursos (1 por linha)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Texto do botao', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Destacar este plano', it.featured, bi, ii, 'featured');
+  if (type === 'features') return iField('Icone (emoji)', it.icon, bi, ii, 'icon') + iField('Title', it.title, bi, ii, 'title') + iField('Text', it.text, bi, ii, 'text');
+  if (type === 'products') return iField('Image URL', it.img, bi, ii, 'img') + iField('Name', it.name, bi, ii, 'name') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Text do button', it.label, bi, ii, 'label') + '</div>' + iField('Descricao', it.desc, bi, ii, 'desc') + iField('Link de compra', it.url, bi, ii, 'url');
+  if (type === 'articles') return iField('URL da image', it.img, bi, ii, 'img') + '<div class="row2">' + iField('Categoria', it.cat, bi, ii, 'cat') + iField('Data', it.date, bi, ii, 'date') + '</div>' + iField('Title', it.title, bi, ii, 'title') + iArea('Summary', it.excerpt, bi, ii, 'excerpt') + iField('Link', it.url, bi, ii, 'url');
+  if (type === 'pricing') return iField('Plan', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Periodo', it.period, bi, ii, 'period') + '</div>' + iArea('Recursos (1 por linha)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Text do button', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Destacar este plan', it.featured, bi, ii, 'featured');
   if (type === 'testimonials') return iArea('Depoimento', it.quote, bi, ii, 'quote') + '<div class="row2">' + iField('Autor', it.author, bi, ii, 'author') + iField('Cargo', it.role, bi, ii, 'role') + '</div>';
-  if (type === 'gallery') return iField('URL da imagem', it.url, bi, ii, 'url');
+  if (type === 'gallery') return iField('URL da image', it.url, bi, ii, 'url');
   return '';
 }
 
@@ -2179,8 +2179,8 @@ async function publishEditor(){
     });
     var data = await res.json();
     if (data.ok) { btn.innerHTML = '✓ Publicado!'; setTimeout(function(){ btn.disabled=false; btn.innerHTML=old; }, 1600); }
-    else { toast('Erro ao publicar: ' + (data.msg||'')); btn.disabled=false; btn.innerHTML=old; }
-  } catch(e) { toast('Erro de conexao: ' + e.message); btn.disabled=false; btn.innerHTML=old; }
+    else { toast('Could not publish: ' + (data.msg||'')); btn.disabled=false; btn.innerHTML=old; }
+  } catch(e) { toast('Connection error: ' + e.message); btn.disabled=false; btn.innerHTML=old; }
 }
 
 function navbarHTML(){
@@ -2342,7 +2342,7 @@ function siteCSS(t, font){
 
 function imgOr(url, cls, alt, ph){
   if (url && /^(https?:|\/)/i.test(url)) return '<img class="'+cls+'" src="'+safeUrl(url)+'" alt="'+attr(alt||'')+'">';
-  return '<div class="'+cls+' s9-ph">'+esc(ph||'Imagem')+'</div>';
+  return '<div class="'+cls+' s9-ph">'+esc(ph||'Image')+'</div>';
 }
 
 function blockHTML(b, t, em, bi){
@@ -2353,7 +2353,7 @@ function blockHTML(b, t, em, bi){
   if (b.type === 'heading') return '<div class="s9-wrap"'+db(em,bi)+'><h2 class="s9-h"'+ce(em)+de(em,bi+':text')+'>' + esc(b.text) + '</h2></div>';
   if (b.type === 'text') return '<div class="s9-wrap"'+db(em,bi)+'><p class="s9-p"'+ce(em)+de(em,bi+':text')+' data-multi="1">' + esc(b.text) + '</p></div>';
   if (b.type === 'image') {
-    var inner = (b.url && /^(https?:|\/)/i.test(b.url)) ? '<img class="s9-img" src="' + safeUrl(b.url) + '" alt="' + attr(b.alt) + '">' : '<div class="s9-img s9-imgph s9-ph">' + (esc(b.alt) || 'Imagem') + '</div>';
+    var inner = (b.url && /^(https?:|\/)/i.test(b.url)) ? '<img class="s9-img" src="' + safeUrl(b.url) + '" alt="' + attr(b.alt) + '">' : '<div class="s9-img s9-imgph s9-ph">' + (esc(b.alt) || 'Image') + '</div>';
     return '<div class="s9-wrap s9-center"'+db(em,bi)+'>'+inner+'</div>';
   }
   if (b.type === 'button') return '<div class="s9-wrap s9-center"'+db(em,bi)+'><a class="s9-btn" href="' + safeUrl(b.url) + '"'+ce(em)+de(em,bi+':text')+'>' + esc(b.text) + '</a></div>';
@@ -2366,15 +2366,15 @@ function blockHTML(b, t, em, bi){
   if (b.type === 'products') {
     var cards = (b.items||[]).map(function(it,ii){
       var buy = it.url ? '<a class="s9-btn s9-btn-sm" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':label')+'>'+esc(it.label||'Comprar')+'</a>' : '';
-      return '<div class="s9-prod">' + imgOr(it.img,'s9-prod-img',it.name,'Sem imagem') +
+      return '<div class="s9-prod">' + imgOr(it.img,'s9-prod-img',it.name,'Sem image') +
         '<div class="s9-prod-b"><h3'+ce(em)+de(em,bi+'.'+ii+':name')+'>'+esc(it.name)+'</h3><div class="s9-price">'+esc(b.currency||'')+' <span'+ce(em)+de(em,bi+'.'+ii+':price')+'>'+esc(it.price||'')+'</span></div><p'+ce(em)+de(em,bi+'.'+ii+':desc')+'>'+esc(it.desc)+'</p>'+buy+'</div></div>';
     }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-prod-grid">'+cards+'</div></section>';
   }
   if (b.type === 'articles') {
     var arts = (b.items||[]).map(function(it,ii){
-      return '<a class="s9-art" href="'+safeUrl(it.url)+'">' + imgOr(it.img,'s9-art-img',it.title,'Sem imagem') +
-        '<div class="s9-art-b"><span class="s9-cat">'+esc(it.cat||'Geral')+'</span><h3'+ce(em)+de(em,bi+'.'+ii+':title')+'>'+esc(it.title)+'</h3><div class="s9-date">'+esc(it.date)+'</div><p'+ce(em)+de(em,bi+'.'+ii+':excerpt')+'>'+esc(it.excerpt)+'</p></div></a>';
+      return '<a class="s9-art" href="'+safeUrl(it.url)+'">' + imgOr(it.img,'s9-art-img',it.title,'Sem image') +
+        '<div class="s9-art-b"><span class="s9-cat">'+esc(it.cat||'General')+'</span><h3'+ce(em)+de(em,bi+'.'+ii+':title')+'>'+esc(it.title)+'</h3><div class="s9-date">'+esc(it.date)+'</div><p'+ce(em)+de(em,bi+'.'+ii+':excerpt')+'>'+esc(it.excerpt)+'</p></div></a>';
     }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-art-grid">'+arts+'</div></section>';
   }
@@ -2393,7 +2393,7 @@ function blockHTML(b, t, em, bi){
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-quote-grid">'+qs+'</div></section>';
   }
   if (b.type === 'gallery') {
-    var imgs = (b.items||[]).map(function(it){ return imgOr(it.url,'','','Imagem'); }).join('');
+    var imgs = (b.items||[]).map(function(it){ return imgOr(it.url,'','','Image'); }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-gal">'+imgs+'</div></section>';
   }
   if (b.type === 'cta') {
@@ -2416,7 +2416,7 @@ function esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replac
 function attr(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 function safeUrl(u){ u=(u==null?'#':String(u).trim()); if(/^(https?:|mailto:|#|\/)/i.test(u)) return attr(u); return '#'; }
 
-// ── Modal proprio (prompt/confirm/alert nao funcionam no Electron) ──
+// ── Own modal (prompt/confirm/alert do not work in Electron) ──
 function askText(opts){
   return new Promise(function(resolve){
     var m=document.getElementById('s9-modal');
@@ -2440,7 +2440,7 @@ function askConfirm(message){
     document.getElementById('s9-modal-title').textContent='Confirmar';
     document.getElementById('s9-modal-msg').textContent=message;
     var inp=document.getElementById('s9-modal-input'); inp.style.display='none';
-    document.getElementById('s9-modal-ok').textContent='Excluir';
+    document.getElementById('s9-modal-ok').textContent='Delete';
     m.classList.remove('hidden');
     var ok=document.getElementById('s9-modal-ok'), cancel=document.getElementById('s9-modal-cancel');
     function done(v){ m.classList.add('hidden'); inp.style.display=''; ok.onclick=null; cancel.onclick=null; resolve(v); }

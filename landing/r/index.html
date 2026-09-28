@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Avaliações — HidraNet</title>
-<meta name="description" content="Deixe a sua avaliação deste estabelecimento na rede HidraNet.">
+<title>Reviews — HidraNet</title>
+<meta name="description" content="Leave your review of this business on the HidraNet network.">
 <link rel="manifest" href="/r/manifest.webmanifest">
 <meta name="theme-color" content="#06060b">
 <link rel="icon" href="/icons/icon-192.png" type="image/png">
@@ -121,7 +121,7 @@ border-radius:10px;padding:12px 13px;color:var(--txt);text-decoration:none;font-
 .dl a .sz{margin-left:auto;color:var(--mut);font-size:12px;font-weight:400}
 .note{color:var(--mut);font-size:12px;margin-top:13px;line-height:1.6}
 
-/* lista de estabelecimentos (a app, quando aberta sem NFC) */
+/* business list (the app, when opened without NFC) */
 .dirhead{padding:22px 0 4px}
 .dirhead h1{font-size:25px;font-weight:800;letter-spacing:-.4px}
 .dirhead p{color:var(--dim);font-size:14px;margin-top:5px}
@@ -148,22 +148,22 @@ background:var(--card2);border:1px solid var(--line2)}
     <button class="getbtn hidden" id="get-pill">Instalar app</button>
   </div>
 
-  <div id="loading" class="state">A carregar o estabelecimento…</div>
+  <div id="loading" class="state">Loading the business…</div>
 
   <div id="missing" class="state hidden">
     <div style="font-size:36px;margin-bottom:10px">🔍</div>
-    <div id="missing-txt">Não encontrei este estabelecimento.</div>
-    <div style="margin-top:14px"><a href="/r/" style="color:var(--acc)">Ver todos os estabelecimentos →</a></div>
+    <div id="missing-txt">Could not find this business.</div>
+    <div style="margin-top:14px"><a href="/r/" style="color:var(--acc)">See all businesses →</a></div>
   </div>
 
   <div id="dir" class="hidden">
     <div class="dirhead">
       <h1>Estabelecimentos na HidraNet</h1>
-      <p>Avaliações reais, sem conta e sem rastreio. Toque num para ver ou avaliar.</p>
+      <p>Real reviews, no account and no tracking. Tap one to view or review it.</p>
     </div>
-    <input id="q" placeholder="Procurar por nome ou cidade…" autocomplete="off">
+    <input id="q" placeholder="Search by name or city…" autocomplete="off">
     <div class="card" id="dir-card" style="margin-top:12px"><div id="dir-list">
-      <div class="cnt" style="color:var(--mut)">À procura de estabelecimentos…</div>
+      <div class="cnt" style="color:var(--mut)">Looking for businesses…</div>
     </div></div>
     <div id="get-slot-dir"></div>
   </div>
@@ -179,38 +179,38 @@ background:var(--card2);border:1px solid var(--line2)}
       <div class="sect">Especialidades</div><div id="menu"></div>
     </div>
     <div class="card hidden" id="hours-card">
-      <div class="sect">Horário</div><div class="hours" id="hours"></div>
+      <div class="sect">Opening hours</div><div class="hours" id="hours"></div>
     </div>
     <div class="card hidden" id="gal-card">
       <div class="sect">Fotos</div><div class="gal" id="gal"></div>
     </div>
 
     <div class="card">
-      <div class="sect">Deixe a sua avaliação</div>
+      <div class="sect">Leave your review</div>
       <div class="pick" id="pick">
         <span data-v="1">★</span><span data-v="2">★</span><span data-v="3">★</span>
         <span data-v="4">★</span><span data-v="5">★</span>
       </div>
       <div class="two">
-        <div><label for="rname">O seu nome *</label><input id="rname" maxlength="36" placeholder="Como quer assinar"></div>
+        <div><label for="rname">Your name *</label><input id="rname" maxlength="36" placeholder="How you want to sign it"></div>
         <div><label for="rloc">De onde é</label><input id="rloc" maxlength="50" placeholder="Lisboa"></div>
       </div>
-      <label for="rtext">Como foi a sua experiência?</label>
+      <label for="rtext">How was your experience?</label>
       <textarea id="rtext" maxlength="1200" placeholder="Conte o que achou…"></textarea>
-      <button id="send">Publicar avaliação</button>
+      <button id="send">Post review</button>
       <div class="msg" id="msg"></div>
     </div>
 
     <div class="card">
-      <div class="sect">Avaliações</div>
+      <div class="sect">Reviews</div>
       <div id="list"></div>
     </div>
     <div id="get-slot-site"></div>
 
     <div class="foot">
-      Este estabelecimento também existe na rede HidraNet em<br>
+      This business also exists on the HidraNet network at<br>
       <code id="hidra-addr"></code><br><br>
-      <a href="/r/">Ver outros estabelecimentos →</a>
+      <a href="/r/">See other businesses →</a>
     </div>
   </div>
 
@@ -224,27 +224,27 @@ background:var(--card2);border:1px solid var(--line2)}
     </div>
 
     <div id="get-android" class="hidden">
-      <p>Instale a app no telemóvel para abrir qualquer estabelecimento da rede
-         directamente do ecrã principal, sem passar por aqui.</p>
+      <p>Install the app on your phone to open any business on the network
+         straight from the home screen, without coming through here.</p>
       <button id="get-install">Instalar HidraNet</button>
       <div id="get-android-manual" class="hidden">
         <ol>
           <li>Toque no menu <span class="key">⋮</span> no canto do navegador.</li>
-          <li>Escolha <span class="key">Instalar aplicação</span> ou <span class="key">Adicionar ao ecrã principal</span>.</li>
+          <li>Choose <span class="key">Install app</span> or <span class="key">Add to Home Screen</span>.</li>
         </ol>
       </div>
     </div>
 
     <div id="get-ios" class="hidden">
-      <p>Adicione a HidraNet ao ecrã principal do iPhone — fica com ícone próprio,
-         abre em ecrã inteiro e não precisa da App Store.</p>
+      <p>Add HidraNet to your iPhone home screen — it gets its own icon,
+         opens full screen and needs no App Store.</p>
       <ol>
         <li>Toque em <span class="key"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"
           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
           aria-hidden="true"><path d="M12 15V3"/><path d="M8 7l4-4 4 4"/>
           <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> Partilhar</span>
           na barra de baixo do Safari</li>
-        <li>Deslize e escolha <span class="key">Adicionar ao ecrã principal</span></li>
+        <li>Scroll and choose <span class="key">Add to Home Screen</span></li>
         <li>Confirme em <span class="key">Adicionar</span></li>
       </ol>
       <div class="note" id="ios-safari-note"></div>
@@ -252,7 +252,7 @@ background:var(--card2);border:1px solid var(--line2)}
 
     <div id="get-desktop" class="hidden">
       <p>No computador existe o navegador HidraNet completo — com rede Tor,
-         endereços <code style="color:var(--acc)">.hidra</code> e correio anónimo.</p>
+         <code style="color:var(--acc)">.hidra</code> addresses and anonymous mail.</p>
       <div class="dl">
         <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Windows-x64.zip"><span class="os">⊞</span>Windows 64-bit<span class="sz">121 MB</span></a>
         <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-arm64.zip"><span class="os">🍎</span>macOS Apple Silicon<span class="sz">103 MB</span></a>
@@ -262,12 +262,12 @@ background:var(--card2);border:1px solid var(--line2)}
     </div>
 
     <div id="get-installed" class="hidden">
-      <p>Já está instalada neste aparelho. Boas avaliações!</p>
+      <p>Already installed on this device. Happy reviewing.</p>
     </div>
 
     <div class="note">
-      A app do telemóvel mostra e recebe as avaliações da rede. O navegador HidraNet
-      completo, com Tor e endereços <code style="color:var(--acc)">.hidra</code>, existe só para computador.
+      The phone app shows and receives the network's reviews. The HidraNet browser
+      full browser, with Tor and <code style="color:var(--acc)">.hidra</code> addresses, is desktop only.
     </div>
   </div>
 </div>
@@ -276,8 +276,8 @@ background:var(--card2);border:1px solid var(--line2)}
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
 
-// O mesmo relay que o navegador HidraNet usa. É isto que permite a esta página,
-// num telemóvel qualquer, ver e escrever as mesmas avaliações — sem servidor.
+// The same relay the HidraNet browser uses. This is what lets this page,
+// on any phone, view and write the same reviews — with no server.
 var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 var client = null, brokerIx = 0;
 var slug = '', biz = null, revs = {}, pics = {}, replies = {}, stars = 0, ready = false;
@@ -292,9 +292,9 @@ function rid(n) {
 }
 
 /* ---- Notificar o dono pelo HidraMail ----
-   O mesmo correio E2E da HidraNet. Quando alguém avalia aqui no telemóvel,
-   o dono recebe a avaliação cifrada na sua caixa (mesmo offline, via retidas).
-   Não há serviços externos: é o próprio sistema. */
+   The same HidraNet E2E mail. When someone reviews here on a phone,
+   the owner receives the review encrypted in their inbox (even offline, via retained).
+   There are no external services: it is the system itself. */
 var subtle = crypto.subtle, te = new TextEncoder();
 var mailResolvers = {};
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
@@ -372,18 +372,18 @@ function connect() {
       client.subscribe('hreview/p/' + slug + '/+', { qos: 1 });
       client.subscribe('hreview/reply/' + slug + '/+', { qos: 1 });
     } else {
-      // Modo lista: só os registos e as avaliações. As fotos são pesadas
-      // e só valem a pena dentro da página do estabelecimento.
+      // List mode: listings and reviews only. Photos are heavy
+      // and only worth it inside the business page.
       client.subscribe('hreview/b/+', { qos: 1 });
       client.subscribe('hreview/r/+/+', { qos: 1 });
     }
-    // As retidas chegam logo a seguir. Se nada chegar, o estabelecimento não existe.
+    // Retained messages arrive right after. If nothing arrives, the business does not exist.
     setTimeout(function () { ready = true; draw(); }, 2500);
   });
   client.on('error', function () { brokerIx = (brokerIx + 1) % BROKERS.length; });
   client.on('message', function (topic, payload) {
     var s = payload.toString(), p = topic.split('/');
-    // Resposta do diretório do correio (pedido de notificação ao dono).
+    // Mail directory answering a request to notify the owner.
     if (p[0] === 'hmaildir') {
       var cb = mailResolvers[topic];
       if (cb) { delete mailResolvers[topic]; try { client.unsubscribe(topic); } catch (e) {} cb(s); }
@@ -405,7 +405,7 @@ function connect() {
   });
 }
 
-/* As retidas chegam todas de rajada — agrupa-as num só desenho. */
+/* Retained messages all arrive at once — batch them into a single render. */
 function draw() {
   if (drawTimer) return;
   drawTimer = setTimeout(function () {
@@ -419,8 +419,8 @@ function render() {
     if (ready) {
       $('loading').className = 'state hidden';
       $('missing').className = 'state';
-      // O cartão de instalação vive dentro de #site; se o estabelecimento não
-      // existe, #site fica escondido — tira-o de lá para continuar à vista.
+      // The install card lives inside #site; if the business does
+      // not exist, #site stays hidden — move it out so it remains visible.
       if ($('get').parentNode === $('get-slot-site')) $('missing').parentNode.appendChild($('get'));
     }
     return;
@@ -434,7 +434,7 @@ function render() {
 
   var rateHtml = st.count
     ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
-      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' avaliação' : ' avaliações') + '</span>'
+      '</span><span class="cnt">' + st.count + (st.count === 1 ? ' review' : ' reviews') + '</span>'
     : '<span class="cnt">seja o primeiro a avaliar</span>';
 
   $('hero').innerHTML =
@@ -445,7 +445,7 @@ function render() {
     (biz.desc ? '<div class="sub">' + esc(biz.desc) + '</div>' : '') +
     '<div class="rate">' + rateHtml + '</div></div>';
 
-  document.title = (biz.name || 'Estabelecimento') + ' — avaliações';
+  document.title = (biz.name || 'Business') + ' — reviews';
 
   var acts = [], where = [biz.addr, biz.city].filter(Boolean).join(', ');
   if (where) acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/search?query=' +
@@ -480,18 +480,18 @@ function render() {
   var ids = Object.keys(revs).sort(function (a, b) { return (revs[b].at || 0) - (revs[a].at || 0); });
   $('list').innerHTML = ids.length ? ids.map(function (id) {
     var r = revs[id], rep = replies[id];
-    var who = esc(r.name || 'Anónimo') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
-    var reply = rep ? '<div class="ownerreply"><div class="orl">Resposta do estabelecimento</div>' + esc(rep.text) + '</div>' : '';
+    var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
+    var reply = rep ? '<div class="ownerreply"><div class="orl">Reply from the business</div>' + esc(rep.text) + '</div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
       '<div class="rc">' + esc(r.text) + '</div>' + reply + '</div>';
-  }).join('') : '<div class="cnt">Ainda ninguém avaliou.</div>';
+  }).join('') : '<div class="cnt">Nobody has reviewed yet.</div>';
 
   $('hidra-addr').textContent = slug + '.hidra';
 }
 
-/* Lista de estabelecimentos — é isto que a app abre quando não veio de um NFC. */
+/* Business list — this is what the app opens when it did not come from an NFC tap. */
 function renderDir() {
   $('loading').className = 'state hidden';
   $('dir').className = '';
@@ -516,8 +516,8 @@ function renderDir() {
   if (!itens.length) {
     $('dir-list').innerHTML = '<div class="cnt" style="color:var(--mut)">' +
       (ready ? (termo ? 'Nada encontrado para essa procura.'
-                      : 'Ainda não há estabelecimentos publicados.')
-             : 'À procura de estabelecimentos…') + '</div>';
+                      : 'No businesses published yet.')
+             : 'Looking for businesses…') + '</div>';
     return;
   }
 
@@ -529,7 +529,7 @@ function renderDir() {
       (meta ? '<div class="mt">' + esc(meta) + '</div>' : '') + '</span>' +
       '<span class="sc">' + (it.n
         ? '<b>' + it.avg.toFixed(1) + '</b><div>' + it.n + (it.n === 1 ? ' aval.' : ' avals.') + '</div>'
-        : '<div>sem avaliações</div>') + '</span></a>';
+        : '<div>no reviews</div>') + '</span></a>';
   }).join('');
 }
 
@@ -543,12 +543,12 @@ $('send').addEventListener('click', function () {
   var msg = $('msg');
   function say(t, k) { msg.textContent = t; msg.className = 'msg ' + k; }
 
-  if (!stars) { say('Escolha de 1 a 5 estrelas.', 'err'); return; }
+  if (!stars) { say('Choose 1 to 5 stars.', 'err'); return; }
   var name = $('rname').value.trim();
-  if (!name) { say('Escreva o seu nome — é obrigatório para avaliar.', 'err'); return; }
+  if (!name) { say('Enter your name — it is required to review.', 'err'); return; }
   var text = $('rtext').value.trim();
-  if (!text) { say('Escreva o seu comentário.', 'err'); return; }
-  if (!client || !client.connected) { say('Sem ligação. Tente daqui a pouco.', 'err'); return; }
+  if (!text) { say('Write your comment.', 'err'); return; }
+  if (!client || !client.connected) { say('No connection. Try again shortly.', 'err'); return; }
 
   var loc = $('rloc').value.trim(), myStars = stars;
   $('send').disabled = true;
@@ -556,29 +556,29 @@ $('send').addEventListener('click', function () {
     stars: myStars, text: text, name: name, loc: loc, at: Date.now()
   }), { qos: 1, retain: true }, function () {
     $('send').disabled = false;
-    say('Obrigado! A sua avaliação já está publicada.', 'ok');
+    say('Thank you. Your review is published.', 'ok');
     $('rtext').value = ''; $('rname').value = ''; $('rloc').value = ''; stars = 0;
     [].forEach.call($('pick').children, function (s) { s.className = ''; });
 
     // Avisa o dono pelo HidraMail (best-effort).
     if (biz && biz.mail) {
       notifyOwner(biz.mail,
-        'Nova avaliação (' + myStars + '★) — ' + (biz.name || ''),
+        'New review (' + myStars + '★) — ' + (biz.name || ''),
         name + (loc ? ' · ' + loc : '') + ' deu ' + myStars + ' estrela' + (myStars > 1 ? 's' : '') +
-        ' a ' + (biz.name || 'seu estabelecimento') + ':\n\n"' + text + '"\n\n' +
+        ' to ' + (biz.name || 'your business') + ':\n\n"' + text + '"\n\n' +
         'Veja e responda no Painel do Dono do HidraReview.');
     }
   });
 });
 
 /* ------------------------------------------------------------------ *
- * Levar a HidraNet para o telemóvel.
+ * Getting HidraNet onto a phone.
  *
- * O navegador HidraNet é um programa de computador — não existe na App
- * Store nem na Play Store. O que se instala no telemóvel é esta app: o
- * mesmo ícone no ecrã principal, a mesma rede de avaliações, sem loja e
- * sem conta. Android instala com um toque; o iPhone faz o mesmo através
- * de "Adicionar ao ecrã principal", que é o caminho que a Apple dá.
+ * The HidraNet browser is a desktop program — it is not on the App
+ * Store or Play Store. What installs on a phone is this app: the same
+ * icon on the home screen, the same review network, with no store and
+ * with no account. Android installs in one tap; iPhone does the same via
+ * "Add to Home Screen", which is the route Apple provides.
  * ------------------------------------------------------------------ */
 var deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', function (e) {
@@ -597,13 +597,13 @@ function setupGet() {
   var installed = navigator.standalone === true ||
     (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 
-  // O cartão vive onde faz sentido: no fim da página do estabelecimento,
-  // ou logo abaixo da lista quando a app abre sem NFC.
+  // The card lives where it makes sense: at the end of the business page,
+  // or right below the list when the app opens without NFC.
   var slot = $(slug ? 'get-slot-site' : 'get-slot-dir');
   slot.appendChild($('get'));
   $('get').className = 'card get';
 
-  function mostra(id, porque) {
+  function show(id, porque) {
     ['get-android', 'get-ios', 'get-desktop', 'get-installed'].forEach(function (k) {
       $(k).className = k === id ? '' : 'hidden';
     });
@@ -611,7 +611,7 @@ function setupGet() {
   }
 
   if (installed) {
-    mostra('get-installed', 'Instalada neste aparelho.');
+    show('get-installed', 'Instalada neste aparelho.');
     return;
   }
 
@@ -621,28 +621,28 @@ function setupGet() {
   });
 
   if (isIOS) {
-    mostra('get-ios', 'iPhone e iPad — sem App Store.');
+    show('get-ios', 'iPhone e iPad — sem App Store.');
     var safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
     $('ios-safari-note').textContent = safari ? '' :
-      'Está noutro navegador. Se não encontrar a opção, abra este mesmo endereço no Safari.';
+      'You are in another browser. If you cannot find the option, open this same address in Safari.';
   } else if (isAndroid) {
-    mostra('get-android', 'Android — sem Play Store.');
+    show('get-android', 'Android — no Play Store.');
     var btn = $('get-install');
     btn.addEventListener('click', function () {
       if (!deferredPrompt) { $('get-android-manual').className = ''; return; }
       deferredPrompt.prompt();
       deferredPrompt.userChoice.then(function () { deferredPrompt = null; });
     });
-    // Se o navegador não oferecer a instalação automática, ensina o caminho à mão.
+    // If the browser does not offer automatic install, show the manual route.
     setTimeout(function () {
       if (!deferredPrompt) {
         btn.disabled = true;
-        btn.textContent = 'Instalação pelo menu do navegador';
+        btn.textContent = 'Install from the browser menu';
         $('get-android-manual').className = '';
       }
     }, 3000);
   } else {
-    mostra('get-desktop', 'Está num computador — leve o navegador completo.');
+    show('get-desktop', 'You are on a computer — get the full browser.');
     $('get-pill').textContent = 'Descarregar';
   }
 }
@@ -657,7 +657,7 @@ window.addEventListener('appinstalled', function () {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('/r/sw.js', { scope: '/r/' })['catch'](function () {
-      /* sem service worker a página continua a funcionar — só não instala */
+      /* without a service worker the page still works — it just cannot be installed */
     });
   });
 }
@@ -665,7 +665,7 @@ if ('serviceWorker' in navigator) {
 $('q').addEventListener('input', renderDir);
 
 slug = readSlug();
-if (!slug) $('loading').textContent = 'A procurar estabelecimentos…';
+if (!slug) $('loading').textContent = 'Looking for businesses…';
 connect();
 setupGet();
 </script>

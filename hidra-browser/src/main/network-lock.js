@@ -31,7 +31,7 @@ const LOCAL_SCHEMES = new Set([
 class NetworkLock {
   constructor() {
     this.engaged = true;
-    this.reason = 'a ligação ao Tor ainda não está pronta';
+    this.reason = 'the Tor connection is not ready yet';
     this.blockedCount = 0;
     this._sessions = new WeakSet();
   }
@@ -47,7 +47,7 @@ class NetworkLock {
   engage(reason) {
     if (!this.engaged) this.blockedCount = 0;
     this.engaged = true;
-    this.reason = reason || 'a ligação ao Tor ainda não está pronta';
+    this.reason = reason || 'the Tor connection is not ready yet';
   }
 
   release() {

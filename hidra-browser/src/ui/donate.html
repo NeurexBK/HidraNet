@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Apoie a HidraNet</title>
+<title>Support HidraNet</title>
 <script src="vendor/qrcode.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--btc:#f7931a;--btc2:#ffa733;--danger:#ff5c6c}
@@ -46,8 +46,8 @@ svg{display:block}
 <div class="wrap">
   <div class="hero">
     <div class="logo"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6h8a3 3 0 0 1 0 6a3 3 0 0 1 0 6H6"/><path d="M8 6v12"/><path d="M8 12h6"/><path d="M9 3v3"/><path d="M13 3v3"/><path d="M9 18v3"/><path d="M13 18v3"/></svg></div>
-    <h1>Apoie a HidraNet</h1>
-    <p class="lead">A HidraNet é mantida de forma independente — sem anúncios e sem rastreamento. Sua doação em Bitcoin ajuda a manter a rede livre, privada e no ar.</p>
+    <h1>Support HidraNet</h1>
+    <p class="lead">HidraNet is maintained independently — no ads, no tracking. Your Bitcoin donation helps keep the network free, private and running.</p>
   </div>
 
   <div class="card">
@@ -62,16 +62,16 @@ svg{display:block}
     </div>
     <div class="custom"><input type="text" id="custom" inputmode="decimal" placeholder="Outro valor em BTC (ex.: 0,0025)"></div>
 
-    <div class="lbl">Endereço Bitcoin (BTC) · rede on-chain</div>
+    <div class="lbl">Bitcoin address (BTC) · on-chain network</div>
     <div class="addr-row">
       <div class="addr" id="addr">bc1q6y0z52d85xxvtvkpd3chp5uz79zhnmsf57v2z3</div>
-      <button class="btn btn-copy" id="copy"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copiar</button>
+      <button class="btn btn-copy" id="copy"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button>
     </div>
 
-    <div class="note"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>Envie <b>apenas Bitcoin (BTC)</b> na rede on-chain para este endereço. Outras moedas enviadas para cá podem ser perdidas.</span></div>
+    <div class="note"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>Send <b>Bitcoin (BTC) only</b>, on-chain, to this address. Other coins sent here may be lost.</span></div>
   </div>
 
-  <div class="foot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Obrigado por manter a rede viva.</div>
+  <div class="foot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>Thank you for keeping the network alive.</div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -89,8 +89,8 @@ function renderQR(a){
     if(typeof qrcode==='function'){
       var qr=qrcode(0,'M'); qr.addData(uri); qr.make();
       $('qrbox').innerHTML=qr.createSvgTag({cellSize:5,margin:0,scalable:true});
-    } else { $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">QR indisponível offline.<br>Use o endereço abaixo.</div>'; }
-  }catch(e){ $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">Use o endereço abaixo.</div>'; }
+    } else { $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">QR unavailable offline.<br>Use the address below.</div>'; }
+  }catch(e){ $('qrbox').innerHTML='<div style="color:#241400;font-size:.7em;text-align:center;padding:10px">Use the address below.</div>'; }
 }
 function normAmount(v){ v=(v||'').toString().trim().replace(',','.'); if(!v) return ''; var n=parseFloat(v); if(isNaN(n)||n<=0) return null; return String(n); }
 function setActive(btn){ Array.prototype.forEach.call(document.querySelectorAll('#amt button'),function(b){ b.classList.toggle('active', b===btn); }); }
@@ -102,14 +102,14 @@ $('custom').oninput=function(){
   var n=normAmount(this.value);
   if(this.value.trim()===''){ setActive(document.querySelector('#amt button[data-a=""]')); curAmount=''; renderQR(''); return; }
   setActive(null);
-  if(n===null){ return; } // valor inválido: mantém o QR atual
+  if(n===null){ return; } // invalid amount: keep the current QR
   curAmount=n; renderQR(n);
 };
 $('copy').onclick=function(){
-  function done(){ toast('Endereço Bitcoin copiado.'); }
+  function done(){ toast('Bitcoin address copied.'); }
   if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ADDR).then(done).catch(fallback); }
   else fallback();
-  function fallback(){ try{ var r=document.createRange(); r.selectNode($('addr')); var s=getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy'); s.removeAllRanges(); done(); }catch(e){ toast('Selecione e copie o endereço.'); } }
+  function fallback(){ try{ var r=document.createRange(); r.selectNode($('addr')); var s=getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy'); s.removeAllRanges(); done(); }catch(e){ toast('Select and copy the address.'); } }
 };
 renderQR('');
 </script>

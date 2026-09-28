@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Publicar Site .hidra na rede</title>
+<title>Publish a .hidra site</title>
 <script src="vendor/mqtt.min.js"></script>
 <style>
 :root{--bg:#06070d;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--danger:#ff5c6c}
@@ -56,45 +56,45 @@ textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize
 <body>
 <div class="wrap">
   <div class="top">
-    <div class="brand"><div class="logo">🌐</div><div><h1>Publicar Site na Rede HidraNet</h1><div class="sub">Sites .hidra acessíveis de qualquer lugar</div></div></div>
-    <div class="conn"><span class="dot" id="cdot"></span><span id="ctxt">Conectando…</span></div>
+    <div class="brand"><div class="logo">🌐</div><div><h1>Publish a site on HidraNet</h1><div class="sub">.hidra sites reachable from anywhere</div></div></div>
+    <div class="conn"><span class="dot" id="cdot"></span><span id="ctxt">Connecting…</span></div>
   </div>
 
   <div class="card">
-    <h2>1. Escolha o site</h2>
-    <div class="d">Pegue um site que você criou no SevenNine, ou cole o HTML aqui. Ele será criptografado e publicado na rede.</div>
+    <h2>1. Choose the site</h2>
+    <div class="d">Load a site you built in SevenNine, or paste the HTML here. It will be encrypted and published on the network.</div>
     <label>Sites do SevenNine (se o HidraNet estiver conectado)</label>
     <div class="row">
       <select id="sn-sites"><option value="">— carregando… —</option></select>
-      <button class="btn btn-ghost" id="btn-load" style="white-space:nowrap">Carregar</button>
+      <button class="btn btn-ghost" id="btn-load" style="white-space:nowrap">Load</button>
     </div>
-    <label>Nome do site</label>
+    <label>Site name</label>
     <input type="text" id="site-name" placeholder="Meu site" maxlength="40">
-    <label>HTML do site (página inicial)</label>
-    <textarea id="site-html" placeholder="<!DOCTYPE html><html>... cole aqui ou carregue do SevenNine ..."></textarea>
-    <div class="hint">Dica: páginas extras (loja.html etc.) também são publicadas se você carregar do SevenNine.</div>
+    <label>Site HTML (home page)</label>
+    <textarea id="site-html" placeholder="<!DOCTYPE html><html>... paste here, or load from SevenNine ..."></textarea>
+    <div class="hint">Tip: extra pages (shop.html and so on) are published too if you load from SevenNine.</div>
   </div>
 
   <div class="card">
-    <h2>2. Publicar</h2>
-    <div class="d">Gera um endereço <b>.hidra</b> secreto (é a chave de acesso). Quem tiver o endereço acessa de qualquer rede; o conteúdo fica criptografado de ponta a ponta.</div>
-    <button class="btn btn-primary" id="btn-pub"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg> Publicar na rede</button>
+    <h2>2. Publish</h2>
+    <div class="d">Generates a secret <b>.hidra</b> address — it is the access key. Anyone holding it can reach the site from any network; the content stays end-to-end encrypted.</div>
+    <button class="btn btn-primary" id="btn-pub"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg> Publish to the network</button>
     <div id="msg"></div>
 
     <div id="result" class="result card hidden" style="margin-top:16px">
       <h2 style="color:var(--accent)">✓ Site publicado!</h2>
-      <div class="d">Compartilhe este endereço com quem você quiser. Eles abrem na barra do HidraNet:</div>
-      <div class="addr-box"><code id="r-addr"></code><button onclick="copyAddr()" title="Copiar">⧉</button></div>
+      <div class="d">Share this address with whoever you choose. They open it in the HidraNet address bar:</div>
+      <div class="addr-box"><code id="r-addr"></code><button onclick="copyAddr()" title="Copy">⧉</button></div>
       <div class="row">
-        <a class="btn btn-ghost" id="r-open" target="_blank">Abrir o site</a>
+        <a class="btn btn-ghost" id="r-open" target="_blank">Open the site</a>
       </div>
-      <div class="hint" style="margin-top:10px">⚠️ Deixe esta janela aberta: enquanto aberta, o site é mantido no ar (re-publicado a cada minuto). Se fechar tudo por muito tempo, o site pode sair do ar.</div>
+      <div class="hint" style="margin-top:10px">⚠️ Keep this window open: while it is, the site stays online (republished every minute). If you close everything, the site goes offline.</div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Meus sites publicados</h2>
-    <div class="mine" id="mine"><div class="empty">Nenhum site publicado ainda.</div></div>
+    <h2>My published sites</h2>
+    <div class="mine" id="mine"><div class="empty">No sites published yet.</div></div>
   </div>
 </div>
 <div class="toast" id="toast">Copiado!</div>
@@ -116,7 +116,7 @@ async function E(k,t){var iv=crypto.getRandomValues(new Uint8Array(12));var c=aw
 
 function connect(){
   mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidrapub_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
-  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Conectado'; repubAll(); });
+  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Connected'; repubAll(); });
   mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconectando…'; });
 }
 
@@ -124,8 +124,8 @@ async function loadFromSevenNine(){
   try{
     var r=await fetch('http://127.0.0.1:8084/api/sites'); var d=await r.json();
     var sel=$('sn-sites');
-    if(d&&d.ok&&d.sites&&d.sites.length){ sel.innerHTML='<option value="">— escolha um site —</option>'+d.sites.map(function(s){return '<option value="'+esc(s.name)+'">'+esc(s.name)+' ('+s.files.length+' arq.)</option>';}).join(''); }
-    else sel.innerHTML='<option value="">— nenhum site no SevenNine —</option>';
+    if(d&&d.ok&&d.sites&&d.sites.length){ sel.innerHTML='<option value="">— choose a site —</option>'+d.sites.map(function(s){return '<option value="'+esc(s.name)+'">'+esc(s.name)+' ('+s.files.length+' arq.)</option>';}).join(''); }
+    else sel.innerHTML='<option value="">— no site in SevenNine —</option>';
   }catch(e){ $('sn-sites').innerHTML='<option value="">— SevenNine offline —</option>'; }
 }
 async function loadSelected(){
@@ -134,7 +134,7 @@ async function loadSelected(){
     var r=await fetch('http://127.0.0.1:8084/sites/'+name+'/'); var html=await r.text();
     $('site-name').value=name; $('site-html').value=html;
     showMsg('Site "'+name+'" carregado do SevenNine.','ok');
-  }catch(e){ showMsg('Não consegui carregar do SevenNine.','err'); }
+  }catch(e){ showMsg('Could not load from SevenNine.','err'); }
 }
 
 async function publish(){
@@ -152,30 +152,30 @@ async function publish(){
     $('r-open').href='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
     $('result').classList.remove('hidden');
     showMsg('','');
-  }catch(e){ showMsg('Erro ao publicar: '+e.message,'err'); }
+  }catch(e){ showMsg('Could not publish: '+e.message,'err'); }
   btn.disabled=false; btn.innerHTML=old;
 }
 async function doPublish(addr,bundle){
   var key=await deriveKey(addr), top=await siteTopic(addr);
   var ct=await E(key,JSON.stringify(bundle));
-  if(ct.length>900000) throw new Error('site muito grande (máx ~600 KB)');
+  if(ct.length>900000) throw new Error('site too large (max ~600 KB)');
   return new Promise(function(res,rej){
-    if(!mqttClient||!mqttClient.connected) return rej(new Error('sem conexão'));
+    if(!mqttClient||!mqttClient.connected) return rej(new Error('no connection'));
     mqttClient.publish(top,ct,{qos:0,retain:true},function(err){ err?rej(err):res(); });
   });
 }
 function repubAll(){ published.forEach(function(p){ doPublish(p.addr,p.bundle).catch(function(){}); }); }
-setInterval(repubAll,60000); // mantém os sites "no ar"
+setInterval(repubAll,60000); // keeps the sites online
 
 function saveMine(){ try{ localStorage.setItem('hidra_pub_sites',JSON.stringify(published)); }catch(e){} }
 function loadMine(){ try{ published=JSON.parse(localStorage.getItem('hidra_pub_sites')||'[]'); }catch(e){ published=[]; } renderMine(); }
 function renderMine(){
   var el=$('mine');
-  if(!published.length){ el.innerHTML='<div class="empty">Nenhum site publicado ainda.</div>'; return; }
+  if(!published.length){ el.innerHTML='<div class="empty">No sites published yet.</div>'; return; }
   el.innerHTML=published.map(function(p,i){
     return '<div class="it"><div><div class="nm">'+esc(p.name)+'</div><div class="ad">'+esc(p.addr)+'</div></div>'+
-      '<div class="row"><span class="st">no ar</span><a class="btn btn-ghost" style="padding:6px 12px;font-size:.78em" target="_blank" href="http://127.0.0.1:8090/site?addr='+encodeURIComponent(p.addr)+'">Abrir</a>'+
-      '<button class="btn btn-ghost" style="padding:6px 10px;font-size:.78em" onclick="copyOne('+i+')">Copiar</button></div></div>';
+      '<div class="row"><span class="st">online</span><a class="btn btn-ghost" style="padding:6px 12px;font-size:.78em" target="_blank" href="http://127.0.0.1:8090/site?addr='+encodeURIComponent(p.addr)+'">Open</a>'+
+      '<button class="btn btn-ghost" style="padding:6px 10px;font-size:.78em" onclick="copyOne('+i+')">Copy</button></div></div>';
   }).join('');
 }
 window.copyOne=function(i){ copy(published[i].addr); };
