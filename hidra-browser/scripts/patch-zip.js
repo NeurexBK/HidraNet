@@ -133,16 +133,11 @@ function scan(dir, base) {
 // inside the .app bundle), so read it from the archive instead of assuming.
 const RE = /(^|.*\/)app\/src\/(.+)$/;
 
-function main() {
+function patchZip(inZip, outZip, opts) {
+  opts = opts || {};
+  const dry = !!opts.dry;
   // The package states its own version in its filename.
-  const VERSION_OF = () => (/-(\d+\.\d+\.\d+)-/.exec(path.basename(process.argv[2])) || [, '1.0.0'])[1];
-  const inZip  = process.argv[2];
-  const outZip = process.argv[3];
-  const dry    = process.argv.indexOf('--dry') !== -1;
-  if (!inZip || (!outZip && !dry)) {
-    console.error('usage: node scripts/patch-zip.js <in.zip> <out.zip> [--dry]');
-    process.exit(2);
-  }
+  const VERSION_OF = () => (/-(\d+\.\d+\.\d+)-/.exec(path.basename(inZip)) || [, '1.0.0'])[1];
 
   const LAUNCHERS = replacementsFor(path.basename(inZip));
   const entries = readZip(fs.readFileSync(inZip));
@@ -236,9 +231,21 @@ function main() {
   console.log('  separators fixed: ' + (hasBackslashes ? 'yes (were backslashes)' : 'no (already /)') +
               ' | permissions restored: ' + (hasModes ? 'no (archive had them)' : 'yes (archive had none)'));
 
-  if (dry) return;
+  if (dry) return null;
   fs.writeFileSync(outZip, writeZip(out));
   console.log('  wrote ' + outZip + ' (' + fs.statSync(outZip).size + ' bytes)');
+  return outZip;
 }
 
-main();
+module.exports = { patchZip };
+
+if (require.main === module) {
+  const inZip  = process.argv[2];
+  const outZip = process.argv[3];
+  const dry    = process.argv.indexOf('--dry') !== -1;
+  if (!inZip || (!outZip && !dry)) {
+    console.error('usage: node scripts/patch-zip.js <in.zip> <out.zip> [--dry]');
+    process.exit(2);
+  }
+  patchZip(inZip, outZip, { dry: dry });
+}
