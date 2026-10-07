@@ -1,101 +1,99 @@
 # 15 — Data Room (due diligence)
 
-O que um investidor vai pedir depois de dizer "estamos interessados". Montar
-**antes** de precisar: um data room pronto em 24 horas transmite competência;
-três semanas a reunir documentos transmite o contrário e arrefece a ronda.
+What an investor will ask for after saying "we are interested". Assemble it
+**before** you need it: a data room ready in 24 hours conveys competence; three
+weeks gathering documents conveys the opposite and cools the round.
 
-Estrutura sugerida em pastas numeradas, numa drive partilhada com controlo de
-acesso.
+Suggested structure in numbered folders, on a shared drive with access control.
 
 ---
 
-## 01 — Sociedade
-- [ ] Certidão permanente
-- [ ] Pacto social (versão em vigor)
-- [ ] Acordo parassocial entre fundadores
-- [ ] **Cap table** atualizado, com vesting explícito
-- [ ] Atas da gerência
-- [ ] RCBE
-- [ ] Registo de beneficiários efetivos
+## 01 — Corporate
+- [ ] Permanent commercial certificate
+- [ ] Articles of association (current version)
+- [ ] Shareholders' agreement between founders
+- [ ] **Cap table**, current, with vesting made explicit
+- [ ] Board minutes
+- [ ] Beneficial ownership register (RCBE)
+- [ ] Register of beneficial owners
 
-## 02 — Financeiro
-- [ ] Contas dos exercícios encerrados
-- [ ] Balancetes do exercício corrente
-- [ ] Modelo financeiro com pressupostos editáveis ([07](07-projecoes-financeiras.md))
-- [ ] Extratos bancários (12 meses)
-- [ ] Situação fiscal e contributiva regularizada (certidões AT e SS)
-- [ ] Mapa de dívida, se existir
+## 02 — Financial
+- [ ] Accounts for closed financial years
+- [ ] Trial balances for the current year
+- [ ] Financial model with editable assumptions ([07](07-financial-projections.md))
+- [ ] Bank statements (12 months)
+- [ ] Tax and social security clearance certificates
+- [ ] Debt schedule, if any
 
-## 03 — Comercial
-- [ ] Lista de clientes (anonimizada se necessário)
-- [ ] Contrato-tipo de cliente
-- [ ] **Coorte de churn por mês de entrada** ← o que mais vão analisar
-- [ ] CAC por canal
-- [ ] MRR e evolução
+## 03 — Commercial
+- [ ] Customer list (anonymised if necessary)
+- [ ] Standard customer contract
+- [ ] **Churn cohort by month of entry** ← what they will analyse most
+- [ ] CAC per channel
+- [ ] MRR and its evolution
 - [ ] Pipeline
 
-## 04 — Produto e tecnologia
-- [ ] Acesso ao repositório (ou auditoria de código)
-- [ ] Documentação de arquitetura
-- [ ] **Inventário de licenças de código aberto**
-- [ ] **Relatório de auditoria de segurança**
+## 04 — Product and technology
+- [ ] Repository access (or a code audit)
+- [ ] Architecture documentation
+- [ ] **Open-source licence inventory**
+- [ ] **Security audit report**
 - [ ] Roadmap ([08](08-roadmap.md))
-- [ ] Registo de incidentes (incluindo a janela de fuga de IP e a correção — ver nota abaixo)
+- [ ] Incident log (including the IP leak window and its fix — see the note below)
 
-## 05 — Propriedade intelectual
-- [ ] **Acordo de cessão de PI dos fundadores** ← bloqueio absoluto se faltar
-- [ ] Cessões de PI de colaboradores e freelancers
-- [ ] Registo de marca (INPI / EUIPO)
-- [ ] Domínios registados
+## 05 — Intellectual property
+- [ ] **Founders' IP assignment** ← an absolute blocker if missing
+- [ ] Contractor and freelancer IP assignments
+- [ ] Trade mark registration (INPI / EUIPO)
+- [ ] Registered domains
 
-## 06 — Jurídico e conformidade
-- [ ] Termos e Condições
-- [ ] Política de Privacidade
-- [ ] Política de Conteúdo
-- [ ] **Registo de atividades de tratamento (RGPD art. 30.º)**
+## 06 — Legal and compliance
+- [ ] Terms and Conditions
+- [ ] Privacy Policy
+- [ ] Content Policy
+- [ ] **Record of processing activities (GDPR art. 30)**
 - [ ] DPIA
-- [ ] Contratos com subcontratantes
-- [ ] Procedimento de violação de dados
-- [ ] Apólices de seguro
-- [ ] Parecer jurídico sobre risco regulatório ([10](10-risco-legal-regulatorio.md))
+- [ ] Processor contracts
+- [ ] Data breach procedure
+- [ ] Insurance policies
+- [ ] Legal opinion on regulatory risk ([10](10-legal-and-regulatory-risk.md))
 
-## 07 — Equipa
-- [ ] Contratos de trabalho e de prestação de serviços
-- [ ] Organograma
-- [ ] Plano de ESOP, se existir
-- [ ] Acordos de confidencialidade
+## 07 — Team
+- [ ] Employment and service contracts
+- [ ] Organisation chart
+- [ ] ESOP plan, if any
+- [ ] Confidentiality agreements
 
-## 08 — Financiamento anterior
-- [ ] Contratos de subvenção (NGI Zero, etc.)
-- [ ] Relatórios de execução entregues
-- [ ] Quaisquer instrumentos convertíveis emitidos
-
----
-
-## Nota sobre o registo de incidentes
-
-Incluir a janela de fuga de IP descrita em
-[03 §1.4](03-produto-e-tecnologia.md), com datas, análise e correção.
-
-Parece contraintuitivo entregar a um investidor a lista das próprias falhas. Não
-é. Numa empresa de privacidade, a pergunta não é *"já tiveram falhas?"* — é
-*"como é que descobrem e corrigem falhas?"*. Um registo que mostra uma falha
-encontrada internamente, compreendida e corrigida antes do lançamento público
-responde a essa pergunta melhor do que qualquer afirmação.
-
-Uma empresa de segurança sem registo de incidentes está a dizer que não procura.
+## 08 — Prior funding
+- [ ] Grant agreements (NGI Zero, etc.)
+- [ ] Progress reports delivered
+- [ ] Any convertible instruments issued
 
 ---
 
-## As cinco perguntas que vão fazer
+## A note on the incident log
 
-Preparar as respostas por escrito, antes:
+Include the IP leak window described in
+[03 §1.4](03-product-and-technology.md), with dates, analysis and the fix.
 
-1. **"Mostrem-me a coorte de churn."** — Se não houver 3 meses de dados, é cedo
-   demais para esta conversa.
-2. **"Quem é dono do código?"** — Resposta certa: a empresa, por cessão escrita.
-3. **"O que acontece se o Google lançar isto?"** — O fosso é a rede e a
-   propriedade dos dados, não o NFC.
-4. **"Qual é a vossa exposição ao Chat Control?"** — [10 §2](10-risco-legal-regulatorio.md).
-5. **"Porque é que são duas empresas?"** — [04 §5](04-modelo-de-negocio.md) e
-   slide 7.
+Handing an investor a list of your own failures looks counter-intuitive. It is
+not. In a privacy company, the question is not *"have you had failures?"* — it is
+*"how do you find and fix failures?"*. A log showing a flaw found internally,
+understood and fixed before the public launch answers that question better than
+any assertion.
+
+A security company with no incident log is saying it does not look.
+
+---
+
+## The five questions they will ask
+
+Prepare the answers in writing, beforehand:
+
+1. **"Show me the churn cohort."** — If there are not 3 months of data, it is too
+   early for this conversation.
+2. **"Who owns the code?"** — Correct answer: the company, by written assignment.
+3. **"What happens if Google launches this?"** — The moat is the network and data
+   ownership, not the NFC.
+4. **"What is your exposure to Chat Control?"** — [10 §2](10-legal-and-regulatory-risk.md).
+5. **"Why is this two companies?"** — [04 §5](04-business-model.md) and slide 7.

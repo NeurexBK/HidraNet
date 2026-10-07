@@ -1,86 +1,88 @@
-# 08 — Roadmap (24 meses)
+# 08 — Roadmap (24 months)
 
-Organizado por **desbloqueios**, não por funcionalidades. Cada trimestre existe
-para remover um bloqueio específico ao trimestre seguinte.
+Organised by **unblockers**, not by features. Every quarter exists to remove a
+specific blocker to the next one.
 
 ---
 
-## T1 — Tornar vendável e candidatável
+## Q1 — Make it sellable and fundable
 
-| # | Trabalho | Desbloqueia |
+| # | Work | Unblocks |
 |---|---|---|
-| 1 | **Kill switch de rede** no browser ([03 §1.4](03-produto-e-tecnologia.md)) | Poder afirmar privacidade sem ressalvas |
-| 2 | Corrigir fuga de WebRTC ao nível da rede (`setWebRTCIPHandlingPolicy`) | Idem — hoje só há uma proteção em JavaScript, contornável |
-| 3 | Injetar o fingerprint no arranque do documento, não em `dom-ready` | Scripts no `<head>` leem hoje os valores reais |
-| 4 | **Candidatura ao NGI Zero** | 5–50 k€ não-diluidores + auditoria |
-| 5 | **HidraReview faturável**: multi-tenant, registo, pagamento | Poder cobrar |
-| 6 | Separar `main.rs` (9.600 linhas) nos módulos já existentes | Due diligence técnica |
-| 7 | Consulta jurídica + constituição da Lda | Tudo o resto |
+| 1 | **Network kill switch** in the browser ([03 §1.4](03-product-and-technology.md)) | Being able to claim privacy without caveats |
+| 2 | Fix the WebRTC leak at the network level (`setWebRTCIPHandlingPolicy`) | Same — today there is only a JavaScript protection, which is bypassable |
+| 3 | Inject the fingerprint at document start, not at `dom-ready` | Scripts in `<head>` currently read the real values |
+| 4 | **NGI Zero application** | €5–50k non-dilutive + an audit |
+| 5 | **Billable HidraReview**: multi-tenant, sign-up, payment | Being able to charge |
+| 6 | Split `main.rs` (9,600 lines) into the modules that already exist | Technical due diligence |
+| 7 | Legal consultation + incorporating the Lda | Everything else |
 
-**Fim do T1:** produto cobrável, candidatura submetida, empresa constituída.
+**End of Q1:** a chargeable product, an application submitted, a company
+incorporated.
 
 ---
 
-## T2 — Provar que alguém paga
+## Q2 — Prove that somebody pays
 
-| # | Trabalho | Desbloqueia |
+| # | Work | Unblocks |
 |---|---|---|
-| 1 | 10 pilotos presenciais, gratuitos | **Medir churn e CAC reais** |
-| 2 | Painel do dono: métricas que justifiquem a fatura | Retenção |
-| 3 | Produção dos cartões NFC | Venda |
-| 4 | Primeiros 30 pagantes | Prova de mercado |
-| 5 | Auditoria de segurança (via NGI Zero, se aprovado) | Lançamento público do browser |
-| 6 | Registo de domínios `.hidra` | 2.ª linha de receita |
+| 1 | 10 in-person pilots, free | **Measuring real churn and CAC** |
+| 2 | Owner panel: metrics that justify the invoice | Retention |
+| 3 | NFC card production | Sales |
+| 4 | First 30 paying customers | Market proof |
+| 5 | Security audit (via NGI Zero, if approved) | Public browser launch |
+| 6 | `.hidra` domain registry | 2nd revenue line |
 
-**Fim do T2:** 30 pagantes, churn medido, auditoria em curso.
-**Porta de decisão:** se o churn for >8%, **parar de vender e corrigir o
-produto**. Não escalar um funil que não retém.
-
----
-
-## T3 — Repetir o canal
-
-| # | Trabalho |
-|---|---|
-| 1 | 100 clientes pagantes |
-| 2 | Canal de revendedores (agências locais, contabilistas) |
-| 3 | Lançamento público do browser — só depois da auditoria |
-| 4 | Apps móveis do HidraReview (o cliente final está no telemóvel) |
-| 5 | Programa de relays de voluntários — **torna a rede real** |
-
-**Fim do T3:** canal repetível, browser lançado com auditoria feita.
+**End of Q2:** 30 paying customers, churn measured, audit under way.
+**Decision gate:** if churn is >8%, **stop selling and fix the product**. Do not
+scale a funnel that does not retain.
 
 ---
 
-## T4 — Preparar a ronda
+## Q3 — Repeat the channel
 
-| # | Trabalho |
+| # | Work |
 |---|---|
-| 1 | 200+ clientes pagantes, 6 meses de histórico de churn |
-| 2 | Data room completo ([15](15-data-room.md)) |
-| 3 | Abordar VC de pre-seed |
-| 4 | 2.ª candidatura ao NGI Zero (fase seguinte) |
-| 5 | HidraNet Pro (B2C) — só se houver base de utilizadores que o justifique |
+| 1 | 100 paying customers |
+| 2 | Reseller channel (local agencies, accountants) |
+| 3 | Public browser launch — only after the audit |
+| 4 | HidraReview mobile apps (the end customer is on a phone) |
+| 5 | Volunteer relay programme — **makes the network real** |
+
+**End of Q3:** a repeatable channel, the browser launched with an audit behind
+it.
 
 ---
 
-## Ano 2 — Escala
+## Q4 — Prepare the round
 
-| Trimestre | Foco |
+| # | Work |
 |---|---|
-| T5 | Fecho do pre-seed · 1.º comercial contratado |
-| T6 | 2.ª e 3.ª cidades · 600 clientes |
-| T7 | Estrutura para o Brasil · começar entrada no mercado |
-| T8 | 1.000+ clientes · preparar seed |
+| 1 | 200+ paying customers, 6 months of churn history |
+| 2 | Complete data room ([15](15-data-room.md)) |
+| 3 | Approach pre-seed VCs |
+| 4 | 2nd NGI Zero application (next phase) |
+| 5 | HidraNet Pro (B2C) — only if there is a user base that justifies it |
 
 ---
 
-## O que **não** está no roadmap, e porquê
+## Year 2 — Scale
 
-| Ideia | Porque não |
+| Quarter | Focus |
 |---|---|
-| Fork do Firefox em vez de Electron | Tecnicamente correto, custa 12 meses. Reavaliar no ano 2 com equipa financiada. |
-| Token / cripto | Ver [04 §3](04-modelo-de-negocio.md) — MiCA, banca, credibilidade |
-| Rede própria de saída operada pela empresa | Ver [10 §1](10-risco-legal-regulatorio.md) — risco estrutural |
-| Expansão internacional (não lusófona) | Antes de repetir o canal numa cidade, é dispersão |
-| HidraNet Pro no T1 | Sem base de utilizadores, converte ~0 |
+| Q5 | Pre-seed closed · 1st salesperson hired |
+| Q6 | 2nd and 3rd cities · 600 customers |
+| Q7 | Brazil structure · begin market entry |
+| Q8 | 1,000+ customers · prepare the seed |
+
+---
+
+## What is **not** on the roadmap, and why
+
+| Idea | Why not |
+|---|---|
+| A Firefox fork instead of Electron | Technically correct, costs 12 months. Re-evaluate in year 2 with a funded team. |
+| Token / crypto | See [04 §3](04-business-model.md) — MiCA, banking, credibility |
+| Our own exit network operated by the company | See [10 §1](10-legal-and-regulatory-risk.md) — structural risk |
+| International expansion (non-Portuguese-speaking) | Before repeating the channel in one city, it is dispersion |
+| HidraNet Pro in Q1 | With no user base, it converts ~0 |

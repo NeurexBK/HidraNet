@@ -1,165 +1,166 @@
 # 14 — Pitch Deck
 
-12 slides. Conteúdo pronto a montar. Regra: **um slide, uma ideia, um número.**
+12 slides. Content ready to lay out. Rule: **one slide, one idea, one number.**
 
 ---
 
-### 1 — Capa
+### 1 — Cover
 > # HidraNet
-> **Reputação para o comércio local, sobre uma rede de privacidade pós-quântica.**
+> **Reputation for local business, on a post-quantum privacy network.**
 >
-> Leonardo Mello · João Brandão · Setembro 2026
+> Leonardo Mello · João Brandão · September 2026
 
 ---
 
-### 2 — O problema
-> Um restaurante com 12 avaliações perde para o da esquina com 200.
-> A diferença não é a comida — é quantos clientes foram convidados a avaliar.
+### 2 — The problem
+> A restaurant with 12 reviews loses to the one on the corner with 200.
+> The difference is not the food — it is how many customers were asked to review.
 >
-> Hoje esse convite é um QR code numa mesa: **converte 35 a 50%**.
+> Today that invitation is a QR code on a table: **converts at 35 to 50%**.
 >
-> E a página com as avaliações não é do restaurante. É do Google.
+> And the page holding the reviews does not belong to the restaurant. It belongs
+> to Google.
 
 ---
 
-### 3 — A solução
-> Um cartão NFC na mesa. Um toque. **Converte 60 a 80%.**
+### 3 — The solution
+> An NFC card on the table. One tap. **Converts at 60 to 80%.**
 >
-> A página é do estabelecimento, com endereço próprio `.hidra`, e não
-> desaparece se o Google mudar de política.
+> The page belongs to the business, with its own `.hidra` address, and it does
+> not disappear if Google changes its policy.
 
-*Visual: fotografia de um cartão numa mesa + página no telemóvel.*
+*Visual: a photograph of a card on a table + the page on a phone.*
 
 ---
 
-### 4 — Produto (o que já existe)
-> - **HidraReview** — reviews, NFC, painel do dono, aviso por HidraMail
-> - **HidraNet Browser** — Tor embutido, isolamento por separador, anonimato verificado
-> - **hidra-node** — 17.000 linhas de Rust: encaminhamento em cebola + **Kyber1024** (pós-quântico)
-> - HidraSearch · HidraChat · HidraMail · Fórum · sites `.hidra`
+### 4 — Product (what already exists)
+> - **HidraReview** — reviews, NFC, owner panel, HidraMail notifications
+> - **HidraNet Browser** — bundled Tor, per-tab isolation, verified anonymity
+> - **hidra-node** — 17,000 lines of Rust: onion routing + **Kyber1024** (post-quantum)
+> - HidraSearch · HidraChat · HidraMail · Forum · `.hidra` sites
 >
-> Código aberto, MIT.
+> Open source, MIT.
 
-*Visual: captura do painel do dono, não diagrama de arquitetura.*
+*Visual: a screenshot of the owner panel, not an architecture diagram.*
 
 ---
 
-### 5 — Mercado
-> **Onde vendemos:** microempresas e comércio local em PT e BR.
-> Cartões NFC de review: **31,4 M$ (2026) → 90 M$ (2035)**.
+### 5 — Market
+> **Where we sell:** micro-businesses and local commerce in PT and BR.
+> Review NFC cards: **$31.4M (2026) → $90M (2035)**.
 >
-> **Onde estamos posicionados:** privacidade e VPN, **83–108 mil M$** em 2026,
-> a crescer ~20%/ano.
+> **Where we are positioned:** privacy and VPN, **$83–108bn** in 2026, growing
+> ~20% a year.
 >
-> **Vento de cauda:** o Chat Control foi rejeitado por **um voto** em março de
-> 2026 e voltou ao Conselho. Cada ciclo destes gera procura por privacidade que
-> o legislador não consegue travar.
+> **Tailwind:** Chat Control was rejected by **one vote** in March 2026 and went
+> back to the Council. Every one of those cycles generates demand for privacy
+> that legislators cannot stop.
 
 ---
 
-### 6 — Modelo de negócio
-> | | Preço |
+### 6 — Business model
+> | | Price |
 > |---|---|
-> | Grátis | 0 € |
-> | **Pro** | **19 €/mês** + cartão NFC |
-> | Multi (5 locais) | 49 €/mês |
+> | Free | €0 |
+> | **Pro** | **€19/month** + NFC card |
+> | Multi (5 locations) | €49/month |
 >
-> **Pressupostos a validar:** LTV ~400 € · CAC ~60 € · margem 85%
+> **Assumptions to validate:** LTV ~€400 · CAC ~€60 · margin 85%
 >
-> *Segunda linha:* domínios `.hidra`, recorrente, custo marginal ~0.
+> *Second line:* `.hidra` domains, recurring, marginal cost ~0.
 
 ---
 
-### 7 — Porque é que isto é um fosso
-> O Birdeye copia o cartão NFC em três meses.
+### 7 — Why this is a moat
+> Birdeye copies the NFC card in three months.
 >
-> **Não copia a rede.**
+> **It does not copy the network.**
 >
-> Cada estabelecimento que adere torna-se um nó com endereço próprio. O negócio
-> de reputação paga as contas; a rede é o que nenhum concorrente de reviews
-> consegue replicar.
+> Every business that joins becomes a node with its own address. The reputation
+> business pays the bills; the network is what no review competitor can
+> replicate.
 
-*Este é o slide que decide a reunião. Ensaiar até sair em 30 segundos.*
+*This is the slide that decides the meeting. Rehearse it until it comes out in 30
+seconds.*
 
 ---
 
-### 8 — Concorrência
-> | | Preço | Dono dos dados | NFC | PT/BR |
+### 8 — Competition
+> | | Price | Owns the data | NFC | PT/BR |
 > |---|---|---|---|---|
-> | Google Business | Grátis | Google | ✗ | parcial |
-> | Birdeye/Podium | 200–400 €/mês | Plataforma | add-on | ✗ |
-> | Cartões NFC | 15–30 € | — | só hardware | ✗ |
-> | **HidraNet** | **0–49 €/mês** | **Estabelecimento** | **✓** | **✓** |
+> | Google Business | Free | Google | ✗ | partial |
+> | Birdeye/Podium | €200–400/month | The platform | add-on | ✗ |
+> | NFC cards | €15–30 | — | hardware only | ✗ |
+> | **HidraNet** | **€0–49/month** | **The business** | **✓** | **✓** |
 >
-> Não substituímos o Google. Somos o que faz o Google funcionar melhor para o
-> estabelecimento — e o que lhe dá uma página que é dele.
+> We do not replace Google. We are what makes Google work better for the business
+> — and what gives it a page that is its own.
 
 ---
 
 ### 9 — Go-to-market
-> **Fase 1** — uma cidade, venda direta, 100 clientes, churn medido
-> **Fase 2** — revendedores (agências locais, contabilistas), 450 clientes
-> **Fase 3** — Brasil
+> **Phase 1** — one city, direct selling, 100 customers, churn measured
+> **Phase 2** — resellers (local agencies, accountants), 450 customers
+> **Phase 3** — Brazil
 >
-> O browser não se vende: é credibilidade técnica e topo de funil.
+> The browser is not sold: it is technical credibility and top of funnel.
 
 ---
 
-### 10 — Tração e financiamento
-> **Hoje:** produto construído, código aberto, pré-receita.
+### 10 — Traction and funding
+> **Today:** product built, open source, pre-revenue.
 >
-> **Em curso:** candidatura ao **NGI Zero** (NLnet) — 5–50 k€ **não-diluidores**,
-> mais auditoria de segurança externa.
+> **Under way:** an **NGI Zero** (NLnet) application — €5–50k **non-dilutive**,
+> plus an external security audit.
 >
-> **Marcos:** 20 clientes com 3 meses de histórico → 100 clientes → ronda.
+> **Milestones:** 20 customers with 3 months of history → 100 customers → round.
 
-*Se, à data do pitch, já houver clientes ou o NGI Zero estiver aprovado, este
-slide passa para posição 3.*
+*If, at the time of the pitch, there are already customers or NGI Zero has been
+approved, this slide moves to position 3.*
 
 ---
 
-### 11 — Equipa
-> **Leonardo Mello**, 28 — *[papel e percurso]*
-> **João Brandão**, 26 — *[papel e percurso]*
+### 11 — Team
+> **Leonardo Mello**, 28 — *[role and background]*
+> **João Brandão**, 26 — *[role and background]*
 >
-> **O que nos falta:** vendas. Plano: fundadores vendem os primeiros 100;
-> primeiro comercial ao 100.º cliente.
+> **What we are missing:** sales. The plan: the founders sell the first 100;
+> first salesperson at the 100th customer.
 
-*Assumir a lacuna. É mais forte do que escondê-la.*
+*Acknowledge the gap. It is stronger than hiding it.*
 
 ---
 
-### 12 — O pedido
-> **300–500 k€ de pre-seed**, 18 meses de pista.
+### 12 — The ask
+> **€300–500k pre-seed**, 18 months of runway.
 >
-> 45% vendas · 25% produto · 15% marketing · 10% jurídico e auditoria · 5% contingência
+> 45% sales · 25% product · 15% marketing · 10% legal and audit · 5% contingency
 >
-> **Para chegar a:** 450 clientes pagantes, churn <5%, canal de revendedores a
-> funcionar, Brasil preparado.
+> **To reach:** 450 paying customers, churn <5%, a working reseller channel,
+> Brazil prepared.
 
 ---
 
-## Apêndice (slides de reserva, para perguntas)
+## Appendix (backup slides, for questions)
 
-| # | Slide | Para a pergunta |
+| # | Slide | For the question |
 |---|---|---|
-| A1 | Arquitetura técnica | "Como funciona?" |
-| A2 | Risco legal e mitigação | "E o Chat Control?" — [10](10-risco-legal-regulatorio.md) |
-| A3 | Modelo financeiro detalhado | "Mostra-me os números" |
-| A4 | Sensibilidade ao churn | "E se o churn for o dobro?" |
-| A5 | Porquê PT e não EE/BR | "Onde vão constituir?" |
-| A6 | Roadmap 24 meses | "O que fazem com o dinheiro?" |
+| A1 | Technical architecture | "How does it work?" |
+| A2 | Legal risk and mitigation | "What about Chat Control?" — [10](10-legal-and-regulatory-risk.md) |
+| A3 | Detailed financial model | "Show me the numbers" |
+| A4 | Churn sensitivity | "What if churn is double?" |
+| A5 | Why PT and not EE/BR | "Where will you incorporate?" |
+| A6 | 24-month roadmap | "What do you do with the money?" |
 
 ---
 
-## Regras de apresentação
+## Presentation rules
 
-1. **Não dizer "o nosso mercado vale 108 mil milhões".** Dizer o SOM.
-2. **Não esconder que são dois produtos.** Levantar antes que perguntem, com o
-   slide 7 como resposta.
-3. **Não apresentar projeções como previsões.** Dizer "pressupostos"; oferecer
-   mexer no modelo ao vivo.
-4. **Não prometer rede própria de anonimato a funcionar.** Hoje é protocolo
-   próprio + rede Tor. Dizer isso.
-5. **Levantar o Chat Control primeiro.** Um VC de privacidade conhece-o melhor
-   do que nós.
+1. **Do not say "our market is worth a hundred and eight billion".** Say the SOM.
+2. **Do not hide that it is two products.** Raise it before they ask, with slide
+   7 as the answer.
+3. **Do not present projections as forecasts.** Say "assumptions"; offer to
+   change the model live.
+4. **Do not promise a working anonymity network of our own.** Today it is our own
+   protocol + the Tor network. Say that.
+5. **Raise Chat Control first.** A privacy VC knows it better than we do.
