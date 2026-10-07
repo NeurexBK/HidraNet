@@ -117,9 +117,9 @@ async function connectTor() {
 // the browser confirms rather than asserts.
 function detectExitIp(proxyRules) {
   return new Promise((resolve) => {
-    // Uma particao fixa, reutilizada. Antes era 'exit-ip-' + Date.now(), o que
-    // criava uma sessao nova por verificacao — cinco por cada nova identidade —
-    // and Electron never frees them. It bypasses the lock: it has to go out via
+    // One fixed partition, reused. It used to be 'exit-ip-' + Date.now(),
+    // which created a new session per check — five per new identity — and
+    // Electron never frees them. It bypasses the lock: it has to go out via
     // Tor precisely so it can confirm that Tor is working.
     const probe = session.fromPartition('hidra-exit-check');
     probe.closeAllConnections().catch(() => {});
@@ -576,11 +576,11 @@ function startChatServer(attempt) {
 
 // 'disable-features=WebRTC' and '--disable-webrtc' correspond to nothing in
 // Chromium: 'WebRTC' is not a base::Feature and the switch does not exist. They
-// a dar a impressao de protecao sem a dar. O que fecha a fuga por candidatos ICE
-// e setWebRTCIPHandlingPolicy('disable_non_proxied_udp'), aplicada a cada
-// separador em tab-manager.js, mais o shim em fingerprint/engine.js.
+// gave the impression of protection without giving any. What closes the ICE
+// candidate leak is setWebRTCIPHandlingPolicy('disable_non_proxied_udp'),
+// applied per tab in tab-manager.js, plus the shim in fingerprint/engine.js.
 //
-// Este si existe, e esconde os IPs locais atras de nomes mDNS.
+// This one does exist, and hides local IPs behind mDNS names.
 app.commandLine.appendSwitch('enable-features', 'WebRtcHideLocalIpsWithMdns');
 app.commandLine.appendSwitch('disable-reading-from-canvas');
 app.commandLine.appendSwitch('disable-gl-extensions');
@@ -597,11 +597,11 @@ app.whenReady().then(async () => {
   proxyManager = new ProxyManager(PROXY_ADDR, PROXY_PORT);
   torManager = new TorManager();
 
-  // Antes de qualquer pedido poder partir.
+  // Before any request can leave.
   networkLock.protect(session.defaultSession);
 
-  // Um Tor que morre a meio da sessao deixava o proxy a cair para directo e a
-  // browsing carried on, with no warning. Now it closes again.
+  // A Tor that dies mid-session used to leave the proxy falling back to
+  // direct, and browsing carried on with no warning. Now it closes again.
   torManager.onUnexpectedExit = (reason) => {
     networkLock.engage('o Tor terminou inesperadamente' + (reason ? ' — ' + reason : ''));
     applyProxyEverywhere(null).catch(() => {});

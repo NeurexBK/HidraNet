@@ -659,7 +659,7 @@
         <div class="settings-list">
           <div class="setting-row">
             <div class="setting-info">
-              <span class="setting-name">Nova Identidade</span>
+              <span class="setting-name">New identity</span>
               <span class="setting-desc" id="identity-desc">Switches your circuit — the exit IP changes</span>
             </div>
             <button id="btn-new-identity" class="setting-select" type="button">New circuit</button>
@@ -746,7 +746,7 @@
           <div class="pref-label">Search language</div>
           <select class="lang-select" id="langSelect">
             <option value="all">🌐 All languages</option>
-            <optgroup label="── Mais usados ──">
+            <optgroup label="── Most used ──">
               <option value="pt-BR">🇧🇷 Portuguese (Brazil)</option>
               <option value="pt-PT">🇵🇹 Portuguese (Portugal)</option>
               <option value="en-US">🇺🇸 English (US)</option>
@@ -1177,8 +1177,8 @@
         // Chat, mail, forum and search are served by the browser itself and are
         // always up. SevenNine lives in the engine, so it has to be started
         // before there is anything to navigate to.
-        // So o SevenNine vive no motor; o HidraReview e servido pelo browser
-        // como o chat e o forum, por isso abre direto.
+        // Only SevenNine lives in the engine; HidraReview is served by the
+        // browser like chat and the forum, so it opens straight away.
         var engineApps = {
           'app-sevennine': { api: 'sevennine', badge: 'sevennine-badge' }
         };
@@ -1209,7 +1209,7 @@
       var desc = document.getElementById('identity-desc');
       if (!(window.hidra && window.hidra.tor)) return;
       btn.disabled = true;
-      var antes = document.getElementById('stat-exit').textContent;
+      var before = document.getElementById('stat-exit').textContent;
       // The Tor daemon rate-limits this signal, so confirming the new exit can
       // take a few seconds. Keep the button held rather than looking stuck.
       desc.textContent = 'Switching circuit… this can take a few seconds';
@@ -1218,7 +1218,7 @@
         if (r && r.ok) {
           document.getElementById('stat-exit').textContent = r.exitIp;
           desc.textContent = r.changed
-            ? 'Exit IP: ' + antes + ' → ' + r.exitIp
+            ? 'Exit IP: ' + before + ' → ' + r.exitIp
             : (r.msg || 'same exit node — try again');
         } else {
           desc.textContent = (r && r.msg) || 'could not switch';
@@ -1298,39 +1298,39 @@
   </script>
 
   <script>
-  /* ---- Beacon de no da HidraNet ----
-     Announces anonymously that this installation is active, for the
-     operations panel can count nodes. It sends no name,
-     messages nor passwords: only a random code and a
-     approximate location by IP and whether it exits via Tor. When Tor is on,
-     este sinal tambem sai por Tor — logo a localizacao e a do no de saida,
-     not the person's (which is what keeps the user anonymous). */
+  /* ---- HidraNet node beacon ----
+     Announces anonymously that this installation is running, so the
+     operations panel can count nodes. It sends no name, no messages and no
+     passwords — only a random code, the version and a timestamp. It used to
+     send an approximate location by IP and whether Tor was in use; both are
+     gone, because on a public channel they amount to telling anyone watching
+     where an unprotected machine is. */
   (function () {
     'use strict';
     var TOPIC = 'hidra/node/v1';
     var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
     var VER = '1.0.0';
-    // Identificador efemero, por sessao. Era guardado em localStorage, o que o
-    // tornava estavel entre arranques — uma impressao digital duravel desta
-    // installation, published on a public channel. Counting presence does not require
-    // reconhecer a mesma maquina amanha.
+    // Ephemeral, per session. It used to be kept in localStorage, which made
+    // it stable across restarts — a durable fingerprint of this installation,
+    // published on a public channel. Counting presence does not require
+    // recognising the same machine tomorrow.
     var cid = '';
     try {
       var a = new Uint8Array(8); crypto.getRandomValues(a);
       cid = Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
     } catch (e) { cid = 'anon' + Math.floor(Math.random() * 1e9); }
-    // Limpa o identificador persistente que versoes anteriores deixaram no disco.
+    // Clear the persistent id that earlier versions left on disk.
     try { localStorage.removeItem('hidra_node_cid'); } catch (e) {}
 
     var cli = null, timer = null;
 
     async function beat() {
       if (!cli || !cli.connected) return;
-      // O canal e publico. O sinal levava a localizacao aproximada, um
-      // identificador estavel e o estado do Tor — ou seja, anunciava a quem
-      // watching that that machine, in that city, was at that moment
-      // SEM protecao (tor: false). Era um sinal de alvo. Agora leva apenas um
-      // identificador efemero, a versao e um instante.
+      // The channel is public. The beacon used to carry the approximate
+      // location, a stable id and the Tor state — which told anyone watching
+      // that that machine, in that city, was at that moment running WITHOUT
+      // protection (tor: false). That is a targeting signal. It now carries an
+      // ephemeral id, the version and a timestamp, and nothing else.
       var msg = { cid: cid, ver: VER, t: Date.now() };
       try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
     }
@@ -1351,7 +1351,11 @@
       try { if (cli && cli.connected) cli.publish(TOPIC, JSON.stringify({ cid: cid, leave: 1 }), { qos: 0 }); } catch (e) {}
     });
 
-    if (typeof mqtt !== 'undefined') { grabGeo(); setTimeout(grabGeo, 8000); start(); }
+    // grabGeo() used to run here and attach an IP-derived location to the
+    // beacon. It is gone, and so are its two calls — they outlived the
+    // function and threw a ReferenceError right here, before start(), so
+    // the beacon never connected and this node stopped being counted.
+    if (typeof mqtt !== 'undefined') { start(); }
   })();
   </script>
 </body>

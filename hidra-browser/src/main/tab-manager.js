@@ -55,12 +55,13 @@ class TabManager {
 
     await this._applyProxy(tabSession);
 
-    // O WebRTC consegue revelar o IP real por candidatos ICE, contornando o
+    // WebRTC can reveal the real IP through ICE candidates, going around the
     // proxy. The injected page deletes window.RTCPeerConnection, but that runs
-    // tarde e um iframe novo devolve um window limpo — a protecao em JavaScript
-    // is bypassable. This policy acts in the Chromium network stack, where it is
-    // e. Os switches 'disable-features=WebRTC' e '--disable-webrtc' em main.js
-    // correspond to anything real in Chromium; this is the measure that works.
+    // late, and a fresh iframe hands back a clean window — protection written
+    // in JavaScript is bypassable. This policy acts in the Chromium network
+    // stack, where it is not. The switches 'disable-features=WebRTC' and
+    // '--disable-webrtc' in main.js correspond to nothing real in Chromium;
+    // this is the measure that works.
     try {
       view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     } catch (e) {
@@ -288,8 +289,8 @@ class TabManager {
     const partition = `tab-${tabId}-${crypto.randomBytes(8).toString('hex')}`;
     const tabSession = session.fromPartition(partition, { cache: false });
 
-    // Cada separador tem sessao propria, portanto cada uma precisa do filtro:
-    // uma sessao sem ele e um caminho directo para fora do kill switch.
+    // Every tab gets its own session, so every one of them needs the filter:
+    // a session without it is a way straight around the kill switch.
     if (this.networkLock) this.networkLock.protect(tabSession);
 
     // Without this every request advertises the real Electron user agent
@@ -336,18 +337,18 @@ class TabManager {
     });
 
     // Allowlist, not denylist. The previous blocklist let through everything that
-    // was not in it — including permissions Chromium added after it was
-    // depois de ela ter sido escrita (serial, hid, usb, idle-detection,
-    // clipboard-read). Numa ferramenta de privacidade o default tem de ser negar.
-    const PERMITIDAS = new Set(['fullscreen', 'clipboard-sanitized-write']);
+    // was not in it — including the permissions Chromium added after it was
+    // written (serial, hid, usb, idle-detection, clipboard-read). In a privacy
+    // tool the default has to be to deny.
+    const ALLOWED = new Set(['fullscreen', 'clipboard-sanitized-write']);
 
     tabSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      callback(PERMITIDAS.has(permission));
+      callback(ALLOWED.has(permission));
     });
 
-    // The synchronous check path does not go through the handler above; without
-    // parte das permissoes era concedida sem nunca ser pedida.
-    tabSession.setPermissionCheckHandler((_wc, permission) => PERMITIDAS.has(permission));
+    // The synchronous check path does not go through the handler above;
+    // without this, some permissions were granted without ever being asked for.
+    tabSession.setPermissionCheckHandler((_wc, permission) => ALLOWED.has(permission));
 
     // WebUSB, WebHID and Web Serial: no device, under any circumstances.
     tabSession.setDevicePermissionHandler(() => false);

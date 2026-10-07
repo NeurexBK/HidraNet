@@ -70,25 +70,25 @@ async function main() {
   const rel = path.relative(ROOT, OUT_DIR).replace(/\\/g, '/');
 
   if (fs.existsSync(STAMP) && fs.readFileSync(STAMP, 'utf8').trim() === TOR_VERSION) {
-    console.log(`[ok] Tor ${TOR_VERSION} já presente em ${rel}`);
+    console.log(`[ok] Tor ${TOR_VERSION} already present in ${rel}`);
     return;
   }
 
-  console.log(`[..] baixando ${file}`);
+  console.log(`[..] downloading ${file}`);
   const [sums, tarball] = await Promise.all([
     get(`${DIST}/sha256sums-unsigned-build.txt`),
     get(`${DIST}/${file}`),
   ]);
 
   const line = sums.toString('utf8').split('\n').find((l) => l.includes(file));
-  if (!line) throw new Error(`${file} não consta na lista de checksums oficial`);
+  if (!line) throw new Error(`${file} is not in the official checksum list`);
   const expected = line.trim().split(/\s+/)[0];
   const actual = crypto.createHash('sha256').update(tarball).digest('hex');
 
   if (expected !== actual) {
-    throw new Error(`checksum não confere para ${file}\n  esperado: ${expected}\n  obtido:   ${actual}`);
+    throw new Error(`checksum does not match for ${file}\n  expected: ${expected}\n  got:      ${actual}`);
   }
-  console.log(`[ok] SHA-256 confere (${actual.slice(0, 16)}…)`);
+  console.log(`[ok] SHA-256 matches (${actual.slice(0, 16)}…)`);
 
   fs.rmSync(OUT_DIR, { recursive: true, force: true });
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -112,7 +112,7 @@ async function main() {
   ];
 
   for (const [src, dest] of wanted) {
-    if (!fs.existsSync(src)) throw new Error(`o bundle não trouxe ${dest}`);
+    if (!fs.existsSync(src)) throw new Error(`the bundle did not contain ${dest}`);
     fs.copyFileSync(src, path.join(OUT_DIR, dest));
     if (dest === exeName) fs.chmodSync(path.join(OUT_DIR, dest), 0o755);
   }
@@ -121,11 +121,11 @@ async function main() {
   fs.writeFileSync(STAMP, TOR_VERSION, 'utf8');
 
   const mb = (fs.statSync(path.join(OUT_DIR, exeName)).size / 1024 / 1024).toFixed(1);
-  console.log(`[ok] Tor ${TOR_VERSION} pronto em ${rel} (${exeName}: ${mb} MB)`);
+  console.log(`[ok] Tor ${TOR_VERSION} ready in ${rel} (${exeName}: ${mb} MB)`);
 }
 
 main().catch((err) => {
-  console.error(`[!!] falha ao obter o Tor: ${err.message}`);
-  console.error('     O browser ainda compila, mas sem anonimato de rede.');
+  console.error(`[!!] could not fetch Tor: ${err.message}`);
+  console.error('     The browser still builds, but with no network anonymity.');
   process.exit(1);
 });

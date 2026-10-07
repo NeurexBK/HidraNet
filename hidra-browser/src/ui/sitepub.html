@@ -69,7 +69,7 @@ textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize
       <button class="btn btn-ghost" id="btn-load" style="white-space:nowrap">Load</button>
     </div>
     <label>Site name</label>
-    <input type="text" id="site-name" placeholder="Meu site" maxlength="40">
+    <input type="text" id="site-name" placeholder="My site" maxlength="40">
     <label>Site HTML (home page)</label>
     <textarea id="site-html" placeholder="<!DOCTYPE html><html>... paste here, or load from SevenNine ..."></textarea>
     <div class="hint">Tip: extra pages (shop.html and so on) are published too if you load from SevenNine.</div>
@@ -82,7 +82,7 @@ textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize
     <div id="msg"></div>
 
     <div id="result" class="result card hidden" style="margin-top:16px">
-      <h2 style="color:var(--accent)">✓ Site publicado!</h2>
+      <h2 style="color:var(--accent)">✓ Site published!</h2>
       <div class="d">Share this address with whoever you choose. They open it in the HidraNet address bar:</div>
       <div class="addr-box"><code id="r-addr"></code><button onclick="copyAddr()" title="Copy">⧉</button></div>
       <div class="row">
@@ -97,7 +97,7 @@ textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize
     <div class="mine" id="mine"><div class="empty">No sites published yet.</div></div>
   </div>
 </div>
-<div class="toast" id="toast">Copiado!</div>
+<div class="toast" id="toast">Copied!</div>
 
 <script>
 'use strict';
@@ -107,7 +107,7 @@ var enc=new TextEncoder(), dec=new TextDecoder();
 var mqttClient=null, published=[];  // {name, addr, bundle}
 var lastAddr='';
 
-// ── cripto: endereco .hidra = chave secreta ──
+// ── crypto: a .hidra address IS the secret key ──
 function b32(bytes){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<bytes.length;i++){v=(v<<8)|bytes[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
 function newAddr(){var r=crypto.getRandomValues(new Uint8Array(16));return b32(r)+'.hidra';}
 async function deriveKey(a){var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}

@@ -61,10 +61,10 @@ async function buildArch(arch) {
                    ELECTRON_VER + '/' + zipName;
 
   if (!fs.existsSync(zipCache)) {
-    console.log('  Descarregando ' + zipName + ' ...');
-    console.log('  (GitHub → ~100 MB, pode demorar)');
+    console.log('  Downloading ' + zipName + ' ...');
+    console.log('  (GitHub → ~100 MB, this can take a while)');
     await download(dlUrl, zipCache);
-    console.log('  Guardado em cache: ' + zipCache);
+    console.log('  Cached at: ' + zipCache);
   } else {
     console.log('  Cache: ' + zipName);
   }
@@ -145,8 +145,9 @@ async function buildArch(arch) {
     }
   });
 
-  // ── Tor daemon — o que de facto anonimiza a navegacao ────────────────────
-  // Sem isto o pacote abre, mas sai sempre pelo IP real do utilizador.
+  // ── Tor daemon — what actually anonymises the browsing ───────────────────
+  // Without it the package opens, but every request leaves from the user's
+  // real IP.
   var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'darwin-' + arch);
   if (fs.existsSync(path.join(torDir, 'tor'))) {
     outEntries.push(mkDir(resPfx + 'bin'));
@@ -156,9 +157,9 @@ async function buildArch(arch) {
       if (!fs.existsSync(abs)) return;
       outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
     });
-    console.log('  Tor incluido (darwin-' + arch + ')');
+    console.log('  Tor included (darwin-' + arch + ')');
   } else {
-    console.log('  [!!] Tor AUSENTE para darwin-' + arch + ' — este pacote nao tera anonimato.');
+    console.log('  [!!] Tor MISSING for darwin-' + arch + ' — this package gives no anonymity.');
     console.log('       node scripts/fetch-tor.js --platform darwin --arch ' + arch);
   }
 
@@ -170,7 +171,7 @@ async function buildArch(arch) {
   outEntries.push(mkFile('README-macOS.txt', Buffer.from(readme, 'utf8')));
 
   // ── Write output ZIP ──────────────────────────────────────────────────────
-  console.log('  Escrevendo ZIP (' + outEntries.length + ' entradas) ...');
+  console.log('  Writing ZIP (' + outEntries.length + ' entries) ...');
   var outBuf  = writeZip(outEntries);
   var outName = 'HidraNet-Browser-' + VERSION + '-macOS-' + arch + '.zip';
   var outPath = path.join(DESKTOP, outName);
@@ -194,12 +195,12 @@ async function buildArch(arch) {
   for (var i = 0; i < archs.length; i++) await buildArch(archs[i]);
 
   console.log('\n╔══════════════════════════════════════════════════════╗');
-  console.log('║  Concluído! ZIPs no Desktop.                        ║');
+  console.log('║  Done. The ZIPs are on your Desktop.                ║');
   console.log('║                                                     ║');
-  console.log('║  arm64 → Apple Silicon (M1/M2/M3/M4) — pós 2020    ║');
-  console.log('║  x64   → Intel — anteriores a 2020                  ║');
+  console.log('║  arm64 → Apple Silicon (M1/M2/M3/M4) — 2020 on      ║');
+  console.log('║  x64   → Intel — before 2020                        ║');
   console.log('╚══════════════════════════════════════════════════════╝');
 })().catch(function(e) {
-  console.error('\nERRO:', e.message);
+  console.error('\nERROR:', e.message);
   process.exit(1);
 });

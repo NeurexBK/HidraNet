@@ -134,12 +134,12 @@ svg{display:block}
   <div class="main">
     <aside class="col side">
       <button class="btn-new" id="btn-new"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New topic</button>
-      <div class="side-t">Categorias</div>
+      <div class="side-t">Categories</div>
       <div id="cats"></div>
       <div class="side-sep"></div>
-      <div class="side-t">Rede</div>
+      <div class="side-t">Network</div>
       <div class="stat-mini">Topics <b id="s-topics">0</b></div>
-      <div class="stat-mini">Respostas <b id="s-replies">0</b></div>
+      <div class="stat-mini">Replies <b id="s-replies">0</b></div>
       <div class="stat-mini">Your role <b id="s-role">reader</b></div>
     </aside>
 
@@ -163,11 +163,11 @@ svg{display:block}
   <div class="box">
     <div class="b-head"><h3>New topic</h3><button class="iconbtn" onclick="closeM('m-new')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
-      <label>Categoria</label>
+      <label>Category</label>
       <select id="n-cat"></select>
       <label>Title</label>
       <input type="text" id="n-title" maxlength="140" placeholder="What do you want to talk about?">
-      <label>Mensagem</label>
+      <label>Message</label>
       <textarea id="n-body" placeholder="Write here. Supports **bold**, *italic*, `code`, [link](url) and ![image](url)."></textarea>
     </div>
     <div class="b-foot"><button class="btn btn-p" id="btn-post">Post topic</button><span class="stat">Anonymous · only your nickname is shown</span></div>
@@ -207,8 +207,14 @@ svg{display:block}
 'use strict';
 var $=function(id){return document.getElementById(id)};
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
-var CATS=['Tecnologia','Privacidade','Dark Web','Off-Topic'];
-var CAT_COLOR={'Tecnologia':'#4f8cff','Privacidade':'#00d4aa','Dark Web':'#a29bfe','Off-Topic':'#f5a623'};
+var CATS=['Technology','Privacy','Dark Web','Off-Topic'];
+var CAT_COLOR={'Technology':'#4f8cff','Privacy':'#00d4aa','Dark Web':'#a29bfe','Off-Topic':'#f5a623'};
+// Topics published before the interface was translated carry the old
+// category names. The category travels inside the retained message, so
+// without this those topics would match no filter and quietly disappear
+// from every list but "All".
+var CAT_LEGACY={'Tecnologia':'Technology','Privacidade':'Privacy'};
+function normCat(c){ return CAT_LEGACY[c]||c; }
 var PER_PAGE=20, RPER_PAGE=20;
 var subtle=crypto.subtle, te=new TextEncoder();
 var client=null;
@@ -232,7 +238,7 @@ function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s)
 function hue(tag){ var n=0; for(var i=0;i<tag.length;i++) n=(n*31+tag.charCodeAt(i))&0xffff; return n%360; }
 function avColor(tag){ return 'linear-gradient(135deg,hsl('+hue(tag)+',55%,52%),hsl('+((hue(tag)+40)%360)+',55%,42%))'; }
 function catColor(c){ return CAT_COLOR[c]||'#8891ad'; }
-function fmtDate(t){ var d=new Date(t),n=Date.now(),diff=(n-t)/1000; if(diff<60)return 'agora'; if(diff<3600)return Math.floor(diff/60)+' min'; if(diff<86400)return Math.floor(diff/3600)+' h'; if(diff<604800)return Math.floor(diff/86400)+' d'; return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear(); }
+function fmtDate(t){ var d=new Date(t),n=Date.now(),diff=(n-t)/1000; if(diff<60)return 'now'; if(diff<3600)return Math.floor(diff/60)+' min'; if(diff<86400)return Math.floor(diff/3600)+' h'; if(diff<604800)return Math.floor(diff/86400)+' d'; return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear(); }
 function md(s){ s=esc(s);
   s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
   s=s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
@@ -243,7 +249,7 @@ function md(s){ s=esc(s);
   s=s.replace(/\n/g,'<br>'); return s; }
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
 
-// ───────── identidade ─────────
+// ───────── identity ─────────
 function loadMe(){ try{ state.me=JSON.parse(localStorage.getItem('hforum_me')||'null'); }catch(e){} }
 async function setNick(nick){
   nick=(nick||'').trim().slice(0,24); if(!nick) return false;
@@ -281,7 +287,7 @@ function onMessage(topic,payload){
     if(topic==='hforum/admin'){ state.adminHash=s||null; refreshRole(); return; }
     if(topic.indexOf('hforum/t/')===0){
       var tid=topic.slice(9);
-      if(!s){ delete state.topics[tid]; } else { var o=JSON.parse(s); o._t=topic; state.topics[tid]=o; }
+      if(!s){ delete state.topics[tid]; } else { var o=JSON.parse(s); o._t=topic; o.cat=normCat(o.cat); state.topics[tid]=o; }
       scheduleRender(); return;
     }
     if(topic.indexOf('hforum/r/')===0){
@@ -335,8 +341,8 @@ async function delOwn(kind,id,tid){
   renderAll(); toast('Deleted.');
 }
 async function modHide(id){
-  if(!state.mod){ toast('Apenas moderadores.'); return; }
-  client.publish('hforum/mod/'+id,'1',{qos:1,retain:true}); state.hidden[id]=1; renderAll(); toast('Ocultado para todos.');
+  if(!state.mod){ toast('Moderators only.'); return; }
+  client.publish('hforum/mod/'+id,'1',{qos:1,retain:true}); state.hidden[id]=1; renderAll(); toast('Hidden for everyone.');
 }
 
 // ───────── moderation ─────────
@@ -360,7 +366,7 @@ function visibleTopics(){ var a=[]; for(var k in state.topics){ var t=state.topi
 function renderStats(){ $('s-topics').textContent=visibleTopics().length; var rc=0; for(var k in state.replies){ if(!state.hidden[state.replies[k].id]) rc++; } $('s-replies').textContent=rc; }
 function renderCats(){
   var counts={}; visibleTopics().forEach(function(t){ counts[t.cat]=(counts[t.cat]||0)+1; });
-  var html='<div class="cat'+(state.cat==='all'?' active':'')+'" data-c="all"><span class="cdot all"></span> Todas <span class="ct">'+visibleTopics().length+'</span></div>';
+  var html='<div class="cat'+(state.cat==='all'?' active':'')+'" data-c="all"><span class="cdot all"></span> All <span class="ct">'+visibleTopics().length+'</span></div>';
   html+=CATS.map(function(c){ return '<div class="cat'+(state.cat===c?' active':'')+'" data-c="'+esc(c)+'"><span class="cdot" style="background:'+catColor(c)+'"></span> '+esc(c)+' <span class="ct">'+(counts[c]||0)+'</span></div>'; }).join('');
   var el=$('cats'); el.innerHTML=html;
   Array.prototype.forEach.call(el.querySelectorAll('.cat'),function(d){ d.onclick=function(){ state.cat=d.getAttribute('data-c'); state.page=0; renderAll(); }; });

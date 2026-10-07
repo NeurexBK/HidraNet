@@ -16,7 +16,7 @@ app.whenReady().then(async()=>{
   var cl=await W.webContents.executeJavaScript("(async()=>{ var n=0; for(var k in state.topics){ var t=state.topics[k]; if(t.title&&(t.title.indexOf('Ola mundo HidraNet')===0)){ client.publish('hforum/t/'+t.id,'',{qos:1,retain:true}); n++; } } for(var r in state.replies){ var rr=state.replies[r]; if(rr.body&&rr.body.indexOf('Resposta de teste da Alice')===0){ client.publish('hforum/r/'+rr.topicId+'/'+rr.id,'',{qos:1,retain:true}); n++; } } return n; })()");
   w('removidos='+cl); await sleep(3500);
   w('FIM_OK');
- }catch(e){ w('ERRO:'+e.message); }
+ }catch(e){ w('ERROR:'+e.message); }
  app.exit(0);
 });
 setTimeout(()=>{w('TIMEOUT');app.exit(0)},40000);

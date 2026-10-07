@@ -198,7 +198,7 @@ impl SiteManager {
         let name = name.trim().to_lowercase();
 
         if name.is_empty() || name.len() > 32 {
-            return Err("Name deve ter entre 1 e 32 caracteres".into());
+            return Err("Name must be between 1 and 32 characters".into());
         }
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err("Name may contain only letters, numbers, - and _".into());
@@ -552,7 +552,7 @@ fn guess_mime(filename: &str) -> String {
 
 fn generate_default_page(site_name: &str) -> String {
     format!(r#"<!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -599,7 +599,7 @@ fn generate_default_page(site_name: &str) -> String {
 <body>
   <div class="container">
     <h1>{name}.hidra</h1>
-    <p>Este site foi criado na plataforma <strong>SevenNine.hidra</strong><br>
+    <p>This site was built with <strong>SevenNine.hidra</strong><br>
     and is hosted on the decentralised <strong>HidraNet</strong> network.</p>
     <div class="badge">Powered by HidraNet</div>
   </div>
@@ -796,7 +796,7 @@ async fn handle_connection(
             let site_name = &p[11..];
             match manager.delete_site(site_name).await {
                 Ok(()) => {
-                    let resp = ApiResponse { ok: true, msg: Some("Site removido".into()), site: None, sites: None };
+                    let resp = ApiResponse { ok: true, msg: Some("Site removed".into()), site: None, sites: None };
                     send_json(&mut stream, 200, &resp).await;
                 }
                 Err(e) => {
@@ -1012,11 +1012,11 @@ async fn send_json(stream: &mut tokio::net::TcpStream, status: u16, data: &ApiRe
 // ─── Frontend HTML ───────────────────────────────────────────────────────────
 
 const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
-<html lang="pt">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SevenNine.hidra — Criador de Sites</title>
+  <title>SevenNine.hidra — Site builder</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -1031,7 +1031,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
         </svg>
         <div>
           <h1>SevenNine<span class="accent">.hidra</span></h1>
-          <p class="tagline">Criador descentralizado de sites para a rede HidraNet</p>
+          <p class="tagline">Decentralised site builder for the HidraNet network</p>
         </div>
       </div>
       <div class="header-stats" id="header-stats">
@@ -1065,10 +1065,10 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
             <circle cx="24" cy="24" r="20" opacity="0.3"/><path d="M14 24l7 7 13-13"/>
           </svg>
         </div>
-        <h2>Site Publicado na HidraNet!</h2>
+        <h2>Site published on HidraNet</h2>
         <div class="address-box" id="address-box">
           <span class="address-text" id="address-text"></span>
-          <button class="btn-copy" onclick="copyAddress()" title="Copiar endereco">
+          <button class="btn-copy" onclick="copyAddress()" title="Copy address">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           </button>
         </div>
@@ -1110,7 +1110,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
 
     <!-- Sites List -->
     <section class="card sites-card">
-      <h2><span class="icon">&#9776;</span> Meus Sites</h2>
+      <h2><span class="icon">&#9776;</span> My sites</h2>
       <div id="sites-list" class="sites-list">
         <div class="empty-state">No sites created yet. Create your first one above.</div>
       </div>
@@ -1142,26 +1142,26 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
           <div class="template-preview docs-preview">
             <div class="tp-bar"></div><div class="tp-sidebar"></div><div class="tp-main"><div class="tp-line w90"></div><div class="tp-line w70"></div></div>
           </div>
-          <span>Documentacao</span>
+          <span>Documentation</span>
         </div>
-        <div class="template-item" onclick="useTemplate('loja')">
+        <div class="template-item" onclick="useTemplate('shop')">
           <div class="template-preview portfolio-preview">
             <div class="tp-bar"></div><div class="tp-grid"><div></div><div></div><div></div><div></div></div>
           </div>
-          <span>Loja Online</span>
+          <span>Online shop</span>
         </div>
-        <div class="template-item" onclick="useTemplate('noticias')">
+        <div class="template-item" onclick="useTemplate('news')">
           <div class="template-preview blog-preview">
             <div class="tp-bar"></div><div class="tp-content"><div class="tp-line w90"></div><div class="tp-line w60"></div><div class="tp-line w80"></div><div class="tp-line w40"></div></div>
           </div>
-          <span>Portal de Noticias</span>
+          <span>News portal</span>
         </div>
       </div>
     </section>
 
     <footer class="footer">
       <p>SevenNine.hidra &mdash; Powered by <strong>HidraNet</strong></p>
-      <p class="hint">Todos os sites sao hospedados de forma descentralizada na rede HidraNet</p>
+      <p class="hint">Every site is hosted decentrally on the HidraNet network</p>
     </footer>
   </div>
 
@@ -1170,11 +1170,11 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
     <div class="ed-top">
       <div class="ed-top-left">
         <button class="btn btn-ghost btn-sm" onclick="closeEditor()">&larr; Back</button>
-        <span class="ed-editing">Editando <span id="ed-site-name" class="accent">site.hidra</span></span>
+        <span class="ed-editing">Editing <span id="ed-site-name" class="accent">site.hidra</span></span>
       </div>
       <div class="ed-top-right">
         <button class="btn btn-ghost btn-sm" id="ed-devtoggle" onclick="toggleDevice()" title="Alternar preview">🖥 Desktop</button>
-        <a id="ed-open" href="#" target="_blank" class="btn btn-ghost btn-sm">Ver site</a>
+        <a id="ed-open" href="#" target="_blank" class="btn btn-ghost btn-sm">View site</a>
         <button class="btn btn-primary btn-sm" id="ed-publish" onclick="publishEditor()">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
           Publish
@@ -1184,9 +1184,9 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
     <div class="ed-main">
       <aside class="ed-side">
         <div class="ed-block">
-          <div class="ed-block-title">Marca</div>
+          <div class="ed-block-title">Brand</div>
           <label class="ed-label">Name / logo (appears in the menu)</label>
-          <input type="text" id="ed-brand" class="ed-input" placeholder="Minha Marca" oninput="setMeta('brand', this.value)">
+          <input type="text" id="ed-brand" class="ed-input" placeholder="My brand" oninput="setMeta('brand', this.value)">
         </div>
         <div class="ed-block">
           <div class="ed-block-title">Aparencia</div>
@@ -1206,12 +1206,12 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div class="ed-block">
           <div class="ed-block-title">Rodape / Redes</div>
-          <label class="ed-label">WhatsApp (numero)</label>
+          <label class="ed-label">WhatsApp (number)</label>
           <input type="text" id="ed-wa" class="ed-input" placeholder="5511999999999" oninput="setSocial('whatsapp', this.value)">
           <label class="ed-label">Instagram (@usuario)</label>
           <input type="text" id="ed-ig" class="ed-input" placeholder="@minhamarca" oninput="setSocial('instagram', this.value)">
           <label class="ed-label">E-mail</label>
-          <input type="text" id="ed-mail" class="ed-input" placeholder="contato@exemplo" oninput="setSocial('email', this.value)">
+          <input type="text" id="ed-mail" class="ed-input" placeholder="contact@example" oninput="setSocial('email', this.value)">
         </div>
       </aside>
 
@@ -1803,13 +1803,13 @@ async function deleteSite(name) {
   try {
     await fetch(API + '/api/sites/' + name, { method: 'DELETE' });
     loadSites();
-    toast('Site excluido.');
+    toast('Site deleted.');
   } catch (e) {
     toast('Error: ' + e.message);
   }
 }
 
-// ── Templates: criam o site e abrem o editor ja preenchido ──
+// ── Templates: create the site and open the editor already filled in ──
 async function useTemplate(type) {
   const name = await askText({ title: 'Create a site from a template', msg: 'Choose a name — it becomes your site\'s .hidra address.', placeholder: 'mysite', ok: 'Create and edit' });
   if (!name) return;
@@ -1825,7 +1825,7 @@ async function useTemplate(type) {
     if (data.ok && data.site) {
       currentSite = data.site.name;
       loadSites();
-      openEditor(data.site.name, type);   // abre o editor com os blocos do template
+      openEditor(data.site.name, type);   // open the editor with the template blocks
     } else {
       showMsg('create-msg', data.msg || 'Could not create site', 'error');
     }
@@ -1853,7 +1853,7 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-// ═══════════════════ Editor Visual de Paginas (estilo WordPress) ═══════════════════
+// ═══════════════════ Visual page editor (WordPress style) ═══════════════════
 
 var ed = { site:null, theme:'hidra', font:'system', brand:'', social:{whatsapp:'',instagram:'',email:''}, pages:[], cur:0 };
 var edPreviewTimer = null;
@@ -1868,15 +1868,21 @@ function uniquePageId(base){ if(!base||base==='index') base='page'; var id=base,
 function isListBlock(t){ return ['features','products','articles','pricing','testimonials','gallery'].indexOf(t)>=0; }
 
 var THEMES = {
-  hidra:    { name:'Hidra',      mode:'dark',  primary:'#00d4aa', primary2:'#00a888', bg:'#06060b', card:'#10101c', border:'#1a1a2e', text:'#e8e8f0', muted:'#8a8aa0' },
-  meianoite:{ name:'Meia-noite', mode:'dark',  primary:'#4f8cff', primary2:'#2f6fe0', bg:'#0a0e1a', card:'#121a2e', border:'#1e2a44', text:'#e6ebf5', muted:'#8a93a8' },
-  nebulosa: { name:'Nebulosa',   mode:'dark',  primary:'#a06bff', primary2:'#7b46d6', bg:'#0c0814', card:'#181226', border:'#271b3d', text:'#ece6f5', muted:'#9a8ab0' },
-  carvao:   { name:'Carvao',     mode:'dark',  primary:'#f5a623', primary2:'#d68a10', bg:'#121212', card:'#1c1c1c', border:'#2a2a2a', text:'#f0f0f0', muted:'#9a9a9a' },
-  clean:    { name:'Clean',      mode:'light', primary:'#2563eb', primary2:'#1d4ed8', bg:'#ffffff', card:'#f4f6fb', border:'#e2e8f0', text:'#1a1f2e', muted:'#667085' },
-  menta:    { name:'Menta',      mode:'light', primary:'#0f9d77', primary2:'#0b7d5e', bg:'#f2fbf7', card:'#ffffff', border:'#d6ece2', text:'#10241d', muted:'#5d7d70' },
-  sepia:    { name:'Sepia',      mode:'light', primary:'#b4612f', primary2:'#8f4a22', bg:'#f7f1e6', card:'#fffaf2', border:'#e6dcc8', text:'#2e261c', muted:'#8a7a63' },
-  coral:    { name:'Coral',      mode:'light', primary:'#e8536b', primary2:'#c63a52', bg:'#fff5f6', card:'#ffffff', border:'#f6dbe0', text:'#2c1419', muted:'#8a6066' }
+  hidra:    { name:'Hidra',    mode:'dark',  primary:'#00d4aa', primary2:'#00a888', bg:'#06060b', card:'#10101c', border:'#1a1a2e', text:'#e8e8f0', muted:'#8a8aa0' },
+  midnight: { name:'Midnight', mode:'dark',  primary:'#4f8cff', primary2:'#2f6fe0', bg:'#0a0e1a', card:'#121a2e', border:'#1e2a44', text:'#e6ebf5', muted:'#8a93a8' },
+  nebula:   { name:'Nebula',   mode:'dark',  primary:'#a06bff', primary2:'#7b46d6', bg:'#0c0814', card:'#181226', border:'#271b3d', text:'#ece6f5', muted:'#9a8ab0' },
+  charcoal: { name:'Charcoal', mode:'dark',  primary:'#f5a623', primary2:'#d68a10', bg:'#121212', card:'#1c1c1c', border:'#2a2a2a', text:'#f0f0f0', muted:'#9a9a9a' },
+  clean:    { name:'Clean',    mode:'light', primary:'#2563eb', primary2:'#1d4ed8', bg:'#ffffff', card:'#f4f6fb', border:'#e2e8f0', text:'#1a1f2e', muted:'#667085' },
+  mint:     { name:'Mint',     mode:'light', primary:'#0f9d77', primary2:'#0b7d5e', bg:'#f2fbf7', card:'#ffffff', border:'#d6ece2', text:'#10241d', muted:'#5d7d70' },
+  sepia:    { name:'Sepia',    mode:'light', primary:'#b4612f', primary2:'#8f4a22', bg:'#f7f1e6', card:'#fffaf2', border:'#e6dcc8', text:'#2e261c', muted:'#8a7a63' },
+  coral:    { name:'Coral',    mode:'light', primary:'#e8536b', primary2:'#c63a52', bg:'#fff5f6', card:'#ffffff', border:'#f6dbe0', text:'#2c1419', muted:'#8a6066' }
 };
+
+// Sites saved before the editor was translated store the old theme ids. The
+// theme is part of the saved source, so without this the editor would fall
+// back to the default and silently restyle someone's published site.
+var THEME_LEGACY = { meianoite:'midnight', nebulosa:'nebula', carvao:'charcoal', menta:'mint' };
+function normTheme(t){ return THEMES[t] ? t : (THEME_LEGACY[t] || 'hidra'); }
 
 var FONTS = {
   system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -1891,14 +1897,14 @@ var PALETTE_BLOCKS = [
   { type:'text',         label:'Text',       icon:'¶' },
   { type:'image',        label:'Image',      icon:'▣' },
   { type:'button',       label:'Button',       icon:'▭' },
-  { type:'features',     label:'Destaques',   icon:'⊞' },
-  { type:'products',     label:'Produtos',    icon:'🛍' },
-  { type:'articles',     label:'Noticias',    icon:'📰' },
-  { type:'pricing',      label:'Precos',      icon:'$' },
-  { type:'testimonials', label:'Depoimentos', icon:'❝' },
-  { type:'gallery',      label:'Galeria',     icon:'▦' },
-  { type:'cta',          label:'Chamada',     icon:'➤' },
-  { type:'contact',      label:'Contato',     icon:'✉' },
+  { type:'features',     label:'Features',    icon:'⊞' },
+  { type:'products',     label:'Products',    icon:'🛍' },
+  { type:'articles',     label:'News',        icon:'📰' },
+  { type:'pricing',      label:'Pricing',     icon:'$' },
+  { type:'testimonials', label:'Testimonials',icon:'❝' },
+  { type:'gallery',      label:'Gallery',     icon:'▦' },
+  { type:'cta',          label:'Call to action', icon:'➤' },
+  { type:'contact',      label:'Contact',     icon:'✉' },
   { type:'divider',      label:'Divisor',     icon:'—' }
 ];
 
@@ -1907,7 +1913,7 @@ function defaultItem(type){
   if(type==='products') return {img:'',name:'Product',price:'99,90',desc:'Descricao do product.',url:'#',label:'Comprar'};
   if(type==='articles') return {img:'',cat:'General',title:'Story headline',date:'Today',excerpt:'A one or two line summary of the story.',url:'#'};
   if(type==='pricing') return {plan:'Plan',price:'0',period:'/mes',feats:'Recurso incluso\nOutro recurso',button:'Escolher',url:'#',featured:false};
-  if(type==='testimonials') return {quote:'Servico excelente, recomendo muito!',author:'Cliente',role:'Cargo'};
+  if(type==='testimonials') return {quote:'Excellent service, highly recommended.',author:'Customer',role:'Role'};
   if(type==='gallery') return {url:''};
   return {};
 }
@@ -1917,19 +1923,19 @@ function itemName(type){
 
 function defaultBlock(type) {
   switch(type) {
-    case 'hero': return { type:type, title:'Bem-vindo ao meu site', subtitle:'Hospedado na rede descentralizada HidraNet.', button:'Saiba mais', url:'#' };
+    case 'hero': return { type:type, title:'Welcome to my site', subtitle:'Hosted on the decentralised HidraNet network.', button:'Learn more', url:'#' };
     case 'heading': return { type:type, text:'Um title de secao' };
     case 'text': return { type:type, text:'Write your content here. Tell people about you, your project or your ideas.' };
     case 'image': return { type:type, url:'', alt:'Descricao da image' };
     case 'button': return { type:type, text:'Click here', url:'#' };
     case 'features': return { type:type, title:'', items:[ {icon:'🔒',title:'Secure',text:'End-to-end encryption'}, {icon:'🕵',title:'Anonymous',text:'No tracking'}, {icon:'🌐',title:'Decentralised',text:'No central server'} ] };
-    case 'products': return { type:type, title:'Nossos Produtos', currency:'R$', items:[ {img:'',name:'Product 1',price:'99,90',desc:'Otimo product com qualidade garantida.',url:'#',label:'Comprar'}, {img:'',name:'Product 2',price:'149,90',desc:'Mais vendido da loja.',url:'#',label:'Comprar'}, {img:'',name:'Product 3',price:'199,90',desc:'Edicao especial.',url:'#',label:'Comprar'} ] };
+    case 'products': return { type:type, title:'Our products', currency:'$', items:[ {img:'',name:'Product 1',price:'99.90',desc:'A great product, quality guaranteed.',url:'#',label:'Buy'}, {img:'',name:'Product 2',price:'149.90',desc:'Our best seller.',url:'#',label:'Buy'}, {img:'',name:'Product 3',price:'199.90',desc:'Special edition.',url:'#',label:'Buy'} ] };
     case 'articles': return { type:type, title:'Latest news', items:[ {img:'',cat:'Featured',title:'Lead story headline',date:'Today',excerpt:'A short summary of the story to draw the reader in.',url:'#'}, {img:'',cat:'General',title:'Second important story',date:'Yesterday',excerpt:'Another informative summary here.',url:'#'} ] };
-    case 'pricing': return { type:type, title:'Planos', items:[ {plan:'Basico',price:'29',period:'/mes',feats:'1 site\nSuporte por email\nDominio .hidra',button:'Comecar',url:'#',featured:false}, {plan:'Pro',price:'79',period:'/mes',feats:'Sites ilimitados\nSuporte prioritario\nEstatisticas',button:'Assinar',url:'#',featured:true} ] };
-    case 'testimonials': return { type:type, title:'O que dizem', items:[ {quote:'Melhor decisao que tomei. Recomendo!',author:'Maria S.',role:'Empreendedora'}, {quote:'Rapido, seguro e facil de usar.',author:'Joao P.',role:'Desenvolvedor'} ] };
-    case 'gallery': return { type:type, title:'Galeria', items:[ {url:''},{url:''},{url:''} ] };
-    case 'cta': return { type:type, title:'Pronto para comecar?', text:'Junte-se a nos today mesmo e faca parte da rede.', button:'Comecar agora', url:'#' };
-    case 'contact': return { type:type, title:'Fale Conosco', email:'contato@exemplo.hidra', phone:'', whatsapp:'', address:'' };
+    case 'pricing': return { type:type, title:'Plans', items:[ {plan:'Basic',price:'29',period:'/mo',feats:'1 site\nEmail support\n.hidra domain',button:'Get started',url:'#',featured:false}, {plan:'Pro',price:'79',period:'/mo',feats:'Unlimited sites\nPriority support\nStatistics',button:'Subscribe',url:'#',featured:true} ] };
+    case 'testimonials': return { type:type, title:'What people say', items:[ {quote:'Best decision I made. Recommended.',author:'Maria S.',role:'Business owner'}, {quote:'Fast, secure and easy to use.',author:'Joao P.',role:'Developer'} ] };
+    case 'gallery': return { type:type, title:'Gallery', items:[ {url:''},{url:''},{url:''} ] };
+    case 'cta': return { type:type, title:'Ready to start?', text:'Join us today and become part of the network.', button:'Start now', url:'#' };
+    case 'contact': return { type:type, title:'Get in touch', email:'contact@example.hidra', phone:'', whatsapp:'', address:'' };
     case 'divider': return { type:type };
     default: return { type:'text', text:'' };
   }
@@ -1938,28 +1944,28 @@ function defaultBlock(type) {
 function starterBlocks() { return [ defaultBlock('hero'), defaultBlock('features') ]; }
 
 function applyTemplate(type) {
-  if (type === 'loja') {
+  if (type === 'shop') {
     ed.theme='clean'; ed.font='system';
     ed.pages=[
-      newPage('index','Inicio',[ {type:'hero',title:(ed.brand||'Minha Loja'),subtitle:'Produtos de qualidade com entrega para todo o Brasil.',button:'Ver produtos',url:'produtos.html'}, defaultBlock('products'), defaultBlock('testimonials'), {type:'cta',title:'Ofertas por tempo limitado',text:'Aproveite os descontos da semana.',button:'Comprar agora',url:'produtos.html'} ]),
-      newPage('produtos','Produtos',[ {type:'heading',text:'Catalogo completo'}, defaultBlock('products') ]),
-      newPage('contato','Contato',[ {type:'contact',title:'Fale Conosco',email:'loja@exemplo.hidra',phone:'',whatsapp:'',address:''} ])
+      newPage('index','Home',[ {type:'hero',title:(ed.brand||'My shop'),subtitle:'Quality products, delivered.',button:'See products',url:'products.html'}, defaultBlock('products'), defaultBlock('testimonials'), {type:'cta',title:'Limited-time offers',text:'Take advantage of this week\'s discounts.',button:'Buy now',url:'products.html'} ]),
+      newPage('products','Products',[ {type:'heading',text:'Full catalogue'}, defaultBlock('products') ]),
+      newPage('contact','Contact',[ {type:'contact',title:'Get in touch',email:'shop@example.hidra',phone:'',whatsapp:'',address:''} ])
     ];
-  } else if (type === 'noticias' || type === 'blog') {
-    ed.theme=(type==='noticias')?'clean':'sepia'; ed.font=(type==='noticias')?'system':'serif';
+  } else if (type === 'news' || type === 'blog') {
+    ed.theme=(type==='news')?'clean':'sepia'; ed.font=(type==='news')?'system':'serif';
     ed.pages=[
-      newPage('index','Inicio',[ {type:'hero',title:(ed.brand||'Meu Portal'),subtitle:'Noticias, artigos e analises atualizadas.',button:'Ler agora',url:'#'}, defaultBlock('articles') ]),
-      newPage('sobre','Sobre',[ {type:'heading',text:'Sobre o portal'}, {type:'text',text:'Um espaco independente para informacao livre, sem censura e sem rastreamento, na rede HidraNet.'} ])
+      newPage('index','Home',[ {type:'hero',title:(ed.brand||'My portal'),subtitle:'News, articles and analysis.',button:'Read now',url:'#'}, defaultBlock('articles') ]),
+      newPage('about','About',[ {type:'heading',text:'About this portal'}, {type:'text',text:'An independent space for free information — no censorship, no tracking — on the HidraNet network.'} ])
     ];
   } else if (type === 'portfolio') {
-    ed.theme='meianoite'; ed.font='system';
-    ed.pages=[ newPage('index','Inicio',[ {type:'hero',title:(ed.brand||'Meu Portfolio'),subtitle:'Design & Desenvolvimento',button:'Ver trabalhos',url:'#'}, defaultBlock('gallery'), defaultBlock('features'), {type:'contact',title:'Fale comigo',email:'eu@exemplo.hidra',phone:'',whatsapp:'',address:''} ]) ];
+    ed.theme='midnight'; ed.font='system';
+    ed.pages=[ newPage('index','Home',[ {type:'hero',title:(ed.brand||'My portfolio'),subtitle:'Design & development',button:'See work',url:'#'}, defaultBlock('gallery'), defaultBlock('features'), {type:'contact',title:'Talk to me',email:'me@example.hidra',phone:'',whatsapp:'',address:''} ]) ];
   } else if (type === 'docs') {
     ed.theme='hidra'; ed.font='mono';
-    ed.pages=[ newPage('index','Inicio',[ {type:'heading',text:'Documentacao'}, {type:'text',text:'Bem-vindo a documentacao do projeto.'} ]), newPage('guia','Guia',[ {type:'heading',text:'Inicio rapido'}, {type:'text',text:'1. Baixe o programa\n2. Execute o instalador\n3. Pronto para usar'} ]) ];
+    ed.pages=[ newPage('index','Home',[ {type:'heading',text:'Documentation'}, {type:'text',text:'Welcome to the project documentation.'} ]), newPage('guide','Guide',[ {type:'heading',text:'Quick start'}, {type:'text',text:'1. Download the program\n2. Run the installer\n3. Ready to use'} ]) ];
   } else {
     ed.theme='hidra'; ed.font='system';
-    ed.pages=[ newPage('index','Inicio',[ defaultBlock('hero'), defaultBlock('features'), defaultBlock('cta') ]) ];
+    ed.pages=[ newPage('index','Home',[ defaultBlock('hero'), defaultBlock('features'), defaultBlock('cta') ]) ];
   }
   ed.cur=0;
 }
@@ -1967,16 +1973,16 @@ function applyTemplate(type) {
 async function openEditor(name, template) {
   ed.site=name; ed.theme='hidra'; ed.font='system'; ed.brand=name;
   ed.social={whatsapp:'',instagram:'',email:''};
-  ed.pages=[ newPage('index','Inicio', starterBlocks()) ]; ed.cur=0;
+  ed.pages=[ newPage('index','Home', starterBlocks()) ]; ed.cur=0;
   try {
     const res = await fetch(API + '/api/page/' + name);
     const src = await res.json();
     if (src && src.pages && src.pages.length) {
-      ed.theme=src.theme||'hidra'; ed.font=src.font||'system'; ed.brand=src.brand||name;
+      ed.theme=normTheme(src.theme); ed.font=src.font||'system'; ed.brand=src.brand||name;
       ed.social=src.social||ed.social; ed.pages=src.pages; ed.cur=0;
     } else if (src && src.blocks) {
-      ed.theme=src.theme||'hidra'; ed.font=src.font||'system'; ed.brand=src.title||name;
-      ed.pages=[ newPage('index','Inicio', src.blocks) ];
+      ed.theme=normTheme(src.theme); ed.font=src.font||'system'; ed.brand=src.title||name;
+      ed.pages=[ newPage('index','Home', src.blocks) ];
     } else if (template) { applyTemplate(template); }
   } catch(e) { if (template) applyTemplate(template); }
 
@@ -1995,7 +2001,7 @@ function closeEditor() { document.getElementById('editor').classList.add('hidden
 function setMeta(key, val) { ed[key] = val; schedulePreview(); }
 function setSocial(key, val) { ed.social[key] = val; schedulePreview(); }
 
-// ── Paginas ──
+// ── Pages ──
 function renderPageTabs() {
   var el = document.getElementById('ed-pages');
   var tabs = ed.pages.map(function(p, i){
@@ -2043,7 +2049,7 @@ function renderPalette() {
 }
 
 function blockLabel(type){
-  var m = {hero:'Cover', heading:'Title', text:'Text', image:'Image', button:'Button', features:'Destaques', products:'Produtos', articles:'Noticias', pricing:'Precos', testimonials:'Depoimentos', gallery:'Galeria', cta:'Chamada', contact:'Contato', divider:'Divisor'};
+  var m = {hero:'Cover', heading:'Title', text:'Text', image:'Image', button:'Button', features:'Features', products:'Products', articles:'News', pricing:'Pricing', testimonials:'Testimonials', gallery:'Gallery', cta:'Call to action', contact:'Contact', divider:'Divider'};
   return m[type] || type;
 }
 
@@ -2069,8 +2075,8 @@ function blockCard(b, i) {
   } else if (b.type === 'contact') {
     body = field('Title', b.title, i, 'title') +
       '<div class="row2">' + field('E-mail', b.email, i, 'email') + field('Telefone', b.phone, i, 'phone') + '</div>' +
-      '<div class="row2">' + field('WhatsApp (numero)', b.whatsapp, i, 'whatsapp') + field('Endereco', b.address, i, 'address') + '</div>';
-  } else if (b.type === 'divider') { body = '<div style="color:var(--text3);font-size:0.85em">Linha divisoria (sem opcoes)</div>'; }
+      '<div class="row2">' + field('WhatsApp (number)', b.whatsapp, i, 'whatsapp') + field('Address', b.address, i, 'address') + '</div>';
+  } else if (b.type === 'divider') { body = '<div style="color:var(--text3);font-size:0.85em">Divider line (no options)</div>'; }
   else if (isListBlock(b.type)) { body = listBlockBody(b, i); }
   return '<div class="ed-card">' +
     '<div class="ed-card-head"><span class="ed-card-type">'+blockLabel(b.type)+'</span>' +
@@ -2097,8 +2103,8 @@ function itemFields(type, it, bi, ii) {
   if (type === 'features') return iField('Icone (emoji)', it.icon, bi, ii, 'icon') + iField('Title', it.title, bi, ii, 'title') + iField('Text', it.text, bi, ii, 'text');
   if (type === 'products') return iField('Image URL', it.img, bi, ii, 'img') + iField('Name', it.name, bi, ii, 'name') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Text do button', it.label, bi, ii, 'label') + '</div>' + iField('Descricao', it.desc, bi, ii, 'desc') + iField('Link de compra', it.url, bi, ii, 'url');
   if (type === 'articles') return iField('URL da image', it.img, bi, ii, 'img') + '<div class="row2">' + iField('Categoria', it.cat, bi, ii, 'cat') + iField('Data', it.date, bi, ii, 'date') + '</div>' + iField('Title', it.title, bi, ii, 'title') + iArea('Summary', it.excerpt, bi, ii, 'excerpt') + iField('Link', it.url, bi, ii, 'url');
-  if (type === 'pricing') return iField('Plan', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Periodo', it.period, bi, ii, 'period') + '</div>' + iArea('Recursos (1 por linha)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Text do button', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Destacar este plan', it.featured, bi, ii, 'featured');
-  if (type === 'testimonials') return iArea('Depoimento', it.quote, bi, ii, 'quote') + '<div class="row2">' + iField('Autor', it.author, bi, ii, 'author') + iField('Cargo', it.role, bi, ii, 'role') + '</div>';
+  if (type === 'pricing') return iField('Plan', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Period', it.period, bi, ii, 'period') + '</div>' + iArea('Recursos (1 por linha)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Text do button', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Destacar este plan', it.featured, bi, ii, 'featured');
+  if (type === 'testimonials') return iArea('Testimonial', it.quote, bi, ii, 'quote') + '<div class="row2">' + iField('Author', it.author, bi, ii, 'author') + iField('Role', it.role, bi, ii, 'role') + '</div>';
   if (type === 'gallery') return iField('URL da image', it.url, bi, ii, 'url');
   return '';
 }
@@ -2178,7 +2184,7 @@ async function publishEditor(){
       body: JSON.stringify({ source: source, files: files })
     });
     var data = await res.json();
-    if (data.ok) { btn.innerHTML = '✓ Publicado!'; setTimeout(function(){ btn.disabled=false; btn.innerHTML=old; }, 1600); }
+    if (data.ok) { btn.innerHTML = '✓ Published'; setTimeout(function(){ btn.disabled=false; btn.innerHTML=old; }, 1600); }
     else { toast('Could not publish: ' + (data.msg||'')); btn.disabled=false; btn.innerHTML=old; }
   } catch(e) { toast('Connection error: ' + e.message); btn.disabled=false; btn.innerHTML=old; }
 }
@@ -2199,7 +2205,7 @@ function footerHTML(){
   return '<footer class="s9-foot"><div class="s9-foot-in">' +
     '<div class="s9-foot-col"><div class="s9-foot-brand">'+brand+'</div><div class="s9-foot-soc">'+soc+'</div></div>' +
     '<nav class="s9-foot-links">'+links+'</nav></div>' +
-    '<div class="s9-foot-bottom">Feito com <strong>SevenNine.hidra</strong> &middot; rede HidraNet</div></footer>';
+    '<div class="s9-foot-bottom">Built with <strong>SevenNine.hidra</strong> &middot; HidraNet network</div></footer>';
 }
 
 // Inline edit helpers (only active in preview/edit mode)
@@ -2227,11 +2233,11 @@ function editorScript(){
 }
 
 function renderPageHTML(page, em){
-  var t = THEMES[ed.theme] || THEMES.hidra;
+  var t = THEMES[normTheme(ed.theme)] || THEMES.hidra;
   var font = FONTS[ed.font] || FONTS.system;
   var title = esc((ed.brand ? ed.brand + ' — ' : '') + (page.name || 'Site'));
   var body = (page.blocks||[]).map(function(b,i){ return blockHTML(b, t, em, i); }).join('\n');
-  return '<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8">' +
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">' +
     '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
     '<title>' + title + '</title><style>' + siteCSS(t, font) + (em ? editorCSS() : '') + '</style></head><body>' +
     navbarHTML() + body + footerHTML() + (em ? editorScript() : '') + '</body></html>';
@@ -2366,14 +2372,14 @@ function blockHTML(b, t, em, bi){
   if (b.type === 'products') {
     var cards = (b.items||[]).map(function(it,ii){
       var buy = it.url ? '<a class="s9-btn s9-btn-sm" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':label')+'>'+esc(it.label||'Comprar')+'</a>' : '';
-      return '<div class="s9-prod">' + imgOr(it.img,'s9-prod-img',it.name,'Sem image') +
+      return '<div class="s9-prod">' + imgOr(it.img,'s9-prod-img',it.name,'No image') +
         '<div class="s9-prod-b"><h3'+ce(em)+de(em,bi+'.'+ii+':name')+'>'+esc(it.name)+'</h3><div class="s9-price">'+esc(b.currency||'')+' <span'+ce(em)+de(em,bi+'.'+ii+':price')+'>'+esc(it.price||'')+'</span></div><p'+ce(em)+de(em,bi+'.'+ii+':desc')+'>'+esc(it.desc)+'</p>'+buy+'</div></div>';
     }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-prod-grid">'+cards+'</div></section>';
   }
   if (b.type === 'articles') {
     var arts = (b.items||[]).map(function(it,ii){
-      return '<a class="s9-art" href="'+safeUrl(it.url)+'">' + imgOr(it.img,'s9-art-img',it.title,'Sem image') +
+      return '<a class="s9-art" href="'+safeUrl(it.url)+'">' + imgOr(it.img,'s9-art-img',it.title,'No image') +
         '<div class="s9-art-b"><span class="s9-cat">'+esc(it.cat||'General')+'</span><h3'+ce(em)+de(em,bi+'.'+ii+':title')+'>'+esc(it.title)+'</h3><div class="s9-date">'+esc(it.date)+'</div><p'+ce(em)+de(em,bi+'.'+ii+':excerpt')+'>'+esc(it.excerpt)+'</p></div></a>';
     }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-art-grid">'+arts+'</div></section>';
@@ -2405,7 +2411,7 @@ function blockHTML(b, t, em, bi){
     if (b.email) rows += '<div class="s9-cd"><b>E-mail:</b> <a href="mailto:'+attr(b.email)+'">'+esc(b.email)+'</a></div>';
     if (b.phone) rows += '<div class="s9-cd"><b>Telefone:</b> '+esc(b.phone)+'</div>';
     if (b.whatsapp) rows += '<div class="s9-cd"><b>WhatsApp:</b> <a href="https://wa.me/'+b.whatsapp.replace(/\D/g,'')+'">'+esc(b.whatsapp)+'</a></div>';
-    if (b.address) rows += '<div class="s9-cd"><b>Endereco:</b> '+esc(b.address)+'</div>';
+    if (b.address) rows += '<div class="s9-cd"><b>Address:</b> '+esc(b.address)+'</div>';
     return '<section class="s9-sec"'+db(em,bi)+'><h2 class="s9-sec-h"'+ce(em)+de(em,bi+':title')+'>'+esc(b.title)+'</h2><div class="s9-contact">'+rows+'</div></section>';
   }
   if (b.type === 'divider') return '<hr class="s9-hr"'+db(em,bi)+'>';

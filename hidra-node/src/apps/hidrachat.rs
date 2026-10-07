@@ -521,6 +521,24 @@ pub mod server {
             );
             stream.write_all(header.as_bytes()).await?;
             stream.write_all(body.as_bytes()).await?;
+        } else if path == "/vendor/mqtt.min.js" {
+            // Served from here rather than from a CDN. This page holds the
+            // end-to-end encryption: a script fetched from someone else's
+            // host at load time can read every message before it is encrypted,
+            // and there is no integrity check on a <script src> pointing at a
+            // moving "@5" tag. The browser's own copy of this app was moved
+            // off the CDN already; this one was still loading it.
+            let body = frontend::VENDOR_MQTT;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/javascript; charset=utf-8\r\n\
+                 Content-Length: {}\r\n\
+                 Cache-Control: public, max-age=86400\r\n\
+                 Connection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await?;
+            stream.write_all(body.as_bytes()).await?;
         } else if path == "/api/whoami" {
             let ip = local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
             let body = format!("{{\"lan_ip\":\"{ip}\",\"port\":8081}}");
@@ -544,8 +562,12 @@ pub mod server {
 }
 
 pub mod frontend {
+    /// mqtt.js, bundled instead of fetched. Same file the browser ships in
+    /// hidra-browser/src/ui/vendor/, kept byte-identical on purpose.
+    pub const VENDOR_MQTT: &str = include_str!("../../assets/vendor/mqtt.min.js");
+
     pub const PAGE_HTML: &str = r##"<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -742,7 +764,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       </div>
       <div class="room-info">
         <div class="label">Room code</div>
-        <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copiar</button></div>
+        <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copy</button></div>
         <div class="encryption-badge" id="encBadge">🔒 E2E: AES-256-GCM</div>
         <div class="share-hint">Share the password with your friends. Anyone using the same password joins the same encrypted room.</div>
       </div>
@@ -761,10 +783,9 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
   </div>
 </div>
 
-<div class="copied-toast" id="toast">Copiado!</div>
+<div class="copied-toast" id="toast">Copied!</div>
 
-<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script src="/vendor/mqtt.min.js"></script>
 <script>
 (function(){
 'use strict';
@@ -838,7 +859,7 @@ function connectRelay(){
 
 function relayOpen(){
   if(typeof mqtt==='undefined'){
-    $('connStatus').textContent='Sem rede';$('connStatus').className='status';
+    $('connStatus').textContent='No network';$('connStatus').className='status';
     addSys('⚠️ Could not load the messaging layer. Check your connection and reload the page (↻).');
     return;
   }
@@ -853,7 +874,7 @@ function relayOpen(){
     $('connStatus').textContent='Connection failed';$('connStatus').className='status';return;
   }
   mqttClient.on('connect',function(){
-    $('connStatus').textContent='Conectado (rede HidraNet)';
+    $('connStatus').textContent='Connected (HidraNet network)';
     $('connStatus').className='status on';
     mqttClient.subscribe(topic,{qos:0});
     relayPublish({k:'join',nick:nick,color:myColor,cid:myCid,t:Date.now()});
@@ -883,7 +904,7 @@ async function onRelayMessage(ciphertext){
   }
   switch(o.k){
     case 'msg':
-      if(o.cid===myCid) return;          // minha propria mensagem (ja exibida localmente)
+      if(o.cid===myCid) return;          // my own message (already shown locally)
       renderChatMsg({nick:o.nick,color:o.color,text:o.text,time:o.t,cid:o.cid});
       beep();
       break;
@@ -990,7 +1011,7 @@ async function doJoin(){
   }
   msgInput.focus();
   if(serverAddr){
-    connectWS();                          // servidor direto / LAN / hub fixo
+    connectWS();                          // direct server / LAN / fixed hub
   }else if(e2e){
     relayTopic=await computeTopic(pass);
     connectRelay();                       // public relay, keyed by password

@@ -246,7 +246,7 @@ async function buildArch(arch) {
 
   if (!fs.existsSync(zipCache)) {
     console.log('  Descarregando ' + zipName + ' ...');
-    console.log('  (GitHub → ~80 MB, pode demorar)');
+    console.log('  (GitHub → ~80 MB, this can take a while)');
     await download(dlUrl, zipCache);
     console.log('  Guardado em cache: ' + zipCache);
   } else {
@@ -303,8 +303,9 @@ async function buildArch(arch) {
     else outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
   });
 
-  // ── Tor daemon — o que de facto anonimiza a navegacao ────────────────────
-  // Sem isto o pacote abre, mas sai sempre pelo IP real do utilizador.
+  // ── Tor daemon — what actually anonymises the browsing ───────────────────
+  // Without it the package opens, but every request leaves from the user's
+  // real IP.
   var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'linux-' + arch);
   if (fs.existsSync(path.join(torDir, 'tor'))) {
     outEntries.push(mkDir(resPfx + 'bin'));
@@ -314,48 +315,63 @@ async function buildArch(arch) {
       if (!fs.existsSync(abs)) return;
       outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
     });
-    console.log('  Tor incluido (linux-' + arch + ')');
+    console.log('  Tor included (linux-' + arch + ')');
   } else {
-    console.log('  [!!] Tor AUSENTE para linux-' + arch + ' — este pacote nao tera anonimato.');
+    console.log('  [!!] Tor MISSING for linux-' + arch + ' — this package gives no anonymity.');
     console.log('       node scripts/fetch-tor.js --platform linux --arch ' + arch);
   }
 
   // ── Launcher script (0o755) ───────────────────────────────────────────────
   var launcher = [
     '#!/bin/bash',
-    '# HidraNet Browser — Iniciador Linux',
+    '# HidraNet Browser — Linux launcher',
     'DIR="$(cd "$(dirname "$0")" && pwd)"',
     'BIN="$DIR/' + APP_NAME + '"',
+    '',
+    '# Some zip tools drop Unix permissions, so set them here rather than',
+    '# assume. Without the execute bit on Tor the browser starts and then',
+    '# cannot connect to anything.',
     'chmod +x "$BIN" 2>/dev/null',
-    '"$BIN" "$@"',
+    'chmod +x "$DIR/resources/bin/hidra-node" 2>/dev/null',
+    'chmod +x "$DIR/resources/bin/tor/tor" 2>/dev/null',
+    '',
+    'if [ ! -f "$DIR/resources/bin/tor/tor" ]; then',
+    '  echo "WARNING: no Tor in this package. It provides no anonymity."',
+    'fi',
+    '',
+    'exec "$BIN" "$@"',
     ''
   ].join('\n');
-  outEntries.push(mkFile(PREFIX + 'iniciar.sh', Buffer.from(launcher, 'utf8'), 0o755));
+  outEntries.push(mkFile(PREFIX + 'start.sh', Buffer.from(launcher, 'utf8'), 0o755));
 
   // ── README ────────────────────────────────────────────────────────────────
   var archNote = arch === 'arm64'
-    ? 'Linux ARM64 (Raspberry Pi 4+, servidores ARM, etc.)'
-    : 'Linux x86-64 (desktop/laptop padrão)';
+    ? 'Linux ARM64 (Raspberry Pi 4+, ARM servers, and so on)'
+    : 'Linux x86-64 (standard desktop/laptop)';
   var readme = [
     APP_DISPLAY + ' Browser ' + VERSION + ' — Linux ' + arch,
-    'Para: ' + archNote,
+    'For: ' + archNote,
     '',
-    'COMO INICIAR',
+    'HOW TO START IT',
     '─'.repeat(40),
     '',
-    'Opção A (script):',
-    '  chmod +x iniciar.sh && ./iniciar.sh',
+    'Option A (script):',
+    '  chmod +x start.sh && ./start.sh',
     '',
-    'Opção B (direto):',
+    'Option B (directly):',
     '  chmod +x ' + APP_NAME + ' && ./' + APP_NAME,
     '',
-    'DEPENDÊNCIAS',
+    'Option A is the safer one: it also makes the bundled Tor executable.',
+    'Started directly, with Tor not executable, the browser opens and then',
+    'cannot connect.',
+    '',
+    'DEPENDENCIES',
     '─'.repeat(40),
-    'Requer bibliotecas comuns do sistema (GTK3, libX11, libnss3).',
-    'Em Ubuntu/Debian:',
+    'Needs the usual system libraries (GTK3, libX11, libnss3).',
+    'On Ubuntu/Debian:',
     '  sudo apt install libgtk-3-0 libnss3 libasound2 libxss1',
     '',
-    '                              — Equipa HidraNet',
+    '                                          — The HidraNet team',
     ''
   ].join('\n');
   outEntries.push(mkFile(PREFIX + 'LEIA-ME.txt', Buffer.from(readme, 'utf8')));
@@ -385,11 +401,11 @@ async function buildArch(arch) {
   for (var i = 0; i < archs.length; i++) await buildArch(archs[i]);
 
   console.log('\n╔══════════════════════════════════════════════════════╗');
-  console.log('║  Concluído! ZIP no Desktop.                         ║');
+  console.log('║  Done. The ZIP is on your Desktop.                  ║');
   console.log('║                                                     ║');
-  console.log('║  Extrair e correr: chmod +x iniciar.sh && ./iniciar.sh ║');
+  console.log('║  Extract and run: chmod +x start.sh && ./start.sh   ║');
   console.log('╚══════════════════════════════════════════════════════╝');
 })().catch(function(e) {
-  console.error('\nERRO:', e.message);
+  console.error('\nERROR:', e.message);
   process.exit(1);
 });

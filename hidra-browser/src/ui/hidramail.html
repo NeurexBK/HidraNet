@@ -175,7 +175,7 @@ var client=null, ready=false;
 var state={ ids:[], active:0, box:{inbox:[],sent:[],drafts:[],trash:[],spam:[]}, folder:'inbox', selId:null, search:'' };
 var resolvers={};
 
-// ───────── cripto ─────────
+// ───────── crypto ─────────
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
 function b64e(u){var s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s);}
 function b64d(s){var r=atob(s),u=new Uint8Array(r.length);for(var i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u;}
@@ -233,7 +233,7 @@ setInterval(function(){ if(client&&client.connected) publishDirs(); }, 120000);
 async function onMessage(topic,payload){
   if(topic.indexOf('hmaildir/')===0){ var cb=resolvers[topic]; if(cb){ delete resolvers[topic]; try{client.unsubscribe(topic)}catch(e){} cb(payload.toString()); } return; }
   // mail in one of my boxes (topic = inbox/<mid>, retained on the relay)
-  var ps=payload.toString(); if(!ps) return; // mensagem vazia = apagada (tombstone)
+  var ps=payload.toString(); if(!ps) return; // empty message = deleted (tombstone)
   for(var i=0;i<state.ids.length;i++){
     var id=state.ids[i]; var t=await inboxTopic(id.addr);
     if(topic.indexOf(t+'/')===0){
@@ -348,7 +348,7 @@ async function newAddress(){
 }
 function renderSettings(){
   $('set-aliases').innerHTML=state.ids.map(function(id,i){
-    return '<div class="it"><code>'+id.addr+(i===state.active?' (ativo)':'')+'</code><button class="btn btn-g" style="padding:5px 10px;font-size:.78em" onclick="copyTxt(\''+id.addr+'\')">Copiar</button></div>';
+    return '<div class="it"><code>'+id.addr+(i===state.active?' (active)':'')+'</code><button class="btn btn-g" style="padding:5px 10px;font-size:.78em" onclick="copyTxt(\''+id.addr+'\')">Copy</button></div>';
   }).join('');
 }
 window.copyTxt=function(s){ if(navigator.clipboard) navigator.clipboard.writeText(s); toast('Address copied.'); };

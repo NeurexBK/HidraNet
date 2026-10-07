@@ -6240,7 +6240,7 @@ mod apps {
 
         pub mod frontend {
             pub const INDEX_HTML: &str = r##"<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -6684,17 +6684,17 @@ body {
         var content = document.getElementById('content');
         content.innerHTML =
             '<div class="compose">' +
-            '<h2>Nova Mensagem</h2>' +
+            '<h2>New message</h2>' +
             '<div class="form-group">' +
                 '<label>Para:</label>' +
                 '<input type="text" id="composeTo" placeholder="destinatario@hash.hidra">' +
             '</div>' +
             '<div class="form-group">' +
                 '<label>Assunto:</label>' +
-                '<input type="text" id="composeSubject" placeholder="Assunto da mensagem">' +
+                '<input type="text" id="composeSubject" placeholder="Subject">' +
             '</div>' +
             '<div class="form-group">' +
-                '<label>Mensagem:</label>' +
+                '<label>Message:</label>' +
                 '<textarea id="composeBody" rows="12" placeholder="Write your message..."></textarea>' +
             '</div>' +
             '<div class="form-group">' +
@@ -6714,7 +6714,7 @@ body {
         var status = document.getElementById('sendStatus');
 
         if (!to || !subject || !body) {
-            status.textContent = 'Preencha todos os campos.';
+            status.textContent = 'Fill in every field.';
             status.style.color = '#ff4757';
             return;
         }
@@ -6736,7 +6736,7 @@ body {
             });
             var result = await res.json();
             if (result.ok) {
-                status.textContent = 'E-mail enviado com sucesso!';
+                status.textContent = 'Mail sent.';
                 status.style.color = '#00ff88';
                 document.getElementById('composeTo').value = '';
                 document.getElementById('composeSubject').value = '';
@@ -7037,10 +7037,10 @@ mod search {
             if q.contains("filme") || q.contains("movie") || q.contains("assistir") || q.contains("watch") {
                 let sites = [
                     ("Internet Archive — Films", "https://archive.org/details/movies", "A free public archive of classic and public-domain films."),
-                    ("Open Culture — Free Movies", "https://www.openculture.com/freemoviesonline", "Mais de 1.000 filmes gratuitos legais para assistir online."),
-                    ("YouTube Movies", "https://www.youtube.com/feed/storefront?bp=ogUCKAQ%3D", "Filmes gratuitos e pagos no YouTube."),
+                    ("Open Culture — Free Movies", "https://www.openculture.com/freemoviesonline", "Over 1,000 free, legal films to watch online."),
+                    ("YouTube Movies", "https://www.youtube.com/feed/storefront?bp=ogUCKAQ%3D", "Free and paid films on YouTube."),
                     ("Tubi TV", "https://tubitv.com", "Free streaming with thousands of films and series."),
-                    ("Pluto TV", "https://pluto.tv", "TV online gratuita com canais de filmes 24h."),
+                    ("Pluto TV", "https://pluto.tv", "Free online TV with 24-hour film channels."),
                 ];
                 for (title, url, snippet) in &sites {
                     results.push(SearchResult {
@@ -7123,7 +7123,7 @@ mod search {
         }
 
         pub static SEARCH_PAGE_HTML: &str = r##"<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7218,7 +7218,7 @@ a:hover{color:var(--link-hover);text-decoration:underline}
     <div class="badge"><span class="dot"></span> Roteamento Onion</div>
     <div class="badge"><span class="dot"></span> Zero Logs</div>
     <div class="badge"><span class="dot"></span> E2E encryption</div>
-    <div class="badge"><span class="dot"></span> Sem Censura</div>
+    <div class="badge"><span class="dot"></span> Uncensored</div>
     <div class="badge"><span class="dot"></span> IP Oculto</div>
   </div>
 </div>
@@ -7232,17 +7232,17 @@ a:hover{color:var(--link-hover);text-decoration:underline}
         <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       </button>
     </div>
-    <div class="top-info"><span class="dot"></span> Circuito ativo</div>
+    <div class="top-info"><span class="dot"></span> Circuit active</div>
   </div>
 
   <div class="results-container">
     <div class="results-stats" id="resultsStats"></div>
     <div class="categories">
-      <span class="cat-btn active" onclick="filterCat('all',this)">Todos</span>
+      <span class="cat-btn active" onclick="filterCat('all',this)">All</span>
       <span class="cat-btn" onclick="filterCat('web',this)">Web</span>
       <span class="cat-btn" onclick="filterCat('video',this)">Videos</span>
       <span class="cat-btn" onclick="filterCat('news',this)">News</span>
-      <span class="cat-btn" onclick="filterCat('hidra',this)">Rede .hidra</span>
+      <span class="cat-btn" onclick="filterCat('hidra',this)">.hidra network</span>
     </div>
     <div class="loading" id="loading">
       <div class="spinner"></div>
@@ -7738,7 +7738,7 @@ mod analytics {
         }
 
         pub const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7810,8 +7810,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <h3>Network traffic</h3>
       <div class="time-filter">
         <button class="time-btn active" data-range="24h">24h</button>
-        <button class="time-btn" data-range="7d">7 dias</button>
-        <button class="time-btn" data-range="30d">30 dias</button>
+        <button class="time-btn" data-range="7d">7 days</button>
+        <button class="time-btn" data-range="30d">30 days</button>
       </div>
       <div class="chart-wrap"><canvas id="trafficChart"></canvas></div>
     </div>
@@ -7826,7 +7826,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="geo-grid" id="geoGrid"></div>
   </div>
 
-  <div class="footer">HidraNet Analytics — Dados locais agregados e anonimizados</div>
+  <div class="footer">HidraNet Analytics — local data, aggregated and anonymised</div>
 </div>
 
 <script>
@@ -8807,7 +8807,7 @@ async fn run_apps_standalone(
     });
 
     info!("╔══════════════════════════════════════════════════════════════╗");
-    info!("║  HidraNet Apps — Modo Local                                ║");
+    info!("║  HidraNet Apps — local mode                                ║");
     info!("║  HidraMail:     http://127.0.0.1:{mail_port}                      ║");
     info!("║  HidraChat:     http://0.0.0.0:{chat_port}                        ║");
     info!("║  HidraSearch:   http://127.0.0.1:{search_port}                      ║");
@@ -8881,7 +8881,7 @@ async fn run_chat_standalone(
 
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║  HidraChat standalone: http://127.0.0.1:{}", local_port);
-    info!("║  Modo local (sem rede cebola) — para testes");
+    info!("║  Local mode (no onion routing) — for testing");
     info!("╚══════════════════════════════════════════════════════════════╝");
 
     tokio::select! {
@@ -8929,7 +8929,7 @@ async fn run_mail_standalone(
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║  HidraMail standalone: http://127.0.0.1:{}", local_port);
     info!("║  Address: {}", mail_addr);
-    info!("║  Modo local (sem rede cebola) — para testes");
+    info!("║  Local mode (no onion routing) — for testing");
     info!("╚══════════════════════════════════════════════════════════════╝");
 
     tokio::select! {

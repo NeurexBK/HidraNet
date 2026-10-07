@@ -93,14 +93,14 @@ button:disabled{opacity:.45}
 .foot a{color:var(--acc);text-decoration:none}
 .foot code{color:var(--acc);font-family:Consolas,monospace}
 
-/* barra de marca com acesso rapido a instalacao */
+/* brand bar with a quick route to installing */
 .brand{justify-content:space-between}
 .brand .bl{display:flex;align-items:center;gap:8px}
 .getbtn{background:rgba(0,212,170,.13);border:1px solid rgba(0,212,170,.42);color:var(--acc);
 font-size:12px;font-weight:700;padding:6px 13px;border-radius:999px;cursor:pointer;
 width:auto;margin:0;font-family:inherit;-webkit-tap-highlight-color:transparent}
 
-/* cartao "instalar a HidraNet" */
+/* "install HidraNet" card */
 .get{background:linear-gradient(160deg,#101a22,#10101c);border:1px solid rgba(0,212,170,.28)}
 .get .top{display:flex;gap:13px;align-items:center}
 .get .mark{width:52px;height:52px;border-radius:14px;flex-shrink:0;background:#070809;
@@ -145,7 +145,7 @@ background:var(--card2);border:1px solid var(--line2)}
 <div class="wrap">
   <div class="brand">
     <a class="bl" href="/r/" style="color:inherit;text-decoration:none">Hidra<span>Review</span></a>
-    <button class="getbtn hidden" id="get-pill">Instalar app</button>
+    <button class="getbtn hidden" id="get-pill">Install app</button>
   </div>
 
   <div id="loading" class="state">Loading the business…</div>
@@ -173,7 +173,7 @@ background:var(--card2);border:1px solid var(--line2)}
     <div class="acts" id="acts"></div>
 
     <div class="card hidden" id="about-card">
-      <div class="sect">Sobre</div><div class="about" id="about"></div>
+      <div class="sect">About</div><div class="about" id="about"></div>
     </div>
     <div class="card hidden" id="menu-card">
       <div class="sect">Especialidades</div><div id="menu"></div>
@@ -193,7 +193,7 @@ background:var(--card2);border:1px solid var(--line2)}
       </div>
       <div class="two">
         <div><label for="rname">Your name *</label><input id="rname" maxlength="36" placeholder="How you want to sign it"></div>
-        <div><label for="rloc">De onde é</label><input id="rloc" maxlength="50" placeholder="Lisboa"></div>
+        <div><label for="rloc">Where from</label><input id="rloc" maxlength="50" placeholder="Lisbon"></div>
       </div>
       <label for="rtext">How was your experience?</label>
       <textarea id="rtext" maxlength="1200" placeholder="Conte o que achou…"></textarea>
@@ -226,10 +226,10 @@ background:var(--card2);border:1px solid var(--line2)}
     <div id="get-android" class="hidden">
       <p>Install the app on your phone to open any business on the network
          straight from the home screen, without coming through here.</p>
-      <button id="get-install">Instalar HidraNet</button>
+      <button id="get-install">Install HidraNet</button>
       <div id="get-android-manual" class="hidden">
         <ol>
-          <li>Toque no menu <span class="key">⋮</span> no canto do navegador.</li>
+          <li>Tap the <span class="key">⋮</span> menu in the corner of the browser.</li>
           <li>Choose <span class="key">Install app</span> or <span class="key">Add to Home Screen</span>.</li>
         </ol>
       </div>
@@ -239,25 +239,25 @@ background:var(--card2);border:1px solid var(--line2)}
       <p>Add HidraNet to your iPhone home screen — it gets its own icon,
          opens full screen and needs no App Store.</p>
       <ol>
-        <li>Toque em <span class="key"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+        <li>Tap <span class="key"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"
           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
           aria-hidden="true"><path d="M12 15V3"/><path d="M8 7l4-4 4 4"/>
-          <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> Partilhar</span>
-          na barra de baixo do Safari</li>
+          <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg> Share</span>
+          in the bar at the bottom of Safari</li>
         <li>Scroll and choose <span class="key">Add to Home Screen</span></li>
-        <li>Confirme em <span class="key">Adicionar</span></li>
+        <li>Confirm with <span class="key">Add</span></li>
       </ol>
       <div class="note" id="ios-safari-note"></div>
     </div>
 
     <div id="get-desktop" class="hidden">
-      <p>No computador existe o navegador HidraNet completo — com rede Tor,
+      <p>On a computer there is the full HidraNet browser — with the Tor network,
          <code style="color:var(--acc)">.hidra</code> addresses and anonymous mail.</p>
       <div class="dl">
         <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Windows-x64.zip"><span class="os">⊞</span>Windows 64-bit<span class="sz">121 MB</span></a>
         <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-arm64.zip"><span class="os">🍎</span>macOS Apple Silicon<span class="sz">103 MB</span></a>
-        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-x64.zip"><span class="os">🍎</span>macOS Intel<span class="sz">107 MB</span></a>
-        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Linux-x64.zip"><span class="os">🐧</span>Linux 64-bit<span class="sz">107 MB</span></a>
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-macOS-x64.zip"><span class="os">🍎</span>macOS Intel<span class="sz">108 MB</span></a>
+        <a href="https://github.com/NeurexBK/HidraNet/releases/download/v1.0.0/HidraNet-Browser-1.0.0-Linux-x64.zip"><span class="os">🐧</span>Linux 64-bit<span class="sz">108 MB</span></a>
       </div>
     </div>
 
@@ -291,7 +291,7 @@ function rid(n) {
   return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
 }
 
-/* ---- Notificar o dono pelo HidraMail ----
+/* ---- Notify the owner over HidraMail ----
    The same HidraNet E2E mail. When someone reviews here on a phone,
    the owner receives the review encrypted in their inbox (even offline, via retained).
    There are no external services: it is the system itself. */
@@ -401,7 +401,7 @@ function connect() {
       else if (p[1] === 'r') { if (!s) delete revs[p[3]]; else revs[p[3]] = JSON.parse(s); }
       else if (p[1] === 'p') { if (!s) delete pics[p[3]]; else pics[p[3]] = s; }
       draw();
-    } catch (e) { /* mensagem de outro cliente malformada */ }
+    } catch (e) { /* malformed message from another client */ }
   });
 }
 
@@ -435,7 +435,7 @@ function render() {
   var rateHtml = st.count
     ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
       '</span><span class="cnt">' + st.count + (st.count === 1 ? ' review' : ' reviews') + '</span>'
-    : '<span class="cnt">seja o primeiro a avaliar</span>';
+    : '<span class="cnt">be the first to review it</span>';
 
   $('hero').innerHTML =
     (photos.length ? '<img src="' + photos[0] + '" alt="">' : '') +
@@ -560,13 +560,13 @@ $('send').addEventListener('click', function () {
     $('rtext').value = ''; $('rname').value = ''; $('rloc').value = ''; stars = 0;
     [].forEach.call($('pick').children, function (s) { s.className = ''; });
 
-    // Avisa o dono pelo HidraMail (best-effort).
+    // Tell the owner over HidraMail (best-effort).
     if (biz && biz.mail) {
       notifyOwner(biz.mail,
         'New review (' + myStars + '★) — ' + (biz.name || ''),
-        name + (loc ? ' · ' + loc : '') + ' deu ' + myStars + ' estrela' + (myStars > 1 ? 's' : '') +
+        name + (loc ? ' · ' + loc : '') + ' gave ' + myStars + ' star' + (myStars > 1 ? 's' : '') +
         ' to ' + (biz.name || 'your business') + ':\n\n"' + text + '"\n\n' +
-        'Veja e responda no Painel do Dono do HidraReview.');
+        'Read it and reply in the HidraReview owner panel.');
     }
   });
 });
@@ -585,7 +585,7 @@ window.addEventListener('beforeinstallprompt', function (e) {
   e.preventDefault();
   deferredPrompt = e;
   var b = $('get-install');
-  if (b) { b.disabled = false; b.textContent = 'Instalar HidraNet'; }
+  if (b) { b.disabled = false; b.textContent = 'Install HidraNet'; }
   $('get-android-manual').className = 'hidden';
 });
 
@@ -603,15 +603,15 @@ function setupGet() {
   slot.appendChild($('get'));
   $('get').className = 'card get';
 
-  function show(id, porque) {
+  function show(id, why) {
     ['get-android', 'get-ios', 'get-desktop', 'get-installed'].forEach(function (k) {
       $(k).className = k === id ? '' : 'hidden';
     });
-    $('get-why').textContent = porque;
+    $('get-why').textContent = why;
   }
 
   if (installed) {
-    show('get-installed', 'Instalada neste aparelho.');
+    show('get-installed', 'Installed on this device.');
     return;
   }
 
@@ -621,7 +621,7 @@ function setupGet() {
   });
 
   if (isIOS) {
-    show('get-ios', 'iPhone e iPad — sem App Store.');
+    show('get-ios', 'iPhone and iPad — no App Store.');
     var safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
     $('ios-safari-note').textContent = safari ? '' :
       'You are in another browser. If you cannot find the option, open this same address in Safari.';
@@ -643,7 +643,7 @@ function setupGet() {
     }, 3000);
   } else {
     show('get-desktop', 'You are on a computer — get the full browser.');
-    $('get-pill').textContent = 'Descarregar';
+    $('get-pill').textContent = 'Download';
   }
 }
 

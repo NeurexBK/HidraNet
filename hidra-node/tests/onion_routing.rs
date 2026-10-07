@@ -110,7 +110,7 @@ async fn three_relay_onion_circuit() {
         },
     ];
 
-    let response = run_client_session(&relays, client_secret, "Olá, mundo oculto")
+    let response = run_client_session(&relays, client_secret, "Hello, hidden world")
         .await
         .unwrap();
 

@@ -8,7 +8,7 @@
   var BROKER = 'wss://broker.emqx.io:8084/mqtt';
   var client = null, ready = false;
 
-  // ── crypto (mesmo esquema do visualizador de sites) ──
+  // ── crypto (same scheme as the site viewer) ──
   function b32(bytes){ var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0; for(var i=0;i<bytes.length;i++){ v=(v<<8)|bytes[i]; bits+=8; while(bits>=5){ o+=A[(v>>>(bits-5))&31]; bits-=5; } } if(bits>0) o+=A[(v<<(5-bits))&31]; return o; }
   function newAddr(){ return b32(crypto.getRandomValues(new Uint8Array(16)))+'.hidra'; }
   async function deriveKey(a){ var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']); return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']); }
@@ -91,7 +91,7 @@
     var inner;
     if(addr){
       var url='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
-      inner='<div style="font-size:1.15em;font-weight:800;color:#00d4aa;margin-bottom:8px">🌐 Site publicado na rede!</div>'+
+      inner='<div style="font-size:1.15em;font-weight:800;color:#00d4aa;margin-bottom:8px">🌐 Site published to the network!</div>'+
         '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Share this secret address. Anyone who has it can open the site.quer pessoa, em quaopen the site from any network by typing it into the HidraNet address bar. The content travels encrypted.</div>'+
         '<div style="display:flex;gap:8px;align-items:center;background:#0a0d16;border:1px solid #1c2133;border-radius:9px;padding:12px 14px;margin-bottom:14px"><code id="hnet-addr" style="flex:1;color:#00d4aa;word-break:break-all;font-size:.95em;font-family:monospace">'+addr+'</code><button id="hnet-copy" style="background:none;border:none;color:#9aa3bd;cursor:pointer;font-size:1.15em">⧉</button></div>'+
         '<div style="display:flex;gap:8px"><a href="'+url+'" target="_blank" style="flex:1;text-align:center;background:#00d4aa;color:#04120e;padding:11px;border-radius:9px;text-decoration:none;font-weight:700">Open the site</a><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:11px 20px;border-radius:9px;cursor:pointer">Close</button></div>'+

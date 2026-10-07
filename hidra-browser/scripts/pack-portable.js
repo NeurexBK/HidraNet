@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const zlib = require('zlib');
+const { writeZip, mkFile, mkDir } = require('./lib/zip');
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
@@ -117,6 +118,42 @@ function copyTorBundle(destBin, targetPlatform, targetArch) {
   return true;
 }
 
+// ── Helper: write the package ZIP ──
+//
+// This used to shell out to PowerShell's Compress-Archive, and the packages
+// that went out carry the damage: it writes `resources\app\...` with
+// backslashes, which the ZIP spec does not allow (Info-ZIP warns and guesses,
+// other extractors produce files with backslashes in their names), and it
+// stores no Unix permissions at all. The published Linux package therefore
+// extracted with `hidranet` and `tor` not executable — it could not be started
+// by double-click, and Tor could not run.
+//
+// Writing the archive here fixes both: forward slashes, and the execute bit
+// where it belongs.
+const EXEC = new Set([
+  'hidranet', 'chrome_crashpad_handler',
+  'resources/bin/tor/tor', 'resources/bin/hidra-node'
+]);
+function modeFor(rel) {
+  if (rel === 'chrome-sandbox') return 0o4755;          // Chromium SUID helper
+  if (EXEC.has(rel)) return 0o755;
+  if (/\.(sh|command)$/.test(rel)) return 0o755;
+  return 0o644;
+}
+function zipDir(dir, zipPath) {
+  const entries = [];
+  (function walk(abs, rel) {
+    for (const name of fs.readdirSync(abs).sort()) {
+      const a = path.join(abs, name);
+      const r = rel ? rel + '/' + name : name;          // always forward slashes
+      if (fs.statSync(a).isDirectory()) { entries.push(mkDir(r)); walk(a, r); }
+      else entries.push(mkFile(r, fs.readFileSync(a), modeFor(r)));
+    }
+  })(dir, '');
+  fs.writeFileSync(zipPath, writeZip(entries));
+  return entries.length;
+}
+
 // ── Build Windows package ──
 function buildWindows() {
   console.log('=== Building Windows x64 package ===\n');
@@ -147,10 +184,10 @@ function buildWindows() {
   copyTorBundle(path.join(outDir, 'resources', 'bin'), 'win32', 'x64');
 
   // Create launcher bat (if HidraNet.exe gets blocked, this is a fallback)
-  fs.writeFileSync(path.join(outDir, 'Iniciar HidraNet.bat'),
+  fs.writeFileSync(path.join(outDir, 'Start HidraNet.bat'),
     '@echo off\r\n' +
     'title HidraNet Browser\r\n' +
-    'echo Iniciando HidraNet Browser...\r\n' +
+    'echo Starting HidraNet Browser...\r\n' +
     'start "" "%~dp0HidraNet.exe"\r\n'
   );
 
@@ -160,10 +197,8 @@ function buildWindows() {
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
   console.log('  Creating ZIP...');
-  execSync(
-    `powershell -NoProfile -Command "Compress-Archive -Path '${outDir}\\*' -DestinationPath '${zipPath}' -CompressionLevel Optimal"`,
-    { stdio: 'inherit', timeout: 300000 }
-  );
+  const count = zipDir(outDir, zipPath);
+  console.log(`  ${count} entries, forward slashes, Unix permissions set.`);
 
   const sizeMB = (fs.statSync(zipPath).size / 1024 / 1024).toFixed(1);
   console.log(`\n  >>> ${zipName} (${sizeMB} MB) -> Desktop\n`);
@@ -219,12 +254,22 @@ function buildLinux() {
   copyTorBundle(path.join(outDir, 'resources', 'bin'), 'linux', 'x64');
 
   // Create launcher script
-  fs.writeFileSync(path.join(outDir, 'iniciar.sh'),
+  fs.writeFileSync(path.join(outDir, 'start.sh'),
     '#!/bin/bash\n' +
+    '# Starts HidraNet. Run:  bash start.sh\n' +
     'DIR="$(cd "$(dirname "$0")" && pwd)"\n' +
+    '\n' +
+    '# Set the permissions here rather than assume them: not every zip tool\n' +
+    '# carries them, and an unexecutable Tor means nothing connects.\n' +
     'chmod +x "$DIR/hidranet" 2>/dev/null\n' +
     'chmod +x "$DIR/resources/bin/hidra-node" 2>/dev/null\n' +
-    '"$DIR/hidranet" "$@"\n',
+    'chmod +x "$DIR/resources/bin/tor/tor" 2>/dev/null\n' +
+    '\n' +
+    'if [ ! -f "$DIR/resources/bin/tor/tor" ]; then\n' +
+    '  echo "WARNING: no Tor in this package. It provides no anonymity."\n' +
+    'fi\n' +
+    '\n' +
+    'exec "$DIR/hidranet" "$@"\n',
     { mode: 0o755 }
   );
 
@@ -234,10 +279,8 @@ function buildLinux() {
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
   console.log('  Creating ZIP...');
-  execSync(
-    `powershell -NoProfile -Command "Compress-Archive -Path '${outDir}\\*' -DestinationPath '${zipPath}' -CompressionLevel Optimal"`,
-    { stdio: 'inherit', timeout: 300000 }
-  );
+  const count = zipDir(outDir, zipPath);
+  console.log(`  ${count} entries, forward slashes, Unix permissions set.`);
 
   const sizeMB = (fs.statSync(zipPath).size / 1024 / 1024).toFixed(1);
   console.log(`\n  >>> ${zipName} (${sizeMB} MB) -> Desktop\n`);
@@ -245,8 +288,8 @@ function buildLinux() {
 
 // ── Build macOS packages ──
 function buildMac() {
-  // Aspas obrigatorias: o caminho do projecto tem um espaco ("Navegador Hidra")
-  // e sem elas o node tenta carregar "C:\Users\...\Desktop\Navegador".
+  // The quotes are required: the project path contains a space, and without
+  // them node tries to load only the part before it.
   execSync('node "' + path.join(__dirname, 'build-mac.js') + '"', {
     cwd: ROOT, stdio: 'inherit', timeout: 900000
   });

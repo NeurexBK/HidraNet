@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -196,7 +196,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       </div>
       <div class="room-info">
         <div class="label">Room code</div>
-        <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copiar</button></div>
+        <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copy</button></div>
         <div class="encryption-badge" id="encBadge">🔒 E2E: AES-256-GCM</div>
         <div class="share-hint">Share the password with your friends. Anyone using the same password joins the same encrypted room.</div>
       </div>
@@ -215,7 +215,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
   </div>
 </div>
 
-<div class="copied-toast" id="toast">Copiado!</div>
+<div class="copied-toast" id="toast">Copied!</div>
 
 <script src="vendor/mqtt.min.js"></script>
 <script>
@@ -236,12 +236,13 @@ var mode='ws';                 // 'ws' = direct/LAN server | 'relay' = public re
 var mqttClient=null, relayTopic='', relayReconn=0;
 var myCid='', myColor='', peers={}, presenceTimer=null, startTime=0;
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
-// Canal publico de contagem. O broker e publico, portanto qualquer pessoa pode
-// subscrever isto — por isso o sinal leva apenas um identificador efemero e um
-// instante, e nada mais. Ja levou a localizacao aproximada (por IP) e o topico
-// da sala: quem observasse o canal conseguia localizar cada utilizador ao nivel
-// city level and, by grouping on the topic, work out who was talking to whom,
-// cifra nenhuma. O conteudo estava cifrado; os metadados estavam abertos.
+// Public headcount channel. The broker is public, so anyone at all can
+// subscribe to this — which is why the beacon carries an ephemeral id and a
+// timestamp, and nothing else. It used to carry the approximate location (by
+// IP) and the room topic: anyone watching the channel could place every user
+// at city level and, by grouping on the topic, work out who was talking to
+// whom, without breaking any encryption. The content was encrypted; the
+// metadata was in the open.
 var PRESENCE_TOPIC='hidra/presence/v1';
 function gpub(obj){ if(mqttClient){ try{ mqttClient.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }catch(e){} } }
 var PALETTE=['#00d4aa','#ff6b6b','#4ecdc4','#45b7d1','#f9ca24','#fd79a8','#6c5ce7','#e17055','#0984e3','#00b894','#e84393','#00cec9','#fdcb6e','#a29bfe','#74b9ff'];
@@ -453,7 +454,7 @@ async function doJoin(){
   }
   msgInput.focus();
   if(serverAddr){
-    connectWS();                          // servidor direto / LAN / hub fixo
+    connectWS();                          // direct server / LAN / fixed hub
   }else if(e2e){
     relayTopic=await computeTopic(pass);
     connectRelay();                       // public relay, keyed by password

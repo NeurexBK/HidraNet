@@ -35,7 +35,7 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 subtle = "2"
 
-# Usado por security::hardening::disable_core_dumps (prctl PR_SET_DUMPABLE).
-# So entra em Linux; sem isto o binario nao compila nessa plataforma.
+# Used by security::hardening::disable_core_dumps (prctl PR_SET_DUMPABLE).
+# Linux only; without it the binary does not compile on that platform.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

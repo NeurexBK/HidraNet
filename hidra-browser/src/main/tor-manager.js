@@ -122,7 +122,7 @@ class TorManager {
 
     const args = [
       '--SocksPort', String(this.socksPort),
-      // Needed for "nova identidade": SIGNAL NEWNYM tears down the current
+      // Needed for "new identity": SIGNAL NEWNYM tears down the current
       // circuits so the next request leaves through a different exit.
       '--ControlPort', String(this.controlPort),
       '--CookieAuthentication', '1',
