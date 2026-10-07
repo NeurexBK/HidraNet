@@ -53,18 +53,18 @@ svg{display:block}
   <div class="card">
     <div class="qrbox" id="qrbox"></div>
 
-    <div class="lbl">Valor sugerido</div>
+    <div class="lbl">Suggested amount</div>
     <div class="amt" id="amt">
-      <button class="active" data-a="">Qualquer<small>valor</small></button>
-      <button data-a="0.0005">0,0005<small>BTC</small></button>
-      <button data-a="0.001">0,001<small>BTC</small></button>
-      <button data-a="0.005">0,005<small>BTC</small></button>
+      <button class="active" data-a="">Any<small>amount</small></button>
+      <button data-a="0.0005">0.0005<small>BTC</small></button>
+      <button data-a="0.001">0.001<small>BTC</small></button>
+      <button data-a="0.005">0.005<small>BTC</small></button>
     </div>
-    <div class="custom"><input type="text" id="custom" inputmode="decimal" placeholder="Outro valor em BTC (ex.: 0,0025)"></div>
+    <div class="custom"><input type="text" id="custom" inputmode="decimal" placeholder="Other amount in BTC (e.g. 0.0025)"></div>
 
-    <div class="lbl">Bitcoin address (BTC) · on-chain network</div>
+    <div class="lbl">Bitcoin address (BTC) · on-chain · Taproot (P2TR)</div>
     <div class="addr-row">
-      <div class="addr" id="addr">bc1q6y0z52d85xxvtvkpd3chp5uz79zhnmsf57v2z3</div>
+      <div class="addr" id="addr">bc1pqw46hh9fypk0wr4z7vnvcpjjk8xe8xnff25vusc23xt3j6ehfaaqx3ku3k</div>
       <button class="btn btn-copy" id="copy"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button>
     </div>
 
@@ -79,7 +79,7 @@ svg{display:block}
 <script>
 'use strict';
 var $=function(id){return document.getElementById(id)};
-var ADDR='bc1q6y0z52d85xxvtvkpd3chp5uz79zhnmsf57v2z3';
+var ADDR='bc1pqw46hh9fypk0wr4z7vnvcpjjk8xe8xnff25vusc23xt3j6ehfaaqx3ku3k';
 var curAmount='';
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2400); }
 function buildURI(a){ return 'bitcoin:'+ADDR+(a?('?amount='+a):''); }
