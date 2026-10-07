@@ -12,15 +12,15 @@ If the value does not match either table below, do not run the file.
 1. REFRESHED PACKAGES  —  not on the release page yet
 -----------------------------------------------------------------------
 
-828e1641390064c66d01d7ef32b4c227a4dc6032042034945e2c257de890e3a5  HidraNet-Browser-1.0.0-macOS-arm64.zip
-215ddc687e6576b3dffafe375c4c4d9a8a11fe40bad360b6fcb064f4cefed056  HidraNet-Browser-1.0.0-macOS-x64.zip
-b3a4c496d3baec5f39af46a82ff080406572c64afc5f3181406f5a763010005f  HidraNet-Browser-1.0.0-Linux-x64.zip
-9407590768d87e88868b960b3458312c3324e539426524a58b2ccc2bdc380b1f  HidraNet-Browser-1.0.0-Windows-x64.zip
+1706917c706ccdf6d563c6c1f77292046a7d517bb6571ab448375c6af68fd4eb  HidraNet-Browser-1.0.0-macOS-arm64.zip
+a2684acd297d104e6c071be15d6159c1359dc342c687bd3d7432ecf2d6c88c32  HidraNet-Browser-1.0.0-macOS-x64.zip
+8c06f26ecc243dc86d99079ee2ddc6ac56892fd8a0d23d7d610e5c0a4df9542b  HidraNet-Browser-1.0.0-Linux-x64.zip
+c8b5701ed49c8328c02be4168aad9e4b30ae64c63b9ddccaf8126fecad8caad7  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,410,618 bytes  (103.4 MiB)
-  macOS x64      112,841,099 bytes  (107.6 MiB)
-  Linux x64      112,764,450 bytes  (107.5 MiB)
-  Windows x64    127,056,995 bytes  (121.2 MiB)
+  macOS arm64    108,410,629 bytes  (103.4 MiB)
+  macOS x64      112,841,110 bytes  (107.6 MiB)
+  Linux x64      112,764,461 bytes  (107.5 MiB)
+  Windows x64    127,057,006 bytes  (121.2 MiB)
 
 What changed from the packages in table 2:
 
@@ -35,8 +35,14 @@ What changed from the packages in table 2:
   - Linux and Windows: paths inside the archive use forward slashes, and
     Unix permissions are restored — the published ones were zipped on
     Windows, so hidranet and tor extracted without the execute bit
-  - English throughout, and the Bitcoin address for supporting the
-    network is the current one
+  - every interface in English: the browser's pages, the apps the engine
+    serves, the launchers and the README
+  - the engine's HidraChat no longer loads mqtt.js from a CDN — that page
+    does the end-to-end encryption, and a script fetched from someone
+    else's host could read messages before they are encrypted
+  - a bug fixed: the node beacon never connected, because two calls to a
+    function that had been removed threw before it started
+  - the Bitcoin address for supporting the network is the current one
 
 Once these are uploaded, delete table 2 and this paragraph.
 
