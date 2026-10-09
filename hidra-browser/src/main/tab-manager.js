@@ -13,6 +13,32 @@ const APPS_PORT = 8090;
 // Trailing slash matters: without it, a sibling directory whose name merely
 // starts with "ui" would match the prefix too.
 const UI_ROOT_URL = pathToFileURL(path.join(__dirname, '..', 'ui') + path.sep).href;
+
+// The built-in pages, by the name the address bar should show for each.
+const INTERNAL_PAGES = {
+  'newtab.html': 'newtab',
+  'hidramail.html': 'mail',
+  'hidrachat.html': 'chat',
+  'forum.html': 'forum',
+  'hidrasearch.html': 'search',
+  'hidrareview.html': 'reviews',
+  'sitepub.html': 'publish',
+  'siteload.html': 'site',
+  'donate.html': 'donate',
+};
+
+// The same, for the pages the apps server hands out on the loopback port.
+const APPS_ROUTES = {
+  '': 'chat',
+  '/mail': 'mail',
+  '/forum': 'forum',
+  '/donate': 'donate',
+  '/sites': 'publish',
+  '/publish': 'publish',
+  '/site': 'site',
+  '/search': 'search',
+  '/reviews': 'reviews',
+};
 const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
 const SEARCH_URL = `${APPS_ORIGIN}/search`;
 
@@ -113,20 +139,20 @@ class TabManager {
     });
 
     view.webContents.on('did-navigate', (_event, navUrl) => {
-      tabInfo.url = navUrl;
+      tabInfo.url = this._displayUrl(navUrl);
       this._notifyUI('tab:navigated', {
         tabId,
-        url: navUrl,
+        url: tabInfo.url,
         canGoBack: view.webContents.navigationHistory.canGoBack(),
         canGoForward: view.webContents.navigationHistory.canGoForward(),
       });
     });
 
     view.webContents.on('did-navigate-in-page', (_event, navUrl) => {
-      tabInfo.url = navUrl;
+      tabInfo.url = this._displayUrl(navUrl);
       this._notifyUI('tab:navigated', {
         tabId,
-        url: navUrl,
+        url: tabInfo.url,
         canGoBack: view.webContents.navigationHistory.canGoBack(),
         canGoForward: view.webContents.navigationHistory.canGoForward(),
       });
@@ -220,6 +246,36 @@ class TabManager {
       canGoBack: tab.view.webContents.navigationHistory.canGoBack(),
       canGoForward: tab.view.webContents.navigationHistory.canGoForward(),
     });
+  }
+
+  /**
+   * What the address bar should say.
+   *
+   * The built-in pages live on disk and on a loopback port, so navigating to
+   * one put `file:///home/.../resources/app/src/ui/newtab.html` in the address
+   * bar — the install path of the browser, on screen, in the one field people
+   * read and copy. It is also the field they would paste to share a page,
+   * which for an internal page is a path that means nothing on anyone else's
+   * machine. Internal destinations report the hidra:// name the user typed, or
+   * would have typed; everything else is untouched.
+   */
+  _displayUrl(rawUrl) {
+    if (typeof rawUrl !== 'string') return rawUrl;
+
+    if (rawUrl.startsWith(UI_ROOT_URL)) {
+      const page = rawUrl.slice(UI_ROOT_URL.length).split(/[?#]/)[0];
+      const name = INTERNAL_PAGES[page];
+      return name ? `hidra://${name}` : 'hidra://newtab';
+    }
+
+    if (rawUrl.startsWith(APPS_ORIGIN)) {
+      const rest = rawUrl.slice(APPS_ORIGIN.length);
+      const path = rest.split(/[?#]/)[0].replace(/\/+$/, '');
+      const name = APPS_ROUTES[path] || APPS_ROUTES[''] || null;
+      return name ? `hidra://${name}` : rawUrl;
+    }
+
+    return rawUrl;
   }
 
   navigate(tabId, url) {
