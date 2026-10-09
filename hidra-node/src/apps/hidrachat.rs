@@ -603,6 +603,30 @@ pub mod server {
     }
 
     async fn serve_http(stream: &mut TcpStream, req: &str) -> crate::error::Result<()> {
+        // /api/whoami below answers with this machine's LAN address, and it
+        // did so under `Access-Control-Allow-Origin: *` — handing any site the
+        // user visited the local IP that browsers go out of their way to hide
+        // (it is the same value a WebRTC leak exposes).
+        if matches!(
+            crate::local_guard::screen(req),
+            crate::local_guard::Access::Deny
+        ) {
+            let (code, text) = crate::local_guard::DENIED_STATUS;
+            let body = crate::local_guard::DENIED_BODY;
+            let header = format!(
+                "HTTP/1.1 {code} {text}\r\n\
+                 Content-Type: application/json\r\n\
+                 {}\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                crate::local_guard::response_headers(None),
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await?;
+            stream.write_all(body.as_bytes()).await?;
+            return Ok(());
+        }
+
         let path = req
             .lines()
             .next()
@@ -646,7 +670,6 @@ pub mod server {
                 "HTTP/1.1 200 OK\r\n\
                  Content-Type: application/json; charset=utf-8\r\n\
                  Content-Length: {}\r\n\
-                 Access-Control-Allow-Origin: *\r\n\
                  Connection: close\r\n\r\n",
                 body.len()
             );

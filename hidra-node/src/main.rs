@@ -5205,6 +5205,15 @@ mod client {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// mod local_guard
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared with the library target rather than inlined a second time: this is
+// the screening every loopback server runs on an incoming request, and a copy
+// that drifts is a copy that stops screening.
+#[path = "local_guard.rs"]
+mod local_guard;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // mod api
 // ─────────────────────────────────────────────────────────────────────────────
 mod api {
@@ -5249,12 +5258,44 @@ mod api {
         state: &ApiState,
     ) {
         let mut buf = [0u8; 2048];
-        let n = match stream.read(&mut buf).await {
-            Ok(0) => return,
-            Ok(n) => n,
-            Err(_) => return,
+        // A peer that opens a connection and never sends used to hold a task
+        // open indefinitely; enough of them and the server stops answering.
+        let n = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return,
+            Ok(Ok(n)) => n,
         };
         let request = String::from_utf8_lossy(&buf[..n]);
+
+        // This reply names the guard, middle and exit relays of the live
+        // circuit. With `Access-Control-Allow-Origin: *` on it, any site the
+        // user visited could read that back, and the entry guard is the one
+        // address that identifies a user to a network observer.
+        let allowed_origin = match crate::local_guard::screen(&request) {
+            crate::local_guard::Access::Allow(origin) => origin,
+            crate::local_guard::Access::Deny => {
+                let (code, text) = crate::local_guard::DENIED_STATUS;
+                let body = crate::local_guard::DENIED_BODY;
+                let response = format!(
+                    "HTTP/1.1 {code} {text}\r\n\
+                     Content-Type: application/json\r\n\
+                     {}\
+                     Content-Length: {}\r\n\
+                     Connection: close\r\n\
+                     \r\n\
+                     {body}",
+                    crate::local_guard::response_headers(None),
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
+        };
+
         let (status_code, status_text, body) =
             if request.starts_with("GET /api/status") {
                 let uptime = state.start_time.elapsed().as_secs();
@@ -5295,12 +5336,12 @@ mod api {
         let response = format!(
             "HTTP/1.1 {status_code} {status_text}\r\n\
              Content-Type: application/json\r\n\
-             Access-Control-Allow-Origin: *\r\n\
+             {}\
              Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-             Access-Control-Allow-Headers: *\r\n\
              Content-Length: {}\r\n\
              \r\n\
              {body}",
+            crate::local_guard::response_headers(allowed_origin.as_deref()),
             body.len()
         );
         let _ = stream.write_all(response.as_bytes()).await;
@@ -5866,6 +5907,24 @@ mod apps {
                     }
                 };
 
+                // Without this, a page on any site the user visited could
+                // POST /api/send as a simple request — no preflight, so the
+                // browser sends it and only hides the reply — and mail went
+                // out in the owner's name. The read endpoints were already
+                // unreadable cross-origin (json_ok sends no CORS header at
+                // all); the write side was not protected by anything.
+                //
+                // /api/deliver is how another node hands this one a message,
+                // so it is screened separately: it carries no authority of
+                // the owner's and has to answer requests from off-machine.
+                let from_this_machine =
+                    matches!(crate::local_guard::screen(raw), crate::local_guard::Access::Allow(_));
+                if !from_this_machine && path != "/api/deliver" {
+                    let r = json_err(403, "request did not come from this machine");
+                    stream.write_all(r.as_bytes()).await?;
+                    return Ok(());
+                }
+
                 let resp = match (method, path) {
                     ("GET", "/" | "/index.html") => {
                         let html = frontend::INDEX_HTML
@@ -5932,10 +5991,11 @@ mod apps {
                         }
                     }
                     ("OPTIONS", _) => {
+                        // No Access-Control-Allow-Origin: this mailbox is not
+                        // for other origins to reach, and the wildcard that
+                        // used to be here invited them to try.
                         "HTTP/1.1 204 No Content\r\n\
-                         Access-Control-Allow-Origin: *\r\n\
                          Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\n\
-                         Access-Control-Allow-Headers: Content-Type\r\n\
                          Connection: close\r\n\r\n"
                             .to_string()
                     }
@@ -6864,6 +6924,26 @@ mod search {
                         };
 
                         let request = String::from_utf8_lossy(&buf[..n]);
+
+                        // Search queries are as revealing as anything on this
+                        // machine, and the wildcard CORS header that used to
+                        // be on every reply made them readable by any page
+                        // the user happened to have open.
+                        let allowed_origin = match crate::local_guard::screen(&request) {
+                            crate::local_guard::Access::Allow(origin) => origin,
+                            crate::local_guard::Access::Deny => {
+                                let (code, text) = crate::local_guard::DENIED_STATUS;
+                                let body = crate::local_guard::DENIED_BODY;
+                                let response = format!(
+                                    "HTTP/1.1 {code} {text}\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    crate::local_guard::response_headers(None),
+                                    body.len()
+                                );
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                return;
+                            }
+                        };
+
                         let first_line = request.lines().next().unwrap_or("");
 
                         let (status, content_type, body) = if first_line.starts_with("GET /search?") {
@@ -6900,9 +6980,8 @@ mod search {
                             "HTTP/1.1 {} {}\r\n\
                              Content-Type: {content_type}\r\n\
                              Content-Length: {}\r\n\
-                             Access-Control-Allow-Origin: *\r\n\
+                             {}\
                              Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-                             Access-Control-Allow-Headers: Content-Type\r\n\
                              X-Hidra-Encrypted: true\r\n\
                              X-Hidra-Logged: false\r\n\
                              Cache-Control: no-store, no-cache\r\n\
@@ -6915,6 +6994,7 @@ mod search {
                                 _ => "Not Found",
                             },
                             body.len(),
+                            crate::local_guard::response_headers(allowed_origin.as_deref()),
                             body,
                         );
 
@@ -7688,6 +7768,25 @@ mod analytics {
                         Ok(n) => n,
                     };
                     let request = String::from_utf8_lossy(&buf[..n]);
+
+                    // The dashboard reports relay counts, traffic and the geo
+                    // breakdown of this node. Wildcard CORS made all of it
+                    // readable by any page open in any browser on the machine.
+                    let allowed_origin = match crate::local_guard::screen(&request) {
+                        crate::local_guard::Access::Allow(origin) => origin,
+                        crate::local_guard::Access::Deny => {
+                            let (code, text) = crate::local_guard::DENIED_STATUS;
+                            let body = crate::local_guard::DENIED_BODY;
+                            let response = format!(
+                                "HTTP/1.1 {code} {text}\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                crate::local_guard::response_headers(None),
+                                body.len()
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            return;
+                        }
+                    };
+
                     let path = request.split_whitespace().nth(1).unwrap_or("/");
 
                     let (status, content_type, body) = match path {
@@ -7698,8 +7797,9 @@ mod analytics {
                     };
 
                     let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{}Cache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
+                        body.len(),
+                        crate::local_guard::response_headers(allowed_origin.as_deref())
                     );
                     let _ = stream.write_all(response.as_bytes()).await;
                 });

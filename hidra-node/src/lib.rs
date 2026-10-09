@@ -28,3 +28,4 @@ pub mod relay;
 pub mod proxy;
 pub mod client;
 pub mod api;
+pub mod local_guard;

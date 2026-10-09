@@ -669,11 +669,32 @@ async fn handle_connection(
 
     let raw = &buf[..total];
     let request = String::from_utf8_lossy(raw);
+
+    // Every reply used to carry `Access-Control-Allow-Origin: *`, which let a
+    // page on any site read this builder's site list and post to its API. The
+    // publish UI does reach it from another local port, so the allowed origin
+    // is echoed by name instead of wildcarded.
+    let allowed_origin = match crate::local_guard::screen(&request) {
+        crate::local_guard::Access::Allow(origin) => origin,
+        crate::local_guard::Access::Deny => {
+            send_response(
+                &mut stream,
+                crate::local_guard::DENIED_STATUS.0,
+                "application/json",
+                crate::local_guard::DENIED_BODY.as_bytes(),
+                None,
+            )
+            .await;
+            return Ok(());
+        }
+    };
+    let allowed_origin = allowed_origin.as_deref();
+
     let first_line = request.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
 
     if parts.len() < 2 {
-        send_response(&mut stream, 400, "text/plain", b"Bad Request").await;
+        send_response(&mut stream, 400, "text/plain", b"Bad Request", allowed_origin).await;
         return Ok(());
     }
 
@@ -690,17 +711,17 @@ async fn handle_connection(
                     match manager.create_site(&req.name).await {
                         Ok(site) => {
                             let resp = ApiResponse { ok: true, msg: None, site: Some(site), sites: None };
-                            send_json(&mut stream, 201, &resp).await;
+                            send_json(&mut stream, 201, &resp, allowed_origin).await;
                         }
                         Err(e) => {
                             let resp = ApiResponse { ok: false, msg: Some(e), site: None, sites: None };
-                            send_json(&mut stream, 400, &resp).await;
+                            send_json(&mut stream, 400, &resp, allowed_origin).await;
                         }
                     }
                 }
                 Err(_) => {
                     let resp = ApiResponse { ok: false, msg: Some("Invalid JSON. Use: {\"name\": \"mysite\"}".into()), site: None, sites: None };
-                    send_json(&mut stream, 400, &resp).await;
+                    send_json(&mut stream, 400, &resp, allowed_origin).await;
                 }
             }
         }
@@ -708,7 +729,7 @@ async fn handle_connection(
         ("GET", "/api/sites") => {
             let sites = manager.list_sites().await;
             let resp = ApiResponse { ok: true, msg: None, site: None, sites: Some(sites) };
-            send_json(&mut stream, 200, &resp).await;
+            send_json(&mut stream, 200, &resp, allowed_origin).await;
         }
 
         // ── Visual page editor (save/load page source) ──
@@ -719,16 +740,16 @@ async fn handle_connection(
                 Ok(req) => match manager.save_page(site_name, &req.html, &req.source).await {
                     Ok(site) => {
                         let resp = ApiResponse { ok: true, msg: None, site: Some(site), sites: None };
-                        send_json(&mut stream, 200, &resp).await;
+                        send_json(&mut stream, 200, &resp, allowed_origin).await;
                     }
                     Err(e) => {
                         let resp = ApiResponse { ok: false, msg: Some(e), site: None, sites: None };
-                        send_json(&mut stream, 400, &resp).await;
+                        send_json(&mut stream, 400, &resp, allowed_origin).await;
                     }
                 },
                 Err(_) => {
                     let resp = ApiResponse { ok: false, msg: Some("Invalid JSON".into()), site: None, sites: None };
-                    send_json(&mut stream, 400, &resp).await;
+                    send_json(&mut stream, 400, &resp, allowed_origin).await;
                 }
             }
         }
@@ -736,8 +757,8 @@ async fn handle_connection(
         ("GET", p) if p.starts_with("/api/page/") => {
             let site_name = &p[10..];
             match manager.load_page(site_name) {
-                Some(src) => send_response(&mut stream, 200, "application/json; charset=utf-8", src.as_bytes()).await,
-                None => send_response(&mut stream, 200, "application/json; charset=utf-8", b"null").await,
+                Some(src) => send_response(&mut stream, 200, "application/json; charset=utf-8", src.as_bytes(), allowed_origin).await,
+                None => send_response(&mut stream, 200, "application/json; charset=utf-8", b"null", allowed_origin).await,
             }
         }
 
@@ -752,17 +773,17 @@ async fn handle_connection(
                     match manager.publish_site(site_name, &req.source, &files).await {
                         Ok(site) => {
                             let resp = ApiResponse { ok: true, msg: None, site: Some(site), sites: None };
-                            send_json(&mut stream, 200, &resp).await;
+                            send_json(&mut stream, 200, &resp, allowed_origin).await;
                         }
                         Err(e) => {
                             let resp = ApiResponse { ok: false, msg: Some(e), site: None, sites: None };
-                            send_json(&mut stream, 400, &resp).await;
+                            send_json(&mut stream, 400, &resp, allowed_origin).await;
                         }
                     }
                 }
                 Err(_) => {
                     let resp = ApiResponse { ok: false, msg: Some("Invalid JSON".into()), site: None, sites: None };
-                    send_json(&mut stream, 400, &resp).await;
+                    send_json(&mut stream, 400, &resp, allowed_origin).await;
                 }
             }
         }
@@ -782,14 +803,14 @@ async fn handle_connection(
                     port = port,
                     name = name
                 );
-                send_response(&mut stream, 200, "application/json; charset=utf-8", json.as_bytes()).await;
+                send_response(&mut stream, 200, "application/json; charset=utf-8", json.as_bytes(), allowed_origin).await;
             } else {
-                send_response(&mut stream, 404, "application/json; charset=utf-8", br#"{"found":false}"#).await;
+                send_response(&mut stream, 404, "application/json; charset=utf-8", br#"{"found":false}"#, allowed_origin).await;
             }
         }
 
         ("OPTIONS", _) => {
-            send_response(&mut stream, 204, "text/plain", b"").await;
+            send_response(&mut stream, 204, "text/plain", b"", allowed_origin).await;
         }
 
         ("DELETE", p) if p.starts_with("/api/sites/") => {
@@ -797,11 +818,11 @@ async fn handle_connection(
             match manager.delete_site(site_name).await {
                 Ok(()) => {
                     let resp = ApiResponse { ok: true, msg: Some("Site removed".into()), site: None, sites: None };
-                    send_json(&mut stream, 200, &resp).await;
+                    send_json(&mut stream, 200, &resp, allowed_origin).await;
                 }
                 Err(e) => {
                     let resp = ApiResponse { ok: false, msg: Some(e), site: None, sites: None };
-                    send_json(&mut stream, 400, &resp).await;
+                    send_json(&mut stream, 400, &resp, allowed_origin).await;
                 }
             }
         }
@@ -813,16 +834,16 @@ async fn handle_connection(
                 match manager.upload_file(site_name, &fname, &data).await {
                     Ok(site) => {
                         let resp = ApiResponse { ok: true, msg: None, site: Some(site), sites: None };
-                        send_json(&mut stream, 200, &resp).await;
+                        send_json(&mut stream, 200, &resp, allowed_origin).await;
                     }
                     Err(e) => {
                         let resp = ApiResponse { ok: false, msg: Some(e), site: None, sites: None };
-                        send_json(&mut stream, 400, &resp).await;
+                        send_json(&mut stream, 400, &resp, allowed_origin).await;
                     }
                 }
             } else {
                 let resp = ApiResponse { ok: false, msg: Some("Invalid upload".into()), site: None, sites: None };
-                send_json(&mut stream, 400, &resp).await;
+                send_json(&mut stream, 400, &resp, allowed_origin).await;
             }
         }
 
@@ -835,33 +856,33 @@ async fn handle_connection(
             };
             match manager.serve_file(site_name, file_path).await {
                 Some((content, mime)) => {
-                    send_response(&mut stream, 200, &mime, &content).await;
+                    send_response(&mut stream, 200, &mime, &content, allowed_origin).await;
                 }
                 None => {
-                    send_response(&mut stream, 404, "text/plain", b"File not found").await;
+                    send_response(&mut stream, 404, "text/plain", b"File not found", allowed_origin).await;
                 }
             }
         }
 
         // ── Frontend ──
         ("GET", "/") | ("GET", "/index.html") => {
-            send_response(&mut stream, 200, "text/html; charset=utf-8", FRONTEND_HTML.as_bytes()).await;
+            send_response(&mut stream, 200, "text/html; charset=utf-8", FRONTEND_HTML.as_bytes(), allowed_origin).await;
         }
 
         ("GET", "/style.css") => {
-            send_response(&mut stream, 200, "text/css; charset=utf-8", FRONTEND_CSS.as_bytes()).await;
+            send_response(&mut stream, 200, "text/css; charset=utf-8", FRONTEND_CSS.as_bytes(), allowed_origin).await;
         }
 
         ("GET", "/app.js") => {
-            send_response(&mut stream, 200, "application/javascript; charset=utf-8", FRONTEND_JS.as_bytes()).await;
+            send_response(&mut stream, 200, "application/javascript; charset=utf-8", FRONTEND_JS.as_bytes(), allowed_origin).await;
         }
 
         ("GET", "/favicon.ico") => {
-            send_response(&mut stream, 204, "image/x-icon", b"").await;
+            send_response(&mut stream, 204, "image/x-icon", b"", allowed_origin).await;
         }
 
         _ => {
-            send_response(&mut stream, 404, "text/plain", b"Not Found").await;
+            send_response(&mut stream, 404, "text/plain", b"Not Found", allowed_origin).await;
         }
     }
 
@@ -979,7 +1000,13 @@ fn hex_val(b: u8) -> u8 {
     }
 }
 
-async fn send_response(stream: &mut tokio::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
+async fn send_response(
+    stream: &mut tokio::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    allowed_origin: Option<&str>,
+) {
     let status_text = match status {
         200 => "OK",
         201 => "Created",
@@ -993,20 +1020,36 @@ async fn send_response(stream: &mut tokio::net::TcpStream, status: u16, content_
         "HTTP/1.1 {} {}\r\n\
          Content-Type: {}\r\n\
          Content-Length: {}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
+         {}\
          Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Filename\r\n\
          Connection: close\r\n\
          \r\n",
-        status, status_text, content_type, body.len()
+        status,
+        status_text,
+        content_type,
+        body.len(),
+        crate::local_guard::response_headers(allowed_origin)
     );
     let _ = stream.write_all(header.as_bytes()).await;
     let _ = stream.write_all(body).await;
 }
 
-async fn send_json(stream: &mut tokio::net::TcpStream, status: u16, data: &ApiResponse) {
+async fn send_json(
+    stream: &mut tokio::net::TcpStream,
+    status: u16,
+    data: &ApiResponse,
+    allowed_origin: Option<&str>,
+) {
     let body = serde_json::to_string(data).unwrap_or_else(|_| "{}".into());
-    send_response(stream, status, "application/json; charset=utf-8", body.as_bytes()).await;
+    send_response(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        body.as_bytes(),
+        allowed_origin,
+    )
+    .await;
 }
 
 // ─── Frontend HTML ───────────────────────────────────────────────────────────
