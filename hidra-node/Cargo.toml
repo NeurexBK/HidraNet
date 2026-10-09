@@ -30,7 +30,12 @@ sha1 = "0.10"
 http = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
-pqc_kyber = { version = "0.7", features = ["kyber1024", "std"] }
+# FIPS 203 ML-KEM. Replaces pqc_kyber 0.7.1, which is unmaintained
+# (RUSTSEC-2026-0289) and carries two unfixable highs: RUSTSEC-2026-0290, whose
+# AVX2 backend skips Fujisaki-Okamoto implicit rejection and hands a
+# chosen-ciphertext attacker the decapsulation key, and RUSTSEC-2023-0079
+# (KyberSlash), whose division timings depend on the secret.
+ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
 subtle = "2"

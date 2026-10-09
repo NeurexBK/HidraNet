@@ -6,9 +6,36 @@ pub mod crypto {
     use rand::RngCore;
     use crate::error::{HidraError, Result};
 
-    #[allow(dead_code)]
-    pub fn derive_room_key(passphrase: &str) -> [u8; 32] {
-        *blake3::hash(passphrase.as_bytes()).as_bytes()
+    /// Room key from the room passphrase.
+    ///
+    /// This was a bare `blake3::hash` of the passphrase: one pass of a fast
+    /// hash, no salt, no stretching. A room password people can actually type
+    /// falls to a dictionary run at billions of guesses a second, and because
+    /// there was no salt the same password gave the same key in every room, so
+    /// one cracked password unlocked all of them at once.
+    ///
+    /// Argon2id at the vault's parameters costs 64 MiB and three passes per
+    /// guess, which is unnoticeable once per room and ruinous a few billion
+    /// times over. The salt is the room name, so two rooms never share a key
+    /// even on the same passphrase, and both sides still derive it offline
+    /// with nothing to exchange.
+    pub fn derive_room_key(passphrase: &str, room: &str) -> Result<[u8; 32]> {
+        // Argon2id requires at least 8 salt bytes; short room names are
+        // domain-separated and padded through BLAKE3 rather than rejected.
+        let salt = blake3::hash(
+            &[b"hidrachat-room-salt-v1:".as_slice(), room.as_bytes()].concat(),
+        );
+
+        let params = argon2::Params::new(65536, 3, 4, Some(32))
+            .map_err(|e| HidraError::Crypto(format!("Argon2 params error: {e}")))?;
+        let argon2 =
+            argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+
+        let mut key = [0u8; 32];
+        argon2
+            .hash_password_into(passphrase.as_bytes(), salt.as_bytes(), &mut key)
+            .map_err(|e| HidraError::Crypto(format!("Argon2id room KDF failed: {e}")))?;
+        Ok(key)
     }
 
     #[allow(dead_code)]
@@ -49,12 +76,15 @@ pub mod server {
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{Mutex, broadcast};
+    use subtle::ConstantTimeEq;
+    use tokio::sync::{Mutex, Semaphore, broadcast};
     use tracing::{debug, info, warn};
 
     use super::frontend;
 
     const MAX_CLIENTS: usize = 512;
+    /// Concurrent Argon2id verifications. Each costs 64 MiB while it runs.
+    const MAX_CONCURRENT_KDF: usize = 4;
     const BROADCAST_CAP: usize = 1024;
     const HISTORY_LIMIT: usize = 200;
     const PING_SECS: u64 = 30;
@@ -101,15 +131,28 @@ pub mod server {
         next_id: Arc<AtomicU64>,
         #[allow(dead_code)]
         default_room: String,
+        /// Argon2id(passphrase, default_room). The passphrase used to be taken
+        /// and thrown away — the parameter was literally named `_passphrase` —
+        /// so the join handler admitted anyone who opened a socket, handed
+        /// them the backlog and the user list, and never asked for anything.
+        room_key: [u8; 32],
+        /// Every join attempt has to run the same Argon2id to be checked, and
+        /// that costs 64 MiB. Without a bound, a few hundred concurrent joins
+        /// would exhaust memory; with it they queue instead.
+        kdf_slots: Arc<Semaphore>,
     }
 
     impl ChatServer {
-        pub fn new(addr: SocketAddr, default_room: String, _passphrase: &str) -> Self {
+        pub fn new(addr: SocketAddr, default_room: String, passphrase: &str) -> Self {
+            let room_key = super::crypto::derive_room_key(passphrase, &default_room)
+                .expect("Argon2id parameters are constant and valid");
             Self {
                 addr,
                 rooms: Arc::new(Mutex::new(HashMap::new())),
                 next_id: Arc::new(AtomicU64::new(1)),
                 default_room,
+                room_key,
+                kdf_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_KDF)),
             }
         }
 
@@ -127,8 +170,15 @@ pub mod server {
                 };
                 let rooms = Arc::clone(&self.rooms);
                 let next_id = Arc::clone(&self.next_id);
+                let room_key = self.room_key;
+                let default_room = self.default_room.clone();
+                let kdf_slots = Arc::clone(&self.kdf_slots);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_conn(stream, peer, rooms, next_id).await {
+                    if let Err(e) = handle_conn(
+                        stream, peer, rooms, next_id, room_key, default_room, kdf_slots,
+                    )
+                    .await
+                    {
                         debug!(peer = %peer, error = %e, "connection ended");
                     }
                 });
@@ -138,11 +188,15 @@ pub mod server {
 
     // ── Connection handler ──────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_conn(
         mut stream: TcpStream,
         peer: SocketAddr,
         rooms: Arc<Mutex<HashMap<String, Arc<RoomState>>>>,
         next_id: Arc<AtomicU64>,
+        room_key: [u8; 32],
+        default_room: String,
+        kdf_slots: Arc<Semaphore>,
     ) -> crate::error::Result<()> {
         let mut buf = vec![0u8; 8192];
         let n = stream.read(&mut buf).await?;
@@ -168,7 +222,10 @@ pub mod server {
             } else {
                 vec![]
             };
-            ws_session(stream, peer, rooms, next_id, leftover).await
+            ws_session(
+                stream, peer, rooms, next_id, leftover, room_key, default_room, kdf_slots,
+            )
+            .await
         } else {
             serve_http(&mut stream, &req).await
         }
@@ -253,12 +310,16 @@ pub mod server {
 
     // ── WebSocket session with room management ──────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn ws_session(
         mut stream: TcpStream,
         peer: SocketAddr,
         rooms: Arc<Mutex<HashMap<String, Arc<RoomState>>>>,
         next_id: Arc<AtomicU64>,
         leftover: Vec<u8>,
+        room_key: [u8; 32],
+        default_room: String,
+        kdf_slots: Arc<Semaphore>,
     ) -> crate::error::Result<()> {
         let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
         let mut ws_buf = leftover;
@@ -282,6 +343,45 @@ pub mod server {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("lobby")
                                     .to_string();
+                                let pass = msg
+                                    .get("pass")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+
+                                // The room key is derived from the server's
+                                // own room name, so a client cannot pick a
+                                // room it does not have the passphrase for.
+                                let offered = {
+                                    let _slot = kdf_slots.acquire().await.map_err(|_| {
+                                        crate::error::HidraError::Protocol(
+                                            "KDF semaphore closed".into(),
+                                        )
+                                    })?;
+                                    let pass = pass.to_string();
+                                    let room = default_room.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        super::crypto::derive_room_key(&pass, &room)
+                                    })
+                                    .await
+                                    .map_err(|e| {
+                                        crate::error::HidraError::Protocol(format!(
+                                            "KDF task failed: {e}"
+                                        ))
+                                    })??
+                                };
+
+                                if offered.ct_ne(&room_key).into() {
+                                    warn!(peer = %peer, "join rejected: wrong room passphrase");
+                                    let body = serde_json::json!({
+                                        "type": "error",
+                                        "msg": "Wrong room passphrase."
+                                    })
+                                    .to_string();
+                                    let _ = stream.write_all(&encode_frame(1, body.as_bytes())).await;
+                                    let _ = stream.write_all(&encode_frame(8, &[])).await;
+                                    return Ok(());
+                                }
+
                                 let c = nick_color(&n).to_string();
                                 break 'join (n, r, c);
                             }
@@ -795,7 +895,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 // different networks to land in the same room. Empty = "host it yourself" (LAN).
 var DEFAULT_HUB='';
 
-var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='';
+var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='', roomPass='';
 var reconnAttempts=0, MAX_RECONN=15, typingTimeout=null, myTyping=false;
 var typingUsers={}, soundEnabled=true;
 
@@ -986,6 +1086,11 @@ async function doJoin(){
   }
   serverAddr=sv;
   var pass=inPass.value;
+  // The server runs Argon2id over this and compares it with the room key, so
+  // a stranger who opens a socket no longer gets the backlog and the user
+  // list for free. It is a separate use from the end-to-end key below, which
+  // is derived in this page and never leaves it.
+  roomPass=pass;
   if(pass.length>0){
     try{
       cryptoKey=await deriveKey(pass);
@@ -1106,7 +1211,7 @@ function connectWS(){
     reconnAttempts=0;
     $('connStatus').textContent=serverAddr?('Conectado ('+host+')'):'Conectado';
     $('connStatus').className='status on';
-    ws.send(JSON.stringify({type:'join',nick:nick,room:roomId}));
+    ws.send(JSON.stringify({type:'join',nick:nick,room:roomId,pass:roomPass}));
   };
   ws.onmessage=function(ev){
     try{handleMsg(JSON.parse(ev.data))}catch(e){}
@@ -1350,4 +1455,50 @@ function showToast(){
 </script>
 </body>
 </html>"##;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crypto::derive_room_key;
+
+    /// The old derivation was an unsalted blake3 of the passphrase, so the
+    /// same password produced the same key everywhere. Salting by room name
+    /// is what stops one cracked password from opening every room.
+    #[test]
+    fn room_key_differs_per_room() {
+        let a = derive_room_key("same passphrase", "room-a").unwrap();
+        let b = derive_room_key("same passphrase", "room-b").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn room_key_differs_per_passphrase() {
+        let a = derive_room_key("passphrase one", "room").unwrap();
+        let b = derive_room_key("passphrase two", "room").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn room_key_is_deterministic() {
+        let a = derive_room_key("passphrase", "room").unwrap();
+        let b = derive_room_key("passphrase", "room").unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// A room name shorter than Argon2id's eight-byte salt minimum has to
+    /// still derive, not error out.
+    #[test]
+    fn short_room_names_still_derive() {
+        assert!(derive_room_key("passphrase", "a").is_ok());
+        assert!(derive_room_key("passphrase", "").is_ok());
+    }
+
+    /// An empty passphrase is a real key, not a bypass: it must not collide
+    /// with any other passphrase.
+    #[test]
+    fn empty_passphrase_is_not_a_wildcard() {
+        let empty = derive_room_key("", "room").unwrap();
+        let real = derive_room_key("actual passphrase", "room").unwrap();
+        assert_ne!(empty, real);
+    }
 }

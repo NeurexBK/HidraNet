@@ -8297,13 +8297,33 @@ mod security {
         }
     }
 
-    // ── Layer II: Post-Quantum Hybrid Handshake (Kyber + X25519) ────────────
+    // ── Layer II: Post-Quantum Hybrid Handshake (ML-KEM-1024 + X25519) ──────
+    //
+    // The post-quantum half is FIPS 203 ML-KEM-1024. It used to be pqc_kyber
+    // 0.7.1, which is unmaintained and has no fixed release: its AVX2 backend
+    // skips the Fujisaki-Okamoto implicit rejection step (RUSTSEC-2026-0290),
+    // so an attacker who can feed it chosen ciphertexts recovers the
+    // decapsulation key outright, and its division timings leak the secret
+    // (RUSTSEC-2023-0079, KyberSlash). Both are fatal to the one property this
+    // layer exists to provide, on exactly the x86-64 machines the browser runs
+    // on.
+    //
+    // Hybrid, not ML-KEM alone: a break of either primitive still leaves the
+    // other standing, because the session key is a hash of both secrets and
+    // neither half can be reconstructed from the other.
     pub mod post_quantum {
-        use pqc_kyber::{keypair as kyber_keypair, encapsulate, decapsulate};
+        use ml_kem::ml_kem_1024::{Ciphertext, DecapsulationKey, EncapsulationKey};
+        use ml_kem::{Decapsulate, Encapsulate, Kem, KeyExport, MlKem1024, TryKeyInit};
         use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
         use zeroize::{Zeroize, ZeroizeOnDrop};
 
         use crate::error::{HidraError, Result};
+
+        /// Domain separator for the combiner. Bumped from v1 with the move off
+        /// Kyber round-3: a v1 and a v2 peer derive different keys and simply
+        /// fail to talk, which is the outcome we want — there is no downgrade
+        /// to the broken construction.
+        const COMBINER_DOMAIN: &[u8] = b"HidraNet-Hybrid-KEM-v2-MLKEM1024-X25519";
 
         #[derive(Zeroize, ZeroizeOnDrop)]
         pub struct HybridSharedSecret {
@@ -8319,14 +8339,12 @@ mod security {
         pub struct HybridKeyPair {
             pub x25519_secret: StaticSecret,
             pub x25519_public: X25519Public,
+            /// ML-KEM-1024 encapsulation key, as it goes on the wire.
             pub kyber_public: Vec<u8>,
-            kyber_secret: Vec<u8>,
-        }
-
-        impl Drop for HybridKeyPair {
-            fn drop(&mut self) {
-                self.kyber_secret.zeroize();
-            }
+            /// Decapsulation key. Kept as the library's own type rather than
+            /// loose bytes so it is never accidentally serialized, logged or
+            /// copied, and so it zeroizes itself on drop.
+            decapsulation_key: DecapsulationKey,
         }
 
         impl HybridKeyPair {
@@ -8335,19 +8353,14 @@ mod security {
                 let x25519_secret = StaticSecret::random_from_rng(&mut rng);
                 let x25519_public = X25519Public::from(&x25519_secret);
 
-                let kyber_keys = kyber_keypair(&mut rng)
-                    .map_err(|e| HidraError::Crypto(format!("Kyber keygen failed: {e:?}")))?;
+                let (decapsulation_key, encapsulation_key) = MlKem1024::generate_keypair();
 
                 Ok(Self {
                     x25519_secret,
                     x25519_public,
-                    kyber_public: kyber_keys.public.to_vec(),
-                    kyber_secret: kyber_keys.secret.to_vec(),
+                    kyber_public: encapsulation_key.to_bytes().to_vec(),
+                    decapsulation_key,
                 })
-            }
-
-            pub fn kyber_secret_ref(&self) -> &[u8] {
-                &self.kyber_secret
             }
         }
 
@@ -8366,11 +8379,29 @@ mod security {
             let ephemeral_public = X25519Public::from(&ephemeral_secret);
             let x25519_shared = ephemeral_secret.diffie_hellman(peer_x25519_public);
 
-            let (kyber_ct, mut kyber_shared) = encapsulate(peer_kyber_public, &mut rng)
-                .map_err(|e| HidraError::Crypto(format!("Kyber encapsulate failed: {e:?}")))?;
+            // A peer who sends a low-order point forces the shared secret to
+            // all zeroes, which would let it fix half the combiner input.
+            if !x25519_shared.was_contributory() {
+                return Err(HidraError::Crypto(
+                    "X25519 peer key is a low-order point".into(),
+                ));
+            }
 
-            let combined = combine_secrets(x25519_shared.as_bytes(), &kyber_shared);
-            kyber_shared.zeroize();
+            // Rejects a malformed or non-canonical encapsulation key rather
+            // than encapsulating to it.
+            let encapsulation_key = EncapsulationKey::new_from_slice(peer_kyber_public)
+                .map_err(|_| HidraError::Crypto("ML-KEM encapsulation key rejected".into()))?;
+
+            let (kyber_ct, mut kyber_shared) = encapsulation_key.encapsulate();
+
+            let combined = combine_secrets(
+                x25519_shared.as_bytes(),
+                &kyber_shared,
+                ephemeral_public.as_bytes(),
+                &kyber_ct,
+                peer_kyber_public,
+            );
+            kyber_shared.as_mut_slice().zeroize();
 
             Ok((
                 HybridSharedSecret { combined },
@@ -8388,23 +8419,60 @@ mod security {
             let peer_ephemeral = X25519Public::from(encapsulation.x25519_ephemeral_public);
             let x25519_shared = own_keys.x25519_secret.diffie_hellman(&peer_ephemeral);
 
-            let mut kyber_shared = decapsulate(
-                &encapsulation.kyber_ciphertext,
-                own_keys.kyber_secret_ref(),
-            )
-            .map_err(|e| HidraError::Crypto(format!("Kyber decapsulate failed: {e:?}")))?;
+            if !x25519_shared.was_contributory() {
+                return Err(HidraError::Crypto(
+                    "X25519 peer key is a low-order point".into(),
+                ));
+            }
 
-            let combined = combine_secrets(x25519_shared.as_bytes(), &kyber_shared);
-            kyber_shared.zeroize();
+            let ciphertext = Ciphertext::try_from(encapsulation.kyber_ciphertext.as_slice())
+                .map_err(|_| {
+                    HidraError::Crypto("ML-KEM ciphertext has the wrong length".into())
+                })?;
+
+            // ML-KEM decapsulation never reports failure: a bad ciphertext
+            // yields an unrelated key by implicit rejection, which is what
+            // denies a chosen-ciphertext attacker the oracle it needs. The
+            // mismatch surfaces later, when the AEAD tag does not verify.
+            let mut kyber_shared = own_keys.decapsulation_key.decapsulate(&ciphertext);
+
+            let combined = combine_secrets(
+                x25519_shared.as_bytes(),
+                &kyber_shared,
+                &encapsulation.x25519_ephemeral_public,
+                &encapsulation.kyber_ciphertext,
+                &own_keys.kyber_public,
+            );
+            kyber_shared.as_mut_slice().zeroize();
 
             Ok(HybridSharedSecret { combined })
         }
 
-        fn combine_secrets(x25519: &[u8; 32], kyber: &[u8]) -> [u8; 32] {
+        /// Both secrets plus the full transcript. Hashing the ciphertexts and
+        /// the encapsulation key in as well — not just the two secrets — is
+        /// what keeps the combined key bound to this exchange: a peer cannot
+        /// replay one half against a different transcript and land on the same
+        /// session key. Lengths are prefixed so no two different transcripts
+        /// can serialize to the same byte string.
+        fn combine_secrets(
+            x25519: &[u8; 32],
+            mlkem: &[u8],
+            x25519_ephemeral_public: &[u8; 32],
+            mlkem_ciphertext: &[u8],
+            mlkem_encapsulation_key: &[u8],
+        ) -> [u8; 32] {
             let mut hasher = blake3::Hasher::new();
-            hasher.update(b"HidraNet-Hybrid-KEM-v1");
-            hasher.update(x25519);
-            hasher.update(kyber);
+            hasher.update(COMBINER_DOMAIN);
+            for part in [
+                x25519.as_slice(),
+                mlkem,
+                x25519_ephemeral_public.as_slice(),
+                mlkem_ciphertext,
+                mlkem_encapsulation_key,
+            ] {
+                hasher.update(&(part.len() as u64).to_le_bytes());
+                hasher.update(part);
+            }
             *hasher.finalize().as_bytes()
         }
     }
@@ -8749,6 +8817,31 @@ async fn spawn_local_relays(
     Ok(entries)
 }
 
+/// Room passphrase for a standalone chat server.
+///
+/// It used to be the literal `"hidrachat-standalone-test"`, compiled into
+/// every copy of the binary, and in hidden-service mode it was
+/// `format!("hidrachat-{hidra_address}")` — derived entirely from the address
+/// the service publishes, so knowing where the room was meant knowing how to
+/// get in. Both are now replaced by a value read from `HIDRA_CHAT_PASSPHRASE`
+/// or, failing that, generated fresh and printed once for the operator to
+/// hand out.
+fn chat_room_passphrase() -> String {
+    if let Ok(p) = std::env::var("HIDRA_CHAT_PASSPHRASE") {
+        if !p.is_empty() {
+            return p;
+        }
+    }
+    let mut bytes = [0u8; 18];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let generated = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    warn!(
+        "no HIDRA_CHAT_PASSPHRASE set — generated one for this run: {generated}"
+    );
+    warn!("share it with the people you want in the room; it changes on restart");
+    generated
+}
+
 async fn run_apps_standalone(
     app_cfg: &app_config::AppConfig,
     signing_key: SigningKey,
@@ -8757,7 +8850,10 @@ async fn run_apps_standalone(
     let chat_port: u16 = 8081;
 
     let mail_addr: SocketAddr = format!("127.0.0.1:{mail_port}").parse()?;
-    let chat_addr: SocketAddr = format!("0.0.0.0:{chat_port}").parse()?;
+    // Loopback only. Bound to 0.0.0.0 the room was reachable from every
+    // machine on the network, and the WebSocket asks for no credential: a
+    // stranger on the same Wi-Fi could join, read the backlog and list users.
+    let chat_addr: SocketAddr = format!("127.0.0.1:{chat_port}").parse()?;
 
     let keys_dir = std::path::Path::new(&app_cfg.paths.keys_dir);
     let mail_keys = apps::hidramail::crypto::MailKeys::load_or_generate(keys_dir)?;
@@ -8778,11 +8874,11 @@ async fn run_apps_standalone(
     let mail_server = apps::hidramail::server::MailServer::new(mail_addr, state);
 
     let room_name = "hidrachat-local".to_string();
-    let passphrase = "hidrachat-standalone-test";
+    let passphrase = chat_room_passphrase();
     let chat_server = apps::hidrachat::server::ChatServer::new(
         chat_addr,
         room_name,
-        passphrase,
+        &passphrase,
     );
 
     let search_port: u16 = 8083;
@@ -8809,9 +8905,9 @@ async fn run_apps_standalone(
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║  HidraNet Apps — local mode                                ║");
     info!("║  HidraMail:     http://127.0.0.1:{mail_port}                      ║");
-    info!("║  HidraChat:     http://0.0.0.0:{chat_port}                        ║");
+    info!("║  HidraChat:     http://127.0.0.1:{chat_port}                      ║");
     info!("║  HidraSearch:   http://127.0.0.1:{search_port}                      ║");
-    info!("║  SevenNine:     http://0.0.0.0:{sevennine_port}                      ║");
+    info!("║  SevenNine:     http://127.0.0.1:{sevennine_port}                    ║");
     info!("║  Address:       {}", mail_addr_str);
     info!("╚══════════════════════════════════════════════════════════════╝");
 
@@ -8870,13 +8966,13 @@ async fn run_chat_standalone(
     app_cfg: &app_config::AppConfig,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let local_port = app_cfg.hidden_service.local_port;
-    let chat_addr: SocketAddr = format!("0.0.0.0:{local_port}").parse()?;
+    let chat_addr: SocketAddr = format!("127.0.0.1:{local_port}").parse()?;
     let room_name = "hidrachat-local".to_string();
-    let passphrase = "hidrachat-standalone-test";
+    let passphrase = chat_room_passphrase();
     let chat_server = apps::hidrachat::server::ChatServer::new(
         chat_addr,
         room_name,
-        passphrase,
+        &passphrase,
     );
 
     info!("╔══════════════════════════════════════════════════════════════╗");
@@ -9041,9 +9137,14 @@ async fn run_server_mode(
     let app_name = app_cfg.hidden_service.app.as_deref();
 
     if app_name == Some("hidrachat") {
-        let chat_addr: SocketAddr = format!("0.0.0.0:{local_port}").parse()?;
+        // Tor reaches the service over loopback. Bound to 0.0.0.0 the same
+        // service also answered on the public interface, so anyone scanning
+        // the host's IP found the thing the hidden service exists to hide.
+        let chat_addr: SocketAddr = format!("127.0.0.1:{local_port}").parse()?;
         let room_name = hidra_address.replace(".hidra", "");
-        let passphrase = format!("hidrachat-{hidra_address}");
+        // Was format!("hidrachat-{hidra_address}"): the address is published,
+        // so the passphrase was public too and gated nothing.
+        let passphrase = chat_room_passphrase();
         let chat_server = apps::hidrachat::server::ChatServer::new(
             chat_addr,
             room_name,
@@ -9100,8 +9201,10 @@ async fn run_server_mode(
             );
             // Re-announce existing sites to DHT on startup
             manager.announce_all_sites().await;
+            // Loopback only, as in run_apps_standalone: on 0.0.0.0 the site
+            // builder was published to every machine on the local network.
             let listener = match tokio::net::TcpListener::bind(
-                format!("0.0.0.0:{sevennine_port}")
+                format!("127.0.0.1:{sevennine_port}")
             ).await {
                 Ok(l) => l,
                 Err(e) => {
@@ -9550,6 +9653,87 @@ mod tests {
             .expect("decapsulate should succeed");
 
         assert_eq!(shared_enc.as_bytes(), shared_dec.as_bytes());
+    }
+
+    /// ML-KEM answers a tampered ciphertext with an unrelated key instead of
+    /// an error (Fujisaki-Okamoto implicit rejection). That is the property
+    /// pqc_kyber's AVX2 backend dropped, and losing it is what let a
+    /// chosen-ciphertext attacker walk the decapsulation key out one query at
+    /// a time. Assert the derived key diverges rather than matching.
+    #[test]
+    fn test_post_quantum_tampered_ciphertext_does_not_recover_key() {
+        let keys = security::post_quantum::HybridKeyPair::generate()
+            .expect("keygen should succeed");
+
+        let (shared_enc, mut encapsulation) = security::post_quantum::hybrid_encapsulate(
+            &keys.x25519_public,
+            &keys.kyber_public,
+        )
+        .expect("encapsulate should succeed");
+
+        encapsulation.kyber_ciphertext[0] ^= 0x01;
+
+        let shared_dec = security::post_quantum::hybrid_decapsulate(&keys, &encapsulation)
+            .expect("implicit rejection returns a key, it does not fail");
+
+        assert_ne!(shared_enc.as_bytes(), shared_dec.as_bytes());
+    }
+
+    /// The combiner hashes the transcript, not just the two secrets, so the
+    /// same ML-KEM ciphertext replayed under a different X25519 ephemeral
+    /// cannot land on the session key it was captured from.
+    #[test]
+    fn test_post_quantum_transcript_is_bound_to_session_key() {
+        let keys = security::post_quantum::HybridKeyPair::generate()
+            .expect("keygen should succeed");
+
+        let (shared_enc, mut encapsulation) = security::post_quantum::hybrid_encapsulate(
+            &keys.x25519_public,
+            &keys.kyber_public,
+        )
+        .expect("encapsulate should succeed");
+
+        encapsulation.x25519_ephemeral_public[0] ^= 0x01;
+
+        let shared_dec = security::post_quantum::hybrid_decapsulate(&keys, &encapsulation)
+            .expect("decapsulate should succeed");
+
+        assert_ne!(shared_enc.as_bytes(), shared_dec.as_bytes());
+    }
+
+    /// A malformed encapsulation key is refused outright rather than being
+    /// encapsulated to.
+    #[test]
+    fn test_post_quantum_rejects_malformed_encapsulation_key() {
+        let keys = security::post_quantum::HybridKeyPair::generate()
+            .expect("keygen should succeed");
+
+        let truncated = &keys.kyber_public[..keys.kyber_public.len() - 1];
+        assert!(
+            security::post_quantum::hybrid_encapsulate(&keys.x25519_public, truncated).is_err()
+        );
+        assert!(
+            security::post_quantum::hybrid_encapsulate(&keys.x25519_public, &[]).is_err()
+        );
+    }
+
+    /// Two independent handshakes must never agree on a key.
+    #[test]
+    fn test_post_quantum_distinct_sessions_differ() {
+        let keys = security::post_quantum::HybridKeyPair::generate().expect("keygen");
+
+        let (a, _) = security::post_quantum::hybrid_encapsulate(
+            &keys.x25519_public,
+            &keys.kyber_public,
+        )
+        .expect("encapsulate");
+        let (b, _) = security::post_quantum::hybrid_encapsulate(
+            &keys.x25519_public,
+            &keys.kyber_public,
+        )
+        .expect("encapsulate");
+
+        assert_ne!(a.as_bytes(), b.as_bytes());
     }
 
     #[test]
