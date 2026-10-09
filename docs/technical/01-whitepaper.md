@@ -9,7 +9,7 @@ Software licence: MIT · Repository: NeurexBK/HidraNet
 ## Abstract
 
 HidraNet is an open-source overlay network combining onion routing with
-post-quantum key encapsulation (CRYSTALS-Kyber-1024), a Kademlia DHT for peer
+post-quantum key encapsulation (ML-KEM-1024), a Kademlia DHT for peer
 and service discovery, and a suite of end-to-end encrypted applications:
 messaging, mail, forum, search and a hidden-site publisher. The reference
 implementation consists of a Rust network engine (`hidra-node`) and a desktop
@@ -60,8 +60,17 @@ state (`circuit`).
 
 ### Pillar 2 — Post-quantum cryptography
 
-Key encapsulation uses **CRYSTALS-Kyber-1024** (`pqc_kyber`), the highest
-security level of the Kyber family, standardised by NIST as ML-KEM.
+Key encapsulation uses **ML-KEM-1024** (the `ml-kem` crate), the highest
+security level of the scheme NIST standardised in FIPS 203.
+
+This was `pqc_kyber`, an implementation of the earlier round-3 Kyber draft,
+until an audit of the dependency tree turned up two unfixable advisories
+against it. RUSTSEC-2026-0290: the AVX2 backend — the one that runs on
+essentially every desktop — skips the Fujisaki-Okamoto implicit rejection
+step, which hands a chosen-ciphertext attacker the decapsulation key.
+RUSTSEC-2023-0079, KyberSlash: division timings that depend on the secret.
+The crate is unmaintained (RUSTSEC-2026-0289) and no fixed release exists,
+so the dependency was replaced rather than pinned.
 
 This answers the *harvest now, decrypt later* attack: traffic captured today and
 stored does not become readable when a cryptographically relevant quantum
@@ -111,7 +120,7 @@ fingerprint profile. Detail in section 5.
 │  │ onion/     │ p2p/dht/  │ relay/   │ proxy/  (SOCKS5)   │  │
 │  │ circuits   │ Kademlia  │ router   │ browser gateway    │  │
 │  ├────────────┴───────────┴──────────┴────────────────────┤  │
-│  │ crypto/ — Kyber1024 · X25519 · Ed25519                 │  │
+│  │ crypto/ — ML-KEM-1024 · X25519 · Ed25519                 │  │
 │  │          ChaCha20-Poly1305 · AES-GCM · BLAKE3 · Argon2 │  │
 │  └────────────────────────────────────────────────────────┘  │
 ├──────────────────────────────────────────────────────────────┤
@@ -138,14 +147,14 @@ This section describes what is implemented, not what is planned.
 
 | Function | Algorithm |
 |---|---|
-| Post-quantum key encapsulation | CRYSTALS-Kyber-1024 |
+| Post-quantum key encapsulation | ML-KEM-1024 |
 | Classical key agreement | X25519 |
 | Signature | Ed25519 |
 | Authenticated symmetric encryption | ChaCha20-Poly1305, AES-256-GCM |
 | Hash function | BLAKE3, SHA-256 |
 | Password-based derivation | Argon2 |
 
-**Hybrid approach.** Key agreement combines X25519 with Kyber-1024. The session
+**Hybrid approach.** Key agreement combines X25519 with ML-KEM-1024. The session
 is only compromised if *both* are broken. It is the current recommendation for
 post-quantum transition: you do not abandon what is well studied, you add quantum
 resistance on top of it.
@@ -236,7 +245,7 @@ advertising, not engineering.
 | An isolated intermediate node | Knows only the previous and the next hop |
 | The message transport operator | Carries ciphertext; does not hold the key |
 | Cross-tab tracking | Isolated sessions, separate storage, wiped on close |
-| Traffic captured for future decryption | Kyber-1024 resists quantum cryptanalysis |
+| Traffic captured for future decryption | ML-KEM-1024 resists quantum cryptanalysis |
 
 ### 5.2 We do **not** protect against
 
@@ -297,7 +306,7 @@ Measures implemented:
 - Rust engine, ~17,000 lines; `cargo build` and `cargo check --all-targets` with
   no errors
 - Onion circuits, Kademlia DHT, relay, SOCKS5 proxy
-- Kyber-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2
+- ML-KEM-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2
 - **71 tests passing** (41 unit + 30 integration: `onion_routing`,
   `dht_discovery`, `key_agreement`, `integration`)
 - Browser with bundled Tor, per-tab isolation, anti-fingerprinting

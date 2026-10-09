@@ -17,7 +17,7 @@ Contact: **press@hidranet.org**
 
 ### Medium (one paragraph)
 > HidraNet is an open-source overlay network that combines onion routing with
-> quantum-resistant cryptography (CRYSTALS-Kyber-1024). It includes a browser
+> quantum-resistant cryptography (ML-KEM-1024). It includes a browser
 > with per-tab isolation and fingerprinting protection, and applications for
 > messaging, mail, search, forums and site publishing — all encrypted on the
 > user's device. Founded in Lisbon by João Brandão and Leonardo Mello, it is
@@ -27,7 +27,7 @@ Contact: **press@hidranet.org**
 > HidraNet is an open-source project building private communication
 > infrastructure. The network combines onion routing — in which traffic crosses
 > several nodes and none knows both the origin and the destination — with
-> CRYSTALS-Kyber-1024, the key encapsulation algorithm standardised by NIST to
+> ML-KEM-1024, the key encapsulation algorithm standardised by NIST to
 > resist cryptanalysis by a quantum computer.
 >
 > On that base run applications that encrypt on the user's device: HidraChat,
@@ -60,7 +60,7 @@ Contact: **press@hidranet.org**
 | Website | hidranet.org |
 | Platforms | Windows, macOS, Linux |
 | Engine | Rust · ~17,000 lines |
-| Cryptography | Kyber-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, Argon2 |
+| Cryptography | ML-KEM-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, Argon2 |
 
 ---
 
@@ -70,7 +70,7 @@ Three angles, with the honest framing of each.
 
 ### 3.1 Post-quantum, already implemented
 
-HidraNet uses **CRYSTALS-Kyber-1024** in production. It answers the *harvest now,
+HidraNet uses **ML-KEM-1024** in production. It answers the *harvest now,
 decrypt later* attack: traffic captured today and stored stays unreadable when a
 cryptographically relevant quantum computer exists.
 

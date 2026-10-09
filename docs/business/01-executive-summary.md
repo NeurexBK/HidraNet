@@ -26,7 +26,7 @@ with its own `.hidra` address on the HidraNet network.
 
 | Component | State |
 |---|---|
-| `hidra-node` — Rust engine, onion routing + post-quantum **Kyber1024** | ~17,000 lines, compiles clean |
+| `hidra-node` — Rust engine, onion routing + post-quantum **ML-KEM-1024** | ~17,000 lines, compiles clean |
 | `hidra-browser` — bundled Tor, per-tab isolation, **verified anonymity** | ~7,800 lines |
 | HidraReview, HidraSearch, HidraChat, HidraMail, Forum, `.hidra` sites | Working |
 | Landing page, PWA, Win/Linux/macOS packaging | Done |
@@ -85,7 +85,7 @@ or they are not sold at all.
 ## What this project has that most do not
 
 - **A product that is built and running**, not a presentation.
-- **Real, verifiable technical differentiation**: onion routing with Kyber1024
+- **Real, verifiable technical differentiation**: onion routing with ML-KEM-1024
   in production, which Tor does not yet have.
 - **Immediate eligibility for non-dilutive money** — MIT, decentralised,
   privacy-focused: literally the NGI Zero mandate, with €21.6M + €9.6M in open

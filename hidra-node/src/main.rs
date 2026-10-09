@@ -5299,8 +5299,11 @@ mod api {
         let (status_code, status_text, body) =
             if request.starts_with("GET /api/status") {
                 let uptime = state.start_time.elapsed().as_secs();
+                // "latency" was the literal 42. Nothing here measures a
+                // round trip, so it reports null and a caller can show "—"
+                // rather than a number that was never true.
                 let body = format!(
-                    r#"{{"connected":true,"relays":{},"latency":42,"uptime":{},"hops":{}}}"#,
+                    r#"{{"connected":true,"relays":{},"latency":null,"uptime":{},"hops":{}}}"#,
                     state.relay_count, uptime, state.hops
                 );
                 (200, "OK", body)
@@ -7335,7 +7338,7 @@ a:hover{color:var(--link-hover);text-decoration:underline}
     <p>Your query was routed through 3 encrypted nodes. No data was stored.</p>
     <div class="shields">
       <span class="shield">ChaCha20-Poly1305</span>
-      <span class="shield">Kyber-1024</span>
+      <span class="shield">ML-KEM-1024</span>
       <span class="shield">X25519</span>
       <span class="shield">BLAKE3</span>
       <span class="shield">Zero Knowledge</span>
@@ -8941,10 +8944,10 @@ async fn spawn_local_relays(
 /// or, failing that, generated fresh and printed once for the operator to
 /// hand out.
 fn chat_room_passphrase() -> String {
-    if let Ok(p) = std::env::var("HIDRA_CHAT_PASSPHRASE") {
-        if !p.is_empty() {
-            return p;
-        }
+    if let Ok(p) = std::env::var("HIDRA_CHAT_PASSPHRASE")
+        && !p.is_empty()
+    {
+        return p;
     }
     let mut bytes = [0u8; 18];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);

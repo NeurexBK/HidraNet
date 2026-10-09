@@ -80,8 +80,11 @@ async fn handle_request(mut stream: tokio::net::TcpStream, state: &ApiState) {
 
     let (status_code, status_text, body) = if request.starts_with("GET /api/status") {
         let uptime = state.start_time.elapsed().as_secs();
+        // "latency" was the literal 42. Nothing here measures a round
+        // trip, so it reports null and a caller can show "—" rather than a
+        // number that was never true.
         let body = format!(
-            r#"{{"connected":true,"relays":{},"latency":42,"uptime":{},"hops":{}}}"#,
+            r#"{{"connected":true,"relays":{},"latency":null,"uptime":{},"hops":{}}}"#,
             state.relay_count, uptime, state.hops
         );
         (200, "OK", body)

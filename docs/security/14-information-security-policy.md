@@ -81,7 +81,7 @@ parties:
 | Rule | |
 |---|---|
 | Do not implement your own primitives | Use established, audited libraries |
-| Approved algorithms | Kyber-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, SHA-256, Argon2id |
+| Approved algorithms | ML-KEM-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, SHA-256, Argon2id |
 | Prohibited | MD5, SHA-1, DES, 3DES, RC4, AES-ECB |
 | Randomness | Cryptographic generators only (`getRandomValues`, `OsRng`) |
 | Password derivation | **Argon2id** with a unique salt per user or context |

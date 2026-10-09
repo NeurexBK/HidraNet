@@ -46,7 +46,7 @@ critical-path blocker for free.
 **Do not submit "HidraNet".** Too broad. Submit a specific, technical, verifiable
 component. Two strong proposals:
 
-1. **"Post-quantum onion routing"** — `hidra-node` with Kyber1024. Concrete,
+1. **"Post-quantum onion routing"** — `hidra-node` with ML-KEM-1024. Concrete,
    technically differentiating, exactly the Entrust mandate. **This is the
    strongest proposal.**
 2. **"A privacy browser with verifiable anonymity"** — independent exit IP

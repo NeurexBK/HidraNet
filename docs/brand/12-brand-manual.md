@@ -227,7 +227,7 @@ It is the characteristic that defines HidraNet's communication.
 |---|---|
 | "100% anonymous" | "Hides your IP from the sites you visit" |
 | "Impossible to trace" | "Makes tracing much harder — see the threat model" |
-| "Military-grade security" | "Kyber-1024, resistant to quantum computing" |
+| "Military-grade security" | "ML-KEM-1024, resistant to quantum computing" |
 | "Nobody can stop you" | "The network is decentralised: there is no single point of failure" |
 | "Better than Tor" | "Different from Tor: it brings integrated applications" |
 

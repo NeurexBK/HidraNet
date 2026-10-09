@@ -8,14 +8,14 @@
 | Base | Firefox ESR | Chromium | Firefox ESR | — | **Electron** |
 | Users | 2–2.5M/day (network) | **100M MAU** | — | — | Pre-launch |
 | Revenue | Donations/grants | **>$100M ARR** | Flat subscription | **$97.5M ARR** | 0 |
-| Post-quantum | In transition | No | No | Partial | **✅ Kyber1024** |
+| Post-quantum | In transition | No | No | Partial | **✅ ML-KEM-1024** |
 | Integrated apps | No | Wallet, VPN | No | Mail, VPN, Drive, Docs | **Chat, Mail, Search, Forum, Reviews** |
 | Fingerprint | Uniformity | Randomisation | Uniformity | — | **Per-tab randomisation** |
 | Anonymity verified for the user | No | N/A | No | N/A | **✅** |
 
 ### Where we realistically win
 
-1. **Post-quantum already in production.** Kyber1024 in the core. None of the
+1. **Post-quantum already in production.** ML-KEM-1024 in the core. None of the
    others has it. A strong argument for grants and for technical users.
 2. **Verified anonymity, not asserted.** The browser confirms its exit IP against
    the Tor Project's verifier and, if it cannot, says so. No competitor does

@@ -37,7 +37,7 @@ presents roadmap as existing product does not survive technical due diligence.
 | Component | State | Notes |
 |---|---|---|
 | Onion routing | Implemented | Circuit construction, cells, layers |
-| Post-quantum cryptography | Implemented | **Kyber1024** (`pqc_kyber`) |
+| Post-quantum cryptography | Implemented | **ML-KEM-1024** (`ml-kem`) |
 | Classical cryptography | Implemented | X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2 |
 | DHT (Kademlia) | Implemented | k-buckets, discovery, bootstrap |
 | SOCKS5 proxy | Implemented | Gateway for the browser |
@@ -46,7 +46,7 @@ presents roadmap as existing product does not survive technical due diligence.
 | HidraChat / HidraMail (engine) | Implemented | |
 | Integration tests | **Passing** | 30 tests: `onion_routing`, `dht_discovery`, `key_agreement`, `integration` |
 
-**Real technical differentiator:** onion routing combined with **Kyber1024** in
+**Real technical differentiator:** onion routing combined with **ML-KEM-1024** in
 production. Tor is moving towards post-quantum but HidraNet already has it in the
 core. This is material for an NGI Zero Entrust application (the privacy and trust
 fund) and is the strongest technical argument we have.
@@ -133,7 +133,7 @@ round.
 
 ## 3. What differentiates us technically
 
-1. **Post-quantum already in production** (Kyber1024) — Tor does not have it yet.
+1. **Post-quantum already in production** (ML-KEM-1024) — Tor does not have it yet.
 2. **Verified anonymity, not asserted** — the browser checks its exit IP against
    the Tor Project's own verifier and, if it cannot confirm it, **says so**
    instead of lying to the user. A rare and defensible product choice.

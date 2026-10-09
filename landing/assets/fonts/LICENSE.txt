@@ -1,0 +1,11 @@
+Inter — SIL Open Font License 1.1 — https://github.com/rsms/inter
+JetBrains Mono — SIL Open Font License 1.1 — https://github.com/JetBrains/JetBrainsMono
+
+Both files are the latin variable subsets published by Fontsource
+(@fontsource-variable/inter 5.1.0, @fontsource-variable/jetbrains-mono 5.1.1).
+
+They are served from this site rather than from Google Fonts. A download page
+for a privacy tool that makes every visitor's browser announce itself to a
+third party before the page has even rendered is working against its own
+argument; the request carries the visitor's IP, user agent and the referring
+URL, which is this page.

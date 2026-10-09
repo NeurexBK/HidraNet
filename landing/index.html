@@ -18,9 +18,24 @@
 <link rel="icon" type="image/png" href="assets/hidranet-logo.png">
 <link rel="alternate icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%23070809%22/><text x=%2250%22 y=%2274%22 font-size=%2272%22 font-family=%22Arial,sans-serif%22 font-weight=%22bold%22 text-anchor=%22middle%22 fill=%22%2300ff88%22>H</text></svg>">
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!--
+  Fonts are served from this site. They used to come from Google Fonts, which
+  made every visitor's browser announce itself — IP, user agent, and this page
+  as the referrer — to a third party before the page had rendered, on the
+  download page of a privacy tool.
+-->
+<style>
+  @font-face{
+    font-family:'Inter';
+    src:url('assets/fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+    font-weight:100 900; font-style:normal; font-display:swap;
+  }
+  @font-face{
+    font-family:'JetBrains Mono';
+    src:url('assets/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+    font-weight:100 800; font-style:normal; font-display:swap;
+  }
+</style>
 
 <style>
   :root{
@@ -412,7 +427,7 @@
         <div class="stat"><div class="n" data-count="0" data-suffix="">0</div><div class="l">Central servers</div></div>
         <div class="stat"><div class="n cyan">3–7</div><div class="l">Saltos por rota</div></div>
         <div class="stat"><div class="n">∞</div><div class="l">Possible nodes</div></div>
-        <div class="stat"><div class="n cyan" data-count="256" data-suffix="-bit">0</div><div class="l">+ post-quantum Kyber</div></div>
+        <div class="stat"><div class="n cyan" data-count="256" data-suffix="-bit">0</div><div class="l">+ post-quantum ML-KEM</div></div>
         <div class="stat"><div class="n" data-count="4" data-suffix="">0</div><div class="l">Apps nativas</div></div>
         <div class="stat"><div class="n cyan" data-count="100" data-suffix="%">0</div><div class="l">Open source</div></div>
       </div>
@@ -424,7 +439,7 @@
     <div class="marquee">
       <div class="track" id="track">
         <span class="chip"><span class="d"></span>Noise Protocol</span>
-        <span class="chip"><span class="d"></span>Kyber · post-quantum</span>
+        <span class="chip"><span class="d"></span>ML-KEM · post-quantum</span>
         <span class="chip"><span class="d"></span>Kademlia DHT</span>
         <span class="chip"><span class="d"></span>Roteamento Cebola</span>
         <span class="chip"><span class="d"></span>Traffic obfuscation</span>
@@ -447,7 +462,7 @@
         <article class="pill reveal"><span class="num">01</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
           <h3>Hardened cryptography</h3>
-          <p>Noise Protocol + Kyber (post-quantum). Resistant to attacks by quantum computers.</p>
+          <p>Noise Protocol + ML-KEM (post-quantum). Resistant to attacks by quantum computers.</p>
         </article>
         <article class="pill reveal"><span class="num">02</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
@@ -467,7 +482,7 @@
         <article class="pill reveal"><span class="num">05</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></div>
           <h3>Hidden services</h3>
-          <p>Publique sites <span style="color:var(--neon);font-family:var(--mono)">.hidra</span> sem revelar IP ou identidade.</p>
+          <p>Publish <span style="color:var(--neon);font-family:var(--mono)">.hidra</span> sites without revealing your IP or identity.</p>
         </article>
         <article class="pill reveal"><span class="num">06</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></div>
