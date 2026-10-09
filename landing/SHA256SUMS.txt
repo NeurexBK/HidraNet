@@ -12,29 +12,36 @@ If the value does not match either table below, do not run the file.
 1. REFRESHED PACKAGES  —  not on the release page yet
 -----------------------------------------------------------------------
 
-66e1c736f914b20be35222802058564b26a407305e5ceec5549be9b015cbdfae  HidraNet-Browser-1.0.0-macOS-arm64.zip
-f17c6ce8023c4dab46cd202d58a78347d7d44dfabe3632aeb3250327937fa1f0  HidraNet-Browser-1.0.0-macOS-x64.zip
-770a6c826938791c989dbd91eda9754243a145fbc081d3e984d4828142bb7ad1  HidraNet-Browser-1.0.0-Linux-x64.zip
-b116978c00b27f0434e71e5a6c522a57cc0a6bc3f5a6983704e8211f3fe680f7  HidraNet-Browser-1.0.0-Windows-x64.zip
+e380a72bbdb1cfa00de99c379b36742bd02087f9c49b7cca32d2367169304bd8  HidraNet-Browser-1.0.0-macOS-arm64.zip
+b20f5fafa20f4c700eb535cd3d20d6384fb83a54bd5c3dd83badf6d6b03933ef  HidraNet-Browser-1.0.0-macOS-x64.zip
+a04dda60085dd3dde4ee6a46c90cde188b538a3be9f25a5de4f457035a03f367  HidraNet-Browser-1.0.0-Linux-x64.zip
+be890866b439123326c689ea8764a3dd442484f26b345aae6b79232cd9b98ec7  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,419,532 bytes  (103.4 MiB)
-  macOS x64      112,850,013 bytes  (107.6 MiB)
-  Linux x64      112,924,342 bytes  (107.7 MiB)
-  Windows x64    129,451,627 bytes  (123.5 MiB)
+  macOS arm64    108,422,920 bytes  (103.4 MiB)
+  macOS x64      112,853,401 bytes  (107.6 MiB)
+  Linux x64      112,927,730 bytes  (107.7 MiB)
+  Windows x64    129,487,695 bytes  (123.5 MiB)
 
 What changed from the packages in table 2:
 
   SECURITY — these are the reason to replace the published packages, not
   the cosmetics further down:
 
-  - the post-quantum handshake no longer runs on pqc_kyber. That crate is
-    unmaintained with no fixed release, and on the AVX2 path — which is
-    every desktop — it skips Fujisaki-Okamoto implicit rejection, so a
-    chosen-ciphertext attacker recovers the decapsulation key
+  - the transport handshake is post-quantum, and this is the release where
+    that became true rather than merely implemented. Every relay-to-relay
+    connection now runs Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3: an
+    ML-KEM-1024 encapsulation beside the X25519 one, with the secret mixed
+    in before the static key is encrypted. Until now the ML-KEM code
+    existed and no handshake ever reached it. Hybrid on purpose — a break
+    of either primitive leaves the other standing
+  - the ML-KEM implementation is FIPS 203 (`ml-kem`), not pqc_kyber. That
+    crate is unmaintained with no fixed release, and on the AVX2 path —
+    which is every desktop — it skips Fujisaki-Okamoto implicit rejection,
+    so a chosen-ciphertext attacker recovers the decapsulation key
     (RUSTSEC-2026-0290); its division timings also leak the secret
-    (RUSTSEC-2023-0079). Replaced with FIPS 203 ML-KEM-1024. This is
-    compiled into the engine, which only the Windows package ships, and
-    that binary is rebuilt here rather than carried over
+    (RUSTSEC-2023-0079). Both are compiled into the engine, which only the
+    Windows package ships, and that binary is rebuilt here rather than
+    carried over
   - HidraMail signs messages. Before, `from` was a string the sender
     chose and nothing checked it: anyone could look up your published key
     and send you mail under someone else's name
