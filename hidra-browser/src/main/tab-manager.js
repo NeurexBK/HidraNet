@@ -64,6 +64,20 @@ class TabManager {
     // Set while connected, so tabs opened after connecting inherit the same
     // network route instead of quietly going out direct.
     this.proxyRules = null;
+
+    // A BrowserView keeps whatever bounds it was given, so without this the
+    // page stays at the size the window had when the tab opened: resize the
+    // window and the content is either clipped or leaves a strip of empty
+    // chrome. Every one of these events changes the content area.
+    for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
+      this.window.on(ev, () => this._resizeActiveView());
+    }
+  }
+
+  _resizeActiveView() {
+    if (!this.window || this.window.isDestroyed()) return;
+    const tab = this.tabs.get(this.activeTabId);
+    if (tab && tab.view) this._resizeView(tab.view);
   }
 
   setProxyRules(rules) {
