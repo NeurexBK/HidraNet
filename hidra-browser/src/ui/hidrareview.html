@@ -44,7 +44,10 @@ a:hover{text-decoration:underline}
 .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
 .filters input,.filters select{background:#0a0a16;border:1px solid var(--line2);border-radius:8px;
 padding:9px 12px;color:var(--txt);font-family:inherit;font-size:13px;outline:none}
-.filters input{flex:1;min-width:150px}
+/* The base rule gives every control width:100%, which is right inside the
+   publish form and wrong here — it put each filter on a line of its own. */
+.filters input{flex:1 1 220px;min-width:150px;width:auto}
+.filters select{flex:0 1 auto;width:auto;min-width:132px}
 .filters input:focus,.filters select:focus{border-color:var(--acc)}
 .tools{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
 .tools button{padding:7px 14px;font-size:13px;background:transparent;color:var(--dim);
@@ -223,6 +226,33 @@ justify-content:center;font-size:20px;margin-bottom:12px}
 .hh-foot{text-align:center;color:var(--mut);font-size:14px;margin-top:22px}
 .hh-foot a,.hero-home h1 span{color:var(--acc);cursor:pointer}
 .top h1{cursor:pointer}
+
+/* What kind of thing is being listed. */
+.kindpick{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.kindpick button{background:var(--card);border:1px solid var(--line);color:var(--mut);
+border-radius:10px;padding:9px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+.kindpick button:hover{color:var(--txt);border-color:var(--acc)}
+.kindpick button.on{background:rgba(0,212,170,.12);border-color:var(--acc);color:var(--acc);font-weight:600}
+
+/* The address is the key. The warning that says so is not a hint. */
+.hint.warn{border-left:2px solid #e9a23b;padding-left:11px;color:#d6b483;line-height:1.6}
+.hint.warn b{color:#f0c177}
+
+/* The .hidra address on a card and on the page. */
+.addrline{font-family:'SF Mono',ui-monospace,monospace;font-size:12px;color:var(--acc);
+word-break:break-all;line-height:1.45}
+.kindtag{display:inline-block;font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;
+border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--mut);margin-left:6px;vertical-align:middle}
+.kindtag.site{border-color:rgba(0,212,170,.4);color:var(--acc)}
+
+/* Visiting is a decision, so it reads like one. */
+.visit{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:14px}
+.visit .vl{min-width:0}
+.visit .vt{font-size:13px;color:var(--mut);margin-bottom:4px}
+.visit .go{white-space:nowrap}
+.caution{background:rgba(233,162,59,.08);border:1px solid rgba(233,162,59,.3);color:#d6b483;
+border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.55;margin-bottom:14px}
 </style>
 </head>
 <body>
@@ -230,39 +260,44 @@ justify-content:center;font-size:20px;margin-bottom:12px}
 
   <div class="top">
     <h1>Hidra<span>Review</span></h1>
-    <span class="dot" id="cdot"></span><span class="conn" id="ctxt">a ligar…</span>
+    <span class="dot" id="cdot"></span><span class="conn" id="ctxt">connecting…</span>
   </div>
-  <div class="sub">Reviews of restaurants and local businesses, shared across the HidraNet network.</div>
+  <div class="sub">Find out whether a <b>.hidra</b> site or forum is worth opening — stars and comments from people who went there first.</div>
 
   <!-- ─── Entrada (o funil) ─── -->
   <div id="view-home">
     <div class="hero-home">
       <div class="hh-badge">HidraNet network · no servers, no accounts</div>
-      <h2>Put your business where customers trust it.</h2>
-      <p>Real reviews shared across the whole network, a page of your own for your business, and an address to write onto an NFC card — all inside HidraNet, encrypted and anonymous.</p>
+      <h2>Know what is behind a <span>.hidra</span> address before you open it.</h2>
+      <p>A .hidra address is a string of random letters. It tells you nothing about what is on the other side. This is where people who have already been there say what they found — a forum worth reading, a site worth trusting, or one to leave alone.</p>
       <div class="hh-cta">
-        <button class="go" id="hh-register">Register my business</button>
-        <button class="go ghost" id="hh-login">Sign in to my panel</button>
+        <button class="go" id="hh-explore-main">Browse sites</button>
+        <button class="go ghost" id="hh-register">List my site</button>
       </div>
-      <a class="hh-explore" id="hh-explore">Browse businesses →</a>
+      <a class="hh-explore" id="hh-explore">Already listed something? Sign in to your panel →</a>
     </div>
 
     <div class="offer">
-      <div class="oc"><div class="oi">⭐</div><h3>Real reviews</h3><p>Customers rate and comment. Everything shows up in the network-wide directory, with no middleman.</p></div>
-      <div class="oc"><div class="oi">🔗</div><h3>Page + NFC link</h3><p>Every business gets a page and a link that opens on any phone — write it onto the NFC card on the table.</p></div>
-      <div class="oc"><div class="oi">📬</div><h3>Alert on every review</h3><p>Each new review arrives in your HidraMail inbox, encrypted. Reply straight from your panel.</p></div>
-      <div class="oc"><div class="oi">✓</div><h3>Confirmed badge</h3><p>Prove the business is yours and earn the verified badge — confirmed on-chain, so nobody can forge it.</p></div>
+      <div class="oc"><div class="oi">⭐</div><h3>Judge it before you click</h3><p>Stars, review count and what people wrote, all on the card. You decide whether to open the address at all.</p></div>
+      <div class="oc"><div class="oi">💬</div><h3>Forums and communities</h3><p>Most of what gets built on HidraNet is a forum or a board. Find the ones that are alive instead of guessing from an address.</p></div>
+      <div class="oc"><div class="oi">📬</div><h3>Owners hear about it</h3><p>Every review reaches the owner's HidraMail, encrypted. They can answer from their panel.</p></div>
+      <div class="oc"><div class="oi">📍</div><h3>Places too</h3><p>A café or a shop can be listed the same way. The directory is mostly sites, but it is not only sites.</p></div>
     </div>
 
-    <div class="hh-foot">Already registered a business? <a id="hh-login2">Sign in to your panel</a>.</div>
+    <div class="hh-foot">Already listed a site or a place? <a id="hh-login2">Sign in to your panel</a>.</div>
   </div>
 
   <!-- ─── Directory ─── -->
   <div id="view-list" class="hidden">
     <div class="filters">
-      <input id="f-q" placeholder="Search by name…">
-      <select id="f-city"><option value="">All cities</option></select>
+      <input id="f-q" placeholder="Search by name, address or description…">
+      <select id="f-kind">
+        <option value="">Sites and places</option>
+        <option value="site">.hidra sites only</option>
+        <option value="place">Places only</option>
+      </select>
       <select id="f-cat"><option value="">All types</option></select>
+      <select id="f-city"><option value="">All cities</option></select>
       <button class="go ghost" id="btn-add">+ Add</button>
       <button class="go ghost" id="btn-owner">Owner panel</button>
     </div>
@@ -274,27 +309,43 @@ justify-content:center;font-size:20px;margin-bottom:12px}
     </div>
 
     <div id="add-form" class="card hidden">
-      <h2>Register your business</h2>
+      <h2 id="n-title">List a .hidra site</h2>
+
+      <label>What are you listing?</label>
+      <div class="kindpick" id="n-kind">
+        <button type="button" class="on" data-k="site">A .hidra site or forum</button>
+        <button type="button" data-k="place">A place in the physical world</button>
+      </div>
 
       <div class="row">
         <div>
-          <label for="n-name">Business name *</label>
-          <input id="n-name" maxlength="70" placeholder="Harbour Tavern">
+          <label for="n-name">Name *</label>
+          <input id="n-name" maxlength="70" placeholder="The Lantern Board">
         </div>
         <div>
           <label for="n-cat">Type</label>
-          <select id="n-cat">
-            <option>Restaurant</option><option>Cafe</option><option>Bar</option>
-            <option>Bakery</option><option>Hotel</option><option>Shop</option>
-            <option>Service</option><option>Other</option>
-          </select>
+          <select id="n-cat"></select>
+        </div>
+      </div>
+
+      <div class="only-site">
+        <label for="n-hidra">.hidra address *</label>
+        <input id="n-hidra" maxlength="80" placeholder="abcdefghijklmnopqrstuvwxyz.hidra"
+               autocomplete="off" spellcheck="false">
+        <div class="hint warn" id="n-hidra-hint">
+          <b>Read this before you publish.</b> On HidraNet the address <i>is</i> the
+          decryption key — that is how a site can live on relays that cannot read it.
+          Listing it here puts it in a public directory, so anyone will be able to
+          open the site. That is what you want for a forum or a public page, and it
+          cannot be taken back: once the address is out, it stays out. A site meant
+          for a few people does not belong in this directory.
         </div>
       </div>
 
       <label for="n-desc">Short description</label>
-      <input id="n-desc" maxlength="140" placeholder="Traditional food, wood-fired oven">
+      <input id="n-desc" maxlength="140" placeholder="Slow board for long-form posts, lightly moderated">
 
-      <div class="row">
+      <div class="row only-place">
         <div>
           <label for="n-city">City *</label>
           <input id="n-city" maxlength="50" placeholder="Lisboa">
@@ -306,12 +357,12 @@ justify-content:center;font-size:20px;margin-bottom:12px}
       </div>
 
       <div class="row">
-        <div>
+        <div class="only-place">
           <label for="n-phone">Phone</label>
           <input id="n-phone" maxlength="40" placeholder="+351 912 345 678">
         </div>
         <div>
-          <label for="n-site">Website or social link</label>
+          <label for="n-site">Clearnet link <span class="only-site">(optional mirror)</span></label>
           <input id="n-site" maxlength="200" placeholder="https://…">
         </div>
       </div>
@@ -320,36 +371,40 @@ justify-content:center;font-size:20px;margin-bottom:12px}
       <input id="n-mail" maxlength="60" placeholder="xxxxxxxxxxxxxxxx@hidra" autocomplete="off" spellcheck="false">
       <div class="hint" id="n-mail-hint">This is where every review is sent, encrypted. Open the <b>Mail</b> app in HidraNet, copy your address and paste it here. (Mail has to be opened at least once to receive.)</div>
 
-      <label for="n-hours">Opening hours</label>
-      <input id="n-hours" maxlength="120" placeholder="Mon–Sat, 12–3pm and 7–11pm">
+      <div class="only-place">
+        <label for="n-hours">Opening hours</label>
+        <input id="n-hours" maxlength="120" placeholder="Mon–Sat, 12–3pm and 7–11pm">
+      </div>
 
-      <label for="n-about">About the business (shown on the page)</label>
-      <textarea id="n-about" maxlength="900" placeholder="Tell the story of the place, what makes it different, who cooks…"></textarea>
+      <label for="n-about" id="n-about-l">About this site (shown on its page)</label>
+      <textarea id="n-about" maxlength="900" placeholder="What is it for, who it is for, how it is run, what the rules are…"></textarea>
 
-      <label for="n-menu">Specialities — one per line</label>
-      <textarea id="n-menu" maxlength="600" placeholder="House salad&#10;Seafood rice&#10;Custard tarts"></textarea>
+      <label for="n-menu" id="n-menu-l">What you will find there — one per line</label>
+      <textarea id="n-menu" maxlength="600" placeholder="Long-form writing&#10;No images&#10;Archive going back two years"></textarea>
 
-      <label>Photos</label>
-      <div class="drop" id="n-drop">Click to choose photos — they are downscaled before publishing</div>
+      <label id="n-photos-l">Screenshots</label>
+      <div class="drop" id="n-drop">Click to choose images — they are downscaled before publishing</div>
       <input type="file" id="n-files" accept="image/*" multiple style="display:none">
       <div class="thumbs" id="n-thumbs"></div>
 
       <div style="margin-top:16px;display:flex;gap:8px">
-        <button class="go" id="n-save">Publish business</button>
-        <button class="go ghost" id="n-cancel">Cancelar</button>
+        <button class="go" id="n-save">Publish listing</button>
+        <button class="go ghost" id="n-cancel">Cancel</button>
       </div>
       <div class="msg" id="n-msg"></div>
     </div>
 
     <div class="grid" id="grid"></div>
-    <div class="empty" id="list-empty">Loading businesses from the network…</div>
+    <div class="empty" id="list-empty">Loading listings from the network…</div>
   </div>
 
   <!-- ─── Business page ─── -->
   <div id="view-biz" class="hidden">
-    <a class="back" id="back">← All businesses</a>
+    <a class="back" id="back">← Back to the directory</a>
 
     <div class="site-hero" id="b-hero"></div>
+    <div id="b-caution"></div>
+    <div id="b-visit"></div>
     <div class="acts" id="b-acts"></div>
 
     <div class="cols">
@@ -359,7 +414,7 @@ justify-content:center;font-size:20px;margin-bottom:12px}
           <div class="about" id="b-about"></div>
         </div>
         <div class="card" id="b-menu-card">
-          <div class="sect-t">Especialidades</div>
+          <div class="sect-t">What you will find there</div>
           <div id="b-menu"></div>
         </div>
       </div>
@@ -379,7 +434,7 @@ justify-content:center;font-size:20px;margin-bottom:12px}
     </div>
 
     <div class="card" id="b-gal-card">
-      <div class="sect-t">Galeria</div>
+      <div class="sect-t">Screenshots</div>
       <div class="gal" id="b-gal"></div>
     </div>
 
@@ -399,7 +454,7 @@ justify-content:center;font-size:20px;margin-bottom:12px}
       <div class="row">
         <div>
           <label for="r-name">Your name *</label>
-          <input id="r-name" maxlength="36" placeholder="Como quer assinar">
+          <input id="r-name" maxlength="36" placeholder="How you want to sign">
         </div>
         <div>
           <label for="r-loc">Where you are from (optional)</label>
@@ -483,6 +538,56 @@ var TYPE_LEGACY = { 'Padaria': 'Bakery', 'Loja': 'Shop', 'Restaurante': 'Restaur
                     'Servico': 'Service', 'Serviço': 'Service', 'Outro': 'Other' };
 function normType(t) { return TYPE_LEGACY[t] || t; }
 
+// What the directory is mostly for. A .hidra address is sixteen random bytes
+// in base32 — it says nothing about what is behind it, which is the whole
+// problem this page exists to solve.
+var SITE_CATS  = ['Forum', 'Community', 'News & writing', 'Wiki', 'Library',
+                  'Marketplace', 'Tools', 'Games', 'Personal', 'Other'];
+var PLACE_CATS = ['Restaurant', 'Cafe', 'Bar', 'Bakery', 'Hotel', 'Shop',
+                  'Service', 'Other'];
+
+/**
+ * Which kind of listing this is.
+ *
+ * Records published before the directory covered sites carry no `kind`. They
+ * were all places, and they all have a city, so that is what decides it —
+ * guessing from the category would put a "Shop" that is a .hidra marketplace
+ * in the wrong half.
+ */
+function kindOf(b) {
+  if (b.kind === 'site' || b.kind === 'place') return b.kind;
+  return b.hidra ? 'site' : 'place';
+}
+
+/**
+ * A .hidra address, or '' if it is not one.
+ *
+ * sitepub.js builds an address from 16 random bytes, base32-encoded, so the
+ * label is 26 characters of [a-z2-7]. tab-manager only resolves labels of at
+ * least 24, and anything shorter would send the visitor to an error page, so
+ * the same floor applies here rather than accepting an address the browser
+ * cannot open.
+ */
+function normHidra(a) {
+  a = (a || '').trim().toLowerCase().replace(/^hidra:\/\//, '').replace(/\/.*$/, '');
+  if (!a) return '';
+  if (!/\.hidra$/.test(a)) a += '.hidra';
+  var label = a.slice(0, -6);
+  return (label.length >= 24 && /^[a-z2-7]+$/.test(label)) ? a : '';
+}
+
+/** Where the browser serves a .hidra site from. */
+function hidraUrl(addr) {
+  return 'http://127.0.0.1:8090/site?addr=' + encodeURIComponent(addr);
+}
+
+/** Enough of an address to recognise, without filling the card with it. */
+function shortAddr(a) {
+  if (!a) return '';
+  var label = a.replace(/\.hidra$/, '');
+  return label.length > 20 ? label.slice(0, 10) + '…' + label.slice(-6) + '.hidra' : a;
+}
+
 var BTC_ADDR = 'bc1ql68lqgkcurm7mv5zjdnprq6ya5ydq4a7pwuvsx';
 var BADGE_USD = 10;
 
@@ -496,7 +601,8 @@ var PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_cu
 var client = null, brokerIx = 0;
 var state = { biz: {}, revs: {}, pics: {}, replies: {}, sort: 'best', rsort: 'newest',
   open: null, stars: 0, draft: [], paidSats: null, btcPrice: null,
-  ownerSlug: null, ownerSecret: null, ownerOpen: false, editSlug: null };
+  ownerSlug: null, ownerSecret: null, ownerOpen: false, editSlug: null,
+  kind: 'site' };
 
 function rid(n) {
   var a = new Uint8Array(n || 8);
@@ -505,7 +611,7 @@ function rid(n) {
 }
 function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
-function when(t) { try { return new Date(t).toLocaleDateString('pt-PT'); } catch (e) { return ''; } }
+function when(t) { try { return new Date(t).toLocaleDateString(); } catch (e) { return ''; } }
 function toast(t) {
   var el = $('toast'); el.textContent = t; el.className = 'toast show';
   setTimeout(function () { el.className = 'toast'; }, 2600);
@@ -595,7 +701,7 @@ $('n-files').addEventListener('change', async function () {
 
 // ───────── connection ─────────
 function connect() {
-  $('ctxt').textContent = 'a ligar…';
+  $('ctxt').textContent = 'connecting…';
   client = mqtt.connect(MQTT_BROKERS[brokerIx], {
     clientId: 'hreview_' + rid(6), clean: true, reconnectPeriod: 4000, keepalive: 30
   });
@@ -744,6 +850,17 @@ function nameTaken(name) {
 }
 
 /**
+ * Is this address already in the directory?
+ *
+ * Two listings for one address would split its reviews in half, which is
+ * exactly the signal someone came here for.
+ */
+function hidraTaken(addr) {
+  for (var slug in state.biz) if (state.biz[slug].hidra === addr) return slug;
+  return null;
+}
+
+/**
  * A 4-digit salt derived from the slug. It is what links a payment to a
  * business: no two businesses ask for the same amount, so nobody
  * can claim another one's payment.
@@ -834,12 +951,16 @@ function statsOf(slug) {
 }
 
 function refreshFilterOptions() {
+  var kind = $('f-kind').value;
   var cities = {}, cats = {};
   for (var slug in state.biz) {
     var b = state.biz[slug];
+    if (kind && kindOf(b) !== kind) continue;
     if (b.city) cities[b.city] = 1;
     if (b.cat) cats[b.cat] = 1;
   }
+  // A city filter means nothing in a list of .hidra sites.
+  $('f-city').style.display = (kind === 'site') ? 'none' : '';
   fillSelect($('f-city'), Object.keys(cities).sort(), 'All cities');
   fillSelect($('f-cat'), Object.keys(cats).sort(), 'All types');
 }
@@ -857,14 +978,16 @@ function render() {
   refreshFilterOptions();
 
   var q = $('f-q').value.trim().toLowerCase();
-  var city = $('f-city').value, cat = $('f-cat').value;
+  var city = $('f-city').value, cat = $('f-cat').value, kind = $('f-kind').value;
 
   var list = [];
   for (var slug in state.biz) {
     var b = state.biz[slug];
+    if (kind && kindOf(b) !== kind) continue;
     if (city && b.city !== city) continue;
     if (cat && b.cat !== cat) continue;
-    if (q && (b.name + ' ' + (b.desc || '') + ' ' + (b.city || '')).toLowerCase().indexOf(q) < 0) continue;
+    var hay = (b.name + ' ' + (b.desc || '') + ' ' + (b.city || '') + ' ' + (b.hidra || '')).toLowerCase();
+    if (q && hay.indexOf(q) < 0) continue;
     list.push({ slug: slug, b: b, st: statsOf(slug), pics: photosOf(slug) });
   }
 
@@ -876,12 +999,13 @@ function render() {
   empty.style.display = list.length ? 'none' : 'block';
   if (!list.length) {
     var anyBiz = Object.keys(state.biz).length > 0;
-    empty.textContent = anyBiz ? 'No business matches that filter.'
-      : (client && client.connected ? 'No businesses yet. Add the first one.'
-        : 'Loading businesses from the network…');
+    empty.textContent = anyBiz ? 'Nothing matches that filter.'
+      : (client && client.connected ? 'Nothing listed yet. Add the first one.'
+        : 'Loading listings from the network…');
   }
 
   $('grid').innerHTML = list.map(function (it) {
+    var isSite = kindOf(it.b) === 'site';
     var cover = it.pics.length
       ? '<img src="' + it.pics[0] + '" alt="">'
       : '<div class="noimg">' + esc((it.b.name || '?').charAt(0).toUpperCase()) + '</div>';
@@ -890,12 +1014,18 @@ function render() {
       ? '<span class="st">' + starRow(Math.round(it.st.avg)) + '</span><span class="cnt">' +
         it.st.avg.toFixed(1) + ' · ' + it.st.count + '</span>'
       : '<span class="cnt">no reviews yet</span>';
-    var sub = [it.b.city, it.b.desc].filter(Boolean).join(' · ');
-    var seal = isVerified(it.slug) ? '<span class="seal">✓ Confirmado</span>' : '';
+    // For a site the address is the useful second line; a city is not one.
+    var sub = isSite ? (it.b.desc || '')
+                     : [it.b.city, it.b.desc].filter(Boolean).join(' · ');
+    var addr = (isSite && it.b.hidra)
+      ? '<div class="addrline">' + esc(shortAddr(it.b.hidra)) + '</div>' : '';
+    var kindTag = '<span class="kindtag' + (isSite ? ' site' : '') + '">' +
+      (isSite ? '.hidra' : 'place') + '</span>';
+    var seal = isVerified(it.slug) ? '<span class="seal">✓ Confirmed</span>' : '';
     return '<div class="biz" data-slug="' + esc(it.slug) + '">' +
       '<div class="cover">' + cover + tag + '</div>' +
-      '<div class="binfo"><div class="bn">' + esc(it.b.name) + seal + '</div>' +
-      '<div class="bd">' + esc(sub) + '</div>' +
+      '<div class="binfo"><div class="bn">' + esc(it.b.name) + kindTag + seal + '</div>' +
+      '<div class="bd">' + esc(sub) + '</div>' + addr +
       '<div class="br">' + rating + '</div></div></div>';
   }).join('');
 
@@ -924,7 +1054,7 @@ function renderBiz() {
   var verified = isVerified(state.open);
 
   // ── Header: the first photo is the page cover ──
-  var seal = verified ? '<span class="seal big">✓ Confirmado</span>' : '';
+  var seal = verified ? '<span class="seal big">✓ Confirmed</span>' : '';
   var rate = st.count
     ? '<span class="n">' + st.avg.toFixed(1) + '</span><span class="st">' + starRow(Math.round(st.avg)) +
       '</span><span class="cnt">' + st.count + (st.count === 1 ? ' review' : ' reviews') + '</span>'
@@ -938,15 +1068,46 @@ function renderBiz() {
     (b.desc ? '<div class="site-sub">' + esc(b.desc) + '</div>' : '') +
     '<div class="hero-rate">' + rate + '</div></div>';
 
+  // ── Open it, or do not ──
+  //
+  // This sits above everything else on the page and below the rating, because
+  // that is the order the decision gets made in: the stars are the reason
+  // someone came here instead of pasting the address straight into the bar.
+  var isSite = kindOf(b) === 'site';
+  var caution = '';
+  if (isSite) {
+    if (!st.count) {
+      caution = 'Nobody has reviewed this yet. The listing says what the owner ' +
+        'wants it to say and nothing has been checked — treat it like an address ' +
+        'a stranger handed you.';
+    } else if (st.avg < 2.5) {
+      caution = 'People who went there rated it ' + st.avg.toFixed(1) + ' out of 5. ' +
+        'Read the reviews below before you open it.';
+    }
+  }
+  $('b-caution').innerHTML = caution ? '<div class="caution">' + esc(caution) + '</div>' : '';
+
+  if (isSite && b.hidra) {
+    $('b-visit').innerHTML =
+      '<div class="visit"><div class="vl">' +
+        '<div class="vt">Opens in a new tab, inside HidraNet</div>' +
+        '<div class="addrline">' + esc(b.hidra) + '</div>' +
+      '</div>' +
+      '<a class="go" href="' + esc(hidraUrl(b.hidra)) + '" target="_blank" rel="noopener noreferrer">Open this site →</a>' +
+      '</div>';
+  } else {
+    $('b-visit').innerHTML = '';
+  }
+
   // ── Quick actions ──
   var acts = [];
-  var where = [b.addr, b.city].filter(Boolean).join(', ');
+  var where = isSite ? '' : [b.addr, b.city].filter(Boolean).join(', ');
   if (where) {
     acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/search?query=' +
       encodeURIComponent(where) + '"><span class="ic">◎</span><span>' +
-      '<span class="t">Como chegar</span><span class="v">' + esc(where) + '</span></span></a>');
+      '<span class="t">Directions</span><span class="v">' + esc(where) + '</span></span></a>');
   }
-  if (b.phone) {
+  if (b.phone && !isSite) {
     acts.push('<a class="act" href="tel:' + esc(b.phone.replace(/[^+0-9]/g, '')) + '">' +
       '<span class="ic">☎</span><span><span class="t">Phone</span>' +
       '<span class="v">' + esc(b.phone) + '</span></span></a>');
@@ -967,11 +1128,15 @@ function renderBiz() {
     if (has) { if (asHtml) $(holderId).innerHTML = value; else $(holderId).textContent = value; }
   }
   section('b-about-card', 'b-about', b.about || b.desc || '');
-  section('b-hours-card', 'b-hours', b.hours || '');
-  var linhas = (b.menu || '').split(String.fromCharCode(10))
+  section('b-hours-card', 'b-hours', isSite ? '' : (b.hours || ''));
+  $('b-menu-card').querySelector('.sect-t').textContent =
+    isSite ? 'What you will find there' : 'Specialities';
+  $('b-gal-card').querySelector('.sect-t').textContent =
+    isSite ? 'Screenshots' : 'Gallery';
+  var lines = (b.menu || '').split(String.fromCharCode(10))
     .map(function (l) { return l.trim(); })
     .filter(function (l) { return l.length; });
-  section('b-menu-card', 'b-menu', linhas.map(function (l) {
+  section('b-menu-card', 'b-menu', lines.map(function (l) {
     return '<div class="menu-item">' + esc(l) + '</div>';
   }).join(''), true);
 
@@ -1027,18 +1192,25 @@ function renderBiz() {
 function renderAddrBox(slug) {
   var hidra = hidraAddr(slug);
   var publicUrl = PUBLIC_BASE + '/r/' + slug;
+  var isSite = kindOf(state.biz[slug] || {}) === 'site';
 
   $('b-addr-box').innerHTML =
     '<div style="width:100%">' +
-      '<div class="lbl">Link for the NFC card</div>' +
+      '<div class="lbl">' + (isSite ? 'Link to share outside HidraNet' : 'Link for the NFC card') + '</div>' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
         '<span class="val" style="flex:1">' + esc(publicUrl) + '</span>' +
         '<button class="go ghost" id="addr-copy-pub">Copy</button>' +
       '</div>' +
       '<div style="font-size:12px;color:var(--mut);margin-top:7px;line-height:1.5">' +
-        'Write <b>this one</b> to the card. It opens on any phone, with nothing to install.' +
+        (isSite
+          ? 'Post <b>this one</b> where people who do not have HidraNet yet will see it. It opens in any browser and explains how to reach the site.'
+          : 'Write <b>this one</b> to the card. It opens on any phone, with nothing to install.') +
       '</div>' +
-      '<div class="lbl" style="margin-top:14px">Address inside HidraNet</div>' +
+      // For a site there are two .hidra addresses in play — the site's own and
+      // this listing's. Saying which is which stops the owner handing out the
+      // wrong one.
+      '<div class="lbl" style="margin-top:14px">' +
+        (isSite ? 'This review page, inside HidraNet' : 'Address inside HidraNet') + '</div>' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
         '<span class="val" style="flex:1">' + esc(hidra) + '</span>' +
         '<button class="go ghost" id="addr-copy-hidra">Copy</button>' +
@@ -1126,7 +1298,7 @@ function back() {
 $('back').addEventListener('click', back);
 $('lb').addEventListener('click', function () { this.className = 'lightbox'; });
 
-['f-q', 'f-city', 'f-cat'].forEach(function (id) {
+['f-q', 'f-city', 'f-cat', 'f-kind'].forEach(function (id) {
   $(id).addEventListener('input', render);
   $(id).addEventListener('change', render);
 });
@@ -1156,12 +1328,56 @@ $('pick').addEventListener('click', function (e) {
   [].forEach.call($('pick').children, function (s, i) { s.className = i < state.stars ? 'on' : ''; });
 });
 
+/**
+ * Show the fields that belong to the kind being listed, and nothing else.
+ *
+ * A .hidra forum has no opening hours and no street, and asking for them is
+ * how a form teaches people that it was not built for what they are doing.
+ */
+function setKind(kind) {
+  state.kind = (kind === 'place') ? 'place' : 'site';
+  var isSite = state.kind === 'site';
+
+  [].forEach.call($('n-kind').children, function (b) {
+    b.className = b.getAttribute('data-k') === state.kind ? 'on' : '';
+  });
+  [].forEach.call(document.querySelectorAll('.only-site'), function (el) {
+    el.style.display = isSite ? '' : 'none';
+  });
+  [].forEach.call(document.querySelectorAll('.only-place'), function (el) {
+    el.style.display = isSite ? 'none' : '';
+  });
+
+  var cats = isSite ? SITE_CATS : PLACE_CATS;
+  var keep = $('n-cat').value;
+  $('n-cat').innerHTML = cats.map(function (c) {
+    return '<option>' + esc(c) + '</option>';
+  }).join('');
+  if (cats.indexOf(keep) >= 0) $('n-cat').value = keep;
+
+  $('n-about-l').textContent = isSite
+    ? 'About this site (shown on its page)' : 'About the place (shown on its page)';
+  $('n-menu-l').textContent = isSite
+    ? 'What you will find there — one per line' : 'Specialities — one per line';
+  $('n-photos-l').textContent = isSite ? 'Screenshots' : 'Photos';
+  $('n-drop').textContent = isSite
+    ? 'Click to choose screenshots — they are downscaled before publishing'
+    : 'Click to choose photos — they are downscaled before publishing';
+  if (!state.editSlug) {
+    $('n-title').textContent = isSite ? 'List a .hidra site' : 'List a place';
+  }
+}
+
+[].forEach.call($('n-kind').children, function (btn) {
+  btn.addEventListener('click', function () { setKind(btn.getAttribute('data-k')); });
+});
+
 $('btn-add').addEventListener('click', function () {
   var f = $('add-form');
   var opening = f.className.indexOf('hidden') >= 0;
   if (opening) {   // always open in "new" mode (clears any previous editing state)
     state.editSlug = null;
-    f.querySelector('h2').textContent = 'Register your business';
+    setKind('site');
     $('n-msg').className = 'msg';
   }
   f.className = opening ? 'card' : 'card hidden';
@@ -1174,12 +1390,27 @@ $('n-cancel').addEventListener('click', function () {
 });
 
 $('n-save').addEventListener('click', async function () {
+  var kind = state.kind;
+  var isSite = kind === 'site';
   var name = $('n-name').value.trim();
-  var city = $('n-city').value.trim();
+  var city = isSite ? '' : $('n-city').value.trim();
+  var hidra = isSite ? normHidra($('n-hidra').value) : '';
   var mail = normMail($('n-mail').value);
   var editing = !!state.editSlug;
-  if (!name) { say('n-msg', 'Enter the business name.', 'err'); return; }
-  if (!city) { say('n-msg', 'Give the city — it is how people search.', 'err'); return; }
+  if (!name) { say('n-msg', 'Give it a name.', 'err'); return; }
+  if (isSite && !hidra) {
+    say('n-msg', 'That does not look like a .hidra address. It is the long string of ' +
+      'letters the publisher gave you — at least 24 characters, a-z and 2-7, ending in .hidra.', 'err');
+    return;
+  }
+  if (isSite) {
+    var clash = hidraTaken(hidra);
+    if (clash && clash !== state.editSlug) {
+      say('n-msg', 'That address is already listed as "' + state.biz[clash].name + '".', 'err');
+      return;
+    }
+  }
+  if (!isSite && !city) { say('n-msg', 'Give the city — it is how people search for a place.', 'err'); return; }
   if (!looksMail(mail)) { say('n-msg', 'Paste the owner HidraMail address (something like xxxx@hidra). Copy it from the Mail app.', 'err'); return; }
   if (!client || !client.connected) { say('n-msg', 'No connection to the network. Try again shortly.', 'err'); return; }
 
@@ -1188,14 +1419,16 @@ $('n-save').addEventListener('click', async function () {
   // does not count as a collision.)
   var taken = nameTaken(name);
   if (taken && taken !== state.editSlug) {
-    say('n-msg', '"' + state.biz[taken].name + '" already exists in ' +
-      (state.biz[taken].city || 'another city') + '. Choose a different name.', 'err');
+    say('n-msg', '"' + state.biz[taken].name + '" is already listed. Choose a different name.', 'err');
     return;
   }
 
-  var slug = editing ? state.editSlug : slugify(name + '-' + city);
+  // Two sites can share a name in a way two cafés in one city cannot, so the
+  // slug takes a few characters of the address to keep them apart.
+  var suffix = isSite ? hidra.slice(0, 6) : city;
+  var slug = editing ? state.editSlug : slugify(name + '-' + suffix);
   if (!slug) { say('n-msg', 'That name does not produce a valid address.', 'err'); return; }
-  if (!editing && state.biz[slug]) { say('n-msg', 'A business already exists at that address.', 'err'); return; }
+  if (!editing && state.biz[slug]) { say('n-msg', 'Something is already listed at that address.', 'err'); return; }
 
   // Owner key: a new one on registration; when editing, reuse the one from the
   // session opened in the Owner panel (which already proved ownership).
@@ -1221,16 +1454,18 @@ $('n-save').addEventListener('click', async function () {
 
   var ok = await publish('hreview/b/' + slug, {
     name: name,
+    kind: kind,
+    hidra: hidra,
     sats: sats,
     mail: mail,
     ownerHash: ownerHash,
     cat: $('n-cat').value,
     desc: $('n-desc').value.trim(),
     city: city,
-    addr: $('n-addr').value.trim(),
-    phone: $('n-phone').value.trim(),
+    addr: isSite ? '' : $('n-addr').value.trim(),
+    phone: isSite ? '' : $('n-phone').value.trim(),
     site: safeUrl($('n-site').value),
-    hours: $('n-hours').value.trim(),
+    hours: isSite ? '' : $('n-hours').value.trim(),
     about: $('n-about').value.trim(),
     menu: $('n-menu').value.trim(),
     at: prev.at || Date.now()
@@ -1378,7 +1613,7 @@ function renderOwner() {
 
   var head =
     '<div class="card"><h2>' + esc(b.name || slug) +
-      (verified ? ' <span class="seal big">✓ Confirmado</span>' : '') + '</h2>' +
+      (verified ? ' <span class="seal big">✓ Confirmed</span>' : '') + '</h2>' +
       '<div class="hint" style="margin-top:4px">Reviews reach you by Mail: <b>' + esc(b.mail || '—') + '</b></div>' +
       '<div class="ostat">' +
         '<div class="b"><div class="v">' + (st.count ? st.avg.toFixed(1) : '—') + '</div><div class="l">Average</div></div>' +
@@ -1454,13 +1689,15 @@ function ownerEdit(slug) {
   state.editSlug = slug;
   closeOwner();
   $('add-form').className = 'card';
-  $('n-name').value = b.name || ''; $('n-cat').value = b.cat || 'Restaurante';
+  setKind(kindOf(b));
+  $('n-name').value = b.name || ''; $('n-cat').value = b.cat || '';
+  $('n-hidra').value = b.hidra || '';
   $('n-desc').value = b.desc || ''; $('n-city').value = b.city || '';
   $('n-addr').value = b.addr || ''; $('n-phone').value = b.phone || '';
   $('n-site').value = b.site || ''; $('n-hours').value = b.hours || '';
   $('n-about').value = b.about || ''; $('n-menu').value = b.menu || '';
   $('n-mail').value = b.mail || '';
-  $('add-form').querySelector('h2').textContent = 'Edit ' + (b.name || 'business');
+  $('n-title').textContent = 'Edit ' + (b.name || 'listing');
   say('n-msg', 'Editing. Photos and the badge are kept; save to publish the changes.', 'work');
   $('add-form').scrollIntoView({ behavior: 'smooth' });
 }
@@ -1484,7 +1721,7 @@ function showList(openAdd) {
   render();
   if (openAdd) {
     state.editSlug = null;
-    $('add-form').querySelector('h2').textContent = 'Register your business';
+    setKind('site');
     $('n-msg').className = 'msg';
     $('add-form').className = 'card';
     $('add-form').scrollIntoView({ behavior: 'smooth' });
@@ -1492,8 +1729,8 @@ function showList(openAdd) {
   window.scrollTo(0, 0);
 }
 $('hh-register').addEventListener('click', function () { showList(true); });
-$('hh-explore').addEventListener('click', function () { showList(false); });
-$('hh-login').addEventListener('click', function () { openOwner(null); });
+$('hh-explore-main').addEventListener('click', function () { showList(false); });
+$('hh-explore').addEventListener('click', function () { openOwner(null); });
 $('hh-login2').addEventListener('click', function () { openOwner(null); });
 document.querySelector('.top h1').addEventListener('click', function () { showHome(); });
 
