@@ -29,15 +29,16 @@ presents roadmap as existing product does not survive technical due diligence.
 > created to expose the module tree that already existed under `src/`.
 >
 > **Current state, verified by reading the output:** `cargo build` and
-> `cargo check --all-targets` at zero errors; **`cargo test --all` with 71 tests,
-> all passing** (41 unit + 30 integration). `cargo clippy` still fails on the
+> `cargo check --all-targets` at zero errors; **`cargo test --all` with 110
+> tests, all passing** (92 unit + 18 integration); `cargo audit` with no
+> vulnerabilities. `cargo clippy` still fails on the
 > binary — 26 stylistic warnings that `main.rs`'s `#![deny(warnings)]` turns into
 > errors; they are not functional defects and are listed as technical debt.
 
 | Component | State | Notes |
 |---|---|---|
 | Onion routing | Implemented | Circuit construction, cells, layers |
-| Post-quantum cryptography | Implemented | **ML-KEM-1024** (`ml-kem`) |
+| Post-quantum cryptography | In the transport handshake | **X25519 + ML-KEM-1024** hybrid (`ml-kem`) |
 | Classical cryptography | Implemented | X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2 |
 | DHT (Kademlia) | Implemented | k-buckets, discovery, bootstrap |
 | SOCKS5 proxy | Implemented | Gateway for the browser |
@@ -133,7 +134,7 @@ round.
 
 ## 3. What differentiates us technically
 
-1. **Post-quantum already in production** (ML-KEM-1024) — Tor does not have it yet.
+1. **Post-quantum in the transport handshake** (X25519 + ML-KEM-1024 hybrid) — Tor does not have it yet.
 2. **Verified anonymity, not asserted** — the browser checks its exit IP against
    the Tor Project's own verifier and, if it cannot confirm it, **says so**
    instead of lying to the user. A rare and defensible product choice.

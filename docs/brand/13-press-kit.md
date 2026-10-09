@@ -60,7 +60,7 @@ Contact: **press@hidranet.org**
 | Website | hidranet.org |
 | Platforms | Windows, macOS, Linux |
 | Engine | Rust · ~17,000 lines |
-| Cryptography | ML-KEM-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, Argon2 |
+| Cryptography | Hybrid X25519 + ML-KEM-1024 handshake, Ed25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE3, Argon2id |
 
 ---
 
@@ -70,7 +70,9 @@ Three angles, with the honest framing of each.
 
 ### 3.1 Post-quantum, already implemented
 
-HidraNet uses **ML-KEM-1024** in production. It answers the *harvest now,
+HidraNet runs a hybrid **X25519 + ML-KEM-1024** key exchange in the
+transport handshake itself — every relay-to-relay connection, not a layer
+beside it. It answers the *harvest now,
 decrypt later* attack: traffic captured today and stored stays unreadable when a
 cryptographically relevant quantum computer exists.
 

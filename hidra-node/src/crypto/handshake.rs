@@ -2,16 +2,32 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305,
 };
+use ml_kem::ml_kem_1024::{Ciphertext, DecapsulationKey, EncapsulationKey};
+use ml_kem::{Decapsulate, Encapsulate, Kem, KeyExport, MlKem1024, TryKeyInit};
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{HidraError, Result};
 
-// "Noise_XX_25519_ChaChaPoly_BLAKE3" — exactly 32 bytes = HASHLEN
-const PROTOCOL_NAME: &[u8; 32] = b"Noise_XX_25519_ChaChaPoly_BLAKE3";
+// Noise XX with hybrid forward secrecy: the X25519 exchange is joined by an
+// ML-KEM-1024 encapsulation, and the session key depends on both.
+//
+// This matters for one attack and one only: an adversary who records traffic
+// today and decrypts it when a cryptographically relevant quantum computer
+// exists. X25519 falls to Shor's algorithm; ML-KEM does not, as far as anyone
+// knows. Against a classical attacker the X25519 half is still what carries
+// the weight, which is why both are here rather than ML-KEM alone — a lattice
+// break would otherwise take the whole thing with it.
+//
+// Longer than HASHLEN, so it is hashed rather than padded, per the Noise spec.
+const PROTOCOL_NAME: &[u8] = b"Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3";
 const DH_LEN: usize = 32;
 const TAG_LEN: usize = 16;
+/// ML-KEM-1024 encapsulation key, as it goes on the wire.
+const KEM_EK_LEN: usize = 1568;
+/// ML-KEM-1024 ciphertext.
+const KEM_CT_LEN: usize = 1568;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -117,7 +133,9 @@ struct SymmetricState {
 
 impl SymmetricState {
     fn initialize() -> Self {
-        let h = *PROTOCOL_NAME;
+        // Noise: a protocol name longer than HASHLEN is hashed; one that fits
+        // is zero-padded. Ours is longer, so it is hashed.
+        let h = *blake3::hash(PROTOCOL_NAME).as_bytes();
         Self {
             ck: h,
             h,
@@ -214,6 +232,13 @@ pub struct HandshakeState {
     rs: Option<PublicKey>,
     re: Option<PublicKey>,
     role: Role,
+    /// Initiator only: the decapsulation key for the ephemeral ML-KEM keypair
+    /// offered in message A. Ephemeral per handshake and never stored, so a
+    /// later compromise of this node cannot unlock a recorded session.
+    e1: Option<DecapsulationKey>,
+    /// Responder only: the initiator's encapsulation key, read from message A
+    /// and used in message B.
+    re1: Option<EncapsulationKey>,
 }
 
 impl HandshakeState {
@@ -225,6 +250,8 @@ impl HandshakeState {
             rs: None,
             re: None,
             role,
+            e1: None,
+            re1: None,
         }
     }
 
@@ -235,17 +262,27 @@ impl HandshakeState {
     }
 
     // -----------------------------------------------------------------------
-    // Message A: -> e
+    // Message A: -> e, e1
+    //
+    // e1 is a fresh ML-KEM-1024 encapsulation key. It is sent in the clear —
+    // there is no key yet — and hashed into the transcript, so message B
+    // cannot be answered with a substituted one without breaking the tag.
     // -----------------------------------------------------------------------
     pub fn write_message_a(&mut self) -> Result<Vec<u8>> {
         let e = StaticSecret::random_from_rng(OsRng);
         let e_pub = PublicKey::from(&e);
         self.e = Some(e);
 
-        self.sym()?.mix_hash(e_pub.as_bytes());
+        let (dk, ek) = MlKem1024::generate_keypair();
+        let ek_bytes = ek.to_bytes();
+        self.e1 = Some(dk);
 
-        let mut msg = Vec::with_capacity(DH_LEN);
+        self.sym()?.mix_hash(e_pub.as_bytes());
+        self.sym()?.mix_hash(&ek_bytes);
+
+        let mut msg = Vec::with_capacity(DH_LEN + KEM_EK_LEN);
         msg.extend_from_slice(e_pub.as_bytes());
+        msg.extend_from_slice(&ek_bytes);
 
         let payload_ct = self.sym()?.encrypt_and_hash(&[])?;
         msg.extend_from_slice(&payload_ct);
@@ -253,22 +290,47 @@ impl HandshakeState {
     }
 
     pub fn read_message_a(&mut self, message: &[u8]) -> Result<()> {
-        if message.len() < DH_LEN {
-            return Err(HidraError::Handshake("message A too short".into()));
+        // No tag: at message A there is no key yet, so Noise's
+        // EncryptWithAd returns the payload unchanged.
+        let min = DH_LEN + KEM_EK_LEN;
+        if message.len() < min {
+            return Err(HidraError::Handshake(format!(
+                "message A too short: {} < {min} — a peer still speaking the \
+                 X25519-only handshake sends {DH_LEN} bytes here",
+                message.len()
+            )));
         }
 
-        let re_bytes: [u8; 32] = message[..DH_LEN]
+        let mut off = 0;
+
+        let re_bytes: [u8; 32] = message[off..off + DH_LEN]
             .try_into()
             .map_err(|_| HidraError::Handshake("invalid ephemeral key in A".into()))?;
         self.re = Some(PublicKey::from(re_bytes));
-
         self.sym()?.mix_hash(&re_bytes);
-        self.sym()?.decrypt_and_hash(&message[DH_LEN..])?;
+        off += DH_LEN;
+
+        let ek_bytes = &message[off..off + KEM_EK_LEN];
+        // Rejects a malformed or non-canonical key rather than encapsulating
+        // to it in message B.
+        self.re1 = Some(EncapsulationKey::new_from_slice(ek_bytes).map_err(|_| {
+            HidraError::Handshake("ML-KEM encapsulation key rejected in A".into())
+        })?);
+        self.sym()?.mix_hash(ek_bytes);
+        off += KEM_EK_LEN;
+
+        self.sym()?.decrypt_and_hash(&message[off..])?;
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Message B: <- e, ee, s, es
+    // Message B: <- e, ee, ekem1, s, es
+    //
+    // ekem1 goes in right after ee and before s, which is the point of putting
+    // it here at all: by the time the responder's static key is encrypted, the
+    // chaining key already depends on the ML-KEM secret. An adversary holding
+    // a recording and a quantum computer breaks the X25519 halves and still
+    // cannot read the static key, let alone the transport.
     // -----------------------------------------------------------------------
     pub fn write_message_b(&mut self) -> Result<Vec<u8>> {
         // e — generate ephemeral
@@ -278,7 +340,9 @@ impl HandshakeState {
 
         self.sym()?.mix_hash(e_pub.as_bytes());
 
-        let mut msg = Vec::with_capacity(DH_LEN + DH_LEN + TAG_LEN + TAG_LEN);
+        let mut msg = Vec::with_capacity(
+            DH_LEN + KEM_CT_LEN + TAG_LEN + DH_LEN + TAG_LEN + TAG_LEN,
+        );
         msg.extend_from_slice(e_pub.as_bytes());
 
         // ee — DH(local_e, remote_e)
@@ -291,6 +355,17 @@ impl HandshakeState {
             .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?
             .diffie_hellman(&re);
         self.sym()?.mix_key(ee.as_bytes());
+
+        // ekem1 — encapsulate to the initiator's ML-KEM key and mix the secret
+        let re1 = self
+            .re1
+            .as_ref()
+            .ok_or_else(|| HidraError::Handshake("missing remote ML-KEM key for ekem1".into()))?;
+        let (kem_ct, mut kem_ss) = re1.encapsulate();
+        let enc_ct = self.sym()?.encrypt_and_hash(&kem_ct)?;
+        msg.extend_from_slice(&enc_ct);
+        self.sym()?.mix_key(&kem_ss);
+        kem_ss.as_mut_slice().zeroize();
 
         // s — encrypt & send static public key
         let s_pub = PublicKey::from(&self.s);
@@ -320,7 +395,7 @@ impl HandshakeState {
     }
 
     pub fn read_message_b(&mut self, message: &[u8]) -> Result<()> {
-        let min = DH_LEN + DH_LEN + TAG_LEN + TAG_LEN;
+        let min = DH_LEN + KEM_CT_LEN + TAG_LEN + DH_LEN + TAG_LEN + TAG_LEN;
         if message.len() < min {
             return Err(HidraError::Handshake(format!(
                 "message B too short: {} < {min}",
@@ -348,6 +423,23 @@ impl HandshakeState {
             .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?
             .diffie_hellman(&re);
         self.sym()?.mix_key(ee.as_bytes());
+
+        // ekem1 — decapsulate and mix the same secret in
+        let enc_ct = &message[off..off + KEM_CT_LEN + TAG_LEN];
+        let ct_bytes = self.sym()?.decrypt_and_hash(enc_ct)?;
+        let kem_ct = Ciphertext::try_from(ct_bytes.as_slice())
+            .map_err(|_| HidraError::Handshake("ML-KEM ciphertext has the wrong length".into()))?;
+        let e1 = self
+            .e1
+            .as_ref()
+            .ok_or_else(|| HidraError::Handshake("missing local ML-KEM key for ekem1".into()))?;
+        // ML-KEM answers a tampered ciphertext with an unrelated key rather
+        // than an error — implicit rejection. The mismatch surfaces at the
+        // next tag, which is the whole point: there is no oracle here.
+        let mut kem_ss = e1.decapsulate(&kem_ct);
+        self.sym()?.mix_key(&kem_ss);
+        kem_ss.as_mut_slice().zeroize();
+        off += KEM_CT_LEN + TAG_LEN;
 
         // s — decrypt remote static
         let enc_s = &message[off..off + DH_LEN + TAG_LEN];
@@ -479,6 +571,12 @@ impl HandshakeState {
         }
     }
 
+    /// The peer's static public key, once the handshake has learned it.
+    ///
+    /// Part of the library's surface and nothing in the binary calls it, which
+    /// is why the allow is here: this module is now shared between the two
+    /// targets, and the binary denies warnings.
+    #[allow(dead_code)]
     pub fn remote_static_public(&self) -> Option<&PublicKey> {
         self.rs.as_ref()
     }
@@ -540,5 +638,113 @@ mod tests {
         let mut ct = i_send.encrypt(b"secret").unwrap();
         ct[0] ^= 0xFF; // flip a byte
         assert!(r_recv.decrypt(&ct).is_err());
+    }
+
+    /// Runs the three messages and hands back the two states.
+    fn complete() -> (HandshakeState, HandshakeState) {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        let a = init.write_message_a().unwrap();
+        resp.read_message_a(&a).unwrap();
+        let b = resp.write_message_b().unwrap();
+        init.read_message_b(&b).unwrap();
+        let c = init.write_message_c().unwrap();
+        resp.read_message_c(&c).unwrap();
+        (init, resp)
+    }
+
+    /// The ML-KEM material is actually on the wire, not merely compiled in.
+    ///
+    /// This is the test that would have caught the state this code was in
+    /// before: a post_quantum module that existed, compiled, passed its own
+    /// tests, and was never reached by a single handshake.
+    #[test]
+    fn the_handshake_carries_ml_kem_material() {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+
+        let a = init.write_message_a().unwrap();
+        assert_eq!(a.len(), DH_LEN + KEM_EK_LEN, "message A must carry an encapsulation key");
+
+        resp.read_message_a(&a).unwrap();
+        let b = resp.write_message_b().unwrap();
+        assert_eq!(
+            b.len(),
+            DH_LEN + KEM_CT_LEN + TAG_LEN + DH_LEN + TAG_LEN + TAG_LEN,
+            "message B must carry an ML-KEM ciphertext"
+        );
+    }
+
+    /// Swapping the encapsulation key in flight breaks the handshake.
+    ///
+    /// Without this the key would be decoration: an attacker could replace it
+    /// with one they hold the decapsulation key for and learn the secret that
+    /// was supposed to be out of their reach.
+    #[test]
+    fn a_substituted_encapsulation_key_breaks_the_handshake() {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+
+        let mut a = init.write_message_a().unwrap();
+        // The attacker's own key, in place of the initiator's.
+        let (_, their_ek) = MlKem1024::generate_keypair();
+        a[DH_LEN..DH_LEN + KEM_EK_LEN].copy_from_slice(&their_ek.to_bytes());
+
+        resp.read_message_a(&a).unwrap(); // the responder cannot tell yet
+        let b = resp.write_message_b().unwrap();
+        // The initiator decapsulates with a key that does not match, so the
+        // chaining keys diverge and the static key will not decrypt.
+        assert!(
+            init.read_message_b(&b).is_err(),
+            "a swapped ML-KEM key must not produce a working session"
+        );
+    }
+
+    /// Tampering with the ciphertext breaks it too, by implicit rejection:
+    /// ML-KEM returns an unrelated key rather than an error, the chaining keys
+    /// diverge, and the next tag fails. That is what denies an attacker the
+    /// oracle a chosen-ciphertext attack needs.
+    #[test]
+    fn a_tampered_ml_kem_ciphertext_breaks_the_handshake() {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+
+        let a = init.write_message_a().unwrap();
+        resp.read_message_a(&a).unwrap();
+        let mut b = resp.write_message_b().unwrap();
+        b[DH_LEN + 4] ^= 0x01;
+
+        assert!(init.read_message_b(&b).is_err());
+    }
+
+    /// A peer still speaking the X25519-only handshake is refused outright
+    /// rather than negotiated down to it. There is no downgrade path: the
+    /// protocol name is hashed into the transcript, so the two cannot agree
+    /// on a key even if the lengths happened to line up.
+    #[test]
+    fn an_x25519_only_peer_is_refused() {
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        let old_style_message_a = vec![0u8; DH_LEN];
+        let err = resp.read_message_a(&old_style_message_a).unwrap_err();
+        assert!(format!("{err}").contains("too short"));
+    }
+
+    /// Two handshakes never land on the same key.
+    #[test]
+    fn distinct_handshakes_produce_distinct_keys() {
+        let (a_init, _) = complete();
+        let (b_init, _) = complete();
+        let (a_send, _) = a_init.into_transport().unwrap();
+        let (b_send, _) = b_init.into_transport().unwrap();
+        assert_ne!(a_send.session_key().unwrap(), b_send.session_key().unwrap());
+    }
+
+    /// Both sides agree on the same session key through the hybrid exchange.
+    #[test]
+    fn both_sides_agree_on_the_hybrid_session_key() {
+        let (init, resp) = complete();
+        let (i_send, _) = init.into_transport().unwrap();
+        let (_, r_recv) = resp.into_transport().unwrap();
+        assert_eq!(i_send.session_key().unwrap(), r_recv.session_key().unwrap());
     }
 }

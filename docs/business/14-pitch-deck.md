@@ -36,7 +36,7 @@
 ### 4 — Product (what already exists)
 > - **HidraReview** — reviews, NFC, owner panel, HidraMail notifications
 > - **HidraNet Browser** — bundled Tor, per-tab isolation, verified anonymity
-> - **hidra-node** — 17,000 lines of Rust: onion routing + **ML-KEM-1024** (post-quantum)
+> - **hidra-node** — 17,000 lines of Rust: onion routing + a hybrid **X25519 + ML-KEM-1024** handshake (post-quantum)
 > - HidraSearch · HidraChat · HidraMail · Forum · `.hidra` sites
 >
 > Open source, MIT.

@@ -9,7 +9,7 @@ Software licence: MIT · Repository: NeurexBK/HidraNet
 ## Abstract
 
 HidraNet is an open-source overlay network combining onion routing with
-post-quantum key encapsulation (ML-KEM-1024), a Kademlia DHT for peer
+hybrid post-quantum key encapsulation (X25519 + ML-KEM-1024), a Kademlia DHT for peer
 and service discovery, and a suite of end-to-end encrypted applications:
 messaging, mail, forum, search and a hidden-site publisher. The reference
 implementation consists of a Rust network engine (`hidra-node`) and a desktop
@@ -153,6 +153,17 @@ This section describes what is implemented, not what is planned.
 | Authenticated symmetric encryption | ChaCha20-Poly1305, AES-256-GCM |
 | Hash function | BLAKE3, SHA-256 |
 | Password-based derivation | Argon2 |
+
+**Where it runs.** The hybrid is the transport handshake itself, not a layer
+beside it: `Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3`. Message A carries
+an ephemeral ML-KEM-1024 encapsulation key alongside the X25519 ephemeral;
+message B carries the ciphertext, and the shared secret is mixed into the
+chaining key immediately after `ee` and before the responder's static key is
+encrypted. An adversary holding a recording and a quantum computer therefore
+breaks the X25519 halves and still cannot read the static key, let alone the
+transport. There is no negotiation and no fallback: the protocol name is
+hashed into the transcript, so a peer offering X25519-only Noise cannot
+complete a handshake rather than silently downgrading one.
 
 **Hybrid approach.** Key agreement combines X25519 with ML-KEM-1024. The session
 is only compromised if *both* are broken. It is the current recommendation for
@@ -306,9 +317,10 @@ Measures implemented:
 - Rust engine, ~17,000 lines; `cargo build` and `cargo check --all-targets` with
   no errors
 - Onion circuits, Kademlia DHT, relay, SOCKS5 proxy
-- ML-KEM-1024, X25519, Ed25519, ChaCha20-Poly1305, AES-GCM, BLAKE3, Argon2
-- **71 tests passing** (41 unit + 30 integration: `onion_routing`,
-  `dht_discovery`, `key_agreement`, `integration`)
+- Hybrid X25519 + ML-KEM-1024 handshake, Ed25519, ChaCha20-Poly1305, AES-GCM,
+  BLAKE3, Argon2id
+- **110 tests passing** (92 unit + 18 integration: `onion_routing`,
+  `dht_discovery`, `key_agreement`, `hybrid_on_the_wire`, `integration`)
 - Browser with bundled Tor, per-tab isolation, anti-fingerprinting
 - Six working applications
 

@@ -65,7 +65,8 @@ business already has one — it is a natural upsell. Marginal cost near zero.
 
 ### Line 4 — Engine licensing *(B2B, opportunistic)*
 
-`hidra-node` is onion routing with **ML-KEM-1024** in Rust, under MIT. There is
+`hidra-node` is onion routing with a hybrid **X25519 + ML-KEM-1024** handshake,
+in Rust, under MIT. There is
 enterprise demand for quantum-resistant transport layers. Commercial licence,
 support and integration — high-value, low-volume revenue. Do not plan for it;
 accept it when it appears.

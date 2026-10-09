@@ -15,7 +15,8 @@
 
 ### Where we realistically win
 
-1. **Post-quantum already in production.** ML-KEM-1024 in the core. None of the
+1. **Post-quantum in the transport handshake.** Every relay-to-relay
+   connection runs the X25519 + ML-KEM-1024 hybrid. None of the
    others has it. A strong argument for grants and for technical users.
 2. **Verified anonymity, not asserted.** The browser confirms its exit IP against
    the Tor Project's verifier and, if it cannot, says so. No competitor does
