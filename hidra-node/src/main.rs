@@ -5922,9 +5922,9 @@ mod apps {
             </div>
             <div class="my-address" id="myAddress">Loading…</div>
             <ul class="nav-items">
-                <li class="nav-item active" id="nav-inbox" onclick="showInbox()">&#128229; Caixa de Entrada</li>
-                <li class="nav-item" id="nav-sent" onclick="showSent()">&#128228; Enviados</li>
-                <li class="nav-item compose-btn" id="nav-compose" onclick="showCompose()">&#9998; Compor</li>
+                <li class="nav-item active" id="nav-inbox" onclick="showInbox()">&#128229; Inbox</li>
+                <li class="nav-item" id="nav-sent" onclick="showSent()">&#128228; Sent</li>
+                <li class="nav-item compose-btn" id="nav-compose" onclick="showCompose()">&#9998; Compose</li>
             </ul>
             <div class="sidebar-footer">
                 <div class="crypto-info">&#128274; E2E encrypted</div>
@@ -6327,7 +6327,7 @@ body {
         content.innerHTML = '<div class="loading">Loading…</div>';
         try {
             var mails = await api('/api/inbox');
-            renderMailList(mails, 'Caixa de Entrada');
+            renderMailList(mails, 'Inbox');
         } catch(e) {
             content.innerHTML = '<div class="empty-state"><p>Failed to load.</p></div>';
         }
@@ -6339,7 +6339,7 @@ body {
         content.innerHTML = '<div class="loading">Loading…</div>';
         try {
             var mails = await api('/api/sent');
-            renderMailList(mails, 'Enviados');
+            renderMailList(mails, 'Sent');
         } catch(e) {
             content.innerHTML = '<div class="empty-state"><p>Failed to load.</p></div>';
         }
@@ -6352,11 +6352,11 @@ body {
             '<div class="compose">' +
             '<h2>New message</h2>' +
             '<div class="form-group">' +
-                '<label>Para:</label>' +
-                '<input type="text" id="composeTo" placeholder="destinatario@hash.hidra">' +
+                '<label>To:</label>' +
+                '<input type="text" id="composeTo" placeholder="recipient@hash.hidra">' +
             '</div>' +
             '<div class="form-group">' +
-                '<label>Assunto:</label>' +
+                '<label>Subject:</label>' +
                 '<input type="text" id="composeSubject" placeholder="Subject">' +
             '</div>' +
             '<div class="form-group">' +
@@ -6458,13 +6458,13 @@ body {
                     '</div>' +
                     '<h2>' + esc(mail.subject) + '</h2>' +
                     '<div class="mail-meta">' +
-                        '<div>De: <strong>' + esc(mail.from_addr) + '</strong></div>' +
-                        '<div>Para: <strong>' + esc(mail.to_addr) + '</strong></div>' +
-                        '<div>Data: ' + date + '</div>' +
+                        '<div>From: <strong>' + esc(mail.from_addr) + '</strong></div>' +
+                        '<div>To: <strong>' + esc(mail.to_addr) + '</strong></div>' +
+                        '<div>Date: ' + date + '</div>' +
                         '<div class="' + vClass + '">' + vIcon + '</div>' +
                     '</div>' +
                     '<div class="mail-body-content">' + esc(mail.body) + '</div>' +
-                    '<div class="crypto-badge">\u{0001f512} Descriptografado localmente — X25519 + ChaCha20-Poly1305</div>' +
+                    '<div class="crypto-badge">\u{0001f512} Decrypted locally — X25519 + ChaCha20-Poly1305</div>' +
                 '</div>';
         } catch(e) {
             content.innerHTML = '<div class="empty-state"><p>Error: ' + e + '</p></div>';

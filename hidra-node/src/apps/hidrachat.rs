@@ -416,7 +416,7 @@ pub mod server {
         {
             let mut users = room.users.lock().await;
             if users.len() >= MAX_CLIENTS {
-                let err_msg = serde_json::json!({"type":"error","msg":"Sala lotada"});
+                let err_msg = serde_json::json!({"type":"error","msg":"Room is full"});
                 let _ = stream
                     .write_all(&encode_frame(1, err_msg.to_string().as_bytes()))
                     .await;
@@ -851,7 +851,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       <button id="btnGen" class="mini" title="Generate a strong password">🎲</button>
       <button id="btnCopyPass" class="mini" title="Copy password">⧉</button>
     </div>
-    <button id="btnJoin">Entrar na Sala 🔒</button>
+    <button id="btnJoin">Join room 🔒</button>
     <p class="hint"><b>Same password = same room.</b> It works from anywhere, across different networks and IPs. Agree a password with your friends: everyone who types the same one lands in the same room. The content is end-to-end encrypted, so nobody in between can read it.</p>
     <div id="recentBox" class="recent hidden">
       <div class="recent-t">Recent rooms (click to rejoin)</div>
