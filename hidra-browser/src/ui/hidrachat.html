@@ -18,8 +18,16 @@
   script-src still carries 'unsafe-inline', because the logic lives in inline
   script elements; moving it into separate files, and dropping that, is the
   next step. Until then the exits above are what the policy is doing.
+
+  worker-src names blob: because the bundled MQTT client runs its keepalive
+  timers in a Worker loaded from a blob URL. Without the directive the policy
+  falls back to script-src, the Worker is refused, and the rejection kills the
+  'connect' handler before it subscribes: the page still publishes, so sending
+  looks fine, and nothing ever arrives. A blob: Worker can only be created by
+  script already running in this document, which 'unsafe-inline' above already
+  allows, so this opens no exit the policy was closing.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraChat</title>
