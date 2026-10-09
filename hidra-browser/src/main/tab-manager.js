@@ -27,6 +27,17 @@ const INTERNAL_PAGES = {
   'donate.html': 'donate',
 };
 
+// The reverse of INTERNAL_PAGES: what to load when someone types the name.
+const INTERNAL_BY_NAME = {
+  newtab: 'newtab.html',
+  mail: 'hidramail.html',
+  chat: 'hidrachat.html',
+  forum: 'forum.html',
+  reviews: 'hidrareview.html',
+  publish: 'sitepub.html',
+  donate: 'donate.html',
+};
+
 // The same, for the pages the apps server hands out on the loopback port.
 const APPS_ROUTES = {
   '': 'chat',
@@ -291,6 +302,19 @@ class TabManager {
       } else {
         finalUrl = SEARCH_URL + '?q=' + encodeURIComponent(url);
       }
+    }
+
+    // The built-in apps, by name. The address bar reports these names when
+    // you are on one of these pages, so they have to work typed back in —
+    // showing a user an address they cannot use is worse than showing them
+    // the raw path.
+    const internal = INTERNAL_BY_NAME[
+      finalUrl.replace(/^hidra:\/\//, '').split(/[/?#]/)[0]
+    ];
+    if (internal && !finalUrl.startsWith('hidra://search')) {
+      tab.view.webContents.loadFile(path.join(__dirname, '..', 'ui', internal));
+      tab.url = finalUrl;
+      return;
     }
 
     if (finalUrl.startsWith('hidra://newtab')) {
@@ -565,4 +589,4 @@ class TabManager {
   }
 }
 
-module.exports = { TabManager };
+module.exports = { TabManager, INTERNAL_BY_NAME };

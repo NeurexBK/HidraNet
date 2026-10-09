@@ -39,6 +39,18 @@ for (const [input, expected, label] of cases) {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${label}${ok ? '' : `\n        got ${actual}\n        want ${expected}`}`);
 }
 
+// Every name the bar shows has to open when typed back in. A browser that
+// prints an address you cannot use is worse than one that prints the path.
+const { INTERNAL_BY_NAME } = require('../src/main/tab-manager');
+const shown = new Set(cases.map(([i]) => show.call(null, i))
+  .filter((u) => u.startsWith('hidra://')));
+for (const url of shown) {
+  const name = url.replace('hidra://', '').split(/[/?#]/)[0];
+  const ok = name === 'search' || Boolean(INTERNAL_BY_NAME[name]);
+  if (!ok) { failed++; console.log(`FAIL  ${url} is shown but cannot be typed back in`); }
+  else console.log(`ok    ${url} round-trips`);
+}
+
 // The install path must never reach the address bar.
 const leaked = show.call(null, `${UI}newtab.html`).includes(__dirname);
 if (leaked) { failed++; console.log('FAIL  the install path leaks into the address bar'); }
