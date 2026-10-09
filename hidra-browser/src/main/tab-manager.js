@@ -132,7 +132,7 @@ class TabManager {
       });
     });
 
-    // Cancelar em onBeforeRequest devolve ERR_BLOCKED_BY_CLIENT (-20) e o
+    // Cancelling in onBeforeRequest returns ERR_BLOCKED_BY_CLIENT (-20) and the
     // user saw a Chromium error screen with no explanation. Tell them why.
     view.webContents.on('did-fail-load', (_e, errorCode, _desc, failedUrl, isMainFrame) => {
       if (!isMainFrame || errorCode !== -20) return;

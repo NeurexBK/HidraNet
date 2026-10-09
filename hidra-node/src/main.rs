@@ -5920,7 +5920,7 @@ mod apps {
                 <div class="logo">&#128013;</div>
                 <h1>HidraMail</h1>
             </div>
-            <div class="my-address" id="myAddress">Carregando...</div>
+            <div class="my-address" id="myAddress">Loading…</div>
             <ul class="nav-items">
                 <li class="nav-item active" id="nav-inbox" onclick="showInbox()">&#128229; Caixa de Entrada</li>
                 <li class="nav-item" id="nav-sent" onclick="showSent()">&#128228; Enviados</li>
@@ -5932,7 +5932,7 @@ mod apps {
             </div>
         </nav>
         <main id="content">
-            <div class="loading">Carregando...</div>
+            <div class="loading">Loading…</div>
         </main>
     </div>
     <script src="/app.js"></script>
@@ -6324,7 +6324,7 @@ body {
     window.showInbox = async function() {
         updateNav('inbox');
         var content = document.getElementById('content');
-        content.innerHTML = '<div class="loading">Carregando...</div>';
+        content.innerHTML = '<div class="loading">Loading…</div>';
         try {
             var mails = await api('/api/inbox');
             renderMailList(mails, 'Caixa de Entrada');
@@ -6336,7 +6336,7 @@ body {
     window.showSent = async function() {
         updateNav('sent');
         var content = document.getElementById('content');
-        content.innerHTML = '<div class="loading">Carregando...</div>';
+        content.innerHTML = '<div class="loading">Loading…</div>';
         try {
             var mails = await api('/api/sent');
             renderMailList(mails, 'Enviados');
@@ -6390,7 +6390,7 @@ body {
             return;
         }
 
-        status.textContent = 'Enviando...';
+        status.textContent = 'Sending…';
         status.style.color = '#8892a4';
 
         try {

@@ -1282,7 +1282,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
       <div class="s9-modal-msg" id="s9-modal-msg"></div>
       <input type="text" id="s9-modal-input" class="ed-input" autocomplete="off" spellcheck="false">
       <div class="s9-modal-actions">
-        <button class="btn btn-ghost" id="s9-modal-cancel">Cancelar</button>
+        <button class="btn btn-ghost" id="s9-modal-cancel">Cancel</button>
         <button class="btn btn-primary" id="s9-modal-ok">Confirmar</button>
       </div>
     </div>
@@ -1738,7 +1738,7 @@ async function publishSite() {
   let lastSite = null;
 
   for (const file of pendingFiles) {
-    prog.innerHTML = '<div class="prog-text">Enviando ' + escapeHtml(file.name) + ' (' + (uploaded+1) + '/' + total + ')</div>' +
+    prog.innerHTML = '<div class="prog-text">Uploading ' + escapeHtml(file.name) + ' (' + (uploaded+1) + '/' + total + ')</div>' +
       '<div class="prog-bar"><div class="prog-fill" style="width:' + Math.round((uploaded/total)*100) + '%"></div></div>';
 
     const formData = new FormData();
