@@ -2,12 +2,17 @@ const { BrowserView, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
 
 // HidraNet apps (chat, mail, forum, search, sites) are served by main.js on this
 // port — not by the hidra-node engine, so they work even when the engine is not
 // running. Keep in sync with CHAT_PORT in main.js.
 const APPS_PORT = 8090;
+
+// Trailing slash matters: without it, a sibling directory whose name merely
+// starts with "ui" would match the prefix too.
+const UI_ROOT_URL = pathToFileURL(path.join(__dirname, '..', 'ui') + path.sep).href;
 const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
 const SEARCH_URL = `${APPS_ORIGIN}/search`;
 
@@ -44,6 +49,9 @@ class TabManager {
     const view = new BrowserView({
       webPreferences: {
         preload: path.join(__dirname, '..', 'renderer', 'tab-preload.js'),
+        // Tells the preload which file:// URLs are our own shipped pages. It
+        // runs sandboxed and cannot work that out for itself.
+        additionalArguments: [`--hidra-ui-root=${UI_ROOT_URL}`],
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,

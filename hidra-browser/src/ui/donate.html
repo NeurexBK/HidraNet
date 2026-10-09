@@ -1,6 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!--
+  These pages hold the keys to the user's mail and rooms in this origin's
+  storage, and they render text that arrives from strangers. Script injected
+  into one of them is only worth something if it can send what it steals
+  somewhere, so the policy below is built around cutting off every exit:
+  connect-src names the handful of hosts each page genuinely talks to,
+  img-src refuses remote URLs (an <img src> to an attacker's host is the
+  simplest beacon there is), form-action and base-uri are shut, and
+  frame-ancestors stops the page being framed.
+
+  script-src still carries 'unsafe-inline', because the logic lives in inline
+  <script> blocks; moving it into separate files, and dropping that, is the
+  next step. Until then the exits above are what the policy is doing.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Support HidraNet</title>

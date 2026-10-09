@@ -4,12 +4,27 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Only expose the proxy status API to internal hidra:// pages
-// and file:// pages (newtab). External web pages get nothing.
+// Only our own shipped pages get this API. The test used to be
+// `url.startsWith('file://')`, which is every file on the disk: any .html the
+// user downloaded and opened in a tab was handed proxy.disconnect(), which
+// turns Tor off, along with tor.newIdentity(), prefs.save() and
+// sevennine.start(). A page cannot be trusted for living on this machine —
+// only for being one of ours.
+//
+// The root comes in through additionalArguments because this preload runs
+// sandboxed, where require() reaches only electron, events, timers and url —
+// no path, no fs. A plain string prefix is enough: the URL constructor
+// resolves ../ before we compare, so a page cannot walk out of the directory
+// by spelling its way out.
+const UI_ROOT_FLAG = '--hidra-ui-root=';
+const uiRoot = (process.argv.find((a) => a.startsWith(UI_ROOT_FLAG)) || '')
+  .slice(UI_ROOT_FLAG.length);
+
 const isInternalPage = (() => {
   try {
-    const url = window.location.href;
-    return url.startsWith('file://') || url.startsWith('hidra://');
+    const href = new URL(window.location.href).href;
+    if (href.startsWith('hidra://')) return true;
+    return Boolean(uiRoot) && href.startsWith(uiRoot);
   } catch {
     return false;
   }

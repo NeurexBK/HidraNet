@@ -7793,6 +7793,17 @@ mod analytics {
                         "/api/stats" => handle_stats(&db),
                         "/api/traffic" => handle_traffic(&db),
                         "/api/geo" => handle_geo(&db),
+                        // Chart.js came from cdn.jsdelivr.net until now. On a
+                        // dashboard whose whole point is that nobody watches
+                        // this node, that announced the node to a CDN on every
+                        // page load and gave whoever controls that CDN — or
+                        // anyone who can tamper with the response — script
+                        // execution inside it.
+                        "/vendor/chart.umd.min.js" => (
+                            "200 OK",
+                            "text/javascript; charset=utf-8",
+                            VENDOR_CHART_JS.to_string(),
+                        ),
                         _ => handle_dashboard_page(),
                     };
 
@@ -7805,6 +7816,9 @@ mod analytics {
                 });
             }
         }
+
+        /// Chart.js, bundled rather than fetched.
+        const VENDOR_CHART_JS: &str = include_str!("../assets/vendor/chart.umd.min.js");
 
         fn handle_stats(db: &AnalyticsDb) -> (&'static str, &'static str, String) {
             let snap = db.latest_snapshot().ok().flatten();
@@ -7843,7 +7857,7 @@ mod analytics {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraNet — Analytics Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="/vendor/chart.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{

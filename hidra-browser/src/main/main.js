@@ -545,7 +545,18 @@ function startChatServer(attempt) {
     else if (p.indexOf('/site') === 0) html = pages.site;
     else if (p.indexOf('/search') === 0) html = pages.search;
     else if (p.indexOf('/reviews') === 0) html = pages.reviews;
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      // Each page carries its own CSP in a <meta>, but frame-ancestors is
+      // ignored there — a meta policy cannot stop the page being framed,
+      // because by the time it parses the framing has happened. It has to
+      // come down as a header, so it does, here.
+      'Content-Security-Policy': "frame-ancestors 'none'",
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+    });
     res.end(html);
   });
   chatServer.on('error', (e) => {
