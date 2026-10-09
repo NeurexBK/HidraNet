@@ -875,7 +875,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
       <span class="room-tag" id="roomTag" title="Click to copy">—</span>
     </div>
     <div class="h-right">
-      <span class="status" id="connStatus">Conectando...</span>
+      <span class="status" id="connStatus">Connecting…</span>
       <span class="count-badge" id="countBadge">0 online</span>
     </div>
   </header>
@@ -987,7 +987,7 @@ function relayOpen(){
     return;
   }
   var topic='hidra/'+relayTopic;
-  $('connStatus').textContent='Conectando...';$('connStatus').className='status';
+  $('connStatus').textContent='Connecting…';$('connStatus').className='status';
   try{
     mqttClient=mqtt.connect(MQTT_BROKERS[0],{
       clientId:'hidra_'+myCid+Math.floor(Math.random()*99999),
@@ -1003,7 +1003,7 @@ function relayOpen(){
     relayPublish({k:'join',nick:nick,color:myColor,cid:myCid,t:Date.now()});
   });
   mqttClient.on('reconnect',function(){
-    $('connStatus').textContent='Reconectando...';$('connStatus').className='status';
+    $('connStatus').textContent='Reconnecting…';$('connStatus').className='status';
   });
   mqttClient.on('message',function(t,payload){ onRelayMessage(payload.toString()); });
   mqttClient.on('error',function(){});
@@ -1232,7 +1232,7 @@ function connectWS(){
   }
   ws.onopen=function(){
     reconnAttempts=0;
-    $('connStatus').textContent=serverAddr?('Conectado ('+host+')'):'Conectado';
+    $('connStatus').textContent=serverAddr?('Connected ('+host+')'):'Connected';
     $('connStatus').className='status on';
     ws.send(JSON.stringify({type:'join',nick:nick,room:roomId,pass:roomPass}));
   };
@@ -1240,7 +1240,7 @@ function connectWS(){
     try{handleMsg(JSON.parse(ev.data))}catch(e){}
   };
   ws.onclose=function(){
-    $('connStatus').textContent='Desconectado';
+    $('connStatus').textContent='Disconnected';
     $('connStatus').className='status';
     if(reconnAttempts<MAX_RECONN){
       reconnAttempts++;
@@ -1266,12 +1266,12 @@ function handleMsg(m){
       else addSys('Connected to room #'+roomId+' — messages are in plaintext');
       break;
     case 'joined':
-      addSys(m.nick+' entrou na sala');
+      addSys(m.nick+' joined the room');
       $('countBadge').textContent=m.count+' online';
       addUser(m.nick,m.color);
       break;
     case 'left':
-      addSys(m.nick+' saiu da sala');
+      addSys(m.nick+' left the room');
       $('countBadge').textContent=m.count+' online';
       removeUser(m.nick);
       clearTyping(m.nick);
