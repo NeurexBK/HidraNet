@@ -12,7 +12,7 @@
   frame-ancestors stops the page being framed.
 
   script-src still carries 'unsafe-inline', because the logic lives in inline
-  <script> blocks; moving it into separate files, and dropping that, is the
+  script elements; moving it into separate files, and dropping that, is the
   next step. Until then the exits above are what the policy is doing.
 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884; object-src 'none'; base-uri 'none'; form-action 'none'">
@@ -191,34 +191,147 @@ var state={ ids:[], active:0, box:{inbox:[],sent:[],drafts:[],trash:[],spam:[]},
 var resolvers={};
 
 // ───────── crypto ─────────
+//
+// v1 of this app encrypted to the recipient and stopped there. Nothing signed
+// the message, so `from` was a string the sender chose: anyone who looked up
+// your public key — it is published, that is the point of the directory —
+// could send you mail that arrived as your bank, your co-founder, anyone. The
+// check v1 did run ("self-certifying, anti-spoofing") only confirmed the
+// *recipient's* key matched the *recipient's* address, which says nothing
+// about who sent it.
+//
+// So an identity is now two keys: ECDH for encryption and ECDSA for
+// signatures, with the address derived from both. Binding both into the
+// address is what makes it self-certifying in the direction that matters —
+// the address a message claims to come from can only be produced by someone
+// holding the signing key that signed it.
+//
+// Also fixed here: the raw ECDH output was used directly as the AES key, with
+// no KDF and nothing tying it to the exchange it came from. It goes through
+// HKDF now, with the ephemeral key and the recipient's key as context, and
+// the ephemeral key is bound in as AEAD associated data.
+
+var MAIL_VERSION = 2;
+
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
 function b64e(u){var s='';for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s);}
 function b64d(s){var r=atob(s),u=new Uint8Array(r.length);for(var i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u;}
-async function genId(){
-  var kp=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
-  var pubRaw=new Uint8Array(await subtle.exportKey('raw',kp.publicKey));
-  var addr=await addrFromPub(pubRaw);
-  return { addr:addr, pubRaw:b64e(pubRaw), privJwk:await subtle.exportKey('jwk',kp.privateKey), client:b32(crypto.getRandomValues(new Uint8Array(10))), created:Date.now() };
+
+// Length-prefixed join. Concatenating fields plainly would let one message's
+// fields be re-cut into another's — a subject ending in the body's first word
+// signs the same bytes as a shorter subject and a longer body — and the
+// signature would carry over.
+function joinParts(parts){
+  var total=0,i;
+  for(i=0;i<parts.length;i++) total+=4+parts[i].length;
+  var out=new Uint8Array(total),o=0;
+  for(i=0;i<parts.length;i++){
+    var n=parts[i].length;
+    out[o]=(n>>>24)&255; out[o+1]=(n>>>16)&255; out[o+2]=(n>>>8)&255; out[o+3]=n&255;
+    out.set(parts[i],o+4); o+=4+n;
+  }
+  return out;
 }
-async function addrFromPub(pubRaw){ var h=new Uint8Array(await subtle.digest('SHA-256',pubRaw)); return b32(h.slice(0,10))+'@hidra'; }
+
+async function genId(){
+  var ecdh=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+  var ecdsa=await subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  var encPub=new Uint8Array(await subtle.exportKey('raw',ecdh.publicKey));
+  var sigPub=new Uint8Array(await subtle.exportKey('raw',ecdsa.publicKey));
+  return {
+    v: MAIL_VERSION,
+    addr: await addrFrom(encPub,sigPub),
+    pubRaw: b64e(encPub),
+    sigPubRaw: b64e(sigPub),
+    privJwk: await subtle.exportKey('jwk',ecdh.privateKey),
+    sigPrivJwk: await subtle.exportKey('jwk',ecdsa.privateKey),
+    client: b32(crypto.getRandomValues(new Uint8Array(10))),
+    created: Date.now()
+  };
+}
+
+// Both keys go into the address, so a holder of one cannot speak for the other.
+async function addrFrom(encPub,sigPub){
+  var h=new Uint8Array(await subtle.digest('SHA-256',
+    joinParts([te.encode('hidramail-addr-v2'),encPub,sigPub])));
+  return b32(h.slice(0,10))+'@hidra';
+}
+
 async function importPriv(jwk){ return subtle.importKey('jwk',jwk,{name:'ECDH',namedCurve:'P-256'},false,['deriveBits']); }
 async function importPub(raw){ return subtle.importKey('raw',raw,{name:'ECDH',namedCurve:'P-256'},false,[]); }
-async function deriveAES(priv,pub){ var b=await subtle.deriveBits({name:'ECDH',public:pub},priv,256); return subtle.importKey('raw',b,{name:'AES-GCM'},false,['encrypt','decrypt']); }
-async function encryptTo(recipPubRaw,text){
+async function importSigPriv(jwk){ return subtle.importKey('jwk',jwk,{name:'ECDSA',namedCurve:'P-256'},false,['sign']); }
+async function importSigPub(raw){ return subtle.importKey('raw',raw,{name:'ECDSA',namedCurve:'P-256'},false,['verify']); }
+
+// HKDF over the ECDH output, with both public keys as context. Using the raw
+// shared secret as an AES key, as v1 did, leaves it unbound to the exchange
+// and with no domain separation from any other use of the same curve point.
+async function deriveAES(priv,pub,ephPub,recipPub){
+  var bits=await subtle.deriveBits({name:'ECDH',public:pub},priv,256);
+  var hk=await subtle.importKey('raw',bits,'HKDF',false,['deriveKey']);
+  return subtle.deriveKey(
+    { name:'HKDF', hash:'SHA-256', salt:new Uint8Array(0),
+      info: joinParts([te.encode('hidramail-aead-v2'),ephPub,recipPub]) },
+    hk, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
+}
+
+async function encryptTo(recipEncPub,text){
   var eph=await subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
-  var aes=await deriveAES(eph.privateKey, await importPub(recipPubRaw));
+  var ephPub=new Uint8Array(await subtle.exportKey('raw',eph.publicKey));
+  var aes=await deriveAES(eph.privateKey, await importPub(recipEncPub), ephPub, recipEncPub);
   var iv=crypto.getRandomValues(new Uint8Array(12));
-  var ct=new Uint8Array(await subtle.encrypt({name:'AES-GCM',iv},aes,te.encode(text)));
-  var ep=new Uint8Array(await subtle.exportKey('raw',eph.publicKey));
-  var out=new Uint8Array(ep.length+12+ct.length); out.set(ep,0); out.set(iv,ep.length); out.set(ct,ep.length+12);
+  // The ephemeral key is authenticated, not merely prepended: swapping it for
+  // another now breaks the tag instead of silently changing the derivation.
+  var ct=new Uint8Array(await subtle.encrypt(
+    {name:'AES-GCM',iv:iv,additionalData:ephPub},aes,te.encode(text)));
+  var out=new Uint8Array(ephPub.length+12+ct.length);
+  out.set(ephPub,0); out.set(iv,ephPub.length); out.set(ct,ephPub.length+12);
   return b64e(out);
 }
-async function decryptWith(privJwk,b64){
-  var a=b64d(b64); var ep=a.slice(0,65),iv=a.slice(65,77),ct=a.slice(77);
-  var priv=await importPriv(privJwk);
-  var aes=await deriveAES(priv, await importPub(ep));
-  return td.decode(await subtle.decrypt({name:'AES-GCM',iv},aes,ct));
+
+// Decrypt for one of our own identities. Needs that identity's public key too,
+// because it is part of the HKDF context.
+async function decryptFor(id,b64){
+  var a=b64d(b64);
+  if(a.length<65+12+16) throw new Error('ciphertext too short');
+  var ephPub=a.slice(0,65),iv=a.slice(65,77),ct=a.slice(77);
+  var aes=await deriveAES(await importPriv(id.privJwk), await importPub(ephPub),
+                          ephPub, b64d(id.pubRaw));
+  return td.decode(await subtle.decrypt(
+    {name:'AES-GCM',iv:iv,additionalData:ephPub},aes,ct));
 }
+
+// The bytes a signature covers. Everything the reader is shown, plus the
+// recipient — without `to` in here, a message to one person could be replayed
+// into someone else's inbox still carrying a valid signature.
+function signedBytes(m){
+  return joinParts([
+    te.encode('hidramail-sig-v2'),
+    te.encode(String(m.mid)), te.encode(String(m.from)), te.encode(String(m.to)),
+    te.encode(String(m.date)), te.encode(String(m.subject||'')), te.encode(String(m.body||''))
+  ]);
+}
+
+async function signMail(id,m){
+  var sig=new Uint8Array(await subtle.sign(
+    {name:'ECDSA',hash:'SHA-256'}, await importSigPriv(id.sigPrivJwk), signedBytes(m)));
+  return b64e(sig);
+}
+
+// Returns the proven sender address, or null. Null means the message does not
+// go in the inbox: a message whose sender cannot be proven is worth less than
+// no message, because the From line is the whole point of the attack.
+async function verifyMail(m){
+  try{
+    if(m.v!==MAIL_VERSION || !m.sp || !m.ss || !m.sig) return null;
+    var encPub=b64d(m.sp), sigPub=b64d(m.ss);
+    // The claimed sender must be the address those two keys produce.
+    if(await addrFrom(encPub,sigPub)!==m.from) return null;
+    var ok=await subtle.verify({name:'ECDSA',hash:'SHA-256'},
+      await importSigPub(sigPub), b64d(m.sig), signedBytes(m));
+    return ok ? m.from : null;
+  }catch(e){ return null; }
+}
+
 async function inboxTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmail:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmail/'+s; }
 async function dirTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmaildir:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmaildir/'+s; }
 
@@ -242,7 +355,17 @@ async function connect(){
   client.on('message',onMessage);
   ready=true;
 }
-function publishDirs(){ state.ids.forEach(async function(id){ try{ client.publish(await dirTopic(id.addr), id.pubRaw, {qos:0,retain:true}); }catch(e){} }); }
+// The directory entry carries both public keys. A sender resolves it and
+// checks that the pair reproduces the address it is sending to, so a poisoned
+// entry cannot redirect mail — at worst it stops delivery, which is visible,
+// rather than diverting it, which is not.
+function dirEntry(id){ return JSON.stringify({v:MAIL_VERSION,e:id.pubRaw,s:id.sigPubRaw}); }
+function publishDirs(){
+  state.ids.forEach(async function(id){
+    if(!id.sigPubRaw) return; // legacy identity: receive-only, never advertised
+    try{ client.publish(await dirTopic(id.addr), dirEntry(id), {qos:0,retain:true}); }catch(e){}
+  });
+}
 setInterval(function(){ if(client&&client.connected) publishDirs(); }, 120000);
 
 async function onMessage(topic,payload){
@@ -253,10 +376,18 @@ async function onMessage(topic,payload){
     var id=state.ids[i]; var t=await inboxTopic(id.addr);
     if(topic.indexOf(t+'/')===0){
       try{
-        var plain=await decryptWith(id.privJwk, ps);
-        var m=JSON.parse(plain);
-        for(var fk in state.box){ if(state.box[fk].some(function(x){return x.mid===m.mid;})) return; } // already have it (any fasta)
-        m.to=id.addr; m.read=false; m.folder='inbox'; m._t=topic; if(!m.mid)m.mid='m'+Date.now()+Math.random();
+        var m=JSON.parse(await decryptFor(id, ps));
+        for(var fk in state.box){ if(state.box[fk].some(function(x){return x.mid===m.mid;})) return; } // already have it
+        // Signed over `to` as well, so check it against the box this landed
+        // in before verifying — otherwise a message addressed elsewhere could
+        // be replayed here with its signature intact.
+        if(m.to!==id.addr) return;
+        if(await verifyMail(m)===null){
+          console.warn('[hidramail] dropped a message whose sender could not be proven');
+          return;
+        }
+        m.read=false; m.folder='inbox'; m._t=topic; m.verified=true;
+        if(!m.mid)m.mid='m'+Date.now()+Math.random();
         state.box.inbox.unshift(m); save(); renderAll(); notify(m);
       }catch(e){ /* not for me, or corrupted */ }
       return;
@@ -275,14 +406,28 @@ function dirResolve(addr){
 async function sendMail(to,subject,body){
   to=to.trim().toLowerCase(); if(to.indexOf('@hidra')<0) to=to+'@hidra';
   if(!ready||!client.connected) return {ok:false,err:'No connection to the network.'};
-  var pub64=await dirResolve(to);
-  if(!pub64) return {ok:false,err:'Address not found on the network (the recipient must have opened HidraMail at least once).'};
-  var pubRaw=b64d(pub64);
-  // check the key matches the address (self-certifying, anti-spoofing)
-  var check=await addrFromPub(pubRaw); if(check!==to){ return {ok:false,err:'Address verification failed.'}; }
+  var me=activeId();
+  if(!me||!me.sigPrivJwk) return {ok:false,err:'This address predates message signing and can only receive. Switch to a newer address to send.'};
+
+  var raw=await dirResolve(to);
+  if(!raw) return {ok:false,err:'Address not found on the network (the recipient must have opened HidraMail at least once).'};
+  var entry; try{ entry=JSON.parse(raw); }catch(e){ entry=null; }
+  if(!entry||entry.v!==MAIL_VERSION||!entry.e||!entry.s)
+    return {ok:false,err:'That address has no usable key on the network.'};
+
+  var recipEnc=b64d(entry.e), recipSig=b64d(entry.s);
+  // Self-certifying: the keys must be the ones this address is made of. A
+  // substituted directory entry fails here rather than quietly receiving the
+  // mail in the real recipient's place.
+  if(await addrFrom(recipEnc,recipSig)!==to)
+    return {ok:false,err:'Address verification failed — the key on the network does not match this address.'};
+
   var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
-  var payload={ mid:mid, from:activeId().addr, subject:subject, body:body, date:Date.now() };
-  var ct=await encryptTo(pubRaw, JSON.stringify(payload));
+  var payload={ v:MAIL_VERSION, mid:mid, from:me.addr, to:to,
+                subject:subject, body:body, date:Date.now(),
+                sp:me.pubRaw, ss:me.sigPubRaw };
+  payload.sig=await signMail(me,payload);
+  var ct=await encryptTo(recipEnc, JSON.stringify(payload));
   if(ct.length>800000) return {ok:false,err:'Message too large (max ~500 KB).'};
   var toTopic=await inboxTopic(to)+'/'+mid;
   await new Promise(function(r){ client.publish(toTopic, ct, {qos:1, retain:true}, function(){ r(); }); });
@@ -302,7 +447,8 @@ function unread(){ return state.box.inbox.filter(function(m){return !m.read;}).l
 function renderAliases(){
   var el=$('aliases');
   el.innerHTML=state.ids.map(function(id,i){
-    return '<div class="alias'+(i===state.active?' active':'')+'" data-i="'+i+'"><span>'+(i===state.active?'●':'○')+'</span><code title="'+id.addr+'">'+id.addr+'</code></div>';
+    var legacy=id.sigPrivJwk?'':' <span title="Predates message signing — can receive, cannot send">(receive only)</span>';
+    return '<div class="alias'+(i===state.active?' active':'')+'" data-i="'+i+'"><span>'+(i===state.active?'●':'○')+'</span><code title="'+id.addr+'">'+id.addr+'</code>'+legacy+'</div>';
   }).join('');
   Array.prototype.forEach.call(el.querySelectorAll('.alias'),function(a){ a.onclick=function(){ switchAlias(parseInt(a.getAttribute('data-i'))); }; });
   var me=activeId(); $('my-addr').textContent=me?me.addr:'—';
@@ -318,7 +464,7 @@ function renderList(){
     var who=(state.folder==='sent')?('To: '+m.to):(m.from||'unknown');
     return '<div class="mail-item'+(m.read?'':' unread')+(m.mid===state.selId?' sel':'')+'" data-mid="'+m.mid+'">'+
       '<div class="mi-top"><span class="mi-from">'+esc(who)+'</span><span class="mi-date">'+fmtDate(m.date)+'</span></div>'+
-      '<div class="mi-subj">'+esc(m.subject||'(sem assunto)')+'</div>'+
+      '<div class="mi-subj">'+esc(m.subject||'(no subject)')+'</div>'+
       '<div class="mi-prev">'+esc((m.body||'').slice(0,80))+'</div></div>';
   }).join('');
   Array.prototype.forEach.call(el.querySelectorAll('.mail-item'),function(it){ it.onclick=function(){ openMail(it.getAttribute('data-mid')); }; });
@@ -330,12 +476,12 @@ function openMail(mid){
   var init=(who||'?').slice(0,1).toUpperCase();
   var spamBtn=(m.folder==='inbox')?'<button class="btn btn-g" onclick="spam(\''+mid+'\')">🚫 Spam</button>':'';
   $('view').innerHTML='<div class="v-actions"><button class="btn btn-p" onclick="reply()">↩ Reply</button>'+spamBtn+'<button class="btn btn-d" onclick="trash(\''+mid+'\')">🗑 Delete</button></div>'+
-    '<div class="v-subj">'+esc(m.subject||'(sem assunto)')+'</div>'+
-    '<div class="v-meta"><div class="v-av">'+esc(init)+'</div><div><div class="v-from">'+esc(who)+'</div><div class="v-addr">'+esc(m.folder==='sent'?('de: '+m.from):who)+'</div></div><div class="v-date">'+new Date(m.date).toLocaleString('pt-BR')+'</div></div>'+
+    '<div class="v-subj">'+esc(m.subject||'(no subject)')+'</div>'+
+    '<div class="v-meta"><div class="v-av">'+esc(init)+'</div><div><div class="v-from">'+esc(who)+'</div><div class="v-addr">'+esc(m.folder==='sent'?('from: '+m.from):who)+'</div></div><div class="v-date">'+new Date(m.date).toLocaleString()+'</div></div>'+
     '<div class="v-body">'+esc(m.body||'')+'</div>';
   renderAll();
 }
-window.reply=function(){ var m=findMail(state.selId); if(!m)return; openCompose({to:(m.folder==='sent'?m.to:m.from),subject:(/^re:/i.test(m.subject||'')?m.subject:'Re: '+(m.subject||'')),body:'\n\n--- '+(m.from||'')+' escreveu ---\n'+(m.body||'')}); };
+window.reply=function(){ var m=findMail(state.selId); if(!m)return; openCompose({to:(m.folder==='sent'?m.to:m.from),subject:(/^re:/i.test(m.subject||'')?m.subject:'Re: '+(m.subject||'')),body:'\n\n--- '+(m.from||'')+' wrote ---\n'+(m.body||'')}); };
 function clearRetained(m){ try{ if(m&&m._t&&client&&client.connected){ client.publish(m._t,'',{qos:1,retain:true}); m._t=null; } }catch(e){} }
 window.trash=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); if(f!=='trash'){ m.folder='trash'; state.box.trash.unshift(m); } break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; renderAll(); };
 window.spam=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); m.folder='spam'; state.box.spam.unshift(m); break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; renderAll(); };
@@ -348,7 +494,7 @@ window.closeSettings=function(){ $('m-settings').classList.add('hidden'); };
 async function doSend(){
   var to=$('c-to').value, subj=$('c-subj').value, body=$('c-body').value;
   if(!to){ toast('Enter a recipient.'); return; }
-  var btn=$('btn-send'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Enviando…';
+  var btn=$('btn-send'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Sending…';
   var r=await sendMail(to,subj,body);
   btn.disabled=false; btn.innerHTML=old;
   if(r.ok){ closeCompose(); renderAll(); toast('Email sent, encrypted 🔒'); }
@@ -358,25 +504,42 @@ async function doSend(){
 async function switchAlias(i){ state.active=i; save(); renderAll(); }
 async function newAddress(){
   var id=await genId(); state.ids.push(id); state.active=state.ids.length-1; save();
-  if(client&&client.connected){ client.subscribe(await inboxTopic(id.addr),{qos:1}); client.publish(await dirTopic(id.addr),id.pubRaw,{qos:0,retain:true}); }
+  if(client&&client.connected){
+    client.subscribe(await inboxTopic(id.addr)+'/+',{qos:1});
+    client.publish(await dirTopic(id.addr), dirEntry(id), {qos:0,retain:true});
+  }
   renderAll(); renderSettings(); toast('New address created: '+id.addr);
 }
 function renderSettings(){
   $('set-aliases').innerHTML=state.ids.map(function(id,i){
-    return '<div class="it"><code>'+id.addr+(i===state.active?' (active)':'')+'</code><button class="btn btn-g" style="padding:5px 10px;font-size:.78em" onclick="copyTxt(\''+id.addr+'\')">Copy</button></div>';
+    var tag=(i===state.active?' (active)':'')+(id.sigPrivJwk?'':' (receive only)');
+    return '<div class="it"><code>'+id.addr+tag+'</code><button class="btn btn-g" style="padding:5px 10px;font-size:.78em" onclick="copyTxt(\''+id.addr+'\')">Copy</button></div>';
   }).join('');
 }
 window.copyTxt=function(s){ if(navigator.clipboard) navigator.clipboard.writeText(s); toast('Address copied.'); };
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
 function notify(m){
   try{ var a=new (window.AudioContext||window.webkitAudioContext)(); var o=a.createOscillator(),g=a.createGain(); o.connect(g);g.connect(a.destination); o.frequency.value=880;g.gain.value=.05;g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.25);o.start();o.stop(a.currentTime+.25);}catch(e){}
-  toast('📬 Novo e-mail de '+(m.from||'unknown'));
+  toast('📬 New email from '+(m.from||'unknown'));
 }
 
 // init
 load();
 (async function init(){
-  if(!state.ids.length){ state.ids=[await genId()]; state.active=0; save(); }
+  // An address made before signing existed is derived from the encryption key
+  // alone, so it cannot be upgraded in place — a signing key bolted on would
+  // change the address. Those stay in the list so old mail still decrypts, and
+  // a signing address is created to send from.
+  var signing = state.ids.filter(function(id){ return id.sigPrivJwk; });
+  if(!signing.length){
+    var fresh = await genId();
+    state.ids.push(fresh);
+    state.active = state.ids.length - 1;
+    save();
+  } else if(!activeId() || !activeId().sigPrivJwk){
+    state.active = state.ids.indexOf(signing[0]);
+    save();
+  }
   renderAll(); renderSettings();
   document.querySelectorAll('.folder[data-folder]').forEach(function(f){ f.onclick=function(){ state.folder=f.getAttribute('data-folder'); state.selId=null; renderAll(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; }; });
   $('btn-compose').onclick=function(){ openCompose(); };
