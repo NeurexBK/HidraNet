@@ -20,6 +20,7 @@
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 const { inflateRawSync } = require('zlib');
 const { readZip } = require('./lib/zip');
 const { download } = require('./lib/net');
@@ -33,6 +34,33 @@ const NAMES   = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64']
                   .map(a => 'HidraNet-Browser-' + VERSION + '-' + a + '.zip');
 
 const BTC = 'bc1pqw46hh9fypk0wr4z7vnvcpjjk8xe8xnff25vusc23xt3j6ehfaaqx3ku3k';
+
+// Only the Windows package ships the Rust engine; the others start the
+// browser's own services and talk to Tor directly. The engine is where the
+// post-quantum handshake lives, so a package refreshed only in its HTML would
+// still be running the one built against the withdrawn pqc_kyber crate —
+// where a chosen-ciphertext attacker recovers the decapsulation key
+// (RUSTSEC-2026-0290). It gets rebuilt here, from this working tree.
+const ENGINE_TARGET = 'x86_64-pc-windows-gnu';
+const ENGINE_OUT = path.join(ROOT, '..', 'hidra-node', 'target', ENGINE_TARGET, 'release', 'hidra-node.exe');
+const ENGINE_IN_ZIP = 'resources/bin/hidra-node.exe';
+
+// The bundled Linux Tor is dynamically linked against libevent, which most
+// distributions do not install by default. Without it Tor dies at startup and
+// the browser opens with nothing connecting. See vendor/linux-x64/README.md.
+const LIBEVENT_LOCAL  = path.join(ROOT, 'vendor', 'linux-x64', 'libevent-2.1.so.7');
+const LIBEVENT_IN_ZIP = 'resources/bin/tor/libevent-2.1.so.7';
+
+function buildEngine() {
+  const dir = path.join(ROOT, '..', 'hidra-node');
+  console.log('  building the engine for ' + ENGINE_TARGET + ' (needs the mingw-w64 cross-compiler)');
+  execFileSync('cargo', ['build', '--release', '--target', ENGINE_TARGET], {
+    cwd: dir, stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  const size = fs.statSync(ENGINE_OUT).size;
+  console.log('  built ' + path.relative(ROOT, ENGINE_OUT) + ' (' + size + ' bytes)');
+  return ENGINE_OUT;
+}
 
 let failures = 0;
 function check(cond, msg) {
@@ -66,6 +94,7 @@ function verify(file) {
   if (!mac && !win) {
     check(mode('hidranet') === '755', 'hidranet is executable (mode ' + mode('hidranet') + ')');
     check(by.has('start.sh'), 'start.sh present');
+    check(by.has(LIBEVENT_IN_ZIP), 'libevent ships with Tor (it is not linked statically)');
   }
   if (mac) {
     const l = by.get('Start HidraNet.command');
@@ -79,6 +108,17 @@ function verify(file) {
     const ip = by.get('HidraNet.app/Contents/Info.plist');
     check(!!ip && /<string>net\.hidra\.browser<\/string>/.test(contents(ip).toString()),
           'bundle id is net.hidra.browser');
+  }
+
+  if (win) {
+    const eng = by.get(ENGINE_IN_ZIP);
+    check(!!eng, 'the engine is in the package');
+    if (eng) {
+      const want = fs.readFileSync(ENGINE_OUT);
+      check(crypto.createHash('sha256').update(contents(eng)).digest('hex') ===
+            crypto.createHash('sha256').update(want).digest('hex'),
+            'the engine is the one built from this tree, not the published one');
+    }
   }
 
   const d = by.get(pfx + 'ui/donate.html');
@@ -106,9 +146,14 @@ function verify(file) {
     }
   }
 
+  console.log('');
+  buildEngine();
+
   console.log('\n  patching\n');
   for (const n of NAMES) {
-    patchZip(path.join(inDir, n), path.join(outDir, n));
+    const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
+    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL } : {};
+    patchZip(path.join(inDir, n), path.join(outDir, n), { binaries, extras });
   }
 
   console.log('\n  checking');

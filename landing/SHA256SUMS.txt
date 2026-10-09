@@ -12,17 +12,51 @@ If the value does not match either table below, do not run the file.
 1. REFRESHED PACKAGES  —  not on the release page yet
 -----------------------------------------------------------------------
 
-1706917c706ccdf6d563c6c1f77292046a7d517bb6571ab448375c6af68fd4eb  HidraNet-Browser-1.0.0-macOS-arm64.zip
-a2684acd297d104e6c071be15d6159c1359dc342c687bd3d7432ecf2d6c88c32  HidraNet-Browser-1.0.0-macOS-x64.zip
-8c06f26ecc243dc86d99079ee2ddc6ac56892fd8a0d23d7d610e5c0a4df9542b  HidraNet-Browser-1.0.0-Linux-x64.zip
-c8b5701ed49c8328c02be4168aad9e4b30ae64c63b9ddccaf8126fecad8caad7  HidraNet-Browser-1.0.0-Windows-x64.zip
+66e1c736f914b20be35222802058564b26a407305e5ceec5549be9b015cbdfae  HidraNet-Browser-1.0.0-macOS-arm64.zip
+f17c6ce8023c4dab46cd202d58a78347d7d44dfabe3632aeb3250327937fa1f0  HidraNet-Browser-1.0.0-macOS-x64.zip
+770a6c826938791c989dbd91eda9754243a145fbc081d3e984d4828142bb7ad1  HidraNet-Browser-1.0.0-Linux-x64.zip
+b116978c00b27f0434e71e5a6c522a57cc0a6bc3f5a6983704e8211f3fe680f7  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,410,629 bytes  (103.4 MiB)
-  macOS x64      112,841,110 bytes  (107.6 MiB)
-  Linux x64      112,764,461 bytes  (107.5 MiB)
-  Windows x64    127,057,006 bytes  (121.2 MiB)
+  macOS arm64    108,419,532 bytes  (103.4 MiB)
+  macOS x64      112,850,013 bytes  (107.6 MiB)
+  Linux x64      112,924,342 bytes  (107.7 MiB)
+  Windows x64    129,451,627 bytes  (123.5 MiB)
 
 What changed from the packages in table 2:
+
+  SECURITY — these are the reason to replace the published packages, not
+  the cosmetics further down:
+
+  - the post-quantum handshake no longer runs on pqc_kyber. That crate is
+    unmaintained with no fixed release, and on the AVX2 path — which is
+    every desktop — it skips Fujisaki-Okamoto implicit rejection, so a
+    chosen-ciphertext attacker recovers the decapsulation key
+    (RUSTSEC-2026-0290); its division timings also leak the secret
+    (RUSTSEC-2023-0079). Replaced with FIPS 203 ML-KEM-1024. This is
+    compiled into the engine, which only the Windows package ships, and
+    that binary is rebuilt here rather than carried over
+  - HidraMail signs messages. Before, `from` was a string the sender
+    chose and nothing checked it: anyone could look up your published key
+    and send you mail under someone else's name
+  - the privileged browser API is no longer handed to every file:// page.
+    Any .html you downloaded and opened could call proxy.disconnect() and
+    turn Tor off
+  - the app pages carry a Content-Security-Policy; the page that holds
+    your mail keys had none
+  - the engine's local HTTP services bind loopback and refuse requests
+    that did not come from this machine. They answered any website with
+    Access-Control-Allow-Origin: *, which exposed the relays of your live
+    circuit, your LAN address and your searches, and let a page send mail
+    in your name
+  - the chat room passphrase is checked with Argon2id instead of being
+    accepted and discarded, and is no longer a constant compiled into the
+    binary
+  - the analytics dashboard no longer loads Chart.js from a CDN
+
+  Linux: the bundled Tor is dynamically linked against libevent, which
+  most distributions do not install by default. It was not in the
+  package, so Tor died at startup and the browser opened with nothing
+  connecting. The library now ships beside it.
 
   - the privacy and security fixes that landed after the release was cut
     (network kill switch, no third-party hosts called from any app page,

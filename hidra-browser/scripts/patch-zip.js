@@ -23,6 +23,10 @@
  *   3. Restores Unix permissions when the archive has none — same cause. With
  *      mode 0, the Linux package extracts with `hidranet` and `tor` not
  *      executable, so it cannot be launched by double-click at all.
+ *   4. Replaces any binaries named in `opts.binaries`. The Windows package
+ *      ships the compiled Rust engine, and the engine is where the
+ *      post-quantum handshake lives: a package refreshed only in its HTML
+ *      would still carry an engine built against the withdrawn Kyber crate.
  *
  * Usage:
  *   node scripts/patch-zip.js <in.zip> <out.zip> [--dry]
@@ -133,9 +137,21 @@ function scan(dir, base) {
 // inside the .app bundle), so read it from the archive instead of assuming.
 const RE = /(^|.*\/)app\/src\/(.+)$/;
 
+/**
+ * @param {object} [opts]
+ * @param {boolean} [opts.dry]
+ * @param {Object<string,string>} [opts.binaries] archive path -> local file.
+ *        The archive path is matched after separators are normalised, and the
+ *        entry must already exist: this replaces a binary, it does not add one
+ *        to a package that was not built to carry it.
+ * @param {Object<string,string>} [opts.extras] archive path -> local file, for
+ *        files the package does not have yet (a shared library beside Tor).
+ */
 function patchZip(inZip, outZip, opts) {
   opts = opts || {};
   const dry = !!opts.dry;
+  const binaries = opts.binaries || {};
+  const extras = opts.extras || {};
   // The package states its own version in its filename.
   const VERSION_OF = () => (/-(\d+\.\d+\.\d+)-/.exec(path.basename(inZip)) || [, '1.0.0'])[1];
 
@@ -151,7 +167,10 @@ function patchZip(inZip, outZip, opts) {
   const hasBackslashes = entries.some(e => e.filename.indexOf('\\') !== -1);
 
   let prefix = null, replaced = 0, same = 0, stale = 0, renamed = 0, plists = 0;
+  let binsDone = 0, extrasDone = 0;
   const seen = new Set();
+  const binsWanted = new Set(Object.keys(binaries));
+  const extrasWanted = new Set(Object.keys(extras));
 
   const out = entries.map(e => {
     const name = e.filename.replace(/\\/g, '/');
@@ -181,7 +200,31 @@ function patchZip(inZip, outZip, opts) {
       }
     }
 
-    // 3. app sources
+    // 3. shipped binaries (the Rust engine)
+    if (Object.prototype.hasOwnProperty.call(binaries, name)) {
+      const data = fs.readFileSync(binaries[name]);
+      binsWanted.delete(name);
+      if (data.length === e.uncompSz && crc32(data) === e.crc) {
+        same++;
+      } else {
+        binsDone++;
+        console.log('  engine        ' + name + ' (' + data.length + ' bytes)');
+        ent = patchEntry(ent, name, data);
+      }
+    }
+
+    // 3b. extra files that the package may or may not already carry
+    if (Object.prototype.hasOwnProperty.call(extras, name)) {
+      extrasWanted.delete(name);
+      const data = fs.readFileSync(extras[name]);
+      if (!(data.length === e.uncompSz && crc32(data) === e.crc)) {
+        extrasDone++;
+        console.log('  replaced      ' + name + ' (' + data.length + ' bytes)');
+        ent = patchEntry(ent, name, data);
+      }
+    }
+
+    // 4. app sources
     const m = RE.exec(name);
     if (m && !name.endsWith('/')) {
       const pfx = m[1] + 'app/src/';
@@ -204,7 +247,7 @@ function patchZip(inZip, outZip, opts) {
       }
     }
 
-    // 4. name + permissions
+    // 5. name + permissions
     ent = Object.assign({}, ent, { filename: name });
     if (!hasModes) {
       const isDir = name.endsWith('/');
@@ -214,8 +257,17 @@ function patchZip(inZip, outZip, opts) {
     return ent;
   });
 
+  for (const name of extrasWanted) {
+    extrasDone++;
+    console.log('  added         ' + name + ' (' + fs.statSync(extras[name]).size + ' bytes)');
+    out.push(mkFile(name, fs.readFileSync(extras[name]), modeFor(name)));
+  }
+
   let added = 0;
   if (!prefix) throw new Error('no app/src/ entries in ' + inZip + ' — wrong archive?');
+  // Silence here would mean shipping the old engine and believing otherwise.
+  if (binsWanted.size)
+    throw new Error('not in ' + path.basename(inZip) + ': ' + [...binsWanted].join(', '));
   for (const f of local) {
     if (seen.has(f.rel)) continue;
     added++;
@@ -227,7 +279,8 @@ function patchZip(inZip, outZip, opts) {
   console.log('  entries ' + entries.length + ' -> ' + out.length +
               ' | updated ' + replaced + ' | added ' + added +
               ' | unchanged ' + same + ' | stale kept ' + stale +
-              ' | launchers ' + renamed + ' | plists ' + plists);
+              ' | launchers ' + renamed + ' | plists ' + plists +
+              ' | engines ' + binsDone + ' | extras ' + extrasDone);
   console.log('  separators fixed: ' + (hasBackslashes ? 'yes (were backslashes)' : 'no (already /)') +
               ' | permissions restored: ' + (hasModes ? 'no (archive had them)' : 'yes (archive had none)'));
 

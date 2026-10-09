@@ -47,6 +47,27 @@ class TorManager {
     };
   }
 
+  /**
+   * Environment for the Tor process, with its own directory on the library
+   * search path.
+   *
+   * The bundled Linux build is dynamically linked against libevent, which is
+   * not part of a base system on most distributions. Without this it died at
+   * startup with "error while loading shared libraries: libevent-2.1.so.7" —
+   * the browser opened, Tor never came up, and nothing connected. The library
+   * now ships next to the binary, and this is what lets it be found.
+   */
+  _env(torPath) {
+    const dir = path.dirname(torPath);
+    const key = process.platform === 'darwin' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';
+    if (process.platform === 'win32') return process.env;
+    const existing = process.env[key];
+    return {
+      ...process.env,
+      [key]: existing ? dir + path.delimiter + existing : dir,
+    };
+  }
+
   findBinary() {
     const exe = process.platform === 'win32' ? 'tor.exe' : 'tor';
     const candidates = [];
@@ -62,6 +83,17 @@ class TorManager {
 
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
+    }
+
+    // Last resort: a Tor the user already has. Better to run theirs than to
+    // tell someone with a working Tor that we could not find one.
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      if (!dir) continue;
+      const p = path.join(dir, exe);
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        return p;
+      } catch { /* not here */ }
     }
     return null;
   }
@@ -147,6 +179,7 @@ class TorManager {
         this.process = spawn(torPath, args, {
           cwd: path.dirname(torPath),
           stdio: ['ignore', 'pipe', 'pipe'],
+          env: this._env(torPath),
         });
       } catch (err) {
         this.state = 'failed';
