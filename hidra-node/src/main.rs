@@ -21,231 +21,25 @@ use zeroize::Zeroize;
 // ─────────────────────────────────────────────────────────────────────────────
 // mod error
 // ─────────────────────────────────────────────────────────────────────────────
-mod error {
-    use thiserror::Error;
-
-    #[derive(Debug, Error)]
-    pub enum HidraError {
-        #[error("I/O error: {0}")]
-        Io(#[from] std::io::Error),
-
-        #[error("configuration error: {0}")]
-        Config(#[from] config::ConfigError),
-
-        #[error("cryptographic error: {0}")]
-        Crypto(String),
-
-        #[error("handshake error: {0}")]
-        Handshake(String),
-
-        #[error("protocol error: {0}")]
-        Protocol(String),
-
-        #[error("key management error: {0}")]
-        KeyManagement(String),
-
-        #[error("invalid address: {0}")]
-        AddrParse(#[from] std::net::AddrParseError),
-
-        #[error("relay error: {0}")]
-        Relay(String),
-
-        #[error("circuit error: {0}")]
-        Circuit(String),
-    }
-
-    pub type Result<T> = std::result::Result<T, HidraError>;
-}
+// Shared with the library. These two were byte-identical.
+#[path = "error.rs"]
+mod error;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mod logging
 // ─────────────────────────────────────────────────────────────────────────────
-mod logging {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-    pub fn init_logging(level: &str, format: &str) {
-        let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-
-        match format {
-            "json" => {
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(
-                        fmt::layer()
-                            .json()
-                            .with_target(true)
-                            .with_thread_ids(true)
-                            .with_file(true)
-                            .with_line_number(true)
-                            .with_span_list(true),
-                    )
-                    .init();
-            }
-            _ => {
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(
-                        fmt::layer()
-                            .pretty()
-                            .with_target(true)
-                            .with_thread_ids(true),
-                    )
-                    .init();
-            }
-        }
-    }
-}
+// Shared with the library. These two were byte-identical.
+#[path = "logging.rs"]
+mod logging;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mod config
 // ─────────────────────────────────────────────────────────────────────────────
-mod app_config {
-    use serde::Deserialize;
-
-    use crate::error::Result;
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct AppConfig {
-        pub node: NodeConfig,
-        pub network: NetworkConfig,
-        pub logging: LoggingConfig,
-        pub paths: PathsConfig,
-        #[serde(default)]
-        pub relays: Vec<RelayInfo>,
-        #[serde(default)]
-        pub dht: DhtConfig,
-        #[serde(default)]
-        pub proxy: ProxyConfig,
-        #[serde(default)]
-        pub hidden_service: HiddenServiceConfig,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct HiddenServiceConfig {
-        #[serde(default)]
-        #[allow(dead_code)]
-        pub enabled: bool,
-        #[serde(default = "default_hs_port")]
-        pub local_port: u16,
-        #[serde(default)]
-        pub app: Option<String>,
-        #[serde(default)]
-        pub mail_name: Option<String>,
-    }
-
-    impl Default for HiddenServiceConfig {
-        fn default() -> Self {
-            Self {
-                enabled: false,
-                local_port: default_hs_port(),
-                app: None,
-                mail_name: None,
-            }
-        }
-    }
-
-    fn default_hs_port() -> u16 {
-        8080
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct DhtConfig {
-        #[serde(default = "default_dht_port")]
-        pub port: u16,
-        #[serde(default)]
-        pub bootstrap_nodes: Vec<String>,
-        #[serde(default = "default_true")]
-        pub enabled: bool,
-    }
-
-    impl Default for DhtConfig {
-        fn default() -> Self {
-            Self {
-                port: default_dht_port(),
-                bootstrap_nodes: Vec::new(),
-                enabled: true,
-            }
-        }
-    }
-
-    fn default_dht_port() -> u16 {
-        7000
-    }
-
-    fn default_true() -> bool {
-        true
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct ProxyConfig {
-        #[serde(default = "default_proxy_addr")]
-        pub listen_addr: String,
-        #[serde(default = "default_proxy_port")]
-        pub port: u16,
-    }
-
-    impl Default for ProxyConfig {
-        fn default() -> Self {
-            Self {
-                listen_addr: default_proxy_addr(),
-                port: default_proxy_port(),
-            }
-        }
-    }
-
-    fn default_proxy_addr() -> String {
-        "127.0.0.1".into()
-    }
-
-    fn default_proxy_port() -> u16 {
-        9050
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct RelayInfo {
-        pub name: String,
-        pub addr: String,
-        pub noise_pubkey: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct NodeConfig {
-        pub name: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct NetworkConfig {
-        pub listen_addr: String,
-        pub listen_port: u16,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct LoggingConfig {
-        pub level: String,
-        pub format: String,
-        /// Print real peer addresses and destination hostnames in the log.
-        ///
-        /// Off by default, and worth leaving off on anything that carries
-        /// other people's traffic: a relay's log would otherwise record who
-        /// connected and, at the exit, where they went. See `safelog`.
-        #[serde(default)]
-        pub unsafe_addresses: bool,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct PathsConfig {
-        pub keys_dir: String,
-    }
-
-    pub fn load_config(path: &str) -> Result<AppConfig> {
-        let config = config::Config::builder()
-            .add_source(config::File::new(path, config::FileFormat::Toml))
-            .build()?;
-        let app_config: AppConfig = config.try_deserialize()?;
-        Ok(app_config)
-    }
-}
+// Shared with the library rather than inlined. It was inlined under a
+// different name, `app_config`, which is why the two never looked like the
+// duplicates they were.
+#[path = "config.rs"]
+mod config;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mod crypto
@@ -804,43 +598,9 @@ mod onion {
         }
     }
 
-    pub mod circuit {
-        use std::net::SocketAddr;
-        use zeroize::Zeroize;
-
-        #[derive(Clone)]
-        pub struct CircuitHop {
-            pub addr: SocketAddr,
-            pub session_key: [u8; 32],
-        }
-
-        impl std::fmt::Debug for CircuitHop {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("CircuitHop")
-                    .field("addr", &self.addr)
-                    .field("session_key", &"[REDACTED]")
-                    .finish()
-            }
-        }
-
-        impl Drop for CircuitHop {
-            fn drop(&mut self) {
-                self.session_key.zeroize();
-            }
-        }
-
-        #[derive(Debug)]
-        pub struct Circuit {
-            pub id: u32,
-            pub hops: Vec<CircuitHop>,
-        }
-
-        impl Circuit {
-            pub fn new(id: u32, hops: Vec<CircuitHop>) -> Self {
-                Self { id, hops }
-            }
-        }
-    }
+    // Shared with the library.
+    #[path = "circuit.rs"]
+    pub mod circuit;
 
     pub mod builder {
         use crate::error::Result;
@@ -2204,37 +1964,10 @@ mod p2p {
 // mod relay
 // ─────────────────────────────────────────────────────────────────────────────
 mod relay {
-    pub mod registry {
-        use std::net::SocketAddr;
-        use crate::app_config::RelayInfo;
-        use crate::error::{HidraError, Result};
-
-        #[derive(Debug, Clone)]
-        pub struct RelayEntry {
-            pub name: String,
-            pub addr: SocketAddr,
-            #[allow(dead_code)]
-            pub noise_pubkey_b64: String,
-        }
-
-        pub fn load_relay_list(relays: &[RelayInfo]) -> Result<Vec<RelayEntry>> {
-            let mut entries = Vec::with_capacity(relays.len());
-            for r in relays {
-                let addr: SocketAddr = r.addr.parse().map_err(|e| {
-                    HidraError::Relay(format!(
-                        "invalid relay addr '{}': {e}",
-                        r.addr
-                    ))
-                })?;
-                entries.push(RelayEntry {
-                    name: r.name.clone(),
-                    addr,
-                    noise_pubkey_b64: r.noise_pubkey.clone(),
-                });
-            }
-            Ok(entries)
-        }
-    }
+    // Shared with the library. The copies differed only in line wrapping
+    // and in the name of the config module, which now matches.
+    #[path = "registry.rs"]
+    pub mod registry;
 
     pub mod router {
         use crate::safelog::sensitive;
@@ -8145,7 +7878,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     security::hardening::zeroize_on_panic();
     let _ = security::hardening::disable_core_dumps();
 
-    let app_cfg = app_config::load_config(&cli.config)?;
+    let app_cfg = config::load_config(&cli.config)?;
 
     // Logging comes up before the keys are touched. It used to be the other
     // way round, which silently threw away everything loading the keys has to
@@ -8276,7 +8009,7 @@ fn chat_room_passphrase() -> String {
 }
 
 async fn run_apps_standalone(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mail_port: u16 = 8080;
@@ -8363,7 +8096,7 @@ async fn run_apps_standalone(
 }
 
 async fn run_dashboard_mode(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let dashboard_port: u16 = 8082;
     let dashboard_addr: SocketAddr = format!("127.0.0.1:{dashboard_port}").parse()?;
@@ -8396,7 +8129,7 @@ async fn run_dashboard_mode(
 }
 
 async fn run_chat_standalone(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let local_port = app_cfg.hidden_service.local_port;
     let chat_addr: SocketAddr = format!("127.0.0.1:{local_port}").parse()?;
@@ -8427,7 +8160,7 @@ async fn run_chat_standalone(
 }
 
 async fn run_mail_standalone(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let local_port = app_cfg.hidden_service.local_port;
@@ -8475,7 +8208,7 @@ async fn run_mail_standalone(
 }
 
 async fn run_server_mode(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     _network_secret: StaticSecret,
     _signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -8732,7 +8465,7 @@ async fn run_server_mode(
 }
 
 async fn run_proxy_mode(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     _network_secret: StaticSecret,
     _signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -8841,7 +8574,7 @@ async fn run_proxy_mode(
 }
 
 async fn run_send_mode(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     network_secret: StaticSecret,
     signing_key: SigningKey,
     payload: &str,
@@ -8912,7 +8645,7 @@ async fn run_send_mode(
 }
 
 async fn run_relay_mode(
-    app_cfg: &app_config::AppConfig,
+    app_cfg: &config::AppConfig,
     network_secret: StaticSecret,
     signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -8978,7 +8711,7 @@ async fn run_relay_mode(
 }
 
 async fn run_sevennine_mode(
-    cfg: &app_config::AppConfig,
+    cfg: &config::AppConfig,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let data_dir = std::path::PathBuf::from(&cfg.paths.keys_dir).parent()
         .unwrap_or(std::path::Path::new("."))

@@ -14,6 +14,37 @@ pub struct AppConfig {
     pub dht: DhtConfig,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub hidden_service: HiddenServiceConfig,
+}
+
+/// A `.hidra` service this node publishes, if any.
+#[derive(Debug, Deserialize, Clone)]
+pub struct HiddenServiceConfig {
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub enabled: bool,
+    #[serde(default = "default_hs_port")]
+    pub local_port: u16,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub mail_name: Option<String>,
+}
+
+impl Default for HiddenServiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            local_port: default_hs_port(),
+            app: None,
+            mail_name: None,
+        }
+    }
+}
+
+fn default_hs_port() -> u16 {
+    8080
 }
 
 #[derive(Debug, Deserialize, Clone)]
