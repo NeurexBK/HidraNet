@@ -263,202 +263,11 @@ mod crypto {
     #[path = "handshake.rs"]
     pub mod handshake;
 
-    pub mod keys {
-        use std::path::Path;
-
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-        use ed25519_dalek::SigningKey;
-        use rand_core::OsRng;
-        use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
-        use zeroize::Zeroize;
-
-        use crate::error::{HidraError, Result};
-
-        pub struct NodeKeys {
-            pub identity_signing: SigningKey,
-            #[allow(dead_code)]
-            pub identity_verifying: ed25519_dalek::VerifyingKey,
-            pub noise_static_secret: StaticSecret,
-            pub noise_static_public: X25519Public,
-            pub node_id: String,
-        }
-
-        impl NodeKeys {
-            pub fn generate() -> Self {
-                let identity_signing = SigningKey::generate(&mut OsRng);
-                let identity_verifying = identity_signing.verifying_key();
-                let noise_static_secret = StaticSecret::random_from_rng(OsRng);
-                let noise_static_public = X25519Public::from(&noise_static_secret);
-                let node_id = derive_node_id(&identity_verifying);
-                Self {
-                    identity_signing,
-                    identity_verifying,
-                    noise_static_secret,
-                    noise_static_public,
-                    node_id,
-                }
-            }
-
-            pub fn load_or_generate(keys_dir: &Path) -> Result<Self> {
-                if keys_dir.join("identity.secret").exists() {
-                    Self::load(keys_dir)
-                } else {
-                    let keys = Self::generate();
-                    keys.save(keys_dir)?;
-                    Ok(keys)
-                }
-            }
-
-            pub fn save(&self, keys_dir: &Path) -> Result<()> {
-                std::fs::create_dir_all(keys_dir)?;
-                std::fs::write(
-                    keys_dir.join("identity.secret"),
-                    BASE64.encode(self.identity_signing.to_bytes()),
-                )?;
-                std::fs::write(
-                    keys_dir.join("identity.public"),
-                    BASE64.encode(self.identity_verifying.to_bytes()),
-                )?;
-                std::fs::write(
-                    keys_dir.join("noise_static.secret"),
-                    BASE64.encode(self.noise_static_secret.to_bytes()),
-                )?;
-                std::fs::write(
-                    keys_dir.join("noise_static.public"),
-                    BASE64.encode(self.noise_static_public.to_bytes()),
-                )?;
-                Ok(())
-            }
-
-            pub fn load(keys_dir: &Path) -> Result<Self> {
-                let identity_secret_b64 =
-                    std::fs::read_to_string(keys_dir.join("identity.secret"))?;
-                let mut identity_bytes =
-                    BASE64.decode(identity_secret_b64.trim()).map_err(|e| {
-                        HidraError::KeyManagement(format!(
-                            "invalid identity key encoding: {e}"
-                        ))
-                    })?;
-                if identity_bytes.len() != 32 {
-                    return Err(HidraError::KeyManagement(
-                        "identity key must be exactly 32 bytes".into(),
-                    ));
-                }
-                let mut id_array = [0u8; 32];
-                id_array.copy_from_slice(&identity_bytes);
-                identity_bytes.zeroize();
-                let identity_signing = SigningKey::from_bytes(&id_array);
-                id_array.zeroize();
-                let identity_verifying = identity_signing.verifying_key();
-
-                let noise_secret_b64 =
-                    std::fs::read_to_string(keys_dir.join("noise_static.secret"))?;
-                let mut noise_bytes =
-                    BASE64.decode(noise_secret_b64.trim()).map_err(|e| {
-                        HidraError::KeyManagement(format!(
-                            "invalid noise key encoding: {e}"
-                        ))
-                    })?;
-                if noise_bytes.len() != 32 {
-                    return Err(HidraError::KeyManagement(
-                        "noise static key must be exactly 32 bytes".into(),
-                    ));
-                }
-                let mut noise_array = [0u8; 32];
-                noise_array.copy_from_slice(&noise_bytes);
-                noise_bytes.zeroize();
-                let noise_static_secret = StaticSecret::from(noise_array);
-                noise_array.zeroize();
-                let noise_static_public = X25519Public::from(&noise_static_secret);
-                let node_id = derive_node_id(&identity_verifying);
-
-                Ok(Self {
-                    identity_signing,
-                    identity_verifying,
-                    noise_static_secret,
-                    noise_static_public,
-                    node_id,
-                })
-            }
-        }
-
-        fn derive_node_id(verifying_key: &ed25519_dalek::VerifyingKey) -> String {
-            let hash = blake3::hash(verifying_key.as_bytes());
-            let id_bytes = &hash.as_bytes()[..16];
-            id_bytes.iter().map(|b| format!("{b:02x}")).collect()
-        }
-
-        pub struct ServiceKeys {
-            pub signing_key: SigningKey,
-            pub verifying_key: ed25519_dalek::VerifyingKey,
-            pub address: String,
-            pub address_hash: [u8; 20],
-        }
-
-        impl ServiceKeys {
-            pub fn generate() -> Self {
-                let signing_key = SigningKey::generate(&mut OsRng);
-                let verifying_key = signing_key.verifying_key();
-                let (address, address_hash) = derive_hidra_address(&verifying_key);
-                Self { signing_key, verifying_key, address, address_hash }
-            }
-
-            pub fn load_or_generate(keys_dir: &Path) -> Result<Self> {
-                let svc_dir = keys_dir.join("service");
-                if svc_dir.join("service.secret").exists() {
-                    Self::load(&svc_dir)
-                } else {
-                    let keys = Self::generate();
-                    keys.save(&svc_dir)?;
-                    Ok(keys)
-                }
-            }
-
-            fn save(&self, dir: &Path) -> Result<()> {
-                std::fs::create_dir_all(dir)?;
-                std::fs::write(
-                    dir.join("service.secret"),
-                    BASE64.encode(self.signing_key.to_bytes()),
-                )?;
-                std::fs::write(
-                    dir.join("service.public"),
-                    BASE64.encode(self.verifying_key.to_bytes()),
-                )?;
-                std::fs::write(dir.join("service.address"), &self.address)?;
-                Ok(())
-            }
-
-            fn load(dir: &Path) -> Result<Self> {
-                let secret_b64 = std::fs::read_to_string(dir.join("service.secret"))?;
-                let mut secret_bytes = BASE64.decode(secret_b64.trim()).map_err(|e| {
-                    HidraError::KeyManagement(format!("invalid service key encoding: {e}"))
-                })?;
-                if secret_bytes.len() != 32 {
-                    return Err(HidraError::KeyManagement(
-                        "service key must be exactly 32 bytes".into(),
-                    ));
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&secret_bytes);
-                secret_bytes.zeroize();
-                let signing_key = SigningKey::from_bytes(&arr);
-                arr.zeroize();
-                let verifying_key = signing_key.verifying_key();
-                let (address, address_hash) = derive_hidra_address(&verifying_key);
-                Ok(Self { signing_key, verifying_key, address, address_hash })
-            }
-        }
-
-        fn derive_hidra_address(
-            verifying_key: &ed25519_dalek::VerifyingKey,
-        ) -> (String, [u8; 20]) {
-            let hash = blake3::hash(verifying_key.as_bytes());
-            let mut addr_hash = [0u8; 20];
-            addr_hash.copy_from_slice(&hash.as_bytes()[..20]);
-            let hex: String = addr_hash.iter().map(|b| format!("{b:02x}")).collect();
-            (format!("{hex}.hidra"), addr_hash)
-        }
-    }
+    // Same reason as handshake above: the binary was still saving the two
+    // secret keys with fs::write and chmodding them afterwards, long after
+    // the library had stopped.
+    #[path = "keys.rs"]
+    pub mod keys;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4835,140 +4644,11 @@ mod safelog;
 // ─────────────────────────────────────────────────────────────────────────────
 // mod api
 // ─────────────────────────────────────────────────────────────────────────────
-mod api {
-    use std::net::SocketAddr;
-    use std::sync::Arc;
-    use std::time::Instant;
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tracing::{info, warn};
-
-    pub struct ApiState {
-        pub start_time: Instant,
-        pub relay_count: usize,
-        pub relay_addrs: Vec<SocketAddr>,
-        pub hops: usize,
-    }
-
-    pub async fn run_api_server(addr: SocketAddr, state: Arc<ApiState>) {
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                warn!(error = %e, addr = %addr, "status API server failed to bind");
-                return;
-            }
-        };
-        info!(addr = %addr, "status API server listening");
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let state = Arc::clone(&state);
-            tokio::spawn(async move {
-                handle_request(stream, &state).await;
-            });
-        }
-    }
-
-    async fn handle_request(
-        mut stream: tokio::net::TcpStream,
-        state: &ApiState,
-    ) {
-        let mut buf = [0u8; 2048];
-        // A peer that opens a connection and never sends used to hold a task
-        // open indefinitely; enough of them and the server stops answering.
-        let n = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.read(&mut buf),
-        )
-        .await
-        {
-            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return,
-            Ok(Ok(n)) => n,
-        };
-        let request = String::from_utf8_lossy(&buf[..n]);
-
-        // This reply names the guard, middle and exit relays of the live
-        // circuit. With `Access-Control-Allow-Origin: *` on it, any site the
-        // user visited could read that back, and the entry guard is the one
-        // address that identifies a user to a network observer.
-        let allowed_origin = match crate::local_guard::screen(&request) {
-            crate::local_guard::Access::Allow(origin) => origin,
-            crate::local_guard::Access::Deny => {
-                let (code, text) = crate::local_guard::DENIED_STATUS;
-                let body = crate::local_guard::DENIED_BODY;
-                let response = format!(
-                    "HTTP/1.1 {code} {text}\r\n\
-                     Content-Type: application/json\r\n\
-                     {}\
-                     Content-Length: {}\r\n\
-                     Connection: close\r\n\
-                     \r\n\
-                     {body}",
-                    crate::local_guard::response_headers(None),
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-                return;
-            }
-        };
-
-        let (status_code, status_text, body) =
-            if request.starts_with("GET /api/status") {
-                let uptime = state.start_time.elapsed().as_secs();
-                // "latency" was the literal 42. Nothing here measures a
-                // round trip, so it reports null and a caller can show "—"
-                // rather than a number that was never true.
-                let body = format!(
-                    r#"{{"connected":true,"relays":{},"latency":null,"uptime":{},"hops":{}}}"#,
-                    state.relay_count, uptime, state.hops
-                );
-                (200, "OK", body)
-            } else if request.starts_with("GET /api/circuit") {
-                let hops: Vec<String> = state
-                    .relay_addrs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, addr)| {
-                        let role = match i {
-                            0 => "Guard",
-                            1 => "Middle",
-                            _ => "Exit",
-                        };
-                        format!(r#"{{"ip":"{addr}","role":"{role}"}}"#)
-                    })
-                    .collect();
-                let body = format!(
-                    r#"{{"hops":[{}]}}"#,
-                    hops.join(",")
-                );
-                (200, "OK", body)
-            } else if request.starts_with("OPTIONS") {
-                (204, "No Content", String::new())
-            } else {
-                (
-                    404,
-                    "Not Found",
-                    r#"{"error":"not found"}"#.to_string(),
-                )
-            };
-
-        let response = format!(
-            "HTTP/1.1 {status_code} {status_text}\r\n\
-             Content-Type: application/json\r\n\
-             {}\
-             Access-Control-Allow-Methods: GET, OPTIONS\r\n\
-             Content-Length: {}\r\n\
-             \r\n\
-             {body}",
-            crate::local_guard::response_headers(allowed_origin.as_deref()),
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-    }
-}
+// Shared with the library rather than inlined a second time. This endpoint
+// decides what the outside world learns about a live circuit, and a copy
+// that drifts is a copy that goes on answering the old way.
+#[path = "api.rs"]
+mod api;
 
 // =============================================================================
 // mod apps — HidraNet decentralized applications
@@ -9097,12 +8777,17 @@ async fn run_proxy_mode(
     proxy_secret_bytes.zeroize();
 
     let api_addr: SocketAddr = format!("127.0.0.1:{API_PORT}").parse()?;
-    let api_state = Arc::new(api::ApiState {
-        start_time: Instant::now(),
-        relay_count: relay_addrs.len(),
+    // The circuit view needs a token the engine leaves in the keys
+    // directory. A page in a browser cannot read a local file, so even a
+    // failure in the Host/Origin screening does not get it the relays.
+    let api_token = api::issue_token(std::path::Path::new(&app_cfg.paths.keys_dir));
+    let api_state = Arc::new(api::ApiState::new(
+        Instant::now(),
+        relay_addrs.len(),
         relay_addrs,
-        hops: 3,
-    });
+        3,
+        api_token,
+    ));
 
     tokio::spawn({
         let state = Arc::clone(&api_state);
