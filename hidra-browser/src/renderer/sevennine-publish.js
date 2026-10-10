@@ -75,7 +75,7 @@
         var btn=document.createElement('button');
         btn.className='btn btn-primary btn-sm hnet-pub'; btn.type='button';
         btn.textContent='🌐 Publish to the network';
-        btn.onclick=function(e){ e.preventDefault(); btn.disabled=true; var t=btn.textContent; btn.textContent='⏳ Publicando…';
+        btn.onclick=function(e){ e.preventDefault(); btn.disabled=true; var t=btn.textContent; btn.textContent='⏳ Publishing…';
           Promise.resolve(publish(name)).catch(function(){}).then(function(){ btn.disabled=false; btn.textContent=t; }); };
         actions.insertBefore(btn, actions.firstChild);
       })(name);

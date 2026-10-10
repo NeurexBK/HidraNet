@@ -245,7 +245,7 @@ pub mod engine {
 
         if q.contains("torrent") || q.contains("download") || q.contains("magnet") {
             results.push(SearchResult {
-                title: "Busca de Torrents — via HidraNet".into(),
+                title: "Torrent search — via HidraNet".into(),
                 url: format!("https://btdig.com/search?q={}", encoded_q),
                 snippet: "Decentralised torrent search. Connection routed through the onion circuit.".into(),
                 source: "HidraSearch".into(),
@@ -406,11 +406,11 @@ a:hover{color:var(--link-hover);text-decoration:underline}
 </button>
   </div>
   <div class="badges">
-<div class="badge"><span class="dot"></span> Roteamento Onion</div>
+<div class="badge"><span class="dot"></span> Onion routing</div>
 <div class="badge"><span class="dot"></span> Zero Logs</div>
 <div class="badge"><span class="dot"></span> E2E encryption</div>
 <div class="badge"><span class="dot"></span> Uncensored</div>
-<div class="badge"><span class="dot"></span> IP Oculto</div>
+<div class="badge"><span class="dot"></span> Hidden IP</div>
   </div>
 </div>
 

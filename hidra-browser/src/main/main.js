@@ -614,7 +614,7 @@ app.whenReady().then(async () => {
   // A Tor that dies mid-session used to leave the proxy falling back to
   // direct, and browsing carried on with no warning. Now it closes again.
   torManager.onUnexpectedExit = (reason) => {
-    networkLock.engage('o Tor terminou inesperadamente' + (reason ? ' — ' + reason : ''));
+    networkLock.engage('Tor exited unexpectedly' + (reason ? ' — ' + reason : ''));
     applyProxyEverywhere(null).catch(() => {});
   };
 
@@ -790,7 +790,7 @@ function setupIPC(tabs, proxy) {
     networkLock.engage('disconnected by the user');
     await applyProxyEverywhere(null);
     await proxy.shutdown(null);
-    return { ok: true, msg: 'desconectado' };
+    return { ok: true, msg: 'disconnected' };
   });
 
   // The new tab page lives on file://, so it cannot probe the apps ports with

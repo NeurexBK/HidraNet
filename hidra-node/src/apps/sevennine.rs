@@ -1121,14 +1121,14 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             Open site
           </a>
-          <button class="btn btn-ghost" onclick="hideSuccess()">Continuar</button>
+          <button class="btn btn-ghost" onclick="hideSuccess()">Continue</button>
         </div>
       </div>
     </section>
 
     <!-- Upload Section (shown after site creation) -->
     <section class="card upload-card hidden" id="upload-section">
-      <h2><span class="icon">&#8593;</span> Upload de Arquivos para <span id="upload-site-name" class="accent"></span></h2>
+      <h2><span class="icon">&#8593;</span> Upload files to <span id="upload-site-name" class="accent"></span></h2>
       <div class="upload-zone" id="drop-zone">
         <svg viewBox="0 0 64 64" width="48" height="48" fill="none" stroke="#00d4aa" stroke-width="2" opacity="0.5">
           <rect x="8" y="16" width="48" height="40" rx="4"/>
@@ -1162,7 +1162,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
 
     <!-- Templates Section -->
     <section class="card templates-card">
-      <h2><span class="icon">&#10025;</span> Templates Prontos</h2>
+      <h2><span class="icon">&#10025;</span> Ready-made templates</h2>
       <div class="templates-grid">
         <div class="template-item" onclick="useTemplate('landing')">
           <div class="template-preview landing-preview">
@@ -1217,7 +1217,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
         <span class="ed-editing">Editing <span id="ed-site-name" class="accent">site.hidra</span></span>
       </div>
       <div class="ed-top-right">
-        <button class="btn btn-ghost btn-sm" id="ed-devtoggle" onclick="toggleDevice()" title="Alternar preview">🖥 Desktop</button>
+        <button class="btn btn-ghost btn-sm" id="ed-devtoggle" onclick="toggleDevice()" title="Toggle preview">🖥 Desktop</button>
         <a id="ed-open" href="#" target="_blank" class="btn btn-ghost btn-sm">View site</a>
         <button class="btn btn-primary btn-sm" id="ed-publish" onclick="publishEditor()">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
@@ -1233,27 +1233,27 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
           <input type="text" id="ed-brand" class="ed-input" placeholder="My brand" oninput="setMeta('brand', this.value)">
         </div>
         <div class="ed-block">
-          <div class="ed-block-title">Aparencia</div>
-          <label class="ed-label">Tema</label>
+          <div class="ed-block-title">Appearance</div>
+          <label class="ed-label">Theme</label>
           <div class="ed-themes" id="ed-themes"></div>
-          <label class="ed-label">Fonte</label>
+          <label class="ed-label">Font</label>
           <select id="ed-font" class="ed-input" onchange="setMeta('font', this.value)">
-            <option value="system">Moderna (sans-serif)</option>
-            <option value="serif">Elegante (serif)</option>
-            <option value="mono">Tecnica (monospace)</option>
-            <option value="round">Arredondada</option>
+            <option value="system">Modern (sans-serif)</option>
+            <option value="serif">Elegant (serif)</option>
+            <option value="mono">Technical (monospace)</option>
+            <option value="round">Rounded</option>
           </select>
         </div>
         <div class="ed-block">
-          <div class="ed-block-title">Adicionar bloco</div>
+          <div class="ed-block-title">Add block</div>
           <div class="ed-palette" id="ed-palette"></div>
         </div>
         <div class="ed-block">
-          <div class="ed-block-title">Rodape / Redes</div>
+          <div class="ed-block-title">Footer / Social</div>
           <label class="ed-label">WhatsApp (number)</label>
           <input type="text" id="ed-wa" class="ed-input" placeholder="5511999999999" oninput="setSocial('whatsapp', this.value)">
-          <label class="ed-label">Instagram (@usuario)</label>
-          <input type="text" id="ed-ig" class="ed-input" placeholder="@minhamarca" oninput="setSocial('instagram', this.value)">
+          <label class="ed-label">Instagram (@username)</label>
+          <input type="text" id="ed-ig" class="ed-input" placeholder="@mybrand" oninput="setSocial('instagram', this.value)">
           <label class="ed-label">E-mail</label>
           <input type="text" id="ed-mail" class="ed-input" placeholder="contact@example" oninput="setSocial('email', this.value)">
         </div>
@@ -1284,7 +1284,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
       <input type="text" id="s9-modal-input" class="ed-input" autocomplete="off" spellcheck="false">
       <div class="s9-modal-actions">
         <button class="btn btn-ghost" id="s9-modal-cancel">Cancel</button>
-        <button class="btn btn-primary" id="s9-modal-ok">Confirmar</button>
+        <button class="btn btn-primary" id="s9-modal-ok">Confirm</button>
       </div>
     </div>
   </div>
@@ -1645,7 +1645,7 @@ async function createSite() {
 
   const btn = document.getElementById('create-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Criando...';
+  btn.innerHTML = '<span class="spinner"></span> Creating...';
 
   try {
     const res = await fetch(API + '/api/sites', {
@@ -1730,7 +1730,7 @@ async function publishSite() {
 
   const btn = document.getElementById('publish-btn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Publicando...';
+  btn.innerHTML = '<span class="spinner"></span> Publishing...';
 
   const prog = document.getElementById('upload-progress');
   prog.classList.remove('hidden');
@@ -1755,7 +1755,7 @@ async function publishSite() {
     }
   }
 
-  prog.innerHTML = '<div class="prog-text">Concluido! ' + uploaded + '/' + total + ' arquivos enviados</div>' +
+  prog.innerHTML = '<div class="prog-text">Done! ' + uploaded + '/' + total + ' files uploaded</div>' +
     '<div class="prog-bar"><div class="prog-fill" style="width:100%"></div></div>';
 
   pendingFiles = [];
@@ -1822,7 +1822,7 @@ function renderSites(sites) {
         '<div class="site-name">' + escapeHtml(s.hidra_address) + '</div>' +
         '<div class="site-meta">' +
           s.files.length + ' file(s) &middot; ' + formatSize(s.size_bytes) + ' &middot; ' +
-          s.visits + ' visita(s) &middot; ' + new Date(s.created_at).toLocaleDateString('pt-BR') +
+          s.visits + ' visit(s) &middot; ' + new Date(s.created_at).toLocaleDateString('en-US') +
         '</div>' +
       '</div>' +
       '<div class="site-actions">' +
@@ -1949,14 +1949,14 @@ var PALETTE_BLOCKS = [
   { type:'gallery',      label:'Gallery',     icon:'▦' },
   { type:'cta',          label:'Call to action', icon:'➤' },
   { type:'contact',      label:'Contact',     icon:'✉' },
-  { type:'divider',      label:'Divisor',     icon:'—' }
+  { type:'divider',      label:'Divider',     icon:'—' }
 ];
 
 function defaultItem(type){
-  if(type==='features') return {icon:'✦',title:'Recurso',text:'Descricao do recurso'};
-  if(type==='products') return {img:'',name:'Product',price:'99,90',desc:'Descricao do product.',url:'#',label:'Comprar'};
+  if(type==='features') return {icon:'✦',title:'Feature',text:'Feature description'};
+  if(type==='products') return {img:'',name:'Product',price:'99.90',desc:'Product description.',url:'#',label:'Buy'};
   if(type==='articles') return {img:'',cat:'General',title:'Story headline',date:'Today',excerpt:'A one or two line summary of the story.',url:'#'};
-  if(type==='pricing') return {plan:'Plan',price:'0',period:'/mes',feats:'Recurso incluso\nOutro recurso',button:'Escolher',url:'#',featured:false};
+  if(type==='pricing') return {plan:'Plan',price:'0',period:'/mo',feats:'Included feature\nAnother feature',button:'Choose',url:'#',featured:false};
   if(type==='testimonials') return {quote:'Excellent service, highly recommended.',author:'Customer',role:'Role'};
   if(type==='gallery') return {url:''};
   return {};
@@ -1968,15 +1968,15 @@ function itemName(type){
 function defaultBlock(type) {
   switch(type) {
     case 'hero': return { type:type, title:'Welcome to my site', subtitle:'Hosted on the decentralised HidraNet network.', button:'Learn more', url:'#' };
-    case 'heading': return { type:type, text:'Um title de secao' };
+    case 'heading': return { type:type, text:'A section title' };
     case 'text': return { type:type, text:'Write your content here. Tell people about you, your project or your ideas.' };
-    case 'image': return { type:type, url:'', alt:'Descricao da image' };
+    case 'image': return { type:type, url:'', alt:'Image description' };
     case 'button': return { type:type, text:'Click here', url:'#' };
     case 'features': return { type:type, title:'', items:[ {icon:'🔒',title:'Secure',text:'End-to-end encryption'}, {icon:'🕵',title:'Anonymous',text:'No tracking'}, {icon:'🌐',title:'Decentralised',text:'No central server'} ] };
     case 'products': return { type:type, title:'Our products', currency:'$', items:[ {img:'',name:'Product 1',price:'99.90',desc:'A great product, quality guaranteed.',url:'#',label:'Buy'}, {img:'',name:'Product 2',price:'149.90',desc:'Our best seller.',url:'#',label:'Buy'}, {img:'',name:'Product 3',price:'199.90',desc:'Special edition.',url:'#',label:'Buy'} ] };
     case 'articles': return { type:type, title:'Latest news', items:[ {img:'',cat:'Featured',title:'Lead story headline',date:'Today',excerpt:'A short summary of the story to draw the reader in.',url:'#'}, {img:'',cat:'General',title:'Second important story',date:'Yesterday',excerpt:'Another informative summary here.',url:'#'} ] };
     case 'pricing': return { type:type, title:'Plans', items:[ {plan:'Basic',price:'29',period:'/mo',feats:'1 site\nEmail support\n.hidra domain',button:'Get started',url:'#',featured:false}, {plan:'Pro',price:'79',period:'/mo',feats:'Unlimited sites\nPriority support\nStatistics',button:'Subscribe',url:'#',featured:true} ] };
-    case 'testimonials': return { type:type, title:'What people say', items:[ {quote:'Best decision I made. Recommended.',author:'Maria S.',role:'Business owner'}, {quote:'Fast, secure and easy to use.',author:'Joao P.',role:'Developer'} ] };
+    case 'testimonials': return { type:type, title:'What people say', items:[ {quote:'Best decision I made. Recommended.',author:'Sarah M.',role:'Business owner'}, {quote:'Fast, secure and easy to use.',author:'James P.',role:'Developer'} ] };
     case 'gallery': return { type:type, title:'Gallery', items:[ {url:''},{url:''},{url:''} ] };
     case 'cta': return { type:type, title:'Ready to start?', text:'Join us today and become part of the network.', button:'Start now', url:'#' };
     case 'contact': return { type:type, title:'Get in touch', email:'contact@example.hidra', phone:'', whatsapp:'', address:'' };
@@ -2100,25 +2100,25 @@ function blockLabel(type){
 function renderCanvas() {
   var el = document.getElementById('ed-canvas');
   var blocks = curBlocks();
-  if (blocks.length === 0) { el.innerHTML = '<div class="ed-canvas-empty">Empty page. Add blocks from the panel a esquerda.</div>'; return; }
+  if (blocks.length === 0) { el.innerHTML = '<div class="ed-canvas-empty">Empty page. Add blocks from the panel on the left.</div>'; return; }
   el.innerHTML = blocks.map(function(b, i){ return blockCard(b, i); }).join('');
 }
 
 function blockCard(b, i) {
   var body = '';
   if (b.type === 'hero') {
-    body = field('Title', b.title, i, 'title') + field('Subtitulo', b.subtitle, i, 'subtitle') +
+    body = field('Title', b.title, i, 'title') + field('Subtitle', b.subtitle, i, 'subtitle') +
       '<div class="row2">' + field('Button text', b.button, i, 'button') + field('Button link', b.url, i, 'url') + '</div>';
   } else if (b.type === 'heading') { body = field('Title', b.text, i, 'text'); }
   else if (b.type === 'text') { body = area('Text', b.text, i, 'text'); }
-  else if (b.type === 'image') { body = field('URL da image (https://...)', b.url, i, 'url') + field('Descricao', b.alt, i, 'alt'); }
+  else if (b.type === 'image') { body = field('Image URL (https://...)', b.url, i, 'url') + field('Description', b.alt, i, 'alt'); }
   else if (b.type === 'button') { body = '<div class="row2">' + field('Text', b.text, i, 'text') + field('Link', b.url, i, 'url') + '</div>'; }
   else if (b.type === 'cta') {
     body = field('Title', b.title, i, 'title') + area('Text', b.text, i, 'text') +
       '<div class="row2">' + field('Button text', b.button, i, 'button') + field('Link', b.url, i, 'url') + '</div>';
   } else if (b.type === 'contact') {
     body = field('Title', b.title, i, 'title') +
-      '<div class="row2">' + field('E-mail', b.email, i, 'email') + field('Telefone', b.phone, i, 'phone') + '</div>' +
+      '<div class="row2">' + field('E-mail', b.email, i, 'email') + field('Phone', b.phone, i, 'phone') + '</div>' +
       '<div class="row2">' + field('WhatsApp (number)', b.whatsapp, i, 'whatsapp') + field('Address', b.address, i, 'address') + '</div>';
   } else if (b.type === 'divider') { body = '<div style="color:var(--text3);font-size:0.85em">Divider line (no options)</div>'; }
   else if (isListBlock(b.type)) { body = listBlockBody(b, i); }
@@ -2134,22 +2134,22 @@ function blockCard(b, i) {
 
 function listBlockBody(b, i) {
   var head = '';
-  if (b.type === 'products') head = field('Title da secao', b.title, i, 'title') + field('Moeda (R$, US$...)', b.currency, i, 'currency');
-  else if (b.type !== 'features') head = field('Title da secao', b.title, i, 'title');
+  if (b.type === 'products') head = field('Section title', b.title, i, 'title') + field('Currency ($, EUR...)', b.currency, i, 'currency');
+  else if (b.type !== 'features') head = field('Section title', b.title, i, 'title');
   var items = (b.items||[]).map(function(it, j){
     return '<div class="ed-item"><button class="ed-item-rm" onclick="rmItem('+i+','+j+')" title="Remove">&times;</button>' +
       '<div class="ed-item-n">'+itemName(b.type)+' '+(j+1)+'</div>' + itemFields(b.type, it, i, j) + '</div>';
   }).join('');
-  return head + '<div class="ed-items">'+items+'</div><button class="ed-mini-btn" onclick="addItem('+i+')">+ Adicionar '+itemName(b.type)+'</button>';
+  return head + '<div class="ed-items">'+items+'</div><button class="ed-mini-btn" onclick="addItem('+i+')">+ Add '+itemName(b.type)+'</button>';
 }
 
 function itemFields(type, it, bi, ii) {
-  if (type === 'features') return iField('Icone (emoji)', it.icon, bi, ii, 'icon') + iField('Title', it.title, bi, ii, 'title') + iField('Text', it.text, bi, ii, 'text');
-  if (type === 'products') return iField('Image URL', it.img, bi, ii, 'img') + iField('Name', it.name, bi, ii, 'name') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Text do button', it.label, bi, ii, 'label') + '</div>' + iField('Descricao', it.desc, bi, ii, 'desc') + iField('Link de compra', it.url, bi, ii, 'url');
-  if (type === 'articles') return iField('URL da image', it.img, bi, ii, 'img') + '<div class="row2">' + iField('Categoria', it.cat, bi, ii, 'cat') + iField('Data', it.date, bi, ii, 'date') + '</div>' + iField('Title', it.title, bi, ii, 'title') + iArea('Summary', it.excerpt, bi, ii, 'excerpt') + iField('Link', it.url, bi, ii, 'url');
-  if (type === 'pricing') return iField('Plan', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Period', it.period, bi, ii, 'period') + '</div>' + iArea('Recursos (1 por linha)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Text do button', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Destacar este plan', it.featured, bi, ii, 'featured');
+  if (type === 'features') return iField('Icon (emoji)', it.icon, bi, ii, 'icon') + iField('Title', it.title, bi, ii, 'title') + iField('Text', it.text, bi, ii, 'text');
+  if (type === 'products') return iField('Image URL', it.img, bi, ii, 'img') + iField('Name', it.name, bi, ii, 'name') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Button text', it.label, bi, ii, 'label') + '</div>' + iField('Description', it.desc, bi, ii, 'desc') + iField('Purchase link', it.url, bi, ii, 'url');
+  if (type === 'articles') return iField('Image URL', it.img, bi, ii, 'img') + '<div class="row2">' + iField('Category', it.cat, bi, ii, 'cat') + iField('Date', it.date, bi, ii, 'date') + '</div>' + iField('Title', it.title, bi, ii, 'title') + iArea('Summary', it.excerpt, bi, ii, 'excerpt') + iField('Link', it.url, bi, ii, 'url');
+  if (type === 'pricing') return iField('Plan', it.plan, bi, ii, 'plan') + '<div class="row2">' + iField('Price', it.price, bi, ii, 'price') + iField('Period', it.period, bi, ii, 'period') + '</div>' + iArea('Features (one per line)', it.feats, bi, ii, 'feats') + '<div class="row2">' + iField('Button text', it.button, bi, ii, 'button') + iField('Link', it.url, bi, ii, 'url') + '</div>' + iCheck('Highlight this plan', it.featured, bi, ii, 'featured');
   if (type === 'testimonials') return iArea('Testimonial', it.quote, bi, ii, 'quote') + '<div class="row2">' + iField('Author', it.author, bi, ii, 'author') + iField('Role', it.role, bi, ii, 'role') + '</div>';
-  if (type === 'gallery') return iField('URL da image', it.url, bi, ii, 'url');
+  if (type === 'gallery') return iField('Image URL', it.url, bi, ii, 'url');
   return '';
 }
 
@@ -2213,13 +2213,13 @@ function selectBlockCard(bi){
 function toggleDevice(){
   edDevice = (edDevice === 'desktop') ? 'mobile' : 'desktop';
   document.getElementById('ed-frame-wrap').classList.toggle('mobile', edDevice === 'mobile');
-  document.getElementById('ed-devtoggle').innerHTML = (edDevice==='desktop') ? '🖥 Desktop' : '📱 Celular';
+  document.getElementById('ed-devtoggle').innerHTML = (edDevice==='desktop') ? '🖥 Desktop' : '📱 Mobile';
 }
 
 async function publishEditor(){
   var btn = document.getElementById('ed-publish');
   btn.disabled = true; var old = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Publicando...';
+  btn.innerHTML = '<span class="spinner"></span> Publishing...';
   var files = ed.pages.map(function(p){ return { path: fileFor(p), html: renderPageHTML(p, false) }; });
   var source = { brand: ed.brand, theme: ed.theme, font: ed.font, social: ed.social, pages: ed.pages };
   try {
@@ -2415,7 +2415,7 @@ function blockHTML(b, t, em, bi){
   }
   if (b.type === 'products') {
     var cards = (b.items||[]).map(function(it,ii){
-      var buy = it.url ? '<a class="s9-btn s9-btn-sm" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':label')+'>'+esc(it.label||'Comprar')+'</a>' : '';
+      var buy = it.url ? '<a class="s9-btn s9-btn-sm" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':label')+'>'+esc(it.label||'Buy')+'</a>' : '';
       return '<div class="s9-prod">' + imgOr(it.img,'s9-prod-img',it.name,'No image') +
         '<div class="s9-prod-b"><h3'+ce(em)+de(em,bi+'.'+ii+':name')+'>'+esc(it.name)+'</h3><div class="s9-price">'+esc(b.currency||'')+' <span'+ce(em)+de(em,bi+'.'+ii+':price')+'>'+esc(it.price||'')+'</span></div><p'+ce(em)+de(em,bi+'.'+ii+':desc')+'>'+esc(it.desc)+'</p>'+buy+'</div></div>';
     }).join('');
@@ -2431,7 +2431,7 @@ function blockHTML(b, t, em, bi){
   if (b.type === 'pricing') {
     var plans = (b.items||[]).map(function(it,ii){
       var feats = (it.feats||'').split('\n').filter(function(x){return x.trim();}).map(function(f){ return '<li>'+esc(f)+'</li>'; }).join('');
-      var bt = it.url ? '<a class="s9-btn" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':button')+'>'+esc(it.button||'Escolher')+'</a>' : '';
+      var bt = it.url ? '<a class="s9-btn" href="'+safeUrl(it.url)+'"'+ce(em)+de(em,bi+'.'+ii+':button')+'>'+esc(it.button||'Choose')+'</a>' : '';
       return '<div class="s9-plan'+(it.featured?' feat':'')+'"><div class="s9-plan-name"'+ce(em)+de(em,bi+'.'+ii+':plan')+'>'+esc(it.plan)+'</div><div class="s9-plan-price"><span'+ce(em)+de(em,bi+'.'+ii+':price')+'>'+esc(it.price)+'</span><span>'+esc(it.period||'')+'</span></div><ul>'+feats+'</ul>'+bt+'</div>';
     }).join('');
     return '<section class="s9-sec"'+db(em,bi)+'>' + secTitle(b,em,bi) + '<div class="s9-price-grid">'+plans+'</div></section>';
@@ -2453,7 +2453,7 @@ function blockHTML(b, t, em, bi){
   if (b.type === 'contact') {
     var rows = '';
     if (b.email) rows += '<div class="s9-cd"><b>E-mail:</b> <a href="mailto:'+attr(b.email)+'">'+esc(b.email)+'</a></div>';
-    if (b.phone) rows += '<div class="s9-cd"><b>Telefone:</b> '+esc(b.phone)+'</div>';
+    if (b.phone) rows += '<div class="s9-cd"><b>Phone:</b> '+esc(b.phone)+'</div>';
     if (b.whatsapp) rows += '<div class="s9-cd"><b>WhatsApp:</b> <a href="https://wa.me/'+b.whatsapp.replace(/\D/g,'')+'">'+esc(b.whatsapp)+'</a></div>';
     if (b.address) rows += '<div class="s9-cd"><b>Address:</b> '+esc(b.address)+'</div>';
     return '<section class="s9-sec"'+db(em,bi)+'><h2 class="s9-sec-h"'+ce(em)+de(em,bi+':title')+'>'+esc(b.title)+'</h2><div class="s9-contact">'+rows+'</div></section>';
@@ -2474,7 +2474,7 @@ function askText(opts){
     document.getElementById('s9-modal-msg').textContent=opts.msg||'';
     var inp=document.getElementById('s9-modal-input');
     inp.style.display=''; inp.placeholder=opts.placeholder||''; inp.value=opts.value||'';
-    document.getElementById('s9-modal-ok').textContent=opts.ok||'Confirmar';
+    document.getElementById('s9-modal-ok').textContent=opts.ok||'Confirm';
     m.classList.remove('hidden');
     setTimeout(function(){ inp.focus(); inp.select(); }, 40);
     var ok=document.getElementById('s9-modal-ok'), cancel=document.getElementById('s9-modal-cancel');
@@ -2487,7 +2487,7 @@ function askText(opts){
 function askConfirm(message){
   return new Promise(function(resolve){
     var m=document.getElementById('s9-modal');
-    document.getElementById('s9-modal-title').textContent='Confirmar';
+    document.getElementById('s9-modal-title').textContent='Confirm';
     document.getElementById('s9-modal-msg').textContent=message;
     var inp=document.getElementById('s9-modal-input'); inp.style.display='none';
     document.getElementById('s9-modal-ok').textContent='Delete';

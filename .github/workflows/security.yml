@@ -52,3 +52,17 @@ jobs:
         run: |
           node test/anonymity-claims.js
           node test/mqtt-worker-csp.js
+
+  language:
+    name: the product is in English
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Twice now, a translation pass has looked finished while the site
+      # builder, the analytics dashboard and every connection status were still
+      # Portuguese — they live in Rust string literals, so grepping the
+      # browser's HTML found nothing.
+      - name: No Portuguese in anything a user sees
+        working-directory: hidra-browser
+        run: node test/english-only.js

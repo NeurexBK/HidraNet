@@ -470,7 +470,7 @@ border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.55;margin-bo
         </div>
       </div>
       <label for="r-text">How was your experience?</label>
-      <textarea id="r-text" maxlength="1200" placeholder="Conte o que achou…"></textarea>
+      <textarea id="r-text" maxlength="1200" placeholder="Tell people what you thought…"></textarea>
       <div style="margin-top:14px"><button class="go" id="r-send">Post review</button></div>
       <div class="msg" id="r-msg"></div>
     </div>
@@ -827,7 +827,7 @@ async function notifyOwner(addr, subject, body){
     var pubRaw=b64d(pub64);
     if(await addrFromPub(pubRaw)!==addr) return false;   // self-certifying: the key has to match the address
     var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
-    var payload={ mid:mid, from:'avaliacoes@hidra', subject:subject, body:body, date:Date.now() };
+    var payload={ mid:mid, from:'reviews@hidra', subject:subject, body:body, date:Date.now() };
     var ct=await encryptTo(pubRaw, JSON.stringify(payload));
     if(ct.length>800000) return false;
     var topic=await mailInbox(addr)+'/'+mid;
@@ -1269,7 +1269,7 @@ function renderPayBox(b, verified) {
     ' em Bitcoin</span></div>' +
     '<div class="payrow"><span>Exact amount (identifies this business)</span>' +
     '<span class="mono">' + fmtSats(b.sats) + '</span></div>' +
-    '<div class="payrow"><span>Carteira</span></div>' +
+    '<div class="payrow"><span>Wallet</span></div>' +
     '<div class="mono">' + esc(BTC_ADDR) + '</div>' +
     '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
     '<button class="go ghost" id="pay-copy">Copy address</button>' +
@@ -1285,7 +1285,7 @@ function renderPayBox(b, verified) {
       function () { say('pay-msg', 'Could not copy. Select the address by hand.', 'err'); });
   });
   $('pay-check').addEventListener('click', async function () {
-    say('pay-msg', 'A consultar a blockchain…', 'work');
+    say('pay-msg', 'Checking the blockchain…', 'work');
     await loadPayments();
     if (isVerified(state.open)) { toast('Badge confirmed'); renderBiz(); }
     else say('pay-msg', 'I have not found that payment yet. If you just sent it, ' +
@@ -1637,7 +1637,7 @@ function renderOwner() {
     '</div>';
 
   var links =
-    '<div class="card"><div class="sect-t">Links para o NFC</div>' +
+    '<div class="card"><div class="sect-t">Links for NFC</div>' +
       '<div class="addrbox"><div style="width:100%">' +
         '<div class="lbl">NFC card (phone)</div>' +
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:3px">' +
@@ -1655,8 +1655,8 @@ function renderOwner() {
     var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
     var replyBlock = rep
       ? '<div class="reply"><div class="rl">Your reply</div>' + esc(rep.text) + '</div>'
-      : '<div class="orep-row"><input id="rep-' + esc(it.id) + '" maxlength="600" placeholder="Responder publicamente…">' +
-        '<button class="go" data-rep="' + esc(it.id) + '">Responder</button></div>';
+      : '<div class="orep-row"><input id="rep-' + esc(it.id) + '" maxlength="600" placeholder="Reply publicly…">' +
+        '<button class="go" data-rep="' + esc(it.id) + '">Reply</button></div>';
     return '<div class="orev"><div class="rh"><span class="who">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="txt">' + esc(r.text) + '</div>' + replyBlock + '</div>';

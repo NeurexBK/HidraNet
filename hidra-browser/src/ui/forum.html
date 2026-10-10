@@ -149,7 +149,7 @@ svg{display:block}
       <div><h1>Hidra Forum</h1><div class="sub">ANONYMOUS · DECENTRALISED</div></div>
     </div>
     <div class="me">
-      <span class="conn"><span class="dot" id="cdot"></span><span id="ctxt">conectando…</span></span>
+      <span class="conn"><span class="dot" id="cdot"></span><span id="ctxt">connecting…</span></span>
       <span class="who" id="me-who" title="Change nickname"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><b id="me-nick">—</b><span class="tag" id="me-tag"></span></span>
       <button class="iconbtn" id="btn-mod" title="Moderation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></button>
     </div>
@@ -197,13 +197,13 @@ svg{display:block}
   </div>
 </div>
 
-<!-- Apelido -->
+<!-- Nickname -->
 <div class="modal hidden" id="m-nick">
   <div class="box sm">
     <div class="b-head"><h3>Your nickname</h3><button class="iconbtn" id="nick-x" onclick="closeM('m-nick')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
       <div class="muted">No sign-up, no email, no password. Pick a nickname — a secret token is generated and kept only in this browser, to prove the posts are yours.</div>
-      <label>Apelido</label>
+      <label>Nickname</label>
       <input type="text" id="nick-in" maxlength="24" placeholder="e.g. Anonymous Reader">
     </div>
     <div class="b-foot"><button class="btn btn-p" id="nick-save">Save</button></div>
@@ -287,17 +287,17 @@ async function setNick(nick){
 
 // ───────── mqtt ─────────
 function connect(){
-  $('ctxt').textContent='conectando…';
+  $('ctxt').textContent='connecting…';
   client=mqtt.connect(MQTT_BROKERS[0],{clientId:'hforum_'+rid(''),clean:true,reconnectPeriod:4000,keepalive:30});
   client.on('connect',function(){
-    $('cdot').className='dot on'; $('ctxt').textContent='conectado';
+    $('cdot').className='dot on'; $('ctxt').textContent='connected';
     client.subscribe('hforum/t/+',{qos:1});
     client.subscribe('hforum/r/+/+',{qos:1});
     client.subscribe('hforum/rep/+/+',{qos:0});
     client.subscribe('hforum/mod/+',{qos:1});
     client.subscribe('hforum/admin',{qos:1});
   });
-  client.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='reconectando…'; });
+  client.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='reconnecting…'; });
   client.on('close',function(){ $('cdot').className='dot'; $('ctxt').textContent='offline'; });
   client.on('message',onMessage);
 }
@@ -466,7 +466,7 @@ loadMe();
   $('me-who').onclick=function(){ openNick(false); };
   $('btn-mod').onclick=function(){ $('mod-state').innerHTML=state.mod?'<span class="ok">You are already a moderator in this session.</span>':'<span class="muted">'+(state.adminHash?'A moderator is already registered. Enter the password.':'Nobody has registered a password yet — the first one becomes the owner password.')+'</span>'; openM('m-mod'); };
   $('mod-enter').onclick=function(){ enterMod($('mod-pass').value); };
-  $('nick-save').onclick=async function(){ if(await setNick($('nick-in').value)){ closeM('m-nick'); renderAll(); toast('Apelido salvo.'); } };
+  $('nick-save').onclick=async function(){ if(await setNick($('nick-in').value)){ closeM('m-nick'); renderAll(); toast('Nickname saved.'); } };
   $('btn-new').onclick=function(){ if(!ensureNick())return; $('n-title').value='';$('n-body').value=''; if(state.cat!=='all')$('n-cat').value=state.cat; openM('m-new'); setTimeout(function(){$('n-title').focus();},50); };
   $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Give it a title.');return;} if(!bo){toast('Write the message.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };
   $('search').oninput=function(){ state.search=this.value; state.page=0; renderList(); };

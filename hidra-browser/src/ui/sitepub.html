@@ -86,9 +86,9 @@ textarea{min-height:150px;font-family:'SF Mono',monospace;font-size:.82em;resize
   <div class="card">
     <h2>1. Choose the site</h2>
     <div class="d">Load a site you built in SevenNine, or paste the HTML here. It will be encrypted and published on the network.</div>
-    <label>Sites do SevenNine (se o HidraNet estiver conectado)</label>
+    <label>SevenNine sites (if HidraNet is connected)</label>
     <div class="row">
-      <select id="sn-sites"><option value="">— carregando… —</option></select>
+      <select id="sn-sites"><option value="">— loading… —</option></select>
       <button class="btn btn-ghost" id="btn-load" style="white-space:nowrap">Load</button>
     </div>
     <label>Site name</label>
@@ -140,7 +140,7 @@ async function E(k,t){var iv=crypto.getRandomValues(new Uint8Array(12));var c=aw
 function connect(){
   mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidrapub_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
   mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Connected'; repubAll(); });
-  mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconectando…'; });
+  mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconnecting…'; });
 }
 
 async function loadFromSevenNine(){
@@ -156,15 +156,15 @@ async function loadSelected(){
   try{
     var r=await fetch('http://127.0.0.1:8084/sites/'+name+'/'); var html=await r.text();
     $('site-name').value=name; $('site-html').value=html;
-    showMsg('Site "'+name+'" carregado do SevenNine.','ok');
+    showMsg('Site "'+name+'" loaded from SevenNine.','ok');
   }catch(e){ showMsg('Could not load from SevenNine.','err'); }
 }
 
 async function publish(){
   var name=$('site-name').value.trim()||'Site';
   var html=$('site-html').value.trim();
-  if(!html){ showMsg('Cole o HTML ou carregue um site do SevenNine.','err'); return; }
-  var btn=$('btn-pub'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Publicando…';
+  if(!html){ showMsg('Paste the HTML, or load a site from SevenNine.','err'); return; }
+  var btn=$('btn-pub'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Publishing…';
   try{
     var addr=newAddr();
     var bundle={'index.html':html};

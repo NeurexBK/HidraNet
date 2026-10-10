@@ -478,8 +478,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   <div class="stats-grid">
 <div class="stat-card"><div class="label">Active users</div><div class="value accent" id="s-users">—</div><div class="delta" id="d-users"></div></div>
-<div class="stat-card"><div class="label">Relays Ativos</div><div class="value" id="s-relays">—</div><div class="delta" id="d-relays"></div></div>
-<div class="stat-card"><div class="label">Circuitos/seg</div><div class="value" id="s-circuits">—</div></div>
+<div class="stat-card"><div class="label">Active relays</div><div class="value" id="s-relays">—</div><div class="delta" id="d-relays"></div></div>
+<div class="stat-card"><div class="label">Circuits/sec</div><div class="value" id="s-circuits">—</div></div>
 <div class="stat-card"><div class="label">Average latency</div><div class="value" id="s-latency">—</div></div>
 <div class="stat-card"><div class="label">Traffic (GB/day)</div><div class="value" id="s-traffic">—</div></div>
 <div class="stat-card"><div class="label">Countries</div><div class="value" id="s-countries">—</div></div>
@@ -519,8 +519,8 @@ let prevStats = null;
 function initCharts(){
   const tCtx=document.getElementById('trafficChart').getContext('2d');
   trafficChart=new Chart(tCtx,{type:'line',data:{labels:[],datasets:[
-{label:'Enviado (MB)',data:[],borderColor:'#00d4aa',backgroundColor:'rgba(0,212,170,0.1)',fill:true,tension:0.4,pointRadius:0},
-{label:'Recebido (MB)',data:[],borderColor:'#4488ff',backgroundColor:'rgba(68,136,255,0.1)',fill:true,tension:0.4,pointRadius:0}
+{label:'Sent (MB)',data:[],borderColor:'#00d4aa',backgroundColor:'rgba(0,212,170,0.1)',fill:true,tension:0.4,pointRadius:0},
+{label:'Received (MB)',data:[],borderColor:'#4488ff',backgroundColor:'rgba(68,136,255,0.1)',fill:true,tension:0.4,pointRadius:0}
   ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#8888a0',font:{size:11}}}},scales:{x:{ticks:{color:'#555570',maxTicksLimit:8},grid:{color:'#1a1a2e'}},y:{ticks:{color:'#555570',callback:v=>v.toFixed(1)+'MB'},grid:{color:'#1a1a2e'}}}}});
 
   const gCtx=document.getElementById('geoChart').getContext('2d');

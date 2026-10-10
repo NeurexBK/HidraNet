@@ -49,7 +49,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <body>
 <div class="bar">
   <span class="lock">🔒</span><code id="addr">—</code>
-  <span class="st" id="st">conectando…</span>
+  <span class="st" id="st">connecting…</span>
 </div>
 <div class="center" id="loading">
   <div class="spin"></div>
@@ -82,9 +82,9 @@ async function start(){
   if(!addr||addr==='.hidra'){ fail('Invalid address.'); return; }
   var key,top;
   try{ key=await deriveKey(addr); top=await siteTopic(addr); }catch(e){ fail('Cryptography error.'); return; }
-  $('st').textContent='conectando…';
+  $('st').textContent='connecting…';
   mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidrasee_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:0,keepalive:30});
-  mqttClient.on('connect',function(){ $('st').textContent='buscando…'; mqttClient.subscribe(top,{qos:0}); });
+  mqttClient.on('connect',function(){ $('st').textContent='searching…'; mqttClient.subscribe(top,{qos:0}); });
   mqttClient.on('error',function(){ fail('No connection to the network.'); });
   mqttClient.on('message',async function(t,payload){
     if(done) return;

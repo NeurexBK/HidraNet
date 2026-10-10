@@ -425,10 +425,10 @@
     <div class="wrap">
       <div class="stats reveal">
         <div class="stat"><div class="n" data-count="0" data-suffix="">0</div><div class="l">Central servers</div></div>
-        <div class="stat"><div class="n cyan">3–7</div><div class="l">Saltos por rota</div></div>
+        <div class="stat"><div class="n cyan">3–7</div><div class="l">Hops per route</div></div>
         <div class="stat"><div class="n">∞</div><div class="l">Possible nodes</div></div>
         <div class="stat"><div class="n cyan" data-count="256" data-suffix="-bit">0</div><div class="l">+ post-quantum ML-KEM</div></div>
-        <div class="stat"><div class="n" data-count="4" data-suffix="">0</div><div class="l">Apps nativas</div></div>
+        <div class="stat"><div class="n" data-count="4" data-suffix="">0</div><div class="l">Native apps</div></div>
         <div class="stat"><div class="n cyan" data-count="100" data-suffix="%">0</div><div class="l">Open source</div></div>
       </div>
     </div>
@@ -441,7 +441,7 @@
         <span class="chip"><span class="d"></span>Noise Protocol</span>
         <span class="chip"><span class="d"></span>ML-KEM · post-quantum</span>
         <span class="chip"><span class="d"></span>Kademlia DHT</span>
-        <span class="chip"><span class="d"></span>Roteamento Cebola</span>
+        <span class="chip"><span class="d"></span>Onion routing</span>
         <span class="chip"><span class="d"></span>Traffic obfuscation</span>
         <span class="chip"><span class="d"></span>E2E encryption</span>
         <span class="chip"><span class="d"></span>Hidden services</span>
@@ -466,7 +466,7 @@
         </article>
         <article class="pill reveal"><span class="num">02</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
-          <h3>Roteamento Cebola</h3>
+          <h3>Onion routing</h3>
           <p>3 to 7 hops with chaffing. Your IP is never exposed to the other end.</p>
         </article>
         <article class="pill reveal"><span class="num">03</span>
@@ -527,12 +527,12 @@
     <div class="wrap">
       <div class="s-head reveal">
         <div class="s-kick">// Obter acesso</div>
-        <h2>Baixe o HidraBrowser</h2>
+        <h2>Download HidraBrowser</h2>
         <p>Free, with no sign-up. Pick your system and the download starts right away.</p>
-        <div class="dl-live reveal" aria-live="polite" aria-label="Downloads ao vivo">
+        <div class="dl-live reveal" aria-live="polite" aria-label="Live downloads">
           <span class="dl-live-dot" aria-hidden="true"></span>
           <span class="dl-live-num" id="dlCount">—</span>
-          <span class="dl-live-label">downloads e subindo</span>
+          <span class="dl-live-label">downloads and climbing</span>
         </div>
       </div>
       <div class="grid-dl">
@@ -899,9 +899,9 @@ codesign --force --deep --sign - HidraNet.app</code></pre>
     function target(){ var d=Date.now()-EPOCH; return BASE + (d>0?Math.floor(d/STEP):0); }
     var shown=false, current=0;
     function show(t){
-      if(reduce){ el.textContent=t.toLocaleString('pt-BR'); current=t; shown=true; return; }
+      if(reduce){ el.textContent=t.toLocaleString('en-US'); current=t; shown=true; return; }
       var start=shown?current:0, t0=performance.now(), dur=shown?700:1300; shown=true; current=t;
-      (function tick(now){ var p=Math.min((now-t0)/dur,1), v=Math.round(start+(t-start)*(1-Math.pow(1-p,3))); el.textContent=v.toLocaleString('pt-BR'); if(p<1) requestAnimationFrame(tick); })(t0);
+      (function tick(now){ var p=Math.min((now-t0)/dur,1), v=Math.round(start+(t-start)*(1-Math.pow(1-p,3))); el.textContent=v.toLocaleString('en-US'); if(p<1) requestAnimationFrame(tick); })(t0);
     }
     show(target());
     setInterval(function(){ var t=target(); if(t!==current) show(t); },15000);

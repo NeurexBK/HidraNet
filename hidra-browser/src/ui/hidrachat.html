@@ -582,7 +582,7 @@ function connectWS(){
     try{handleMsg(JSON.parse(ev.data))}catch(e){}
   };
   ws.onclose=function(){
-    $('connStatus').textContent='Desconectado';
+    $('connStatus').textContent='Disconnected';
     $('connStatus').className='status';
     if(reconnAttempts<MAX_RECONN){
       reconnAttempts++;
@@ -714,7 +714,7 @@ function renderTyping(){
   var dots='<span class="dots"><span></span><span></span><span></span></span>';
   if(names.length===1) bar.innerHTML=esc(names[0])+' is typing'+dots;
   else if(names.length===2) bar.innerHTML=esc(names[0])+' and '+esc(names[1])+' are typing'+dots;
-  else bar.innerHTML=names.length+' pessoas digitando'+dots;
+  else bar.innerHTML=names.length+' people typing'+dots;
 }
 
 // ── Stale typing cleanup ──
@@ -783,7 +783,7 @@ function esc(s){var d=document.createElement('div');d.textContent=s;return d.inn
 
 function formatTime(ts){
   var d=new Date(ts);
-  return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
 }
 
 var scrollLock=false;

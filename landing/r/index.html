@@ -158,7 +158,7 @@ background:var(--card2);border:1px solid var(--line2)}
 
   <div id="dir" class="hidden">
     <div class="dirhead">
-      <h1>Estabelecimentos na HidraNet</h1>
+      <h1>Businesses on HidraNet</h1>
       <p>Real reviews, no account and no tracking. Tap one to view or review it.</p>
     </div>
     <input id="q" placeholder="Search by name or city…" autocomplete="off">
@@ -196,7 +196,7 @@ background:var(--card2);border:1px solid var(--line2)}
         <div><label for="rloc">Where from</label><input id="rloc" maxlength="50" placeholder="Lisbon"></div>
       </div>
       <label for="rtext">How was your experience?</label>
-      <textarea id="rtext" maxlength="1200" placeholder="Conte o que achou…"></textarea>
+      <textarea id="rtext" maxlength="1200" placeholder="Tell people what you thought…"></textarea>
       <button id="send">Post review</button>
       <div class="msg" id="msg"></div>
     </div>
@@ -218,8 +218,8 @@ background:var(--card2);border:1px solid var(--line2)}
     <div class="top">
       <div class="mark">H</div>
       <div>
-        <h3>Levar a HidraNet consigo</h3>
-        <div class="why" id="get-why">Funciona em iPhone e Android.</div>
+        <h3>Take HidraNet with you</h3>
+        <div class="why" id="get-why">Works on iPhone and Android.</div>
       </div>
     </div>
 
@@ -285,7 +285,7 @@ var dirBiz = {}, dirRev = {}, drawTimer = null;
 
 function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
-function when(t) { try { return new Date(t).toLocaleDateString('pt-PT'); } catch (e) { return ''; } }
+function when(t) { try { return new Date(t).toLocaleDateString('en-US'); } catch (e) { return ''; } }
 function rid(n) {
   var a = new Uint8Array(n || 8); crypto.getRandomValues(a);
   return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
@@ -332,7 +332,7 @@ async function notifyOwner(addr, subject, body){
     var pubRaw=b64d(pub64);
     if(await addrFromPub(pubRaw)!==addr) return false;
     var mid='m'+Date.now()+Math.floor(Math.random()*1e6);
-    var payload={ mid:mid, from:'avaliacoes@hidra', subject:subject, body:body, date:Date.now() };
+    var payload={ mid:mid, from:'reviews@hidra', subject:subject, body:body, date:Date.now() };
     var ct=await encryptTo(pubRaw, JSON.stringify(payload));
     if(ct.length>800000) return false;
     var topic=(await mailInbox(addr))+'/'+mid;
@@ -452,7 +452,7 @@ function render() {
     encodeURIComponent(where) + '"><span class="ic">◎</span><span><span class="t">Como chegar</span>' +
     '<span class="v">' + esc(where) + '</span></span></a>');
   if (biz.phone) acts.push('<a class="act" href="tel:' + esc(biz.phone.replace(/[^+0-9]/g, '')) +
-    '"><span class="ic">☎</span><span><span class="t">Telefone</span><span class="v">' +
+    '"><span class="ic">☎</span><span><span class="t">Phone</span><span class="v">' +
     esc(biz.phone) + '</span></span></a>');
   var site = safeUrl(biz.site);
   if (site) acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="' + esc(site) +
@@ -515,7 +515,7 @@ function renderDir() {
 
   if (!itens.length) {
     $('dir-list').innerHTML = '<div class="cnt" style="color:var(--mut)">' +
-      (ready ? (termo ? 'Nada encontrado para essa procura.'
+      (ready ? (termo ? 'Nothing found for that search.'
                       : 'No businesses published yet.')
              : 'Looking for businesses…') + '</div>';
     return;
@@ -650,7 +650,7 @@ function setupGet() {
 window.addEventListener('appinstalled', function () {
   ['get-android', 'get-ios', 'get-desktop'].forEach(function (k) { $(k).className = 'hidden'; });
   $('get-installed').className = '';
-  $('get-why').textContent = 'Instalada neste aparelho.';
+  $('get-why').textContent = 'Installed on this device.';
   $('get-pill').className = 'getbtn hidden';
 });
 
