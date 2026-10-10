@@ -6,8 +6,12 @@ listen_addr = "0.0.0.0"
 listen_port = 9150
 
 [logging]
-level = "debug"
+level = "info"
 format = "pretty"
+# Real peer addresses and destination hostnames in the log. Leave this
+# off on anything carrying other people's traffic: it is the record of
+# who connected and where they went.
+unsafe_addresses = false
 
 [paths]
 keys_dir = "keys"
@@ -24,7 +28,7 @@ port = 9050
 [hidden_service]
 enabled = false
 local_port = 8080
-# app = "hidrachat"  # descomente para ativar o HidraChat
+# app = "hidrachat"  # uncomment to run HidraChat on this node
 
 [[relays]]
 name = "relay-1"

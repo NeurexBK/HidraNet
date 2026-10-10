@@ -224,6 +224,13 @@ mod app_config {
     pub struct LoggingConfig {
         pub level: String,
         pub format: String,
+        /// Print real peer addresses and destination hostnames in the log.
+        ///
+        /// Off by default, and worth leaving off on anything that carries
+        /// other people's traffic: a relay's log would otherwise record who
+        /// connected and, at the exit, where they went. See `safelog`.
+        #[serde(default)]
+        pub unsafe_addresses: bool,
     }
 
     #[derive(Debug, Deserialize, Clone)]
@@ -618,6 +625,7 @@ mod network {
     }
 
     pub mod listener {
+        use crate::safelog::sensitive;
         use std::net::SocketAddr;
         use std::sync::Arc;
 
@@ -680,15 +688,15 @@ mod network {
                     let peer_ip = remote_addr.ip();
 
                     if let Err(e) = limiter.check_rate_limit(peer_ip) {
-                        debug!(peer = %remote_addr, error = %e, "rate limited");
+                        debug!(peer = %sensitive(&remote_addr), error = %e, "rate limited");
                         continue;
                     }
                     if let Err(e) = limiter.track_connection(peer_ip) {
-                        debug!(peer = %remote_addr, error = %e, "connection limit");
+                        debug!(peer = %sensitive(&remote_addr), error = %e, "connection limit");
                         continue;
                     }
 
-                    info!(remote_addr = %remote_addr, "accepted connection");
+                    info!(remote_addr = %sensitive(&remote_addr), "accepted connection");
 
                     let mut proto_byte = [0u8; 1];
                     if let Err(e) = stream.read_exact(&mut proto_byte).await {
@@ -1062,6 +1070,7 @@ mod onion {
 // ─────────────────────────────────────────────────────────────────────────────
 mod p2p {
     pub mod dht {
+        use crate::safelog::sensitive;
         pub mod node {
             use std::fmt;
             use std::net::SocketAddr;
@@ -2102,7 +2111,7 @@ mod p2p {
                         service_pubkey,
                     };
                     if let Err(e) = self.send_message(&msg, node.dht_addr).await {
-                        debug!(error = %e, peer = %node.id, "failed to announce service to peer");
+                        debug!(error = %e, peer = %sensitive(&node.id), "failed to announce service to peer");
                     }
                 }
                 Ok(())
@@ -2416,6 +2425,7 @@ mod relay {
     }
 
     pub mod router {
+        use crate::safelog::sensitive;
         use std::collections::HashMap;
         use std::net::SocketAddr;
         use std::sync::Arc;
@@ -2589,7 +2599,7 @@ mod relay {
                         );
                         match header.next_hop {
                             Some(next_addr) => {
-                                info!(circuit_id, next_hop = %next_addr, "forwarding to next relay");
+                                info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding to next relay");
                                 let mut next_stream =
                                     connect_to_next(next_addr).await?;
                                 let relay_msg = Message::Relay {
@@ -2706,7 +2716,7 @@ mod relay {
                     );
                     match header.next_hop {
                         Some(next_addr) => {
-                            info!(circuit_id, next_hop = %next_addr, "forwarding further");
+                            info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding further");
                             let mut next_stream =
                                 connect_to_next(next_addr).await?;
                             let relay_msg = Message::Relay {
@@ -2801,16 +2811,16 @@ mod relay {
         ) -> Result<()> {
             match cmd {
                 RelayCommand::Connect { host, port } => {
-                    info!(circuit_id, host = %host, port, "exit relay — connecting to target");
+                    info!(circuit_id, host = %sensitive(&host), port, "exit relay — connecting to target");
                     let target_addr = format!("{host}:{port}");
                     let mut target =
                         match TcpStream::connect(&target_addr).await {
                             Ok(t) => {
-                                info!(circuit_id, target = %target_addr, "exit relay — connected to target");
+                                info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected to target");
                                 t
                             }
                             Err(e) => {
-                                warn!(circuit_id, error = %e, target = %target_addr, "exit relay — connect failed");
+                                warn!(circuit_id, error = %e, target = %sensitive(&target_addr), "exit relay — connect failed");
                                 let fail = RelayCommand::ConnectFailed(
                                     format!("{e}"),
                                 );
@@ -2957,7 +2967,7 @@ mod relay {
                     .await
                 }
                 RelayCommand::ResolveDns { hostname } => {
-                    info!(circuit_id, hostname = %hostname, "exit relay — DNS resolution");
+                    info!(circuit_id, hostname = %sensitive(&hostname), "exit relay — DNS resolution");
                     let addr_str = format!("{hostname}:0");
                     let addresses: Vec<String> =
                         match tokio::net::lookup_host(&addr_str).await {
@@ -2965,7 +2975,7 @@ mod relay {
                                 addrs.map(|a| a.ip().to_string()).collect()
                             }
                             Err(e) => {
-                                warn!(circuit_id, hostname = %hostname, error = %e, "DNS resolution failed");
+                                warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                                 Vec::new()
                             }
                         };
@@ -3083,12 +3093,12 @@ mod relay {
                     .await
                 }
                 RelayCommand::Connect { host, port } => {
-                    info!(circuit_id, host = %host, port, "exit relay (forwarded) — connecting to target");
+                    info!(circuit_id, host = %sensitive(&host), port, "exit relay (forwarded) — connecting to target");
                     let target_addr = format!("{host}:{port}");
                     let mut target =
                         match TcpStream::connect(&target_addr).await {
                             Ok(t) => {
-                                info!(circuit_id, target = %target_addr, "exit relay — connected");
+                                info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected");
                                 t
                             }
                             Err(e) => {
@@ -3132,7 +3142,7 @@ mod relay {
                     .await
                 }
                 RelayCommand::ResolveDns { hostname } => {
-                    info!(circuit_id, hostname = %hostname, "exit relay (forwarded) — DNS resolution");
+                    info!(circuit_id, hostname = %sensitive(&hostname), "exit relay (forwarded) — DNS resolution");
                     let addr_str = format!("{hostname}:0");
                     let addresses: Vec<String> =
                         match tokio::net::lookup_host(&addr_str).await {
@@ -3140,7 +3150,7 @@ mod relay {
                                 addrs.map(|a| a.ip().to_string()).collect()
                             }
                             Err(e) => {
-                                warn!(circuit_id, hostname = %hostname, error = %e, "DNS resolution failed");
+                                warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                                 Vec::new()
                             }
                         };
@@ -3531,6 +3541,7 @@ mod relay {
 // ─────────────────────────────────────────────────────────────────────────────
 mod proxy {
     pub mod socks5 {
+        use crate::safelog::sensitive;
         use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpStream;
@@ -3653,7 +3664,7 @@ mod proxy {
                     )));
                 }
             };
-            debug!(target = %target, "SOCKS5 CONNECT request");
+            debug!(target = %sensitive(&target), "SOCKS5 CONNECT request");
             Ok(target)
         }
 
@@ -4023,6 +4034,7 @@ mod proxy {
 // ─────────────────────────────────────────────────────────────────────────────
 mod client {
     pub mod streaming {
+        use crate::safelog::sensitive;
         use std::net::SocketAddr;
 
         use rand::Rng;
@@ -4082,7 +4094,7 @@ mod client {
                         session_key,
                     });
                     connections.push(conn);
-                    info!(hop = i, relay = %relay.name, "streaming circuit hop established");
+                    info!(hop = i, relay = %sensitive(&relay.name), "streaming circuit hop established");
                 }
                 let relay_addrs: Vec<SocketAddr> =
                     relays.iter().take(3).map(|r| r.addr).collect();
@@ -4346,7 +4358,7 @@ mod client {
             handshake.read_message_b(&msg_b)?;
             let msg_c = handshake.write_message_c()?;
             write_frame(&mut stream, &msg_c).await?;
-            debug!(addr = %addr, "handshake done");
+            debug!(relay = %sensitive(&addr), "handshake done");
             let (send_cipher, recv_cipher) = handshake.into_transport()?;
             let session_key = send_cipher.session_key()?;
             let mut conn =
@@ -4522,6 +4534,7 @@ mod client {
     }
 
     pub mod session {
+        use crate::safelog::sensitive;
         use std::net::SocketAddr;
 
         use rand::Rng;
@@ -4577,7 +4590,7 @@ mod client {
                     session_key,
                 });
                 connections.push(conn);
-                info!(hop = i, relay = %relay.name, "handshake completed, circuit extended");
+                info!(hop = i, relay = %sensitive(&relay.name), "handshake completed, circuit extended");
             }
             let circuit = Circuit::new(circuit_id, hops);
             info!(circuit_id, payload, "building onion packet");
@@ -4632,7 +4645,7 @@ mod client {
             handshake.read_message_b(&msg_b)?;
             let msg_c = handshake.write_message_c()?;
             write_frame(&mut stream, &msg_c).await?;
-            debug!(addr = %addr, "handshake done, extracting session key");
+            debug!(relay = %sensitive(&addr), "handshake done, extracting session key");
             let (send_cipher, recv_cipher) = handshake.into_transport()?;
             let session_key = send_cipher.session_key()?;
             let mut conn =
@@ -4815,6 +4828,9 @@ mod client {
 // that drifts is a copy that stops screening.
 #[path = "local_guard.rs"]
 mod local_guard;
+
+#[path = "safelog.rs"]
+mod safelog;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mod api
@@ -5326,6 +5342,7 @@ mod apps {
         }
 
         pub mod server {
+            use crate::safelog::sensitive;
             use std::net::SocketAddr;
             use std::sync::Arc;
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -5425,7 +5442,7 @@ mod apps {
                     return Ok(());
                 }
                 let raw = String::from_utf8_lossy(&buf[..total]).to_string();
-                debug!(peer = %peer, bytes = total, "request received");
+                debug!(peer = %sensitive(&peer), bytes = total, "request received");
                 handle_http(&mut stream, &raw, &state).await
             }
 
@@ -8451,7 +8468,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         crypto::keys::NodeKeys::load_or_generate(Path::new(&app_cfg.paths.keys_dir))?;
     let node_id = keys.node_id.clone();
 
+    safelog::set_unsafe_logging(app_cfg.logging.unsafe_addresses);
     logging::init_logging(&app_cfg.logging.level, &app_cfg.logging.format);
+    if app_cfg.logging.unsafe_addresses {
+        tracing::warn!(
+            "unsafe_addresses is on: this log will record who connected to this \
+             node and, at an exit, the hostnames they asked for. Turn it off \
+             on anything carrying other people's traffic."
+        );
+    }
 
     let _root = tracing::info_span!("hidra_node", node_id = %node_id).entered();
 

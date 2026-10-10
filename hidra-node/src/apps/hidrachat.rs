@@ -80,6 +80,8 @@ pub mod server {
     use tokio::sync::{Mutex, Semaphore, broadcast};
     use tracing::{debug, info, warn};
 
+    use crate::safelog::sensitive;
+
     use super::frontend;
 
     const MAX_CLIENTS: usize = 512;
@@ -179,7 +181,7 @@ pub mod server {
                     )
                     .await
                     {
-                        debug!(peer = %peer, error = %e, "connection ended");
+                        debug!(peer = %sensitive(&peer), error = %e, "connection ended");
                     }
                 });
             }
@@ -371,7 +373,7 @@ pub mod server {
                                 };
 
                                 if offered.ct_ne(&room_key).into() {
-                                    warn!(peer = %peer, "join rejected: wrong room passphrase");
+                                    warn!(peer = %sensitive(&peer), "join rejected: wrong room passphrase");
                                     let body = serde_json::json!({
                                         "type": "error",
                                         "msg": "Wrong room passphrase."
@@ -396,7 +398,7 @@ pub mod server {
             ws_buf.extend_from_slice(&tmp[..n]);
         };
 
-        info!(peer = %peer, nick = %nick, room = %room_id, "user joined");
+        info!(peer = %sensitive(&peer), nick = %nick, room = %room_id, "user joined");
 
         // ── Get or create room ──
         let room = {
@@ -543,7 +545,7 @@ pub mod server {
             });
             let _ = room.tx.send(msg.to_string());
         }
-        info!(peer = %peer, nick = %nick, "user left");
+        info!(peer = %sensitive(&peer), nick = %nick, "user left");
         Ok(())
     }
 

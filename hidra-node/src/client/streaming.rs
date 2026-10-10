@@ -16,6 +16,7 @@ use crate::onion::cell::RelayCommand;
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::onion::layer::{decrypt_stream, encrypt_stream};
 use crate::relay::registry::RelayEntry;
+use crate::safelog::sensitive;
 
 pub struct StreamingCircuit {
     conn: SecureConnection,
@@ -56,7 +57,7 @@ impl StreamingCircuit {
             });
             connections.push(conn);
 
-            info!(hop = i, relay = %relay.name, "streaming circuit hop established");
+            info!(hop = i, relay = %sensitive(&relay.name), "streaming circuit hop established");
         }
 
         let relay_addrs: Vec<SocketAddr> = relays.iter().take(3).map(|r| r.addr).collect();
@@ -228,7 +229,7 @@ async fn handshake_with_relay(
     let msg_c = handshake.write_message_c()?;
     write_frame(&mut stream, &msg_c).await?;
 
-    debug!(addr = %addr, "handshake done");
+    debug!(relay = %sensitive(&addr), "handshake done");
 
     let (send_cipher, recv_cipher) = handshake.into_transport()?;
     let session_key = send_cipher.session_key()?;

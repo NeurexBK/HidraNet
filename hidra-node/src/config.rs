@@ -91,6 +91,13 @@ pub struct NetworkConfig {
 pub struct LoggingConfig {
     pub level: String,
     pub format: String,
+    /// Print real peer addresses and destination hostnames in the log.
+    ///
+    /// Off by default, and worth leaving off on anything that carries other
+    /// people's traffic: a relay's log would otherwise record who connected
+    /// and, at the exit, where they went. See `safelog`.
+    #[serde(default)]
+    pub unsafe_addresses: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

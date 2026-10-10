@@ -14,6 +14,7 @@ use crate::network::listener::PROTO_NOISE_SESSION;
 use crate::onion::builder::{build_onion, peel_response_layers};
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::relay::registry::RelayEntry;
+use crate::safelog::sensitive;
 
 pub async fn run_client_session(
     relays: &[RelayEntry],
@@ -116,7 +117,7 @@ async fn handshake_with_relay(
     let msg_c = handshake.write_message_c()?;
     write_frame(&mut stream, &msg_c).await?;
 
-    debug!(addr = %addr, "handshake done, extracting session key");
+    debug!(relay = %sensitive(&addr), "handshake done, extracting session key");
 
     let (send_cipher, recv_cipher) = handshake.into_transport()?;
     let session_key = send_cipher.session_key()?;

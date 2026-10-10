@@ -11,6 +11,7 @@ use crate::crypto::handshake::{HandshakeState, Role};
 use crate::error::Result;
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::relay::router::RelayRouter;
+use crate::safelog::sensitive;
 
 pub const PROTO_NOISE_SESSION: u8 = 0x00;
 pub const PROTO_FORWARDED_CELL: u8 = 0x01;
@@ -35,7 +36,7 @@ impl NodeListener {
 
         loop {
             let (mut stream, remote_addr) = self.listener.accept().await?;
-            info!(remote_addr = %remote_addr, "accepted connection");
+            info!(remote_addr = %sensitive(&remote_addr), "accepted connection");
 
             let mut proto_byte = [0u8; 1];
             if let Err(e) = stream.read_exact(&mut proto_byte).await {

@@ -16,6 +16,7 @@ use crate::network::connection::{read_frame, write_frame, Message, SecureConnect
 use crate::network::listener::PROTO_FORWARDED_CELL;
 use crate::onion::cell::{LayerHeader, RelayCommand};
 use crate::onion::layer::{decrypt_stream, encrypt_stream, peel_layer, wrap_layer};
+use crate::safelog::sensitive;
 
 struct CircuitEntry {
     session_key: [u8; 32],
@@ -149,7 +150,7 @@ async fn handle_noise_session(
 
                 match header.next_hop {
                     Some(next_addr) => {
-                        info!(circuit_id, next_hop = %next_addr, "forwarding to next relay");
+                        info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding to next relay");
                         let mut next_stream = connect_to_next(next_addr).await?;
 
                         let relay_msg = Message::Relay {
@@ -254,7 +255,7 @@ async fn handle_forwarded(
 
             match header.next_hop {
                 Some(next_addr) => {
-                    info!(circuit_id, next_hop = %next_addr, "forwarding further");
+                    info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding further");
                     let mut next_stream = connect_to_next(next_addr).await?;
 
                     let relay_msg = Message::Relay {
@@ -329,16 +330,16 @@ async fn handle_exit_command(
 ) -> Result<()> {
     match cmd {
         RelayCommand::Connect { host, port } => {
-            info!(circuit_id, host = %host, port, "exit relay — connecting to target");
+            info!(circuit_id, host = %sensitive(&host), port, "exit relay — connecting to target");
 
             let target_addr = format!("{host}:{port}");
             let mut target = match TcpStream::connect(&target_addr).await {
                 Ok(t) => {
-                    info!(circuit_id, target = %target_addr, "exit relay — connected to target");
+                    info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected to target");
                     t
                 }
                 Err(e) => {
-                    warn!(circuit_id, error = %e, target = %target_addr, "exit relay — connect failed");
+                    warn!(circuit_id, error = %e, target = %sensitive(&target_addr), "exit relay — connect failed");
                     let fail = RelayCommand::ConnectFailed(format!("{e}"));
                     let fail_data = fail.serialize_bincode()?;
                     let wrapped = wrap_layer(key, &LayerHeader { next_hop: None }, &fail_data)?;
@@ -363,12 +364,12 @@ async fn handle_exit_command(
             exit_streaming_loop(conn, &mut target, circuit_id, key).await
         }
         RelayCommand::ResolveDns { hostname } => {
-            info!(circuit_id, hostname = %hostname, "exit relay — DNS resolution");
+            info!(circuit_id, hostname = %sensitive(&hostname), "exit relay — DNS resolution");
             let addr_str = format!("{hostname}:0");
             let addresses: Vec<String> = match tokio::net::lookup_host(&addr_str).await {
                 Ok(addrs) => addrs.map(|a| a.ip().to_string()).collect(),
                 Err(e) => {
-                    warn!(circuit_id, hostname = %hostname, error = %e, "DNS resolution failed");
+                    warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                     Vec::new()
                 }
             };
@@ -397,12 +398,12 @@ async fn handle_exit_forwarded(
 ) -> Result<()> {
     match cmd {
         RelayCommand::Connect { host, port } => {
-            info!(circuit_id, host = %host, port, "exit relay (forwarded) — connecting to target");
+            info!(circuit_id, host = %sensitive(&host), port, "exit relay (forwarded) — connecting to target");
 
             let target_addr = format!("{host}:{port}");
             let mut target = match TcpStream::connect(&target_addr).await {
                 Ok(t) => {
-                    info!(circuit_id, target = %target_addr, "exit relay — connected");
+                    info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected");
                     t
                 }
                 Err(e) => {
@@ -431,12 +432,12 @@ async fn handle_exit_forwarded(
             exit_forwarded_streaming_loop(upstream, &mut target, circuit_id, key).await
         }
         RelayCommand::ResolveDns { hostname } => {
-            info!(circuit_id, hostname = %hostname, "exit relay (forwarded) — DNS resolution");
+            info!(circuit_id, hostname = %sensitive(&hostname), "exit relay (forwarded) — DNS resolution");
             let addr_str = format!("{hostname}:0");
             let addresses: Vec<String> = match tokio::net::lookup_host(&addr_str).await {
                 Ok(addrs) => addrs.map(|a| a.ip().to_string()).collect(),
                 Err(e) => {
-                    warn!(circuit_id, hostname = %hostname, error = %e, "DNS resolution failed");
+                    warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                     Vec::new()
                 }
             };

@@ -5,6 +5,7 @@ use tokio::net::TcpStream;
 use tracing::debug;
 
 use crate::error::{HidraError, Result};
+use crate::safelog::sensitive;
 
 const SOCKS5_VERSION: u8 = 0x05;
 const AUTH_NONE: u8 = 0x00;
@@ -125,7 +126,7 @@ pub async fn read_request(stream: &mut TcpStream) -> Result<TargetAddr> {
         }
     };
 
-    debug!(target = %target, "SOCKS5 CONNECT request");
+    debug!(target = %sensitive(&target), "SOCKS5 CONNECT request");
     Ok(target)
 }
 
