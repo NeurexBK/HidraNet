@@ -6,6 +6,7 @@ use rand_core::OsRng;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use zeroize::Zeroize;
 
+use crate::crypto::keystore;
 use crate::error::{HidraError, Result};
 
 pub struct NodeKeys {
@@ -91,13 +92,25 @@ impl NodeKeys {
     }
 
     pub fn load_or_generate(keys_dir: &Path) -> Result<Self> {
-        if keys_dir.join("identity.secret").exists() {
-            Self::load(keys_dir)
+        let keys = if keys_dir.join("identity.secret").exists() {
+            Self::load(keys_dir)?
         } else {
             let keys = Self::generate();
             keys.save(keys_dir)?;
-            Ok(keys)
+            keys
+        };
+        // Said on every start, including the first: which of the two modes
+        // this node is in is not something an operator should have to infer.
+        if keystore::passphrase().is_some() {
+            tracing::info!("node keys are encrypted at rest");
+        } else {
+            tracing::info!(
+                "node keys are stored in the clear, protected by file \
+                 permissions only. Set HIDRA_KEY_PASSPHRASE to encrypt them \
+                 against a stolen disk or a copied backup."
+            );
         }
+        Ok(keys)
     }
 
     pub fn save(&self, keys_dir: &Path) -> Result<()> {
@@ -107,11 +120,12 @@ impl NodeKeys {
         // The two secrets are created 0600 at open(2). They used to be
         // written with fs::write and chmodded afterwards, which left them
         // world-readable for as long as that took.
-        write_private_file(
+        // Sealed under HIDRA_KEY_PASSPHRASE when one is set; see keystore.
+        keystore::write_secret(
             &keys_dir.join("identity.secret"),
             BASE64.encode(self.identity_signing.to_bytes()).as_bytes(),
         )?;
-        write_private_file(
+        keystore::write_secret(
             &keys_dir.join("noise_static.secret"),
             BASE64.encode(self.noise_static_secret.to_bytes()).as_bytes(),
         )?;
@@ -130,8 +144,9 @@ impl NodeKeys {
     }
 
     pub fn load(keys_dir: &Path) -> Result<Self> {
-        let identity_secret_b64 =
-            std::fs::read_to_string(keys_dir.join("identity.secret"))?;
+        let identity_path = keys_dir.join("identity.secret");
+        let identity_read = keystore::read_secret(&identity_path)?;
+        let identity_secret_b64 = String::from_utf8_lossy(&identity_read.plaintext).to_string();
         let mut identity_bytes = BASE64.decode(identity_secret_b64.trim()).map_err(|e| {
             HidraError::KeyManagement(format!("invalid identity key encoding: {e}"))
         })?;
@@ -150,8 +165,9 @@ impl NodeKeys {
         id_array.zeroize();
         let identity_verifying = identity_signing.verifying_key();
 
-        let noise_secret_b64 =
-            std::fs::read_to_string(keys_dir.join("noise_static.secret"))?;
+        let noise_path = keys_dir.join("noise_static.secret");
+        let noise_read = keystore::read_secret(&noise_path)?;
+        let noise_secret_b64 = String::from_utf8_lossy(&noise_read.plaintext).to_string();
         let mut noise_bytes = BASE64.decode(noise_secret_b64.trim()).map_err(|e| {
             HidraError::KeyManagement(format!("invalid noise key encoding: {e}"))
         })?;
@@ -171,6 +187,24 @@ impl NodeKeys {
         let noise_static_public = X25519Public::from(&noise_static_secret);
 
         let node_id = derive_node_id(&identity_verifying);
+
+        // A key found world-readable has already been exposed for as long as
+        // it sat there; say so rather than tightening it quietly.
+        warn_if_group_or_world_readable(&identity_path);
+        warn_if_group_or_world_readable(&noise_path);
+
+        if identity_read.needs_sealing || noise_read.needs_sealing {
+            // HIDRA_KEY_PASSPHRASE appeared since these were written. Seal
+            // them now, so the next shutdown does not leave them readable.
+            tracing::info!("sealing the node keys under HIDRA_KEY_PASSPHRASE");
+            if identity_read.needs_sealing {
+                keystore::write_secret(&identity_path, identity_secret_b64.trim().as_bytes())?;
+            }
+            if noise_read.needs_sealing {
+                keystore::write_secret(&noise_path, noise_secret_b64.trim().as_bytes())?;
+            }
+        }
+
 
         Ok(Self {
             identity_signing,
@@ -219,7 +253,7 @@ impl ServiceKeys {
         std::fs::create_dir_all(dir)?;
         restrict_dir(dir)?;
 
-        write_private_file(
+        keystore::write_secret(
             &dir.join("service.secret"),
             BASE64.encode(self.signing_key.to_bytes()).as_bytes(),
         )?;
@@ -234,7 +268,9 @@ impl ServiceKeys {
     }
 
     fn load(dir: &Path) -> Result<Self> {
-        let secret_b64 = std::fs::read_to_string(dir.join("service.secret"))?;
+        let secret_path = dir.join("service.secret");
+        let read = keystore::read_secret(&secret_path)?;
+        let secret_b64 = String::from_utf8_lossy(&read.plaintext).to_string();
         let mut secret_bytes = BASE64.decode(secret_b64.trim()).map_err(|e| {
             HidraError::KeyManagement(format!("invalid service key encoding: {e}"))
         })?;
@@ -253,7 +289,11 @@ impl ServiceKeys {
 
         // A key found world-readable has already been exposed for however
         // long it sat there, so say so rather than fixing it quietly.
-        warn_if_group_or_world_readable(&dir.join("service.secret"));
+        warn_if_group_or_world_readable(&secret_path);
+        if read.needs_sealing {
+            tracing::info!("sealing the service key under HIDRA_KEY_PASSPHRASE");
+            keystore::write_secret(&secret_path, secret_b64.trim().as_bytes())?;
+        }
         Ok(Self { signing_key, verifying_key, address, address_hash })
     }
 }

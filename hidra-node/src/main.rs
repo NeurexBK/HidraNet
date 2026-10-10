@@ -268,6 +268,9 @@ mod crypto {
     // the library had stopped.
     #[path = "keys.rs"]
     pub mod keys;
+
+    #[path = "keystore.rs"]
+    pub mod keystore;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8144,10 +8147,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let app_cfg = app_config::load_config(&cli.config)?;
 
-    let keys =
-        crypto::keys::NodeKeys::load_or_generate(Path::new(&app_cfg.paths.keys_dir))?;
-    let node_id = keys.node_id.clone();
-
+    // Logging comes up before the keys are touched. It used to be the other
+    // way round, which silently threw away everything loading the keys has to
+    // say — including the warning that a secret on disk is readable by other
+    // accounts, which is the one message on this path nobody can afford to
+    // miss.
     safelog::set_unsafe_logging(app_cfg.logging.unsafe_addresses);
     logging::init_logging(&app_cfg.logging.level, &app_cfg.logging.format);
     if app_cfg.logging.unsafe_addresses {
@@ -8157,6 +8161,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
              on anything carrying other people's traffic."
         );
     }
+
+    let keys =
+        crypto::keys::NodeKeys::load_or_generate(Path::new(&app_cfg.paths.keys_dir))?;
+    let node_id = keys.node_id.clone();
 
     let _root = tracing::info_span!("hidra_node", node_id = %node_id).entered();
 
