@@ -11,6 +11,7 @@
  * Usage:
  *   node scripts/refresh-release.js              # download, patch, verify
  *   node scripts/refresh-release.js --in <dir>   # use packages already on disk
+ *   node scripts/refresh-release.js --engine <f> # skip the cross-compile
  *
  * Output lands in dist/release-out/, with the SHA-256 of each file to paste
  * into landing/SHA256SUMS.txt.
@@ -51,9 +52,35 @@ const ENGINE_IN_ZIP = 'resources/bin/hidra-node.exe';
 const LIBEVENT_LOCAL  = path.join(ROOT, 'vendor', 'linux-x64', 'libevent-2.1.so.7');
 const LIBEVENT_IN_ZIP = 'resources/bin/tor/libevent-2.1.so.7';
 
+/**
+ * The engine that goes in the Windows package.
+ *
+ * Cross-compiling it needs the mingw-w64 toolchain and the
+ * x86_64-pc-windows-gnu Rust target, which is a lot to ask of someone who
+ * only wants to cut a release. --engine <path> takes one that was already
+ * built, and the verify step afterwards is what keeps that honest: the engine
+ * in the finished package has to hash to the file named here, so a stale or
+ * swapped binary fails the build rather than shipping.
+ */
 function buildEngine() {
+  const argIdx = process.argv.indexOf('--engine');
+  if (argIdx !== -1) {
+    const given = path.resolve(process.argv[argIdx + 1] || '');
+    if (!fs.existsSync(given)) {
+      console.error('  --engine: no such file: ' + given);
+      process.exit(1);
+    }
+    fs.mkdirSync(path.dirname(ENGINE_OUT), { recursive: true });
+    fs.copyFileSync(given, ENGINE_OUT);
+    const sum = crypto.createHash('sha256').update(fs.readFileSync(given)).digest('hex');
+    console.log('  using the engine at ' + given);
+    console.log('  sha256 ' + sum);
+    return ENGINE_OUT;
+  }
+
   const dir = path.join(ROOT, '..', 'hidra-node');
   console.log('  building the engine for ' + ENGINE_TARGET + ' (needs the mingw-w64 cross-compiler)');
+  console.log('  (or pass --engine <path> to use one that is already built)');
   execFileSync('cargo', ['build', '--release', '--target', ENGINE_TARGET], {
     cwd: dir, stdio: ['ignore', 'ignore', 'inherit'],
   });
