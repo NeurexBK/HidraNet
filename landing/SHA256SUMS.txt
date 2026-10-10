@@ -12,17 +12,17 @@ If the value does not match either table below, do not run the file.
 1. REFRESHED PACKAGES  —  not on the release page yet
 -----------------------------------------------------------------------
 
-bfc6620421ac9cffbd4dd1e4247a3e37958cceaf98f7dc966a570868585481ab  HidraNet-Browser-1.0.0-macOS-arm64.zip
-765f639ed44377b5d0ef1101c3da5d11434a29b5e9ac345cd9a0aaaa67ef4774  HidraNet-Browser-1.0.0-macOS-x64.zip
-f76096b9c7b055de162f768e8f77a6c35262a24a12c54ea2810ba53cc841c72f  HidraNet-Browser-1.0.0-Linux-x64.zip
-d6f0786f82d68dd436ed1e1a0032631755521b145e8232bf46ca379f5d7a6308  HidraNet-Browser-1.0.0-Windows-x64.zip
+326f1f9ad9cdf8d6e628a19baebb859f6fc8a45bcf21213e8d269bdd4128ee22  HidraNet-Browser-1.0.0-macOS-arm64.zip
+c1cbd59360bef636830b8a6b4e1067cf5fb68e26498a2e7ca3effec749ec9060  HidraNet-Browser-1.0.0-macOS-x64.zip
+52bff1459446a8d31aa912616ad0bd1363bf35b46c33ffe34d8d75d6bf4bc3a4  HidraNet-Browser-1.0.0-Linux-x64.zip
+75e826e0eadf8082a751eda7186187e31eb29bb0804afcd288957154adcefb64  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,426,227 bytes  (103.4 MiB)
-  macOS x64      112,856,708 bytes  (107.6 MiB)
-  Linux x64      112,931,037 bytes  (107.7 MiB)
-  Windows x64    129,497,312 bytes  (123.5 MiB)
+  macOS arm64    108,426,135 bytes  (103.4 MiB)
+  macOS x64      112,856,616 bytes  (107.6 MiB)
+  Linux x64      112,930,945 bytes  (107.6 MiB)
+  Windows x64    129,498,416 bytes  (123.4 MiB)
 
-  Built from commit d6aa88a. The three packages without the engine are a
+  Built from commit db35c8e. The three packages without the engine are a
   pure repack — rebuilding from the same tree reproduces these hashes
   byte for byte, which was checked by running the build twice. The
   Windows one carries a freshly compiled Rust engine, so a rebuild on
@@ -103,6 +103,24 @@ What changed from the packages in table 2:
     cannot read
   - a client binds the DHT to an ephemeral port. On a fixed one, sweeping
     the internet for it returns a list of this network's users by IP
+
+  ADDED 10 OCTOBER:
+
+  - an exit relay was writing the payload it had just decrypted into its
+    log, beside a circuit id. Not who the user is — what they said. Ping
+    and Pong bodies went the same way, and those arrive from a peer, so
+    anyone could write into an operator's log. Lengths now, never content
+  - HidraMail logged the recipient of every message sent and the sender
+    of every message received, with the shared message id beside each, so
+    a log from both ends joined the two. HidraChat logged the nickname and
+    room id next to an address it had carefully scrubbed. All scrubbed now
+  - the product is in English — all of it this time. The engine's pages
+    had been missed entirely, because they are HTML inside Rust string
+    literals: the whole SevenNine site builder, the analytics dashboard,
+    every connection status. So had dates and times, which were formatted
+    with a Portuguese locale under labels that read English, and strings
+    translated word by word into neither language ("Text do button",
+    "URL da image"). A lint now fails the build on any of it
 
   Linux: the bundled Tor is dynamically linked against libevent, which
   most distributions do not install by default. It was not in the
