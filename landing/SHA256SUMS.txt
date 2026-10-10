@@ -19,8 +19,8 @@ c1cbd59360bef636830b8a6b4e1067cf5fb68e26498a2e7ca3effec749ec9060  HidraNet-Brows
 
   macOS arm64    108,426,135 bytes  (103.4 MiB)
   macOS x64      112,856,616 bytes  (107.6 MiB)
-  Linux x64      112,930,945 bytes  (107.6 MiB)
-  Windows x64    129,498,416 bytes  (123.4 MiB)
+  Linux x64      112,930,945 bytes  (107.7 MiB)
+  Windows x64    129,498,416 bytes  (123.5 MiB)
 
   Built from commit db35c8e. The three packages without the engine are a
   pure repack — rebuilding from the same tree reproduces these hashes

@@ -1,0 +1,134 @@
+# Replace the v1.0.0 download packages with ones built from this branch.
+#
+# This exists because the packages on the release page were built in
+# September and the product has been fixed a great deal since — most of it
+# security, and the part people notice is that the interface was still partly
+# in Portuguese. Anyone downloading HidraNet today gets the old one.
+#
+# It is a workflow rather than something done by hand because the hashes have
+# to be generated from the files that actually go out. The three packages
+# without the engine repack byte for byte, so they can be checked against a
+# table written anywhere; the Windows one carries a freshly compiled Rust
+# binary and hashes differently on every machine that builds it. A published
+# table that does not match what is on the release page turns "verify before
+# running" into an alarm that fires on a good download, and the honest
+# conclusion for the person checking is that they were tampered with. So the
+# job builds, publishes, then rewrites the table from the bytes it uploaded,
+# in that order, and commits it.
+#
+# Note for a second run: refresh-release.js takes the packages currently on
+# the release page as its base, and after this job has run once those are the
+# patched ones. Re-patching them is harmless — the app sources are overwritten
+# with the same current content and the engine is swapped for the same
+# freshly built binary — but it does mean the base is no longer the September
+# build.
+
+name: publish release packages
+
+on:
+  # Dispatch only works from the default branch, so pushing a change to the
+  # trigger file is how this runs from a feature branch.
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/release.trigger'
+
+permissions:
+  contents: write
+
+concurrency:
+  # Two of these running at once would clobber each other's assets.
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build, verify, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The engine is cross-compiled for Windows, and rusqlite is built from
+      # source, so a C compiler for the target is needed and not just the Rust
+      # target.
+      - name: Install the Windows cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      - name: Add the Windows Rust target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      # Nothing ships that fails the invariants. These are cheap, and the
+      # whole reason for this release is that something shipped which should
+      # not have.
+      - name: The product is in English
+        working-directory: hidra-browser
+        run: node test/english-only.js
+
+      - name: The anonymity panel's claims are backed by code
+        working-directory: hidra-browser
+        run: |
+          node test/anonymity-claims.js
+          node test/mqtt-worker-csp.js
+
+      - name: No addresses or content in the logs
+        working-directory: hidra-node
+        run: cargo test --test no_addresses_in_logs
+
+      # Downloads the current packages, swaps in this branch's app sources and
+      # a newly built engine, and checks the result. Exits non-zero if any
+      # check fails, which stops the job before anything is published.
+      - name: Build the packages
+        working-directory: hidra-browser
+        run: node scripts/refresh-release.js
+
+      - name: Show what was built
+        working-directory: hidra-browser
+        run: |
+          ls -l dist/release-out
+          sha256sum dist/release-out/*.zip
+
+      # --clobber replaces an asset of the same name, so the download URLs on
+      # the release page do not change.
+      - name: Publish them to v1.0.0
+        working-directory: hidra-browser
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v1.0.0 dist/release-out/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+
+      # Read the hashes back from the release rather than trusting what was
+      # uploaded, then write the table from the files on disk and check the
+      # two agree.
+      - name: Check the release now serves what was built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v1.0.0 --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[] | [.name, (.size|tostring), (.updatedAt // "")] | @tsv'
+
+      - name: Rewrite the published checksum table
+        working-directory: hidra-browser
+        run: node scripts/update-sums.js dist/release-out "$GITHUB_SHA"
+
+      - name: Commit the table
+        run: |
+          if git diff --quiet landing/SHA256SUMS.txt; then
+            echo "the table already matched the packages; nothing to commit"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add landing/SHA256SUMS.txt
+          git commit \
+            -m 'release: checksums for the packages this run published' \
+            -m 'Generated from the uploaded files by scripts/update-sums.js. The Windows package carries an engine compiled in this run, so its hash could not have been known before the build.'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
