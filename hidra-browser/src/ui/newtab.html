@@ -704,9 +704,9 @@
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">DNS Leak Protection</span>
-              <span class="setting-desc">All DNS resolved at exit relay</span>
+              <span class="setting-desc" id="dns-desc">Checking…</span>
             </div>
-            <div class="setting-badge">Active</div>
+            <div class="setting-badge" id="dns-badge">—</div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
@@ -944,14 +944,28 @@
     const startTime = Date.now();
     var isConnecting = false;
 
-    function maskIp(addr) {
+    // A relay is shown by fingerprint, never by address, not even a masked
+    // one: masking to a /16 and keeping the port leaves very few candidates
+    // for a guard, and the guard is the single address that identifies this
+    // user to anyone watching the network. The key is random per session and
+    // never leaves this page, so the tag is stable while the panel is open,
+    // means nothing after a reload, and cannot be worked back to an address
+    // by trying all 2^32 of them.
+    var fingerprintKey = crypto.getRandomValues(new Uint8Array(32));
+    var fingerprintCache = {};
+
+    async function relayFingerprint(addr) {
       if (!addr) return '—';
-      var parts = addr.split(':');
-      var octets = parts[0].split('.');
-      if (octets.length === 4) {
-        return octets[0] + '.' + octets[1] + '.***.**' + (parts[1] ? ':' + parts[1] : '');
-      }
-      return addr.substring(0, 12) + '...';
+      if (fingerprintCache[addr]) return fingerprintCache[addr];
+      var material = new Uint8Array(fingerprintKey.length + addr.length);
+      material.set(fingerprintKey);
+      material.set(new TextEncoder().encode(addr), fingerprintKey.length);
+      var digest = new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+      var tag = Array.from(digest.slice(0, 4))
+        .map(function (b) { return b.toString(16).padStart(2, '0'); })
+        .join('');
+      fingerprintCache[addr] = tag;
+      return tag;
     }
 
     function updateUptime() {
@@ -1143,10 +1157,10 @@
               var relays = status.relayChain.split(' → ');
               for (var i = 0; i < 3; i++) {
                 var node = document.getElementById('relay-' + (i + 1));
-                var ip = document.getElementById('relay-' + (i + 1) + '-ip');
+                var slot = document.getElementById('relay-' + (i + 1) + '-ip');
                 if (relays[i]) {
                   node.classList.add('active');
-                  ip.textContent = maskIp(relays[i]);
+                  slot.textContent = await relayFingerprint(relays[i]);
                 }
               }
             }
@@ -1175,6 +1189,26 @@
         text.textContent = 'Disconnected';
         text.style.color = '#ff4466';
         if (!isConnecting) updateConnectUI('disconnected');
+      }
+
+      // Every other badge on this panel describes something the browser does
+      // on its own, in every tab, connected or not. This one does not: names
+      // only reach an exit relay while traffic is routed through the engine.
+      // Disconnected, Chromium resolves them itself, straight to whatever
+      // resolver the machine uses — so saying "Active" here was false exactly
+      // when it mattered.
+      var dnsBadge = document.getElementById('dns-badge');
+      var dnsDesc = document.getElementById('dns-desc');
+      if (connected && (mode === 'tor' || mode === 'full')) {
+        dnsBadge.textContent = 'Active';
+        dnsBadge.style.color = '';
+        dnsDesc.textContent = 'Names are resolved at the exit relay';
+      } else {
+        dnsBadge.textContent = 'Not routed';
+        dnsBadge.style.color = '#ff4466';
+        dnsDesc.textContent = connected
+          ? 'Local mode — this machine resolves names itself'
+          : 'Disconnected — this machine resolves names itself';
       }
 
       updateUptime();
