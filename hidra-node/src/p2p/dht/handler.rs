@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
-
 use tracing::{debug, info};
 
 use crate::p2p::dht::kbuckets::{RoutingTable, UpdateResult, K};
@@ -7,6 +7,14 @@ use crate::p2p::dht::message::DhtMessage;
 use crate::p2p::dht::node::NodeInfo;
 
 const GOSSIP_FANOUT: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct ServiceDescriptor {
+    pub intro_points: Vec<SocketAddr>,
+    pub service_pubkey: [u8; 32],
+}
+
+pub type ServiceStore = HashMap<[u8; 20], ServiceDescriptor>;
 
 pub struct HandleResult {
     pub response: Option<DhtMessage>,
@@ -21,6 +29,7 @@ impl DhtHandler {
         msg: DhtMessage,
         our_info: &NodeInfo,
         _sender_addr: SocketAddr,
+        services: &mut ServiceStore,
     ) -> HandleResult {
         let no_gossip = || HandleResult {
             response: None,
@@ -32,11 +41,9 @@ impl DhtHandler {
         };
 
         match msg {
-            DhtMessage::Ping {
-                request_id,
-                sender,
-            } => {
-                let bucket_index = table.our_id().bucket_index(&sender.id);
+            DhtMessage::Ping { request_id, sender } => {
+                let bucket_index =
+                    table.our_id().bucket_index(&sender.id);
                 info!(
                     dht_message_type = "PING",
                     node_id = %sender.id,
@@ -50,12 +57,9 @@ impl DhtHandler {
                     sender: our_info.clone(),
                 })
             }
-
-            DhtMessage::Pong {
-                request_id: _,
-                sender,
-            } => {
-                let bucket_index = table.our_id().bucket_index(&sender.id);
+            DhtMessage::Pong { request_id: _, sender } => {
+                let bucket_index =
+                    table.our_id().bucket_index(&sender.id);
                 info!(
                     dht_message_type = "PONG",
                     node_id = %sender.id,
@@ -66,13 +70,9 @@ impl DhtHandler {
                 update_table(table, sender);
                 no_gossip()
             }
-
-            DhtMessage::FindNode {
-                request_id,
-                sender,
-                target,
-            } => {
-                let bucket_index = table.our_id().bucket_index(&sender.id);
+            DhtMessage::FindNode { request_id, sender, target } => {
+                let bucket_index =
+                    table.our_id().bucket_index(&sender.id);
                 info!(
                     dht_message_type = "FIND_NODE",
                     node_id = %sender.id,
@@ -93,7 +93,6 @@ impl DhtHandler {
                     nodes: closest,
                 })
             }
-
             DhtMessage::FindNodeResponse { nodes, .. } => {
                 debug!(
                     dht_message_type = "FIND_NODE_RESPONSE",
@@ -105,14 +104,9 @@ impl DhtHandler {
                 }
                 no_gossip()
             }
-
-            DhtMessage::Store {
-                request_id,
-                sender,
-                key: _,
-                value: _,
-            } => {
-                let bucket_index = table.our_id().bucket_index(&sender.id);
+            DhtMessage::Store { request_id, sender, .. } => {
+                let bucket_index =
+                    table.our_id().bucket_index(&sender.id);
                 info!(
                     dht_message_type = "STORE",
                     node_id = %sender.id,
@@ -126,15 +120,55 @@ impl DhtHandler {
                     stored: true,
                 })
             }
-
             DhtMessage::StoreResponse { .. } => no_gossip(),
-
-            DhtMessage::AnnounceRelay {
-                request_id: _,
-                sender,
+            DhtMessage::AnnounceService {
+                request_id: _, sender, service_hash, intro_points, service_pubkey,
             } => {
-                let bucket_index = table.our_id().bucket_index(&sender.id);
-                let already_known = table.contains(&sender.id) && sender.is_relay();
+                info!(
+                    dht_message_type = "ANNOUNCE_SERVICE",
+                    node_id = %sender.id,
+                    peer_count = table.total_nodes(),
+                    "received service announcement"
+                );
+                update_table(table, sender);
+                services.insert(service_hash, ServiceDescriptor {
+                    intro_points,
+                    service_pubkey,
+                });
+                no_gossip()
+            }
+            DhtMessage::LookupService {
+                request_id, sender, service_hash,
+            } => {
+                info!(
+                    dht_message_type = "LOOKUP_SERVICE",
+                    node_id = %sender.id,
+                    peer_count = table.total_nodes(),
+                    "received service lookup"
+                );
+                update_table(table, sender);
+                if let Some(desc) = services.get(&service_hash) {
+                    reply(DhtMessage::LookupServiceResponse {
+                        request_id,
+                        intro_points: desc.intro_points.clone(),
+                        service_pubkey: desc.service_pubkey,
+                        found: true,
+                    })
+                } else {
+                    reply(DhtMessage::LookupServiceResponse {
+                        request_id,
+                        intro_points: Vec::new(),
+                        service_pubkey: [0u8; 32],
+                        found: false,
+                    })
+                }
+            }
+            DhtMessage::LookupServiceResponse { .. } => no_gossip(),
+            DhtMessage::AnnounceRelay { request_id: _, sender } => {
+                let bucket_index =
+                    table.our_id().bucket_index(&sender.id);
+                let already_known =
+                    table.contains(&sender.id) && sender.is_relay();
                 info!(
                     dht_message_type = "ANNOUNCE_RELAY",
                     node_id = %sender.id,
@@ -145,31 +179,30 @@ impl DhtHandler {
                 );
                 update_table(table, sender.clone());
 
-                let gossip = if !already_known && sender.is_relay() {
-                    let nearest = table.find_closest(&sender.id, GOSSIP_FANOUT + 1);
-                    let targets: Vec<(NodeInfo, DhtMessage)> = nearest
-                        .into_iter()
-                        .filter(|n| n.id != sender.id && n.id != *table.our_id())
-                        .take(GOSSIP_FANOUT)
-                        .map(|target| {
-                            let msg = DhtMessage::AnnounceRelay {
-                                request_id: rand_request_id(),
-                                sender: sender.clone(),
-                            };
-                            (target, msg)
-                        })
-                        .collect();
-
-                    debug!(
-                        dht_message_type = "GOSSIP_RELAY",
-                        relay_id = %sender.id,
-                        gossip_count = targets.len(),
-                        "gossiping relay announcement"
-                    );
-                    targets
-                } else {
-                    Vec::new()
-                };
+                let gossip =
+                    if !already_known && sender.is_relay() {
+                        let nearest = table.find_closest(
+                            &sender.id,
+                            GOSSIP_FANOUT + 1,
+                        );
+                        nearest
+                            .into_iter()
+                            .filter(|n| {
+                                n.id != sender.id
+                                    && n.id != *table.our_id()
+                            })
+                            .take(GOSSIP_FANOUT)
+                            .map(|target| {
+                                let msg = DhtMessage::AnnounceRelay {
+                                    request_id: rand_request_id(),
+                                    sender: sender.clone(),
+                                };
+                                (target, msg)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                 HandleResult {
                     response: None,

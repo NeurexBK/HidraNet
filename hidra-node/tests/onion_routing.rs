@@ -71,6 +71,25 @@ async fn start_three_relays() -> (SocketAddr, SocketAddr, SocketAddr) {
     (a1, a2, a3)
 }
 
+/// A DHT the SOCKS handler can hold but will never consult.
+///
+/// `handle_socks5_connection` takes one because a `.hidra` target is resolved
+/// through it. These tests only ask for host:port, which never reaches that
+/// path, so an isolated node with an empty routing table is the honest stand-in
+/// — it is a real DhtNode, not a mock, and a test that did take the service
+/// path would fail rather than quietly pass.
+async fn idle_dht() -> std::sync::Arc<hidra_node::p2p::dht::DhtNode> {
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+    let node = hidra_node::p2p::dht::DhtNode::new(
+        "127.0.0.1:0".parse().unwrap(),
+        signing_key,
+        None,
+    )
+    .await
+    .unwrap();
+    std::sync::Arc::new(node)
+}
+
 #[tokio::test]
 async fn three_relay_onion_circuit() {
     let relay1_secret = StaticSecret::random_from_rng(OsRng);
@@ -181,11 +200,13 @@ async fn socks5_proxy_end_to_end() {
     let proxy_addr = proxy_listener.local_addr().unwrap();
 
     let pool_clone = std::sync::Arc::clone(&pool);
+    let dht = idle_dht().await;
     tokio::spawn(async move {
         let (stream, remote_addr) = proxy_listener.accept().await.unwrap();
         hidra_node::proxy::stream_handler::handle_socks5_connection(
             stream,
             pool_clone,
+            dht,
             remote_addr,
         )
         .await;
@@ -234,11 +255,13 @@ async fn socks5_proxy_domain_name_no_local_dns() {
     let proxy_addr = proxy_listener.local_addr().unwrap();
 
     let pool_clone = std::sync::Arc::clone(&pool);
+    let dht = idle_dht().await;
     tokio::spawn(async move {
         let (stream, remote_addr) = proxy_listener.accept().await.unwrap();
         hidra_node::proxy::stream_handler::handle_socks5_connection(
             stream,
             pool_clone,
+            dht,
             remote_addr,
         )
         .await;
@@ -315,11 +338,13 @@ async fn failover_retries_on_connect_failure() {
     let proxy_addr = proxy_listener.local_addr().unwrap();
 
     let pool_clone = std::sync::Arc::clone(&pool);
+    let dht = idle_dht().await;
     tokio::spawn(async move {
         let (stream, remote_addr) = proxy_listener.accept().await.unwrap();
         hidra_node::proxy::stream_handler::handle_socks5_connection(
             stream,
             pool_clone,
+            dht,
             remote_addr,
         )
         .await;

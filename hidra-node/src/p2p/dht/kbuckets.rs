@@ -1,5 +1,4 @@
 use std::time::Instant;
-
 use crate::p2p::dht::node::{NodeId, NodeInfo, ID_BITS};
 
 pub const K: usize = 20;
@@ -17,9 +16,7 @@ struct KBucket {
 
 impl KBucket {
     fn new() -> Self {
-        Self {
-            entries: Vec::with_capacity(K),
-        }
+        Self { entries: Vec::with_capacity(K) }
     }
 
     fn len(&self) -> usize {
@@ -35,7 +32,9 @@ impl KBucket {
     }
 
     fn update_or_insert(&mut self, info: NodeInfo) -> UpdateResult {
-        if let Some(pos) = self.entries.iter().position(|e| e.info.id == info.id) {
+        if let Some(pos) =
+            self.entries.iter().position(|e| e.info.id == info.id)
+        {
             self.entries[pos].info = info;
             self.entries[pos].last_seen = Instant::now();
             let entry = self.entries.remove(pos);
@@ -55,7 +54,9 @@ impl KBucket {
     }
 
     fn remove(&mut self, id: &NodeId) -> bool {
-        if let Some(pos) = self.entries.iter().position(|e| e.info.id == *id) {
+        if let Some(pos) =
+            self.entries.iter().position(|e| e.info.id == *id)
+        {
             self.entries.remove(pos);
             true
         } else {
@@ -67,7 +68,10 @@ impl KBucket {
         self.entries.iter().map(|e| e.info.clone()).collect()
     }
 
-    fn stale_nodes(&self, timeout: std::time::Duration) -> Vec<NodeId> {
+    fn stale_nodes(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Vec<NodeId> {
         let now = Instant::now();
         self.entries
             .iter()
@@ -106,12 +110,10 @@ impl RoutingTable {
         if info.id == self.our_id {
             return UpdateResult::Updated;
         }
-
         let bucket_idx = match self.our_id.bucket_index(&info.id) {
             Some(idx) => idx,
             None => return UpdateResult::Updated,
         };
-
         self.buckets[bucket_idx].update_or_insert(info)
     }
 
@@ -121,19 +123,21 @@ impl RoutingTable {
         }
     }
 
-    pub fn find_closest(&self, target: &NodeId, count: usize) -> Vec<NodeInfo> {
+    pub fn find_closest(
+        &self,
+        target: &NodeId,
+        count: usize,
+    ) -> Vec<NodeInfo> {
         let mut all_nodes: Vec<NodeInfo> = self
             .buckets
             .iter()
             .flat_map(|b| b.get_nodes())
             .collect();
-
         all_nodes.sort_by(|a, b| {
             let da = a.id.xor_distance(target);
             let db = b.id.xor_distance(target);
             da.cmp(&db)
         });
-
         all_nodes.truncate(count);
         all_nodes
     }
@@ -145,14 +149,16 @@ impl RoutingTable {
             .flat_map(|b| b.get_nodes())
             .filter(|n| n.is_relay())
             .collect();
-
         use rand::seq::SliceRandom;
         relays.shuffle(&mut rand::thread_rng());
         relays.truncate(count);
         relays
     }
 
-    pub fn stale_nodes(&self, timeout: std::time::Duration) -> Vec<NodeId> {
+    pub fn stale_nodes(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Vec<NodeId> {
         self.buckets
             .iter()
             .flat_map(|b| b.stale_nodes(timeout))
@@ -161,19 +167,6 @@ impl RoutingTable {
 
     pub fn total_nodes(&self) -> usize {
         self.buckets.iter().map(|b| b.len()).sum()
-    }
-
-    pub fn all_nodes(&self) -> Vec<NodeInfo> {
-        self.buckets.iter().flat_map(|b| b.get_nodes()).collect()
-    }
-
-    pub fn bucket_stats(&self) -> Vec<(usize, usize)> {
-        self.buckets
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.len() > 0)
-            .map(|(i, b)| (i, b.len()))
-            .collect()
     }
 
     pub fn contains(&self, id: &NodeId) -> bool {

@@ -13,7 +13,8 @@ use crate::proxy::stream_handler;
 use crate::relay::registry::RelayEntry;
 
 const RELAY_CACHE_TTL: Duration = Duration::from_secs(120);
-const POOL_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
+const POOL_MAINTENANCE_INTERVAL: Duration =
+    Duration::from_secs(30);
 const MIN_RELAYS: usize = 3;
 
 pub struct ProxyConfig {
@@ -25,26 +26,39 @@ pub struct ProxyConfig {
 }
 
 pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
-    let listener = TcpListener::bind(config.listen_addr).await?;
-    info!(addr = %config.listen_addr, "SOCKS5 proxy listening");
+    let listener =
+        TcpListener::bind(config.listen_addr).await?;
+    info!(addr = %config.listen_addr, "HidraNet proxy listening on {}", config.listen_addr);
 
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
-    let mut dht = DhtNode::new(config.dht_addr, signing_key, None).await?;
+    let signing_key = ed25519_dalek::SigningKey::generate(
+        &mut rand_core::OsRng,
+    );
+    let mut dht = DhtNode::new(
+        config.dht_addr,
+        signing_key,
+        None,
+    )
+    .await?;
     dht.start().await;
 
     if !config.bootstrap_addrs.is_empty() {
-        if let Err(e) = bootstrap(&dht, &config.bootstrap_addrs).await {
+        if let Err(e) =
+            bootstrap(&dht, &config.bootstrap_addrs).await
+        {
             warn!(error = %e, "DHT bootstrap failed, will use static relays");
         }
     }
-
     let dht = Arc::new(dht);
-
-    let initial_relays = discover_relays(&dht, &config.static_relays).await;
+    let initial_relays = discover_relays(
+        &dht,
+        &config.static_relays,
+    )
+    .await;
     info!(relay_count = initial_relays.len(), "initial relay set loaded");
-
-    let pool = CircuitPool::new(config.secret_bytes, initial_relays);
-
+    let pool = CircuitPool::new(
+        config.secret_bytes,
+        initial_relays,
+    );
     pool.maintain().await;
     info!(pool_size = pool.pool_size().await, "circuit pool initialized");
 
@@ -55,31 +69,43 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
         let mut relay_refresh = Instant::now();
         loop {
             tokio::time::sleep(POOL_MAINTENANCE_INTERVAL).await;
-
             if relay_refresh.elapsed() > RELAY_CACHE_TTL {
-                let relays = discover_relays(&dht_bg, &static_relays).await;
+                let relays = discover_relays(
+                    &dht_bg,
+                    &static_relays,
+                )
+                .await;
                 if relays.len() >= MIN_RELAYS {
                     pool_bg.update_relays(relays).await;
                     relay_refresh = Instant::now();
                 }
             }
-
             pool_bg.maintain().await;
         }
     });
 
     loop {
-        let (stream, remote_addr) = listener.accept().await?;
+        let (stream, remote_addr) =
+            listener.accept().await?;
         info!(client_ip = %remote_addr, "accepted SOCKS5 connection");
-
         let pool = Arc::clone(&pool);
+        let dht_ref = Arc::clone(&dht);
         tokio::spawn(async move {
-            stream_handler::handle_socks5_connection(stream, pool, remote_addr).await;
+            stream_handler::handle_socks5_connection(
+                stream,
+                pool,
+                dht_ref,
+                remote_addr,
+            )
+            .await;
         });
     }
 }
 
-async fn discover_relays(dht: &DhtNode, static_relays: &[RelayEntry]) -> Vec<RelayEntry> {
+async fn discover_relays(
+    dht: &DhtNode,
+    static_relays: &[RelayEntry],
+) -> Vec<RelayEntry> {
     match dht.find_relays(MIN_RELAYS).await {
         Ok(nodes) if nodes.len() >= MIN_RELAYS => {
             let entries: Vec<RelayEntry> = nodes
@@ -101,7 +127,8 @@ async fn discover_relays(dht: &DhtNode, static_relays: &[RelayEntry]) -> Vec<Rel
             );
             let mut all = static_relays.to_vec();
             for n in nodes {
-                let addr = n.relay_addr.unwrap_or(n.dht_addr);
+                let addr =
+                    n.relay_addr.unwrap_or(n.dht_addr);
                 if !all.iter().any(|r| r.addr == addr) {
                     all.push(RelayEntry {
                         name: format!("{}", n.id),

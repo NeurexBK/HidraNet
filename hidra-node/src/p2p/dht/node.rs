@@ -1,6 +1,5 @@
 use std::fmt;
 use std::net::SocketAddr;
-
 use serde::{Deserialize, Serialize};
 
 pub const ID_LEN: usize = 20;
@@ -25,7 +24,10 @@ impl NodeId {
 
     pub fn xor_distance(&self, other: &NodeId) -> [u8; ID_LEN] {
         let mut dist = [0u8; ID_LEN];
-        for (d, (a, b)) in dist.iter_mut().zip(self.0.iter().zip(other.0.iter())) {
+        for (d, (a, b)) in dist
+            .iter_mut()
+            .zip(self.0.iter().zip(other.0.iter()))
+        {
             *d = a ^ b;
         }
         dist
@@ -35,7 +37,13 @@ impl NodeId {
         let dist = self.xor_distance(other);
         leading_bit_position(&dist)
     }
-
+    /// True when self sits nearer `target` in XOR space than `other` does.
+    ///
+    /// Only the test uses it today — the lookup loops sort by distance rather
+    /// than compare pairwise — but it is the definition the whole routing
+    /// table rests on, and a test that pins it is worth more than the line
+    /// it costs.
+    #[allow(dead_code)]
     pub fn is_closer(&self, target: &NodeId, other: &NodeId) -> bool {
         let d_self = self.xor_distance(target);
         let d_other = other.xor_distance(target);

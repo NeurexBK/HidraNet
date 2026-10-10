@@ -4,45 +4,21 @@ use std::net::SocketAddr;
 use crate::error::{HidraError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OnionCell {
-    pub circuit_id: u32,
-    pub cell_type: CellType,
-    pub body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CellType {
-    Data,
-    Created,
-    Destroy,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerHeader {
     pub next_hop: Option<SocketAddr>,
 }
 
-impl OnionCell {
-    pub fn serialize_bincode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self)
-            .map_err(|e| HidraError::Protocol(format!("cell serialization failed: {e}")))
-    }
-
-    pub fn deserialize_bincode(data: &[u8]) -> Result<Self> {
-        bincode::deserialize(data)
-            .map_err(|e| HidraError::Protocol(format!("cell deserialization failed: {e}")))
-    }
-}
-
 impl LayerHeader {
     pub fn serialize_bincode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self)
-            .map_err(|e| HidraError::Protocol(format!("header serialization failed: {e}")))
+        bincode::serialize(self).map_err(|e| {
+            HidraError::Protocol(format!("header serialization failed: {e}"))
+        })
     }
 
     pub fn deserialize_bincode(data: &[u8]) -> Result<Self> {
-        bincode::deserialize(data)
-            .map_err(|e| HidraError::Protocol(format!("header deserialization failed: {e}")))
+        bincode::deserialize(data).map_err(|e| {
+            HidraError::Protocol(format!("header deserialization failed: {e}"))
+        })
     }
 }
 
@@ -55,37 +31,38 @@ pub enum RelayCommand {
     ConnectFailed(String),
     ResolveDns { hostname: String },
     DnsResolved { addresses: Vec<String> },
+    RegisterService { service_hash: Vec<u8> },
+    ServiceRegistered,
+    ConnectService { service_hash: Vec<u8> },
+    ServiceConnected,
 }
 
 impl RelayCommand {
     pub fn serialize_bincode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self)
-            .map_err(|e| HidraError::Protocol(format!("relay command serialize failed: {e}")))
+        bincode::serialize(self).map_err(|e| {
+            HidraError::Protocol(format!(
+                "relay command serialize failed: {e}"
+            ))
+        })
     }
 
     pub fn deserialize_bincode(data: &[u8]) -> Result<Self> {
-        bincode::deserialize(data)
-            .map_err(|e| HidraError::Protocol(format!("relay command deserialize failed: {e}")))
+        bincode::deserialize(data).map_err(|e| {
+            HidraError::Protocol(format!(
+                "relay command deserialize failed: {e}"
+            ))
+        })
     }
 }
 
+// cell_roundtrip used to live here. It exercised an OnionCell and a CellType
+// that nothing in either target ever constructed — protocol scaffolding that
+// was never wired up — so the test was the type's only consumer. Both are
+// gone; git has them if the cell format is ever built out.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn cell_roundtrip() {
-        let cell = OnionCell {
-            circuit_id: 42,
-            cell_type: CellType::Data,
-            body: b"test payload".to_vec(),
-        };
-        let bytes = cell.serialize_bincode().unwrap();
-        let decoded = OnionCell::deserialize_bincode(&bytes).unwrap();
-        assert_eq!(decoded.circuit_id, 42);
-        assert_eq!(decoded.cell_type, CellType::Data);
-        assert_eq!(decoded.body, b"test payload");
-    }
 
     #[test]
     fn header_with_next_hop() {

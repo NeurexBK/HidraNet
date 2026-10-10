@@ -3,6 +3,12 @@ pub mod kbuckets;
 pub mod message;
 pub mod node;
 
+use crate::safelog::sensitive;
+
+
+
+
+// DHT node (from dht/mod.rs)
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,10 +20,10 @@ use tokio::sync::{mpsc, Mutex, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::error::{HidraError, Result};
-use crate::p2p::dht::handler::DhtHandler;
-use crate::p2p::dht::kbuckets::{RoutingTable, K};
-use crate::p2p::dht::message::{sign_and_serialize, verify_and_deserialize, DhtMessage};
-use crate::p2p::dht::node::{NodeId, NodeInfo};
+use self::handler::{DhtHandler, ServiceStore};
+use self::kbuckets::{RoutingTable, K};
+use self::message::{sign_and_serialize, verify_and_deserialize, DhtMessage};
+use self::node::{NodeId, NodeInfo};
 
 const MAX_UDP_PACKET: usize = 65535;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,6 +37,8 @@ pub struct DhtNode {
     our_info: NodeInfo,
     signing_key: SigningKey,
     pending: Arc<Mutex<PendingMap>>,
+    service_store: Arc<Mutex<ServiceStore>>,
+    #[allow(dead_code)]
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
@@ -42,30 +50,27 @@ impl DhtNode {
     ) -> Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await?;
         let local_addr = socket.local_addr()?;
-
         let pubkey = signing_key.verifying_key().to_bytes();
         let node_id = NodeId::from_public_key(&pubkey);
-
         let our_info = NodeInfo {
             id: node_id,
             dht_addr: local_addr,
             relay_addr,
             public_key: pubkey,
         };
-
         info!(
             node_id = %node_id,
             dht_addr = %local_addr,
             is_relay = relay_addr.is_some(),
             "DHT node initialized"
         );
-
         Ok(Self {
             socket: Arc::new(socket),
             routing_table: Arc::new(Mutex::new(RoutingTable::new(node_id))),
             our_info,
             signing_key,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            service_store: Arc::new(Mutex::new(HashMap::new())),
             shutdown_tx: None,
         })
     }
@@ -85,26 +90,22 @@ impl DhtNode {
         let socket = Arc::clone(&self.socket);
         let table = Arc::clone(&self.routing_table);
         let pending = Arc::clone(&self.pending);
+        let svc_store = Arc::clone(&self.service_store);
         let our_info = self.our_info.clone();
         let signing_key_bytes = self.signing_key.to_bytes();
 
         tokio::spawn(async move {
             let signing_key = SigningKey::from_bytes(&signing_key_bytes);
             let mut buf = vec![0u8; MAX_UDP_PACKET];
-
             loop {
                 tokio::select! {
                     result = socket.recv_from(&mut buf) => {
                         match result {
                             Ok((len, addr)) => {
                                 if let Err(e) = process_packet(
-                                    &buf[..len],
-                                    addr,
-                                    &table,
-                                    &pending,
-                                    &our_info,
-                                    &signing_key,
-                                    &socket,
+                                    &buf[..len], addr, &table, &pending,
+                                    &svc_store,
+                                    &our_info, &signing_key, &socket,
                                 ).await {
                                     debug!(error = %e, from = %addr, "failed to process DHT packet");
                                 }
@@ -123,7 +124,11 @@ impl DhtNode {
         });
     }
 
-    pub async fn send_message(&self, msg: &DhtMessage, addr: SocketAddr) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        msg: &DhtMessage,
+        addr: SocketAddr,
+    ) -> Result<()> {
         let packet = sign_and_serialize(msg, &self.signing_key)?;
         self.socket.send_to(&packet, addr).await?;
         debug!(
@@ -141,24 +146,21 @@ impl DhtNode {
     ) -> Result<DhtMessage> {
         let request_id = msg.request_id();
         let (tx, rx) = oneshot::channel();
-
         {
             let mut pending = self.pending.lock().await;
             pending.insert(request_id, tx);
         }
-
         self.send_message(&msg, addr).await?;
-
         let result = tokio::time::timeout(REQUEST_TIMEOUT, rx).await;
-
         {
             let mut pending = self.pending.lock().await;
             pending.remove(&request_id);
         }
-
         match result {
             Ok(Ok((response, _addr))) => Ok(response),
-            Ok(Err(_)) => Err(HidraError::Protocol("DHT response channel closed".into())),
+            Ok(Err(_)) => Err(HidraError::Protocol(
+                "DHT response channel closed".into(),
+            )),
             Err(_) => Err(HidraError::Protocol(format!(
                 "DHT request timed out (id={request_id}, target={addr})"
             ))),
@@ -171,7 +173,6 @@ impl DhtNode {
             request_id,
             sender: self.our_info.clone(),
         };
-
         let response = self.send_request(msg, addr).await?;
         match response {
             DhtMessage::Pong { sender, .. } => {
@@ -186,42 +187,39 @@ impl DhtNode {
         }
     }
 
-    pub async fn find_node(&self, target: &NodeId) -> Result<Vec<NodeInfo>> {
+    pub async fn find_node(
+        &self,
+        target: &NodeId,
+    ) -> Result<Vec<NodeInfo>> {
         let initial = {
             let table = self.routing_table.lock().await;
             table.find_closest(target, K)
         };
-
         if initial.is_empty() {
             return Ok(vec![]);
         }
-
         let mut seen: HashMap<NodeId, NodeInfo> = HashMap::new();
-        let mut queried: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
-
+        let mut queried: std::collections::HashSet<NodeId> =
+            std::collections::HashSet::new();
         for node in &initial {
             seen.insert(node.id, node.clone());
         }
-
         loop {
             let mut candidates: Vec<NodeInfo> = seen
                 .values()
                 .filter(|n| !queried.contains(&n.id))
                 .cloned()
                 .collect();
-
             candidates.sort_by(|a, b| {
                 let da = a.id.xor_distance(target);
                 let db = b.id.xor_distance(target);
                 da.cmp(&db)
             });
-
-            let to_query: Vec<NodeInfo> = candidates.into_iter().take(ALPHA).collect();
-
+            let to_query: Vec<NodeInfo> =
+                candidates.into_iter().take(ALPHA).collect();
             if to_query.is_empty() {
                 break;
             }
-
             let mut tasks = Vec::new();
             for node in &to_query {
                 queried.insert(node.id);
@@ -234,28 +232,29 @@ impl DhtNode {
                 let addr = node.dht_addr;
                 tasks.push(self.send_request(msg, addr));
             }
-
             let results = futures::future::join_all(tasks).await;
-
             let mut found_new = false;
             for result in results {
-                if let Ok(DhtMessage::FindNodeResponse { nodes, .. }) = result {
+                if let Ok(DhtMessage::FindNodeResponse { nodes, .. }) =
+                    result
+                {
                     for node in nodes {
-                        if node.id != self.our_info.id && !seen.contains_key(&node.id) {
+                        if node.id != self.our_info.id
+                            && !seen.contains_key(&node.id)
+                        {
                             seen.insert(node.id, node.clone());
-                            let mut table = self.routing_table.lock().await;
+                            let mut table =
+                                self.routing_table.lock().await;
                             table.update(node);
                             found_new = true;
                         }
                     }
                 }
             }
-
             if !found_new {
                 break;
             }
         }
-
         let mut result: Vec<NodeInfo> = seen.into_values().collect();
         result.sort_by(|a, b| {
             let da = a.id.xor_distance(target);
@@ -263,16 +262,17 @@ impl DhtNode {
             da.cmp(&db)
         });
         result.truncate(K);
-
         Ok(result)
     }
 
-    pub async fn find_relays(&self, count: usize) -> Result<Vec<NodeInfo>> {
+    pub async fn find_relays(
+        &self,
+        count: usize,
+    ) -> Result<Vec<NodeInfo>> {
         let random_target = NodeId::random();
         let nodes = self.find_node(&random_target).await?;
-
-        let relays: Vec<NodeInfo> = nodes.into_iter().filter(|n| n.is_relay()).collect();
-
+        let relays: Vec<NodeInfo> =
+            nodes.into_iter().filter(|n| n.is_relay()).collect();
         if relays.len() >= count {
             Ok(relays.into_iter().take(count).collect())
         } else {
@@ -295,23 +295,22 @@ impl DhtNode {
                 "cannot announce: not configured as relay".into(),
             ));
         }
-
         let nodes = {
             let table = self.routing_table.lock().await;
             table.find_closest(&self.our_info.id, K)
         };
-
         info!(
             peer_count = nodes.len(),
             "announcing relay presence to nearest nodes"
         );
-
         for node in &nodes {
             let msg = DhtMessage::AnnounceRelay {
                 request_id: new_request_id(),
                 sender: self.our_info.clone(),
             };
-            if let Err(e) = self.send_message(&msg, node.dht_addr).await {
+            if let Err(e) =
+                self.send_message(&msg, node.dht_addr).await
+            {
                 debug!(
                     error = %e,
                     peer = %node.id,
@@ -319,13 +318,93 @@ impl DhtNode {
                 );
             }
         }
-
         Ok(())
     }
 
     pub async fn node_count(&self) -> usize {
         let table = self.routing_table.lock().await;
         table.total_nodes()
+    }
+
+    pub async fn announce_service(
+        &self,
+        service_hash: [u8; 20],
+        intro_points: Vec<SocketAddr>,
+        service_pubkey: [u8; 32],
+    ) -> Result<()> {
+        let target = NodeId::from_public_key(&{
+            let mut padded = [0u8; 32];
+            padded[..20].copy_from_slice(&service_hash);
+            padded
+        });
+        let nodes = {
+            let table = self.routing_table.lock().await;
+            table.find_closest(&target, K)
+        };
+        info!(
+            peer_count = nodes.len(),
+            "announcing hidden service to nearest nodes"
+        );
+        {
+            let mut store = self.service_store.lock().await;
+            store.insert(service_hash, handler::ServiceDescriptor {
+                intro_points: intro_points.clone(),
+                service_pubkey,
+            });
+        }
+        for node in &nodes {
+            let msg = DhtMessage::AnnounceService {
+                request_id: new_request_id(),
+                sender: self.our_info.clone(),
+                service_hash,
+                intro_points: intro_points.clone(),
+                service_pubkey,
+            };
+            if let Err(e) = self.send_message(&msg, node.dht_addr).await {
+                debug!(error = %e, peer = %sensitive(&node.id), "failed to announce service to peer");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn lookup_service(
+        &self,
+        service_hash: &[u8; 20],
+    ) -> Result<Option<(Vec<SocketAddr>, [u8; 32])>> {
+        {
+            let store = self.service_store.lock().await;
+            if let Some(desc) = store.get(service_hash) {
+                return Ok(Some((desc.intro_points.clone(), desc.service_pubkey)));
+            }
+        }
+        let target = NodeId::from_public_key(&{
+            let mut padded = [0u8; 32];
+            padded[..20].copy_from_slice(service_hash);
+            padded
+        });
+        let closest = self.find_node(&target).await?;
+        for node in &closest {
+            let request_id = new_request_id();
+            let msg = DhtMessage::LookupService {
+                request_id,
+                sender: self.our_info.clone(),
+                service_hash: *service_hash,
+            };
+            match self.send_request(msg, node.dht_addr).await {
+                Ok(DhtMessage::LookupServiceResponse {
+                    found: true, intro_points, service_pubkey, ..
+                }) => {
+                    let mut store = self.service_store.lock().await;
+                    store.insert(*service_hash, handler::ServiceDescriptor {
+                        intro_points: intro_points.clone(),
+                        service_pubkey,
+                    });
+                    return Ok(Some((intro_points, service_pubkey)));
+                }
+                _ => continue,
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -334,12 +413,12 @@ async fn process_packet(
     addr: SocketAddr,
     table: &Arc<Mutex<RoutingTable>>,
     pending: &Arc<Mutex<PendingMap>>,
+    svc_store: &Arc<Mutex<ServiceStore>>,
     our_info: &NodeInfo,
     signing_key: &SigningKey,
     socket: &UdpSocket,
 ) -> Result<()> {
     let (msg, _pubkey) = verify_and_deserialize(data)?;
-
     if msg.is_response() {
         let request_id = msg.request_id();
         let mut pending_map = pending.lock().await;
@@ -348,19 +427,26 @@ async fn process_packet(
         }
         return Ok(());
     }
-
     let mut table_guard = table.lock().await;
-    let result = DhtHandler::handle_message(&mut table_guard, msg, our_info, addr);
+    let mut store_guard = svc_store.lock().await;
+    let result = DhtHandler::handle_message(
+        &mut table_guard,
+        msg,
+        our_info,
+        addr,
+        &mut store_guard,
+    );
+    drop(store_guard);
     drop(table_guard);
-
     if let Some(resp) = result.response {
         let packet = sign_and_serialize(&resp, signing_key)?;
         socket.send_to(&packet, addr).await?;
     }
-
     for (target, gossip_msg) in result.gossip_targets {
         let packet = sign_and_serialize(&gossip_msg, signing_key)?;
-        if let Err(e) = socket.send_to(&packet, target.dht_addr).await {
+        if let Err(e) =
+            socket.send_to(&packet, target.dht_addr).await
+        {
             debug!(
                 error = %e,
                 target = %target.id,
@@ -368,7 +454,6 @@ async fn process_packet(
             );
         }
     }
-
     Ok(())
 }
 

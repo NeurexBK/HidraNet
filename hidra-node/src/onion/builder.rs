@@ -21,18 +21,6 @@ pub fn build_onion(circuit: &Circuit, payload: &[u8]) -> Result<Vec<u8>> {
     Ok(current)
 }
 
-pub fn build_response_onion(circuit: &Circuit, payload: &[u8]) -> Result<Vec<u8>> {
-    let hops = &circuit.hops;
-    let mut current = payload.to_vec();
-
-    // Simulates relay response path: exit wraps first (innermost), entry wraps last (outermost)
-    for hop in hops.iter().rev() {
-        let header = LayerHeader { next_hop: None };
-        current = wrap_layer(&hop.session_key, &header, &current)?;
-    }
-
-    Ok(current)
-}
 
 pub fn peel_response_layers(circuit: &Circuit, mut data: Vec<u8>) -> Result<Vec<u8>> {
     // Response outermost layer is from entry relay (hop[0]), peel forward
@@ -45,6 +33,27 @@ pub fn peel_response_layers(circuit: &Circuit, mut data: Vec<u8>) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    /// Build what a relay sends back, so peel_response_layers can be checked
+    /// against a known-good wrap.
+    ///
+    /// This is a fixture, not production code: a real relay wraps each
+    /// response with wrap_layer as it forwards, in router.rs. It lived beside
+    /// the production builder and read like part of it until one file started
+    /// serving both targets and the compiler pointed out that nothing called
+    /// it.
+    fn build_response_onion(circuit: &Circuit, payload: &[u8]) -> Result<Vec<u8>> {
+        let hops = &circuit.hops;
+        let mut current = payload.to_vec();
+
+        // Simulates relay response path: exit wraps first (innermost), entry wraps last (outermost)
+        for hop in hops.iter().rev() {
+            let header = LayerHeader { next_hop: None };
+            current = wrap_layer(&hop.session_key, &header, &current)?;
+        }
+
+        Ok(current)
+    }
+
     use super::*;
     use crate::onion::circuit::CircuitHop;
     use crate::onion::layer::peel_layer;

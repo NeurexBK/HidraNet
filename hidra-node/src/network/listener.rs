@@ -58,9 +58,16 @@ impl NodeListener {
         }
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.listener.local_addr().map_err(Into::into)
+    /// The address this listener actually bound to.
+    ///
+    /// Used by the integration tests, which bind to port 0 and need to learn
+    /// what they got. Nothing in the running node asks — it already knows the
+    /// address it configured — so the compiler would otherwise call it dead.
+    #[allow(dead_code)]
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
     }
+
 }
 
 pub async fn connect_to_peer(

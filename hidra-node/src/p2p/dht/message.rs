@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -11,36 +13,30 @@ const HEADER_LEN: usize = 4 + SIGNATURE_LEN + PUBKEY_LEN;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DhtMessage {
-    Ping {
+    Ping { request_id: u64, sender: NodeInfo },
+    Pong { request_id: u64, sender: NodeInfo },
+    FindNode { request_id: u64, sender: NodeInfo, target: NodeId },
+    FindNodeResponse { request_id: u64, nodes: Vec<NodeInfo> },
+    Store { request_id: u64, sender: NodeInfo, key: NodeId, value: Vec<u8> },
+    StoreResponse { request_id: u64, stored: bool },
+    AnnounceRelay { request_id: u64, sender: NodeInfo },
+    AnnounceService {
         request_id: u64,
         sender: NodeInfo,
+        service_hash: [u8; 20],
+        intro_points: Vec<SocketAddr>,
+        service_pubkey: [u8; 32],
     },
-    Pong {
+    LookupService {
         request_id: u64,
         sender: NodeInfo,
+        service_hash: [u8; 20],
     },
-    FindNode {
+    LookupServiceResponse {
         request_id: u64,
-        sender: NodeInfo,
-        target: NodeId,
-    },
-    FindNodeResponse {
-        request_id: u64,
-        nodes: Vec<NodeInfo>,
-    },
-    Store {
-        request_id: u64,
-        sender: NodeInfo,
-        key: NodeId,
-        value: Vec<u8>,
-    },
-    StoreResponse {
-        request_id: u64,
-        stored: bool,
-    },
-    AnnounceRelay {
-        request_id: u64,
-        sender: NodeInfo,
+        intro_points: Vec<SocketAddr>,
+        service_pubkey: [u8; 32],
+        found: bool,
     },
 }
 
@@ -53,7 +49,10 @@ impl DhtMessage {
             | Self::FindNodeResponse { request_id, .. }
             | Self::Store { request_id, .. }
             | Self::StoreResponse { request_id, .. }
-            | Self::AnnounceRelay { request_id, .. } => *request_id,
+            | Self::AnnounceRelay { request_id, .. }
+            | Self::AnnounceService { request_id, .. }
+            | Self::LookupService { request_id, .. }
+            | Self::LookupServiceResponse { request_id, .. } => *request_id,
         }
     }
 
@@ -66,72 +65,93 @@ impl DhtMessage {
             Self::Store { .. } => "STORE",
             Self::StoreResponse { .. } => "STORE_RESPONSE",
             Self::AnnounceRelay { .. } => "ANNOUNCE_RELAY",
+            Self::AnnounceService { .. } => "ANNOUNCE_SERVICE",
+            Self::LookupService { .. } => "LOOKUP_SERVICE",
+            Self::LookupServiceResponse { .. } => "LOOKUP_SERVICE_RESPONSE",
         }
     }
 
     pub fn is_response(&self) -> bool {
         matches!(
             self,
-            Self::Pong { .. } | Self::FindNodeResponse { .. } | Self::StoreResponse { .. }
+            Self::Pong { .. }
+                | Self::FindNodeResponse { .. }
+                | Self::StoreResponse { .. }
+                | Self::LookupServiceResponse { .. }
         )
     }
 }
 
-pub fn sign_and_serialize(msg: &DhtMessage, signing_key: &SigningKey) -> Result<Vec<u8>> {
-    let payload = bincode::serialize(msg)
-        .map_err(|e| HidraError::Protocol(format!("DHT message serialize failed: {e}")))?;
-
+pub fn sign_and_serialize(
+    msg: &DhtMessage,
+    signing_key: &SigningKey,
+) -> Result<Vec<u8>> {
+    let payload = bincode::serialize(msg).map_err(|e| {
+        HidraError::Protocol(format!(
+            "DHT message serialize failed: {e}"
+        ))
+    })?;
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
-
-    let mut sign_data = Vec::with_capacity(PUBKEY_LEN + payload.len());
+    let mut sign_data =
+        Vec::with_capacity(PUBKEY_LEN + payload.len());
     sign_data.extend_from_slice(&pubkey_bytes);
     sign_data.extend_from_slice(&payload);
-
     let signature = signing_key.sign(&sign_data);
-
-    let mut packet = Vec::with_capacity(HEADER_LEN + payload.len());
+    let mut packet =
+        Vec::with_capacity(HEADER_LEN + payload.len());
     packet.extend_from_slice(MAGIC);
     packet.extend_from_slice(&signature.to_bytes());
     packet.extend_from_slice(&pubkey_bytes);
     packet.extend_from_slice(&payload);
-
     Ok(packet)
 }
 
-pub fn verify_and_deserialize(packet: &[u8]) -> Result<(DhtMessage, [u8; 32])> {
+pub fn verify_and_deserialize(
+    packet: &[u8],
+) -> Result<(DhtMessage, [u8; 32])> {
     if packet.len() < HEADER_LEN {
-        return Err(HidraError::Protocol("DHT packet too short".into()));
+        return Err(HidraError::Protocol(
+            "DHT packet too short".into(),
+        ));
     }
-
     if &packet[..4] != MAGIC {
-        return Err(HidraError::Protocol("invalid DHT magic bytes".into()));
+        return Err(HidraError::Protocol(
+            "invalid DHT magic bytes".into(),
+        ));
     }
-
-    let sig_bytes: [u8; SIGNATURE_LEN] = packet[4..4 + SIGNATURE_LEN]
-        .try_into()
-        .map_err(|_| HidraError::Protocol("invalid signature length".into()))?;
-
-    let pubkey_bytes: [u8; PUBKEY_LEN] = packet[4 + SIGNATURE_LEN..HEADER_LEN]
-        .try_into()
-        .map_err(|_| HidraError::Protocol("invalid pubkey length".into()))?;
-
+    let sig_bytes: [u8; SIGNATURE_LEN] =
+        packet[4..4 + SIGNATURE_LEN].try_into().map_err(|_| {
+            HidraError::Protocol("invalid signature length".into())
+        })?;
+    let pubkey_bytes: [u8; PUBKEY_LEN] =
+        packet[4 + SIGNATURE_LEN..HEADER_LEN]
+            .try_into()
+            .map_err(|_| {
+                HidraError::Protocol("invalid pubkey length".into())
+            })?;
     let payload = &packet[HEADER_LEN..];
-
     let signature = Signature::from_bytes(&sig_bytes);
-    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
-        .map_err(|e| HidraError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
-
-    let mut sign_data = Vec::with_capacity(PUBKEY_LEN + payload.len());
+    let verifying_key =
+        VerifyingKey::from_bytes(&pubkey_bytes).map_err(|e| {
+            HidraError::Crypto(format!(
+                "invalid Ed25519 public key: {e}"
+            ))
+        })?;
+    let mut sign_data =
+        Vec::with_capacity(PUBKEY_LEN + payload.len());
     sign_data.extend_from_slice(&pubkey_bytes);
     sign_data.extend_from_slice(payload);
-
-    verifying_key
-        .verify(&sign_data, &signature)
-        .map_err(|_| HidraError::Crypto("DHT message signature verification failed".into()))?;
-
-    let msg: DhtMessage = bincode::deserialize(payload)
-        .map_err(|e| HidraError::Protocol(format!("DHT message deserialize failed: {e}")))?;
-
+    verifying_key.verify(&sign_data, &signature).map_err(|_| {
+        HidraError::Crypto(
+            "DHT message signature verification failed".into(),
+        )
+    })?;
+    let msg: DhtMessage =
+        bincode::deserialize(payload).map_err(|e| {
+            HidraError::Protocol(format!(
+                "DHT message deserialize failed: {e}"
+            ))
+        })?;
     Ok((msg, pubkey_bytes))
 }
 

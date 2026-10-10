@@ -16,7 +16,6 @@ const ATYP_IPV6: u8 = 0x04;
 
 const REPLY_SUCCESS: u8 = 0x00;
 const REPLY_GENERAL_FAILURE: u8 = 0x01;
-const REPLY_CONN_REFUSED: u8 = 0x05;
 const REPLY_CMD_NOT_SUPPORTED: u8 = 0x07;
 
 #[derive(Debug, Clone)]
@@ -26,19 +25,7 @@ pub enum TargetAddr {
 }
 
 impl TargetAddr {
-    pub fn host_string(&self) -> String {
-        match self {
-            Self::Ip(addr) => addr.ip().to_string(),
-            Self::Domain(host, _) => host.clone(),
-        }
-    }
 
-    pub fn port(&self) -> u16 {
-        match self {
-            Self::Ip(addr) => addr.port(),
-            Self::Domain(_, port) => *port,
-        }
-    }
 }
 
 impl std::fmt::Display for TargetAddr {
@@ -171,9 +158,6 @@ pub async fn send_failure(stream: &mut TcpStream) -> Result<()> {
     send_reply(stream, REPLY_GENERAL_FAILURE, None).await
 }
 
-pub async fn send_conn_refused(stream: &mut TcpStream) -> Result<()> {
-    send_reply(stream, REPLY_CONN_REFUSED, None).await
-}
 
 #[cfg(test)]
 mod tests {
