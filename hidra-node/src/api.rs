@@ -140,10 +140,11 @@ fn presented_token(request: &str) -> Option<&str> {
         if line.is_empty() {
             break;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            if key.trim().eq_ignore_ascii_case("authorization") {
-                return value.trim().strip_prefix("Bearer ").map(str::trim);
-            }
+        if let Some((_, value)) = line
+            .split_once(':')
+            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("authorization"))
+        {
+            return value.trim().strip_prefix("Bearer ").map(str::trim);
         }
     }
 
