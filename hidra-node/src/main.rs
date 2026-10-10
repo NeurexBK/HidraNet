@@ -8745,7 +8745,17 @@ async fn run_proxy_mode(
     let proxy_addr: SocketAddr =
         format!("{}:{}", app_cfg.proxy.listen_addr, app_cfg.proxy.port).parse()?;
 
-    let dht_addr: SocketAddr = format!("0.0.0.0:{}", app_cfg.dht.port).parse()?;
+    // Port 0, not the configured one. A client has no reason to run a
+    // predictable, scannable service: on a fixed port, anyone who sweeps the
+    // internet for it gets a list of this network's users by IP, and "is a
+    // HidraNet user" is in many situations the whole thing a user needs
+    // hidden. An ephemeral port still sends queries and still receives the
+    // replies; it just is not something you can go looking for.
+    //
+    // It does not hide the address from a DHT peer that is contacted
+    // directly. Routing lookups through a circuit is the fix for that, and it
+    // is not done yet — see SECURITY.md.
+    let dht_addr: SocketAddr = "0.0.0.0:0".parse()?;
 
     let bootstrap_addrs: Vec<SocketAddr> = app_cfg
         .dht
@@ -8838,7 +8848,8 @@ async fn run_send_mode(
     dht_discover: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     if dht_discover && app_cfg.dht.enabled {
-        let dht_addr: SocketAddr = format!("0.0.0.0:{}", app_cfg.dht.port).parse()?;
+        // Ephemeral, as in proxy mode: a one-shot send is a client.
+        let dht_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let mut dht = p2p::dht::DhtNode::new(dht_addr, signing_key, None).await?;
         dht.start().await;
 

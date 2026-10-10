@@ -1,0 +1,54 @@
+# Advisories against dependencies, on every change and on a schedule.
+#
+# The schedule is the part that matters. An advisory is usually published
+# against a crate that has not changed — the code is the same today as it was
+# when it was fine — so a check that only runs on push would never see it. The
+# project already learned this once: pqc_kyber sat in Cargo.toml carrying two
+# unfixable highs, including an AVX2 path that skipped Fujisaki-Okamoto
+# implicit rejection and handed a chosen-ciphertext attacker the decapsulation
+# key, and nothing in CI was looking.
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 06:17 UTC daily. Not on the hour: everything else is.
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        working-directory: hidra-node
+        # Deny warnings too: "unmaintained" is how pqc_kyber first showed up.
+        # Accepted advisories are listed in .cargo/audit.toml with the reasoning, so
+        # an exception has to be written down to exist.
+        run: cargo audit --deny warnings
+
+  anonymity:
+    name: anonymity invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No addresses in logs
+        working-directory: hidra-node
+        run: cargo test --test no_addresses_in_logs
+
+      - name: Browser claims match the code
+        working-directory: hidra-browser
+        run: |
+          node test/anonymity-claims.js
+          node test/mqtt-worker-csp.js

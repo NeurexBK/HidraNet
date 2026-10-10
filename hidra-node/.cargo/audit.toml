@@ -1,0 +1,23 @@
+# Advisories accepted rather than fixed. Each one needs a reason here, so an
+# exception cannot exist without someone having written down why.
+#
+# CI runs `cargo audit --deny warnings`, which means "unmaintained" fails the
+# build too. That is deliberate: unmaintained is how pqc_kyber first appeared,
+# and by the time it was two unfixable highs it had been shipping for months.
+
+[advisories]
+ignore = [
+    # bincode 1.3.3 is unmaintained (RUSTSEC-2025-0141).
+    #
+    # It parses relay commands, which arrive from the network, so this is not
+    # waved through. What was checked: frames are capped at 64 KiB before
+    # anything is deserialized (network/connection.rs), deserialization is
+    # always from a slice and never from a reader, and a crafted length prefix
+    # was tried against it — a Vec<u8> claiming 2^48 elements is refused at
+    # end-of-input rather than allocated.
+    #
+    # Unmaintained is still a reason to move, and moving to bincode 2 changes
+    # the wire format, so it needs a protocol version bump rather than a
+    # dependency bump. Tracked separately.
+    "RUSTSEC-2025-0141",
+]
