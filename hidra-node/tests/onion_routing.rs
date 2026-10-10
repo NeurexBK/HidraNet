@@ -133,7 +133,7 @@ async fn three_relay_onion_circuit() {
         .await
         .unwrap();
 
-    assert_eq!(response, "Recebido, agente");
+    assert_eq!(response, "Received, agent");
 }
 
 #[tokio::test]

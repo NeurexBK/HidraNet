@@ -91,7 +91,7 @@ pub async fn run_client_session(
     let response_str = String::from_utf8(plaintext)
         .map_err(|e| HidraError::Circuit(format!("response is not valid UTF-8: {e}")))?;
 
-    info!(circuit_id, response = %response_str, "circuit complete");
+    info!(circuit_id, bytes = response_str.len(), "circuit complete");
     Ok(response_str)
 }
 

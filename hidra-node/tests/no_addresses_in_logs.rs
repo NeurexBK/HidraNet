@@ -34,6 +34,23 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "target_domain",
     "address",
     "service",
+    // Content, not just identity. An exit relay logging the payload it just
+    // decrypted writes what a user said to an operator's disk, which is worse
+    // than writing who they are; the same goes for what came back. Ping and
+    // Pong bodies arrive from a peer, so echoing them lets anyone else write
+    // this log too.
+    "payload",
+    "response",
+    // A HidraMail address, a chat nickname and a room id are the identities
+    // this product exists to keep apart from each other.
+    "nick",
+    "room",
+    "from",
+    "to",
+    "mail",
+    // A message id appears in both the sender's log and the recipient's, so in
+    // the clear it links the two.
+    "id",
 ];
 
 /// Fields that look sensitive but name this node's own configuration. A bind
@@ -54,6 +71,12 @@ const OWN_CONFIGURATION: &[&str] = &[
     "\"pinging bootstrap node\"",
     "\"bootstrap node unreachable\"",
     "\"bootstrap node timed out\"",
+    // This node's own mail address and its own site, printed once at startup on
+    // the machine of the person they belong to.
+    "mail = %self.state.mail_addr",
+    "site = %name",
+    // The response to a readiness probe is a constant, not a user's traffic.
+    "response = %\"ok\"",
 ];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -101,7 +124,18 @@ fn no_log_line_carries_an_unscrubbed_address() {
                 // `field = %value` or `field = ?value`, not already wrapped.
                 for sigil in ['%', '?'] {
                     let needle = format!("{field} = {sigil}");
-                    if let Some(at) = line.find(&needle) {
+                    let mut from = 0;
+                    while let Some(rel) = line[from..].find(&needle) {
+                        let at = from + rel;
+                        from = at + needle.len();
+                        // `id` must not match the tail of `session_id`.
+                        let preceded_by_name = line[..at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        if preceded_by_name {
+                            continue;
+                        }
                         let value = &line[at + needle.len()..];
                         if !value.starts_with("sensitive(") {
                             offences.push(format!(

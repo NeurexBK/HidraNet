@@ -113,7 +113,7 @@ pub async fn connect_to_peer(
     let msg = conn.recv_message().await?;
     match msg {
         Message::Pong(ref data) => {
-            info!(payload = %String::from_utf8_lossy(data), "received encrypted Pong");
+            info!(bytes = data.len(), "received encrypted Pong");
         }
         Message::Ping(_) => {
             warn!("unexpected Ping from responder");

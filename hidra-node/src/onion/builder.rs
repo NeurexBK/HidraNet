@@ -74,7 +74,7 @@ mod tests {
         };
 
         let circuit = Circuit::new(1, vec![hop1, hop2, hop3]);
-        let payload = b"Ola, mundo oculto";
+        let payload = b"Hello, hidden world";
 
         let onion = build_onion(&circuit, payload).unwrap();
 
@@ -105,7 +105,7 @@ mod tests {
         };
 
         let circuit = Circuit::new(1, vec![hop1, hop2, hop3]);
-        let response = b"Recebido, agente";
+        let response = b"Received, agent";
 
         let onion = build_response_onion(&circuit, response).unwrap();
         let peeled = peel_response_layers(&circuit, onion).unwrap();

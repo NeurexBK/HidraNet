@@ -704,7 +704,7 @@ async fn run_server_mode(
             }
         });
         info!("╔══════════════════════════════════════════════════════════════╗");
-        info!("║  SevenNine.hidra — Criador de Sites Descentralizado        ║");
+        info!("║  SevenNine.hidra — Decentralised site builder              ║");
         info!("║  Address:    http://{}", hidra_address);
         info!("║  Local:      http://127.0.0.1:{}", local_port);
         info!("║  Every site created is published to the DHT automatically  ║");
@@ -930,7 +930,7 @@ async fn run_send_mode(
             client::session::run_client_session(&relay_entries, network_secret, payload)
                 .await?;
 
-        info!(response = %response, "onion circuit complete (DHT discovery)");
+        info!(bytes = response.len(), "onion circuit complete (DHT discovery)");
     } else {
         let relay_list = relay::registry::load_relay_list(&app_cfg.relays)?;
 
@@ -944,7 +944,7 @@ async fn run_send_mode(
 
         info!(
             relays = relay_list.len(),
-            payload = %payload,
+            bytes = payload.len(),
             "starting client onion session"
         );
 
@@ -952,7 +952,7 @@ async fn run_send_mode(
             client::session::run_client_session(&relay_list, network_secret, payload)
                 .await?;
 
-        info!(response = %response, "onion circuit complete");
+        info!(bytes = response.len(), "onion circuit complete");
     }
 
     Ok(())
@@ -1032,8 +1032,8 @@ async fn run_sevennine_mode(
         .to_path_buf();
 
     info!("╔═══════════════════════════════════════════════════════════════╗");
-    info!("║  SevenNine.hidra — Criador Descentralizado de Sites         ║");
-    info!("║  Acesse: http://127.0.0.1:8084                             ║");
+    info!("║  SevenNine.hidra — Decentralised site builder               ║");
+    info!("║  Open: http://127.0.0.1:8084                               ║");
     info!("╚═══════════════════════════════════════════════════════════════╝");
 
     tokio::select! {

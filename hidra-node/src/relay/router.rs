@@ -230,13 +230,20 @@ async fn handle_noise_session(
                             .await?;
                             break;
                         }
-                        let payload =
-                            String::from_utf8_lossy(&inner);
-                        info!(circuit_id, payload = %payload, "exit node — received payload (legacy)");
+                        // The length, and never the content. This is traffic a
+                        // user sent through the circuit, decrypted at the exit:
+                        // writing it to the log puts what they said on an
+                        // operator's disk, which is worse than writing who they
+                        // are.
+                        info!(
+                            circuit_id,
+                            bytes = inner.len(),
+                            "exit node — received payload (legacy)"
+                        );
                         let response_wrapped = wrap_layer(
                             &key,
                             &LayerHeader { next_hop: None },
-                            b"Recebido, agente",
+                            b"Received, agent",
                         )?;
                         conn.send_message(&Message::Relay {
                             circuit_id,
@@ -248,7 +255,7 @@ async fn handle_noise_session(
                 }
             }
             Message::Ping(ref data) => {
-                info!(payload = %String::from_utf8_lossy(data), "received Ping (legacy)");
+                info!(bytes = data.len(), "received Ping (legacy)");
                 conn.send_message(&Message::Pong(
                     b"HidraPong".to_vec(),
                 ))
@@ -346,13 +353,20 @@ async fn handle_forwarded(
                         )
                         .await?;
                     } else {
-                        let payload =
-                            String::from_utf8_lossy(&inner);
-                        info!(circuit_id, payload = %payload, "exit node — received payload (legacy)");
+                        // The length, and never the content. This is traffic a
+                        // user sent through the circuit, decrypted at the exit:
+                        // writing it to the log puts what they said on an
+                        // operator's disk, which is worse than writing who they
+                        // are.
+                        info!(
+                            circuit_id,
+                            bytes = inner.len(),
+                            "exit node — received payload (legacy)"
+                        );
                         let response_wrapped = wrap_layer(
                             &key,
                             &LayerHeader { next_hop: None },
-                            b"Recebido, agente",
+                            b"Received, agent",
                         )?;
                         let out_msg = Message::Relay {
                             circuit_id,

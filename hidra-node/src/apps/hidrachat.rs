@@ -398,7 +398,12 @@ pub mod server {
             ws_buf.extend_from_slice(&tmp[..n]);
         };
 
-        info!(peer = %sensitive(&peer), nick = %nick, room = %room_id, "user joined");
+        info!(
+            peer = %sensitive(&peer),
+            nick = %sensitive(&nick),
+            room = %sensitive(&room_id),
+            "user joined"
+        );
 
         // ── Get or create room ──
         let room = {
@@ -545,7 +550,7 @@ pub mod server {
             });
             let _ = room.tx.send(msg.to_string());
         }
-        info!(peer = %sensitive(&peer), nick = %nick, "user left");
+        info!(peer = %sensitive(&peer), nick = %sensitive(&nick), "user left");
         Ok(())
     }
 
@@ -1374,7 +1379,7 @@ function renderTyping(){
   var dots='<span class="dots"><span></span><span></span><span></span></span>';
   if(names.length===1) bar.innerHTML=esc(names[0])+' is typing'+dots;
   else if(names.length===2) bar.innerHTML=esc(names[0])+' and '+esc(names[1])+' are typing'+dots;
-  else bar.innerHTML=names.length+' pessoas digitando'+dots;
+  else bar.innerHTML=names.length+' people typing'+dots;
 }
 
 // ── Stale typing cleanup ──
@@ -1443,7 +1448,7 @@ function esc(s){var d=document.createElement('div');d.textContent=s;return d.inn
 
 function formatTime(ts){
   var d=new Date(ts);
-  return d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
 }
 
 var scrollLock=false;

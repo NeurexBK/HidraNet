@@ -40,8 +40,12 @@ wrong is high.
   `open(2)` and the keys directory is `0700`. With `HIDRA_KEY_PASSPHRASE` set
   they are also encrypted at rest, which extends this to a stolen disk or a
   copied backup.
-- **A log that outlives its usefulness.** Peer addresses and the hostnames
-  asked for at an exit are scrubbed before they reach the log.
+- **A log that outlives its usefulness.** Peer addresses, the hostnames asked
+  for at an exit, HidraMail addresses, chat nicknames and room ids are scrubbed
+  before they reach the log. Content never reaches it at all: an exit relay
+  logs how many bytes it relayed and not what they said, which it used to do.
+  A Ping body is not logged either — it arrives from a peer, and echoing it
+  would let anyone else write an operator's log file.
 
 ## What it does not defend against
 
@@ -116,7 +120,8 @@ One advisory is currently accepted rather than fixed:
 Rather than taking the above on trust:
 
 - `cargo test -p hidra-node --test no_addresses_in_logs` fails if any log line
-  would write a peer address or a destination hostname in the clear.
+  would write a peer address, a destination hostname, a mail address, a
+  nickname or a relayed payload in the clear.
 - `node hidra-browser/test/anonymity-claims.js` fails if a badge in the
   browser's anonymity panel claims something the code does not do.
 - `node hidra-browser/test/preload-boundary.js` fails if the privileged

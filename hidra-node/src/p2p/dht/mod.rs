@@ -107,7 +107,7 @@ impl DhtNode {
                                     &svc_store,
                                     &our_info, &signing_key, &socket,
                                 ).await {
-                                    debug!(error = %e, from = %addr, "failed to process DHT packet");
+                                    debug!(error = %e, from = %sensitive(&addr), "failed to process DHT packet");
                                 }
                             }
                             Err(e) => {

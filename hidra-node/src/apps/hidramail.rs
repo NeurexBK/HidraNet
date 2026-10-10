@@ -762,8 +762,8 @@ pub mod server {
                 );
                 let _ = state.store.store_sent(&sender_copy);
                 info!(
-                    to = %req.to,
-                    id = %envelope.id,
+                    to = %sensitive(&req.to),
+                    id = %sensitive(&envelope.id),
                     "mail sent"
                 );
                 json_ok(r#"{"ok":true}"#)
@@ -795,8 +795,8 @@ pub mod server {
         match state.store.store_incoming(&envelope) {
             Ok(()) => {
                 info!(
-                    from = %envelope.from_addr,
-                    id = %envelope.id,
+                    from = %sensitive(&envelope.from_addr),
+                    id = %sensitive(&envelope.id),
                     "mail received"
                 );
                 json_ok(&format!(
@@ -1459,7 +1459,7 @@ if (!mails || mails.length === 0) {
 var html = '<div class="mail-list-header">' + esc(title) + ' (' + mails.length + ')</div>';
 for (var i = 0; i < mails.length; i++) {
     var m = mails[i];
-    var date = new Date(m.timestamp).toLocaleString('pt-BR');
+    var date = new Date(m.timestamp).toLocaleString('en-US');
     var unread = !m.read ? ' unread' : '';
     html +=
         '<div class="mail-item' + unread + '" onclick="readMail(\'' + esc(m.id) + '\')">' +
@@ -1473,14 +1473,14 @@ content.innerHTML = html;
 
     window.readMail = async function(id) {
 var content = document.getElementById('content');
-content.innerHTML = '<div class="loading">Descriptografando...</div>';
+content.innerHTML = '<div class="loading">Decrypting...</div>';
 try {
     var mail = await api('/api/mail/' + id);
     if (mail.error) {
         content.innerHTML = '<div class="empty-state"><p>Error: ' + esc(mail.error) + '</p></div>';
         return;
     }
-    var date = new Date(mail.timestamp).toLocaleString('pt-BR');
+    var date = new Date(mail.timestamp).toLocaleString('en-US');
     var vIcon = mail.verified ? '✓ Signature verified' : '✗ Invalid signature';
     var vClass = mail.verified ? 'verified' : 'unverified';
     content.innerHTML =
