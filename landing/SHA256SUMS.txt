@@ -12,15 +12,21 @@ If the value does not match either table below, do not run the file.
 1. REFRESHED PACKAGES  —  not on the release page yet
 -----------------------------------------------------------------------
 
-e380a72bbdb1cfa00de99c379b36742bd02087f9c49b7cca32d2367169304bd8  HidraNet-Browser-1.0.0-macOS-arm64.zip
-b20f5fafa20f4c700eb535cd3d20d6384fb83a54bd5c3dd83badf6d6b03933ef  HidraNet-Browser-1.0.0-macOS-x64.zip
-a04dda60085dd3dde4ee6a46c90cde188b538a3be9f25a5de4f457035a03f367  HidraNet-Browser-1.0.0-Linux-x64.zip
-be890866b439123326c689ea8764a3dd442484f26b345aae6b79232cd9b98ec7  HidraNet-Browser-1.0.0-Windows-x64.zip
+bfc6620421ac9cffbd4dd1e4247a3e37958cceaf98f7dc966a570868585481ab  HidraNet-Browser-1.0.0-macOS-arm64.zip
+765f639ed44377b5d0ef1101c3da5d11434a29b5e9ac345cd9a0aaaa67ef4774  HidraNet-Browser-1.0.0-macOS-x64.zip
+f76096b9c7b055de162f768e8f77a6c35262a24a12c54ea2810ba53cc841c72f  HidraNet-Browser-1.0.0-Linux-x64.zip
+d6f0786f82d68dd436ed1e1a0032631755521b145e8232bf46ca379f5d7a6308  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,422,920 bytes  (103.4 MiB)
-  macOS x64      112,853,401 bytes  (107.6 MiB)
-  Linux x64      112,927,730 bytes  (107.7 MiB)
-  Windows x64    129,487,695 bytes  (123.5 MiB)
+  macOS arm64    108,426,227 bytes  (103.4 MiB)
+  macOS x64      112,856,708 bytes  (107.6 MiB)
+  Linux x64      112,931,037 bytes  (107.7 MiB)
+  Windows x64    129,497,312 bytes  (123.5 MiB)
+
+  Built from commit d6aa88a. The three packages without the engine are a
+  pure repack — rebuilding from the same tree reproduces these hashes
+  byte for byte, which was checked by running the build twice. The
+  Windows one carries a freshly compiled Rust engine, so a rebuild on
+  another machine may differ there.
 
 What changed from the packages in table 2:
 
@@ -59,6 +65,44 @@ What changed from the packages in table 2:
     accepted and discarded, and is no longer a constant compiled into the
     binary
   - the analytics dashboard no longer loads Chart.js from a CDN
+
+  ADDED 9–10 OCTOBER — the reason to replace the packages again:
+
+  - every page that speaks MQTT could send but never receive. The client
+    runs its keepalive in a Worker loaded from a blob: URL, and no page
+    declared worker-src, so the policy fell back to script-src, Chromium
+    refused the Worker, and the rejection killed the connect handler
+    before it subscribed. Mail, chat, forum, reviews, site publish and
+    site load: sending worked, which is why it survived
+  - HidraMail proves who sent a message. `from` used to be a string the
+    sender chose, so anyone who looked up your published key could arrive
+    as your bank. An identity is now an ECDH and an ECDSA key with the
+    address derived from both, and the signature covers the whole
+    envelope including the recipient. A sender that cannot be proven is
+    dropped rather than displayed
+  - the anonymity panel stops claiming what it is not doing. Five of its
+    badges describe things every tab gets either way; "DNS Leak
+    Protection: Active" was hardcoded and only true while traffic goes
+    through the engine. Disconnected, this machine resolves names itself,
+    and the badge now says so
+  - relays are shown by fingerprint, not by a masked address. A /16 with
+    the port kept leaves few candidates, and the one it narrows down is
+    the guard — the address that identifies the user
+  - the engine keeps peer addresses and exit destinations out of its log.
+    A relay saw who connected, the next hop, and at the exit the hostname
+    and port asked for, all beside a circuit id, with the shipped config
+    at level = "debug". Scrubbed now, under a key made at startup and
+    never written down. This ships in the Windows package and to anyone
+    running a relay built from source
+  - secret keys are created 0600 at open(2) in a 0700 directory, and
+    HIDRA_KEY_PASSPHRASE seals them with Argon2id and XChaCha20-Poly1305.
+    The .hidra service key had no mode set at all — 0644, readable by
+    every account on the machine, and that key *is* the service
+  - the status API no longer hands out the IP addresses of the live
+    circuit, and the circuit view needs a token from a file a web page
+    cannot read
+  - a client binds the DHT to an ephemeral port. On a fixed one, sweeping
+    the internet for it returns a list of this network's users by IP
 
   Linux: the bundled Tor is dynamically linked against libevent, which
   most distributions do not install by default. It was not in the
