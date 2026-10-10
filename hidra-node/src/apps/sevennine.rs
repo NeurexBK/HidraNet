@@ -15,6 +15,7 @@ use rand_core::OsRng;
 use blake3;
 use base64::Engine as _;
 use chrono::Utc;
+use crate::safelog::sensitive;
 
 #[derive(Debug, Clone)]
 pub struct DhtAnnouncement {
@@ -272,7 +273,7 @@ impl SiteManager {
             if tx.try_send(announcement).is_ok() {
                 tracing::info!(
                     site = %name,
-                    address = %crypto_address,
+                    address = %sensitive(&crypto_address),
                     "site published to DHT"
                 );
             }

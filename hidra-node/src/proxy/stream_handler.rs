@@ -10,7 +10,9 @@ use crate::client::circuit_pool::CircuitPool;
 use crate::client::streaming::StreamingCircuit;
 use crate::error::{HidraError, Result};
 use crate::p2p::dht::DhtNode;
+use crate::proxy::resolver;
 use crate::proxy::socks5::{self, TargetAddr};
+use crate::safelog::sensitive;
 
 const MAX_RETRIES: usize = 3;
 const INITIAL_BACKOFF_MS: u64 = 100;
@@ -25,7 +27,7 @@ pub async fn handle_socks5_connection(
         handle_inner(&mut browser_stream, &pool, &dht, client_addr).await
     {
         warn!(
-            client_ip = %client_addr,
+            client_ip = %sensitive(&client_addr),
             error = %e,
             "SOCKS5 session failed"
         );
@@ -73,15 +75,32 @@ async fn handle_inner(
     };
     let target_domain = format!("{target}");
     info!(
-        client_ip = %client_addr,
-        target_domain = %target_domain,
+        client_ip = %sensitive(&client_addr),
+        target_domain = %sensitive(&target_domain),
         "SOCKS5 CONNECT request"
     );
 
-    if let Some(service_hash) = parse_hidra_address(&host) {
+    // Where a name is resolved is the whole DNS-leak question, so the answer
+    // comes from resolver::target_host — one tested place that states the
+    // policy — rather than from an ad-hoc check here. An internet name is
+    // never looked up locally: it travels the circuit as a name and the exit
+    // resolves it.
+    let routing = resolver::target_host(&host);
+    debug_assert!(
+        !matches!(routing, resolver::TargetResolution::RemoteDns)
+            || parse_hidra_address(&host).is_none(),
+        "a .hidra name must never be classified for remote DNS"
+    );
+
+    if matches!(routing, resolver::TargetResolution::HidraInternal) {
+        let service_hash = parse_hidra_address(&host).ok_or_else(|| {
+            HidraError::Protocol(format!(
+                "{host} ends in .hidra but is not a service address"
+            ))
+        })?;
         info!(
-            client_ip = %client_addr,
-            address = %host,
+            client_ip = %sensitive(&client_addr),
+            address = %sensitive(&host),
             "resolving .hidra hidden service via DHT"
         );
         let descriptor = dht.lookup_service(&service_hash).await?
@@ -104,8 +123,8 @@ async fn handle_inner(
         let hop_count = circuit.hop_count();
         let relay_chain = circuit.relay_chain_display();
         info!(
-            client_ip = %client_addr,
-            target_domain = %target_domain,
+            client_ip = %sensitive(&client_addr),
+            target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
             relay_chain = %relay_chain,
             "circuit connected to hidden service"
@@ -121,8 +140,8 @@ async fn handle_inner(
         )
         .await;
         info!(
-            client_ip = %client_addr,
-            target_domain = %target_domain,
+            client_ip = %sensitive(&client_addr),
+            target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
             relay_chain = %relay_chain,
             bytes_sent, bytes_received,
@@ -143,8 +162,8 @@ async fn handle_inner(
     let hop_count = circuit.hop_count();
     let relay_chain = circuit.relay_chain_display();
     info!(
-        client_ip = %client_addr,
-        target_domain = %target_domain,
+        client_ip = %sensitive(&client_addr),
+        target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
         relay_chain = %relay_chain,
         "circuit connected to target"
@@ -160,8 +179,8 @@ async fn handle_inner(
     )
     .await;
     info!(
-        client_ip = %client_addr,
-        target_domain = %target_domain,
+        client_ip = %sensitive(&client_addr),
+        target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
         relay_chain = %relay_chain,
         bytes_sent, bytes_received,
@@ -185,8 +204,8 @@ async fn connect_with_failover(
             Err(e) => {
                 warn!(
                     attempt,
-                    client_ip = %client_addr,
-                    target_domain = %target_domain,
+                    client_ip = %sensitive(&client_addr),
+                    target_domain = %sensitive(&target_domain),
                     error = %e,
                     "failed to obtain circuit"
                 );
@@ -202,8 +221,8 @@ async fn connect_with_failover(
                 warn!(
                     attempt,
                     circuit_id = circuit.circuit_id(),
-                    client_ip = %client_addr,
-                    target_domain = %target_domain,
+                    client_ip = %sensitive(&client_addr),
+                    target_domain = %sensitive(&target_domain),
                     error = %e,
                     "circuit connect failed, retrying"
                 );
@@ -234,8 +253,8 @@ async fn connect_service_with_failover(
             Err(e) => {
                 warn!(
                     attempt,
-                    client_ip = %client_addr,
-                    target_domain = %target_domain,
+                    client_ip = %sensitive(&client_addr),
+                    target_domain = %sensitive(&target_domain),
                     error = %e,
                     "failed to obtain circuit for service"
                 );
@@ -251,8 +270,8 @@ async fn connect_service_with_failover(
                 warn!(
                     attempt,
                     circuit_id = circuit.circuit_id(),
-                    client_ip = %client_addr,
-                    target_domain = %target_domain,
+                    client_ip = %sensitive(&client_addr),
+                    target_domain = %sensitive(&target_domain),
                     error = %e,
                     "service connect failed, retrying"
                 );

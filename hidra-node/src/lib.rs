@@ -30,3 +30,12 @@ pub mod client;
 pub mod api;
 pub mod local_guard;
 pub mod safelog;
+
+// Served by the binary, and in the library so the tests can reach them. These
+// four were inlined in main.rs, which is most of why hidramail's crypto — the
+// part that decides whether a message can be read by anyone but its
+// recipient — had no tests at all.
+pub mod apps;
+pub mod search;
+pub mod analytics;
+pub mod security;

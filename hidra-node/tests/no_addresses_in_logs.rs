@@ -25,6 +25,15 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "peer",
     "target",
     "relay",
+    // These four were missed the first time round. The first sweep looked for
+    // `target = %`, which does not match `target_domain = %`, and did not
+    // think of `client_ip` at all — so the SOCKS handler went on writing who
+    // connected and which site they asked for, on the user's own machine,
+    // which is their browsing history on disk.
+    "client_ip",
+    "target_domain",
+    "address",
+    "service",
 ];
 
 /// Fields that look sensitive but name this node's own configuration. A bind

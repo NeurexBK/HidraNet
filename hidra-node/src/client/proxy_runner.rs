@@ -11,6 +11,7 @@ use crate::p2p::bootstrap::bootstrap;
 use crate::p2p::dht::DhtNode;
 use crate::proxy::stream_handler;
 use crate::relay::registry::RelayEntry;
+use crate::safelog::sensitive;
 
 const RELAY_CACHE_TTL: Duration = Duration::from_secs(120);
 const POOL_MAINTENANCE_INTERVAL: Duration =
@@ -87,7 +88,7 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     loop {
         let (stream, remote_addr) =
             listener.accept().await?;
-        info!(client_ip = %remote_addr, "accepted SOCKS5 connection");
+        info!(client_ip = %sensitive(&remote_addr), "accepted SOCKS5 connection");
         let pool = Arc::clone(&pool);
         let dht_ref = Arc::clone(&dht);
         tokio::spawn(async move {
