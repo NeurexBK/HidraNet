@@ -1,10 +1,10 @@
-/// DNS resolution strategy for HidraNet proxy.
-///
-/// Internet domain names are NEVER resolved locally — they are passed as-is
-/// through the onion circuit to the exit relay, which performs DNS resolution.
-/// This prevents DNS leaks that could reveal the client's browsing activity.
-///
-/// `.hidra` internal domains are kept within the network for DHT-based resolution.
+//! DNS resolution strategy for HidraNet proxy.
+//!
+//! Internet domain names are NEVER resolved locally — they are passed as-is
+//! through the onion circuit to the exit relay, which performs DNS resolution.
+//! This prevents DNS leaks that could reveal the client's browsing activity.
+//!
+//! `.hidra` internal domains are kept within the network for DHT-based resolution.
 
 pub fn is_hidra_domain(host: &str) -> bool {
     host.ends_with(".hidra")

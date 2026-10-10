@@ -569,10 +569,7 @@ async fn run_server_mode(
         }
     }
 
-    let mut config_relays = match relay::registry::load_relay_list(&app_cfg.relays) {
-        Ok(list) => list,
-        Err(_) => Vec::new(),
-    };
+    let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
     for lr in &local_relays {
         if !config_relays.iter().any(|r| r.addr == lr.addr) {
             config_relays.push(lr.clone());
@@ -817,10 +814,7 @@ async fn run_proxy_mode(
         .filter_map(|s| s.parse().ok())
         .collect();
 
-    let mut config_relays = match relay::registry::load_relay_list(&app_cfg.relays) {
-        Ok(list) => list,
-        Err(_) => Vec::new(),
-    };
+    let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
 
     for lr in &local_relays {
         if !config_relays.iter().any(|r| r.addr == lr.addr) {
