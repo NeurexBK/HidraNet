@@ -12,3 +12,7 @@ feature branch.
 run 1 — 2026-10-10 — the September packages were still being served, with a
 partly Portuguese interface and without any of the security work from 7-10
 October.
+
+run 2 — 2026-10-11 — support moved from a Bitcoin address to an $HNET wallet on
+Solana, ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc. The packages published in
+run 1 still show the Bitcoin donate page.
