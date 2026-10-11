@@ -34,7 +34,10 @@ const BASE    = 'https://github.com/NeurexBK/HidraNet/releases/download/v' + VER
 const NAMES   = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64']
                   .map(a => 'HidraNet-Browser-' + VERSION + '-' + a + '.zip');
 
-const BTC = 'bc1pqw46hh9fypk0wr4z7vnvcpjjk8xe8xnff25vusc23xt3j6ehfaaqx3ku3k';
+// Where support goes. It replaced a Bitcoin address, so the check below
+// also refuses a package that still carries the old one.
+const HNET_WALLET = 'ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc';
+const OLD_BTC = 'bc1pqw46hh9fypk0wr4z7vnvcpjjk8xe8xnff25vusc23xt3j6ehfaaqx3ku3k';
 
 // Only the Windows package ships the Rust engine; the others start the
 // browser's own services and talk to Tor directly. The engine is where the
@@ -149,7 +152,9 @@ function verify(file) {
   }
 
   const d = by.get(pfx + 'ui/donate.html');
-  check(!!d && contents(d).toString().indexOf(BTC) !== -1, 'donate page carries the current BTC address');
+  const donate = d ? contents(d).toString() : '';
+  check(donate.indexOf(HNET_WALLET) !== -1, 'donate page carries the HNET support wallet');
+  check(donate.indexOf(OLD_BTC) === -1, 'donate page no longer carries the retired Bitcoin address');
   check(by.has(pfx + 'main/network-lock.js'), 'network kill switch is in the package');
   check(by.has(pfx + 'ui/vendor/mqtt.min.js'), 'mqtt is vendored (no CDN at runtime)');
 }

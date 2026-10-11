@@ -145,7 +145,7 @@ What changed from the packages in table 2:
     else's host could read messages before they are encrypted
   - a bug fixed: the node beacon never connected, because two calls to a
     function that had been removed threw before it started
-  - the Bitcoin address for supporting the network is the current one
+  - support goes to an $HNET wallet on Solana, replacing the Bitcoin address
 
 Once these are uploaded, delete table 2 and this paragraph.
 
