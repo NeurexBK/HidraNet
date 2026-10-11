@@ -92,7 +92,7 @@
     if(addr){
       var url='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
       inner='<div style="font-size:1.15em;font-weight:800;color:#00d4aa;margin-bottom:8px">🌐 Site published to the network!</div>'+
-        '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Share this secret address. Anyone who has it can open the site.quer pessoa, em quaopen the site from any network by typing it into the HidraNet address bar. The content travels encrypted.</div>'+
+        '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Share this secret address. Anyone who has it can open the site from any network by typing it into the HidraNet address bar. The content travels encrypted.</div>'+
         '<div style="display:flex;gap:8px;align-items:center;background:#0a0d16;border:1px solid #1c2133;border-radius:9px;padding:12px 14px;margin-bottom:14px"><code id="hnet-addr" style="flex:1;color:#00d4aa;word-break:break-all;font-size:.95em;font-family:monospace">'+addr+'</code><button id="hnet-copy" style="background:none;border:none;color:#9aa3bd;cursor:pointer;font-size:1.15em">⧉</button></div>'+
         '<div style="display:flex;gap:8px"><a href="'+url+'" target="_blank" style="flex:1;text-align:center;background:#00d4aa;color:#04120e;padding:11px;border-radius:9px;text-decoration:none;font-weight:700">Open the site</a><button id="hnet-close" style="background:#161a2b;color:#e9ecf5;border:1px solid #1c2133;padding:11px 20px;border-radius:9px;cursor:pointer">Close</button></div>'+
         '<div style="color:#5b6480;font-size:.75em;margin-top:13px;line-height:1.5">⚠️ Keep HidraNet open to keep the site online — it republishes itself every minute.</div>';

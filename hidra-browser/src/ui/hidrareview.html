@@ -1266,7 +1266,7 @@ function renderPayBox(b, verified) {
   box.innerHTML = '<div class="paybox">' +
     '<div class="payrow"><span>Confirmation badge</span><span>' +
     (state.btcPrice ? '≈ US$' + (b.sats / 1e8 * state.btcPrice).toFixed(2) : 'US$' + BADGE_USD) +
-    ' em Bitcoin</span></div>' +
+    ' in Bitcoin</span></div>' +
     '<div class="payrow"><span>Exact amount (identifies this business)</span>' +
     '<span class="mono">' + fmtSats(b.sats) + '</span></div>' +
     '<div class="payrow"><span>Wallet</span></div>' +

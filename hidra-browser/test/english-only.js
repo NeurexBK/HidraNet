@@ -43,7 +43,7 @@ const ACCENT = /[À-ÖØ-öø-ÿĀ-ſ]/;
 // Joining words English never uses. `do` and `com` are left out on purpose —
 // "do not" is English and ".com" is a hostname.
 const JOINERS =
-  /\b(?:da|dos|das|ao|aos|pelo|pela|uma|nas|nos|que|para|por|sem|mais|muito|todos|cada|isso|nao|seu|sua|este|esta|esse|essa|quando|onde|qual|quais|sobre|entre|ate)\b/i;
+  /\b(?:em|da|dos|das|ao|aos|pelo|pela|uma|nas|nos|que|para|por|sem|mais|muito|todos|cada|isso|nao|seu|sua|este|esta|esse|essa|quando|onde|qual|quais|sobre|entre|ate)\b/i;
 
 // An English noun joined to the next word by a Portuguese preposition, or the
 // other way round. This is what word-by-word translation leaves behind, and
