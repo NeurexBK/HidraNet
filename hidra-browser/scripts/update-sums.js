@@ -61,15 +61,17 @@ const facts = ROWS.map(([arch, label]) => {
 
 // ── Rewrite only the first table ──────────────────────────────────────────
 //
-// The file carries a second table for what is still on the release page, and
-// a long explanation between them. Only the lines above the second heading
-// may be touched, so the rewrite is bounded by it rather than by a line count.
+// Only the published table may be touched, not the signing notes after it, so
+// the rewrite is bounded by that section's heading rather than a line count.
+// It used to stop at a second table listing the September hashes; that table
+// was removed once those packages left the release page, because a stale
+// download would have matched it and read as genuine.
 
 let text = fs.readFileSync(SUMS, 'utf8');
-const marker = '2. CURRENTLY ON THE RELEASE PAGE';
+const marker = 'NONE OF THESE BUILDS ARE SIGNED OR NOTARISED';
 const cut = text.indexOf(marker);
 if (cut === -1) {
-  console.error('  cannot find the second table; refusing to guess where the first ends');
+  console.error('  cannot find the signing notes; refusing to guess where the table ends');
   process.exit(1);
 }
 let head = text.slice(0, cut);

@@ -6,10 +6,10 @@ Verify before running.
   macOS / Linux:   shasum -a 256 <file>
   Windows:         Get-FileHash .\<file> -Algorithm SHA256
 
-If the value does not match either table below, do not run the file.
+If the value does not match the table below, do not run the file.
 
 
-1. REFRESHED PACKAGES  —  not on the release page yet
+ON THE RELEASE PAGE NOW
 -----------------------------------------------------------------------
 
 82ccfe0561d730f072796a91f39750aad8c2913c4ac573623f3213c56729ff03  HidraNet-Browser-1.0.0-macOS-arm64.zip
@@ -28,7 +28,7 @@ cd541521abb1bc5903a9bef0eae3273511138efdd9de4d2f3569a03213603302  HidraNet-Brows
   Windows one carries a freshly compiled Rust engine, so a rebuild on
   another machine may differ there.
 
-What changed from the packages in table 2:
+What changed from the first packages, published in September:
 
   SECURITY — these are the reason to replace the published packages, not
   the cosmetics further down:
@@ -146,26 +146,6 @@ What changed from the packages in table 2:
   - a bug fixed: the node beacon never connected, because two calls to a
     function that had been removed threw before it started
   - support goes to an $HNET wallet on Solana, replacing the Bitcoin address
-
-Once these are uploaded, delete table 2 and this paragraph.
-
-
-2. CURRENTLY ON THE RELEASE PAGE
------------------------------------------------------------------------
-
-419973157750ecdc983edb41a97752735e26b20f2fab332815114290c4b512e8  HidraNet-Browser-1.0.0-macOS-arm64.zip
-afc755836eddc7604b84775530133ca783910e08a2fd5f0704621a80bfed3e43  HidraNet-Browser-1.0.0-macOS-x64.zip
-21bc8b4c2b7a00821afa2a73ab74b12d891a2737131233f594749b4a2ddbceb2  HidraNet-Browser-1.0.0-Linux-x64.zip
-79fcdd6eba376e4bcca19cdfe9023cbc318d0e7e8fd1871a01c5adeb26daa5d0  HidraNet-Browser-1.0.0-Windows-x64.zip
-
-  macOS arm64    108,280,222 bytes  (103.3 MiB)
-  macOS x64      112,710,702 bytes  (107.5 MiB)
-  Linux x64      112,635,456 bytes  (107.4 MiB)
-  Windows x64    126,928,181 bytes  (121.0 MiB)
-
-Taken from the GitHub release asset digests:
-https://github.com/NeurexBK/HidraNet/releases/tag/v1.0.0
-
 
 -----------------------------------------------------------------------
 
