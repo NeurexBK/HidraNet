@@ -75,7 +75,8 @@ journalctl -u hidravpn-node -f
 ## The client
 
 ```
-hidravpn keygen            # once; prints the public key to give the node's administrator
+hidravpn keygen            # once; the master key
+hidravpn pubkey --node <the node's public key>   # the key to give that node's administrator (phase 3)
 sudo hidravpn up invite.json      # Linux
 hidravpn up invite.json           # Windows: in a PowerShell opened "as Administrator"
 ```

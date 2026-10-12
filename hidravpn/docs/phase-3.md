@@ -15,13 +15,71 @@ Everything is still in `hidravpn/`, and nothing outside the VPN is touched.
 
 ```
 crates/hidravpn-core/src/circuit.rs   one hop or two: the spec, the bring-up order, the teardown
-crates/hidravpn-service/src/daemon.rs  holds a circuit and the pool of exits; new_identity
-crates/hidravpn-service/src/ipc.rs     Up gains via + alternates; NewIdentity; status gains mode, hops, entry
+crates/hidravpn-core/src/keys.rs      one master key; a different key derived for each node
+crates/hidravpn-core/src/pocket.rs    the pocket: entries and exits to pick from, at random
+crates/hidravpn-service/src/daemon.rs  holds a circuit and the pools of entries and exits; new_identity
+crates/hidravpn-service/src/ipc.rs     Up gains via + alternates; NewIdentity; status gains mode, hops, each hop's handshake
 scripts/test-multihop-netns.sh         five namespaces, three nodes, the whole thing end to end
 ```
 
-The nodes do not change. Any phase-1 node is an entry or an exit; which one it
-is depends only on how the client uses it.
+The nodes gain one command, `hidravpn-node pubkey`, and nothing else. Any
+phase-1 node is an entry or an exit; which one it is depends only on how the
+client uses it.
+
+## A different key for every node
+
+The client keeps one secret, `client.key`, exactly as before: 32 bytes, base64,
+same file. But no node is ever shown its public half. For each node the client
+derives a key of its own:
+
+```
+node_key = HKDF-SHA256(ikm  = the 32 bytes of the master key,
+                       salt = "HidraVPN per-node key v1",
+                       info = the 32 raw bytes of the node's WireGuard public key)
+```
+
+The 32 bytes out are an X25519 secret (clamped as the library does for any
+key). The derivation is deterministic, so there is nothing new to store, and
+the same node always gets the same key, so it is admitted once. Two nodes get
+keys with nothing in common: an entry and an exit whose operators compared
+their peer lists would find no key shared between them. The entry and the
+exit of a circuit, and the one node of Rápido, are each shown their own key;
+so is a node reached with `--direct`.
+
+What the administrator admits is therefore the key *for that node*:
+
+```
+hidravpn-node pubkey                       # on the node: its public key, to share
+hidravpn pubkey --node <that key>          # on the client: the key this node is shown
+hidravpn pubkey --node-from-invite x.json  # the same, read from an invite of that node
+hidravpn-node admit --name laptop --pubkey <what the client printed>
+```
+
+`hidravpn keygen` makes the master key if there is none and says this. A
+client admitted before this change was admitted with its master key, which it
+no longer presents: it needs admitting **once more**, with the per-node key,
+on every node it uses. The key file itself does not change.
+
+## The pocket
+
+Instead of being handed one invite at a time, the client can keep the nodes
+it holds invites for in a pocket, `/etc/hidravpn/circuit.json` on Linux and
+`%ProgramData%\HidraVPN\circuit.json` on Windows:
+
+```
+hidravpn nodes add --entry entry.json      # an entry node
+hidravpn nodes add --exit exit.json        # an exit node
+hidravpn nodes list                        # names and endpoints, never keys
+hidravpn nodes remove <name>
+hidravpn up --privado                      # an entry and an exit from the pocket, at random
+hidravpn up --rapido                       # an exit from the pocket, at random
+```
+
+The choice is uniform, from the operating system's randomness, among pairs
+of two different nodes; a node that is in the pocket as both an entry and an
+exit is never paired with itself. `up` hands the service the nodes it did not
+pick, so that `new-identity` can rotate to them. `nodes` and `up` need
+administrator rights.
 
 ## Two tunnels, one inside the other
 
@@ -57,31 +115,53 @@ nodes, they do.
 ## New identity
 
 `hidravpn new-identity` takes the circuit down completely — the exit's
-session, the routes, the kill switch — and builds it again through the next
-exit the service holds an invite for, through the same entry. The address the
-internet sees changes because the exit did. With only one exit configured it
-reconnects to the same one and **says so**: the reply carries a note, and the
-command prints it. It never claims a new address it did not get.
+session, the routes, the kill switch — and builds it again through a
+**different** exit, chosen at random among the others the service holds, and
+through a different entry too when it holds more than one. The address the
+internet sees changes because the exit did. With only one exit it reconnects
+to the same one and **says so**; with only one entry it says the entry stays.
+The reply carries the note, and the command prints it. It never claims a new
+address it did not get.
+
+## What `status` says
+
+One line per connection, as before, then one honest line for the mode and one
+per hop with the age of its last handshake:
+
+```
+connected: privado, 2 hops: entry entry-node then exit exit-node (10.202.0.1:51820); kill switch on; ...
+  privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic
+  entry entry-node (10.200.0.1:51820): last handshake 3s ago
+  exit exit-node (10.202.0.1:51820): last handshake 2s ago
+```
+
+For one hop the line is: *rapido: the node sees your address and your
+traffic; it hides them from your network, not from the node*. The word is
+"strong privacy"; the word "anonymous" appears nowhere, and the test checks
+that.
 
 ## Command lines
 
 ```
 hidravpn up exit.json                                   # Rápido: one hop
 hidravpn up exit.json --via entry.json                  # Privado: two hops
-hidravpn up exit.json --via entry.json --alternate other-exit.json   # ... with an exit to rotate to
-hidravpn new-identity                                   # next exit; needs the service
-hidravpn status                                         # mode, hops, nodes, kill switch
+hidravpn up exit.json --via entry.json --alternate other-exit.json --alternate-entry other-entry.json
+hidravpn up --privado | --rapido                        # the same, picked from the pocket
+hidravpn new-identity                                   # another exit (and entry); needs the service
+hidravpn status                                         # mode and what it hides, hops and handshakes, kill switch
 hidravpn down
 ```
 
-`hidravpn-service up|new-identity|status|down` take the same arguments.
-`--direct` holds a two-hop circuit in the current process as it held one hop
-before; `--alternate` is for the service's `new-identity` and does nothing
-there. `hidravpn-service firewall on --extra-interface hvpn1` arms the kill
-switch for two interfaces by hand, for diagnosis.
+`hidravpn-service up|new-identity|status|down` take the same arguments
+(except `--privado`/`--rapido`: the pocket is the client's). `--direct` holds
+a two-hop circuit in the current process as it held one hop before; the
+alternates are for the service's `new-identity` and do nothing there.
+`hidravpn-service firewall on --extra-interface hvpn1` arms the kill switch
+for two interfaces by hand, for diagnosis.
 
-Requests from the phase-2 client still work: `via` and `alternates` are
-optional on the wire, and a status report without the new fields still reads.
+Requests from the phase-2 client still work: `via`, `alternates` and
+`alternate_entries` are optional on the wire, and a status report without
+the new fields still reads.
 
 ## How to check it
 
@@ -99,8 +179,11 @@ The daemon runs in the client namespace; the three nodes run on the one host
 (`HIDRAVPN_RUN_DIR` and a different interface name each) and, on purpose, all
 three hand the client the same tunnel subnet.
 
-It proves, in 50 checks:
+It proves, in 73 checks:
 
+- the three nodes are shown three different keys, none of them the master
+  key: the entry's and the exit's `peers.json` hold different client keys
+  and neither holds the master key's public half;
 - the internet host sees the **exit's** address, never the entry's;
 - the entry **never forwarded plaintext**: an observation table in its
   namespace (counters only) sees 0 TCP packets, 0 HTTP and 0 DNS leave its
@@ -111,16 +194,23 @@ It proves, in 50 checks:
   allows off-tunnel, both interfaces are allowed, and a plain request to a
   host on the physical link is blocked;
 - `status` says privado, 2 hops, and names both nodes;
+- `status` explains the mode honestly and shows each hop's handshake age,
+  and nowhere says "anonymous";
 - `new-identity` with a second exit changes the address the internet sees,
   moves the via route, and keeps the kill switch armed throughout; with no
   alternate it reconnects and the note says so;
+- the pocket: `nodes add` one entry and two exits, `nodes list` names them
+  without a key, a duplicate is refused, `up --privado` picks from it, a
+  `new-identity` moves to the other exit and the address the internet sees
+  changes, `nodes remove` takes one out, `up --rapido` picks the one left;
 - `down` removes both interfaces, every route, restores `resolv.conf`, leaves
   no plan behind, and the physical link works again;
 - the same circuit held directly, without the service, connects and restores;
 - no node or service log names a client address or a name looked up.
 
-Then the existing suites still pass unchanged: unit tests, `test-netns.sh`
-(one hop, 23), `test-killswitch.sh` (12) and `test-service-netns.sh` (19).
+Then the existing suites still pass: unit tests, `test-netns.sh` (one hop,
+24: it now also checks the per-node key), `test-killswitch.sh` (12) and
+`test-service-netns.sh` (19).
 
 ## What is honest about this phase
 
@@ -134,10 +224,16 @@ Then the existing suites still pass unchanged: unit tests, `test-netns.sh`
 - A new identity changes the exit only if another exit is available, and the
   command says which it got. It is a full rebuild, so the connection drops
   for a second while it happens.
-- Both hops use the client's one key, admitted on each node; the entry and
-  the exit can see it is the same key. Phase 5's passes give every
-  connection a fresh key.
-- The second exit is still chosen by the person, invite by invite; a
-  directory of nodes to pick from is later work.
+- Each node is shown a different key, derived from the one secret the client
+  keeps; the entry and the exit have no key in common to compare. What two
+  nodes that conspired could still do is correlate times and volumes — the
+  residue of any two-hop system, which this phase does not remove. Phase 5's
+  passes give every connection a fresh key on top.
+- A client admitted before per-node keys was admitted with its master key,
+  which it no longer presents. It needs admitting once more, with
+  `hidravpn pubkey --node ...`, on every node it uses.
+- The pocket holds only nodes the person added, invite by invite; a
+  directory of nodes to pick from is later work. `nodes list` prints names
+  and endpoints, never keys.
 - Nothing logs an address, a name looked up or a byte of traffic — on either
   hop.

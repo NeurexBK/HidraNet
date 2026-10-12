@@ -5,8 +5,9 @@
 //!   hidravpn-service start|stop          start / stop the OS service
 //!   hidravpn-service status              ask the running service how things stand
 //!   hidravpn-service up <exit.json> [--via entry.json] [--alternate other.json]...
+//!                                        [--alternate-entry other-entry.json]...
 //!                                        connect through the running service
-//!   hidravpn-service new-identity        rebuild the circuit through the next exit
+//!   hidravpn-service new-identity        rebuild the circuit through another exit
 //!   hidravpn-service down                disconnect
 //!   hidravpn-service firewall on|off     the kill switch on its own (diagnostics)
 //!
@@ -60,13 +61,18 @@ enum Cmd {
         /// May be given more than once.
         #[arg(long = "alternate")]
         alternates: Vec<PathBuf>,
+        /// Another entry node's invite that `new-identity` may rotate to.
+        /// May be given more than once; needs --via.
+        #[arg(long = "alternate-entry", requires = "via")]
+        alternate_entries: Vec<PathBuf>,
         #[arg(long)]
         allow_lan: bool,
         #[arg(long)]
         keep_ipv6: bool,
     },
-    /// Rebuild the circuit through the next exit node given with --alternate,
-    /// so the address the internet sees changes.
+    /// Rebuild the circuit through another exit node given with --alternate
+    /// (and another entry given with --alternate-entry), so the address the
+    /// internet sees changes.
     NewIdentity,
     /// Disconnect.
     Down,
@@ -144,6 +150,7 @@ fn main() -> Result<()> {
                             s.rx_bytes,
                             s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
                         );
+                        print_detail(&s);
                     } else if s.hops > 0 {
                         println!(
                             "connecting: {}, {} hop{}, no session with every node yet; kill switch {}",
@@ -152,6 +159,7 @@ fn main() -> Result<()> {
                             if s.hops == 1 { "" } else { "s" },
                             if s.killswitch { "on" } else { "OFF" }
                         );
+                        print_detail(&s);
                     } else {
                         println!(
                             "not connected; kill switch {}",
@@ -167,6 +175,7 @@ fn main() -> Result<()> {
             invite,
             via,
             alternates,
+            alternate_entries,
             allow_lan,
             keep_ipv6,
         } => client(async move {
@@ -176,12 +185,17 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|p| read_invite(p))
                 .collect::<Result<Vec<_>>>()?;
+            let alternate_entries = alternate_entries
+                .iter()
+                .map(|p| read_invite(p))
+                .collect::<Result<Vec<_>>>()?;
             let resp = ipc::call(ipc::Command::Up {
                 invite: inv,
                 allow_lan,
                 keep_ipv6,
                 via,
                 alternates,
+                alternate_entries,
             })
             .await?;
             if resp.ok {
@@ -246,6 +260,17 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// After the status line: what the mode hides and what it does not, and
+/// each hop's handshake age.
+fn print_detail(s: &ipc::StatusReport) {
+    if let Some(line) = s.explanation() {
+        println!("  {line}");
+    }
+    for line in s.hop_lines() {
+        println!("  {line}");
     }
 }
 

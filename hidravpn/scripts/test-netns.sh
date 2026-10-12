@@ -64,8 +64,14 @@ grep -q "DNS forwarder ready" "$WORK/node.log" && pass "node up: $(grep -o 'tunn
 $N nft list table inet hidravpn >/dev/null 2>&1 && pass "NAT table present in the node" || fail "no NAT table"
 
 # ── Client key, admission, invite ────────────────────────────────────────────
-PUB=$($C "$BIN/hidravpn" --key "$WORK/client.key" keygen 2>/dev/null)
-[ ${#PUB} -eq 44 ] && pass "client key generated" || fail "client keygen: $PUB"
+# The node admits the key derived for it, not the master key: the master key's
+# public half reaches no node.
+NODE_PUB=$(grep -o 'node public key: .*' "$WORK/init.log" | cut -d' ' -f4)
+$C "$BIN/hidravpn" --key "$WORK/client.key" keygen >/dev/null 2>&1
+MASTER=$($C "$BIN/hidravpn" --key "$WORK/client.key" pubkey 2>/dev/null)
+PUB=$($C "$BIN/hidravpn" --key "$WORK/client.key" pubkey --node "$NODE_PUB" 2>/dev/null)
+[ ${#MASTER} -eq 44 ] && [ ${#PUB} -eq 44 ] && pass "client key generated; the key for this node derived from it" || fail "client keygen: master '$MASTER' per-node '$PUB'"
+[ "$PUB" != "$MASTER" ] && [ "$PUB" = "$($C "$BIN/hidravpn" --key "$WORK/client.key" pubkey --node "$NODE_PUB" 2>/dev/null)" ] && pass "the per-node key is not the master key, and derives the same twice" || fail "per-node key derivation"
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" admit --name laptop --pubkey "$PUB" > "$WORK/invite.json" 2> "$WORK/admit.log"
 grep -q '"client_address": "10.77.0.2/16"' "$WORK/invite.json" && pass "client admitted with 10.77.0.2 (invite: $(tr -d '\n ' < "$WORK/invite.json" | cut -c1-70)...)" || { cat "$WORK/invite.json" "$WORK/admit.log"; fail "admit"; }
 

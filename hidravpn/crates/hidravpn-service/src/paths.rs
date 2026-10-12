@@ -1,6 +1,7 @@
 //! Where the service keeps its control socket, its control token and the
 //! client key. On Linux the socket and token live in /run (RAM), so a reboot
-//! starts clean; the key lives in /etc, written once by `hidravpn keygen`.
+//! starts clean; the key lives in /etc, written once by `hidravpn keygen`,
+//! and the pocket of nodes next to it.
 
 use std::path::PathBuf;
 
@@ -29,6 +30,19 @@ pub fn control_token() -> PathBuf {
     #[cfg(windows)]
     {
         program_data().join("control.token")
+    }
+}
+
+/// The pocket: the entry and exit nodes this machine holds invites for,
+/// managed by `hidravpn nodes`. Next to the key; written by the administrator.
+pub fn circuit_pocket() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/etc/hidravpn/circuit.json")
+    }
+    #[cfg(windows)]
+    {
+        program_data().join("circuit.json")
     }
 }
 

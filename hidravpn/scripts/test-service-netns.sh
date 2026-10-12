@@ -63,8 +63,13 @@ grep -q "DNS forwarder ready" "$WORK/node.log" && pass "node up" || { cat "$WORK
 
 # ── Client key at the service's fixed path, admission, invite ───────────────
 mkdir -p /etc/hidravpn
-PUB=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key keygen 2>/dev/null)
-[ ${#PUB} -eq 44 ] && pass "client key generated at the service path" || fail "keygen: $PUB"
+# The node admits the key derived for it (hidravpn pubkey --node), never the
+# master key.
+NODE_PUB=$(grep -o 'node public key: .*' "$WORK/init.log" | cut -d' ' -f4)
+$C "$BIN/hidravpn" --key /etc/hidravpn/client.key keygen >/dev/null 2>&1
+MASTER=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey 2>/dev/null)
+PUB=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB" 2>/dev/null)
+[ ${#PUB} -eq 44 ] && [ "$PUB" != "$MASTER" ] && pass "client key generated at the service path; the key for this node derived from it" || fail "keygen: master '$MASTER' per-node '$PUB'"
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" admit --name laptop --pubkey "$PUB" > "$WORK/invite.json" 2>/dev/null
 grep -q '"client_address": "10.77.0.2/16"' "$WORK/invite.json" && pass "client admitted" || { cat "$WORK/invite.json"; fail "admit"; }
 

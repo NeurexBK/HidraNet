@@ -35,10 +35,12 @@ Install
 2. Open PowerShell "as Administrator" in that folder and run:
 
      .\hidravpn-service.exe install     # registers and starts the service
-     .\hidravpn.exe keygen              # once; prints this machine's public key
+     .\hidravpn.exe keygen              # once; this machine's master key
 
-3. Give the public key to the node's administrator, who admits it and sends
-   you an invite file (invite.json).
+3. Every node is shown a different key derived from the master key. Ask the
+   node's administrator for the node's public key (hidravpn-node pubkey), run
+   .\hidravpn.exe pubkey --node <that key>, and send the administrator what
+   it prints; they admit it and send you an invite file (invite.json).
 
 Use
 ---

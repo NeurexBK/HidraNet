@@ -245,9 +245,14 @@ if (-not (Test-Path $KeyPath)) {
 } else {
   Log "key already at $KeyPath"
 }
-$Pub = Run-Native $ExePath @('pubkey')
-if ($LASTEXITCODE -ne 0 -or $Pub -notmatch '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$') { Fail-Now "could not read the public key ($Pub)" }
-Log "public key $Pub"
+# Every node is shown a different key, derived from the master key for that
+# node (phase 3). The node's own public key comes first, over ssh; it needs a
+# hidravpn-node from this branch (`hidravpn-node pubkey`).
+$NodePub = ((& ssh.exe -o ConnectTimeout=20 "$SshUser@$Server" '/usr/local/bin/hidravpn-node pubkey') | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $NodePub -notmatch '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$') { Fail-Now "could not read the node's public key over ssh (the node needs hidravpn-node from this branch): $NodePub" }
+$Pub = Run-Native $ExePath @('pubkey', '--node', $NodePub)
+if ($LASTEXITCODE -ne 0 -or $Pub -notmatch '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$') { Fail-Now "could not derive the key for this node ($Pub)" }
+Log "key for this node $Pub (the master key's public half is never shown to a node)"
 
 # ------------------------------------------------------------------ admit ----
 $Name = $Name -replace '[^A-Za-z0-9_-]', '-'

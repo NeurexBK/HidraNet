@@ -44,11 +44,10 @@ echo ">> installing and starting the service"
 
 install -d -m 0755 /etc/hidravpn
 if [ -f /etc/hidravpn/client.key ]; then
-  PUB="$("$PREFIX/hidravpn" pubkey)"
   echo ">> keeping the existing key at /etc/hidravpn/client.key"
 else
-  PUB="$("$PREFIX/hidravpn" keygen)"
-  echo ">> new key written to /etc/hidravpn/client.key (the secret stays there)"
+  "$PREFIX/hidravpn" keygen >/dev/null 2>&1
+  echo ">> new master key written to /etc/hidravpn/client.key (the secret stays there)"
 fi
 
 cat <<EOF
@@ -56,13 +55,12 @@ cat <<EOF
 ────────────────────────────────────────────────────────────────────────
 HidraVPN is installed and the service is running.
 
-This machine's public key — give it to the node's administrator:
+Every node is shown a different key, derived from this machine's one master
+key. To be admitted on a node:
 
-  $PUB
-
-On the node, the administrator runs:
-
-  hidravpn-node admit --name <a-name> --pubkey '$PUB'
+  1. the node's administrator runs   hidravpn-node pubkey   and sends you the key
+  2. you run                         hidravpn pubkey --node <that key>
+  3. the administrator runs          hidravpn-node admit --name <a-name> --pubkey '<what step 2 printed>'
 
 Save the invite it prints as invite.json on this machine, then:
 

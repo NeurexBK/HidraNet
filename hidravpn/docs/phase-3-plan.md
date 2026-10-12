@@ -51,7 +51,9 @@ Consequences worth keeping in mind:
   machine: `HIDRAVPN_RUN_DIR` for the leases, and a different `interface` in
   the second node's `node.toml` so the two userspace control sockets differ.
 - **Both hops use the client's one key** (it is admitted on both nodes). In
-  phase 5 passes give every connection a fresh key.
+  phase 5 passes give every connection a fresh key. *Superseded after the
+  phase shipped: each node is now shown a key derived for it from the one
+  master key; `phase-3.md` has the derivation.*
 - **Inner MTU** = min(exit's MTU, entry's MTU − 80), never below 1280. The 80
   covers WireGuard's 32 bytes plus the outer UDP/IP headers, with margin.
 - Core pieces already there: `netcfg::Wanted::via_tunnel`,

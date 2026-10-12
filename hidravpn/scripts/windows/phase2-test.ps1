@@ -198,8 +198,12 @@ try {
     Copy-Item $Dll (Join-Path (Split-Path $CliExe) 'wintun.dll') -Force -ErrorAction SilentlyContinue
 
     # client key + admission
-    if (-not (Test-Path (Join-Path $env:ProgramData 'HidraVPN\client.key'))) { & $CliExe keygen | Out-Null }
-    $pub = (& $CliExe pubkey 2>&1 | Out-String).Trim()
+    if (-not (Test-Path (Join-Path $env:ProgramData 'HidraVPN\client.key'))) { & $CliExe keygen 2>&1 | Out-Null }
+    # The node is shown a key derived for it from the master key (phase 3):
+    # its public key first, over ssh (needs hidravpn-node from this branch).
+    $nodePub = ((& ssh.exe -o ConnectTimeout=20 "$SshUser@$Server" '/usr/local/bin/hidravpn-node pubkey') | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nodePub -notmatch '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$') { Stop-Now "could not read the node's public key over ssh (the node needs hidravpn-node from this branch): $nodePub" }
+    $pub = (& $CliExe pubkey --node $nodePub 2>$null | Out-String).Trim()
     $Name = ($Name -replace '[^A-Za-z0-9_-]', '-'); if (-not $Name) { $Name = 'windows' }
     $inviteText = ((& ssh.exe -o ConnectTimeout=20 "$SshUser@$Server" "/usr/local/bin/hidravpn-node admit --name '$Name' --pubkey '$pub'") | Out-String).Trim()
     $invite = $null; try { $invite = $inviteText | ConvertFrom-Json } catch {}

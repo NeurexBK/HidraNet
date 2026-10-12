@@ -2,6 +2,8 @@
 //!
 //!   hidravpn-node init --endpoint IP:PORT --name NAME   write /etc/hidravpn/node.toml with a new key
 //!   hidravpn-node run                                   bring the tunnel up and serve until stopped
+//!   hidravpn-node pubkey                                print this node's public key, for a
+//!                                                       client to derive the key it will present
 //!   hidravpn-node admit --name NAME --pubkey KEY        let a client in; prints its invite
 //!   hidravpn-node revoke --pubkey KEY                   throw a client out
 //!   hidravpn-node status                                peers, handshakes, bytes — never addresses
@@ -80,6 +82,10 @@ mod node {
         },
         /// Bring the tunnel up and serve until SIGTERM or Ctrl+C.
         Run,
+        /// Print this node's public key. A client derives, from this, the
+        /// key it presents here (`hidravpn pubkey --node KEY`); that is the
+        /// key to admit.
+        Pubkey,
         /// Admit a client's public key; prints the invite to give it.
         Admit {
             #[arg(long)]
@@ -155,6 +161,10 @@ mod node {
                 require_root()?;
                 let cfg = NodeConfig::load(&cli.config)?;
                 run(cfg).await?;
+            }
+            Cmd::Pubkey => {
+                let cfg = NodeConfig::load(&cli.config)?;
+                println!("{}", cfg.public_key()?);
             }
             Cmd::Admit { name, pubkey } => {
                 require_root()?;

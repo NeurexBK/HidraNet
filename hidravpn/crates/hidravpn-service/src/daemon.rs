@@ -5,8 +5,9 @@
 //! the kill switch cannot be armed, the connection is refused and undone — the
 //! service never routes the machine through a tunnel it cannot protect.
 //!
-//! It keeps what it needs to rebuild: the entry node, the pool of exit nodes
-//! and which one is in use, so `new_identity` can rotate to the next exit.
+//! It keeps what it needs to rebuild: the pool of entry nodes and the pool of
+//! exit nodes it was given, and which of each is in use, so `new_identity`
+//! can rotate to another exit — and another entry, when it has more than one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,16 +15,18 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
-use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite};
+use hidravpn_core::{random, Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Role};
 use tokio::sync::Mutex;
 
-use crate::ipc::{Command, Request, Response, StatusReport};
+use crate::ipc::{Command, HopReport, Request, Response, StatusReport};
 use crate::paths;
 
 struct Active {
     circuit: Circuit,
-    /// The entry node, when there are two hops.
-    entry: Option<Invite>,
+    /// The entry nodes, when there are two hops; `current_entry` is the one
+    /// in use. Empty for one hop.
+    entries: Vec<Invite>,
+    current_entry: usize,
     /// The exit nodes, in the order given; `current` is the one in use.
     pool: Vec<Invite>,
     current: usize,
@@ -57,13 +60,17 @@ impl Daemon {
                 keep_ipv6,
                 via,
                 alternates,
+                alternate_entries,
             } => {
                 let opts = CircuitOptions {
                     route_ipv6: !keep_ipv6,
                     allow_lan,
                     ..CircuitOptions::default()
                 };
-                match self.up(invite, via, alternates, opts).await {
+                match self
+                    .up(invite, via, alternates, alternate_entries, opts)
+                    .await
+                {
                     Ok(()) => self.status().await,
                     Err(e) => Response::err(format!("{e:#}")),
                 }
@@ -84,18 +91,34 @@ impl Daemon {
         exit: Invite,
         entry: Option<Invite>,
         alternates: Vec<Invite>,
+        alternate_entries: Vec<Invite>,
         opts: CircuitOptions,
     ) -> Result<()> {
-        // Everything is checked before anything is touched.
+        // Everything is checked before anything is touched: every exit with
+        // every entry, since any pair may be built later.
         let mut pool = Vec::with_capacity(1 + alternates.len());
         pool.push(exit);
         pool.extend(alternates);
+        let mut entries = Vec::new();
+        if let Some(e) = entry {
+            entries.push(e);
+            entries.extend(alternate_entries);
+        }
         for exit in &pool {
-            CircuitSpec {
-                exit: exit.clone(),
-                entry: entry.clone(),
+            if entries.is_empty() {
+                CircuitSpec {
+                    exit: exit.clone(),
+                    entry: None,
+                }
+                .validate()?;
             }
-            .validate()?;
+            for entry in &entries {
+                CircuitSpec {
+                    exit: exit.clone(),
+                    entry: Some(entry.clone()),
+                }
+                .validate()?;
+            }
         }
 
         let mut guard = self.state.lock().await;
@@ -103,10 +126,11 @@ impl Daemon {
             // Replace an existing connection cleanly.
             let _ = old.circuit.down().await;
         }
-        let circuit = connect(&pool[0], entry.as_ref(), &opts).await?;
+        let circuit = connect(&pool[0], entries.first(), &opts).await?;
         *guard = Some(Active {
             circuit,
-            entry,
+            entries,
+            current_entry: 0,
             pool,
             current: 0,
             opts,
@@ -115,8 +139,10 @@ impl Daemon {
         Ok(())
     }
 
-    /// Rebuilds the circuit through the next exit in the pool. Returns the
-    /// note for the person: which exit it got, or that there was only one.
+    /// Rebuilds the circuit through another exit of the pool, chosen at
+    /// random among the others, and through another entry when there is
+    /// more than one. Returns the note for the person: which nodes it got,
+    /// or that there was no other to choose.
     async fn new_identity(&self) -> Result<String> {
         let mut guard = self.state.lock().await;
         let active = guard
@@ -124,35 +150,51 @@ impl Daemon {
             .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
         let Active {
             circuit,
-            entry,
+            entries,
+            current_entry,
             pool,
             current,
             opts,
         } = active;
-        let next = (current + 1) % pool.len();
+        let next = random::index_other_than(pool.len(), current)?.unwrap_or(current);
+        let next_entry =
+            random::index_other_than(entries.len(), current_entry)?.unwrap_or(current_entry);
 
         // The old circuit goes down completely before the new one comes up:
         // the exit's session, its routes and the kill switch all belong to
         // the old identity.
         let _ = circuit.down().await;
-        match connect(&pool[next], entry.as_ref(), &opts).await {
+        match connect(&pool[next], entries.get(next_entry), &opts).await {
             Ok(circuit) => {
-                *guard = Some(Active {
-                    circuit,
-                    entry,
-                    pool: pool.clone(),
-                    current: next,
-                    opts,
-                });
-                tracing::info!("new identity");
-                Ok(if pool.len() == 1 {
+                let exit_note = if pool.len() == 1 {
                     "only one exit node is configured; reconnected to the same one, so the address the internet sees has not changed".to_string()
                 } else {
                     format!(
                         "new identity: the exit is now {} (was {})",
                         pool[next].node_name, pool[current].node_name
                     )
-                })
+                };
+                let entry_note = match entries.len() {
+                    0 => String::new(),
+                    1 => format!(
+                        "; the entry stays {} (only one entry node is configured)",
+                        entries[0].node_name
+                    ),
+                    _ => format!(
+                        "; the entry is now {} (was {})",
+                        entries[next_entry].node_name, entries[current_entry].node_name
+                    ),
+                };
+                *guard = Some(Active {
+                    circuit,
+                    entries,
+                    current_entry: next_entry,
+                    pool,
+                    current: next,
+                    opts,
+                });
+                tracing::info!("new identity");
+                Ok(format!("{exit_note}{entry_note}"))
             }
             Err(e) => {
                 // The machine is back on its own network, with nothing left
@@ -199,6 +241,7 @@ impl Daemon {
                 hops: 0,
                 mode: String::new(),
                 entry_name: None,
+                hops_detail: Vec::new(),
             }),
             Some(a) => {
                 let s = a.circuit.status();
@@ -216,6 +259,21 @@ impl Daemon {
                     hops: a.circuit.hops(),
                     mode: s.mode.as_str().to_string(),
                     entry_name: s.entry().map(|h| h.node_name.clone()),
+                    hops_detail: s
+                        .hops
+                        .iter()
+                        .map(|h| HopReport {
+                            role: match h.role {
+                                Role::Entry => "entry",
+                                Role::Exit => "exit",
+                            }
+                            .to_string(),
+                            node_name: h.node_name.clone(),
+                            endpoint: h.endpoint.clone(),
+                            last_handshake_secs: h.tunnel.last_handshake.map(|d| d.as_secs()),
+                            connected: h.tunnel.connected,
+                        })
+                        .collect(),
                 })
             }
         }

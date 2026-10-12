@@ -1,28 +1,39 @@
 //! HidraVPN client, command line: the whole machine, one hop or two.
 //!
-//!   hidravpn keygen                 make this machine's key, print the public half
-//!   hidravpn up <exit.json>         connect, one hop (Rápido)
+//!   hidravpn keygen                 make this machine's master key (once)
+//!   hidravpn pubkey --node KEY      the key this machine presents to that node —
+//!                                   the one its administrator admits
+//!   hidravpn nodes add --entry e.json | --exit x.json
+//!   hidravpn nodes list | remove NAME
+//!                                   the pocket: nodes to pick from
+//!   hidravpn up --privado           two hops from the pocket (an entry and an exit)
+//!   hidravpn up --rapido            one hop from the pocket
+//!   hidravpn up <exit.json>         connect, one hop (Rápido), this exit
 //!   hidravpn up <exit.json> --via <entry.json>
 //!                                   connect, two hops (Privado): the entry sees who,
 //!                                   the exit sees where, neither sees both
-//!   hidravpn up ... --alternate <other-exit.json>
-//!                                   more exits for `new-identity` to rotate to
-//!   hidravpn new-identity           rebuild the circuit through the next exit
-//!   hidravpn status                 mode, hops, nodes, kill switch
+//!   hidravpn up ... --alternate <other-exit.json> --alternate-entry <other-entry.json>
+//!                                   more nodes for `new-identity` to rotate to
+//!   hidravpn new-identity           rebuild the circuit through another exit (and
+//!                                   another entry when there is one)
+//!   hidravpn status                 mode, what it hides, hops, handshakes, kill switch
 //!   hidravpn down                   disconnect, or restore the network after a crash
 //!
-//! `up` and `down` need administrator rights (a TUN interface, routes, DNS).
-//! Nothing here records where the traffic went.
+//! Every node is shown a different key, derived from the one master key for
+//! that node; the master key's public half reaches no node. `up`, `down` and
+//! `nodes` need administrator rights. Nothing here records where the traffic
+//! went.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
-use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite};
+use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Pocket, Slot};
 use hidravpn_service::ipc::{self, Command, StatusReport};
+use hidravpn_service::paths;
 
 #[derive(Parser)]
 #[command(
@@ -31,9 +42,12 @@ use hidravpn_service::ipc::{self, Command, StatusReport};
     about = "HidraVPN client: one hop (Rápido) or two (Privado)"
 )]
 struct Cli {
-    /// Where this machine's key is kept.
+    /// Where this machine's master key is kept.
     #[arg(long, global = true)]
     key: Option<PathBuf>,
+    /// Where the pocket of nodes is kept.
+    #[arg(long, global = true)]
+    pocket: Option<PathBuf>,
     /// Make the change in this process instead of asking the background
     /// service, even if the service is running (phase-1 behaviour).
     #[arg(long, global = true)]
@@ -44,14 +58,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create this machine's key (if there is none) and print its public half.
+    /// Create this machine's master key, if there is none. No node is ever
+    /// shown it: the key to give a node comes from `pubkey --node`.
     Keygen,
-    /// Print this machine's public key.
-    Pubkey,
+    /// Print the key this machine presents to one node, derived from the
+    /// master key and that node's public key. That is the key the node's
+    /// administrator admits. Without --node, the master key's public half
+    /// (which no node admits).
+    Pubkey {
+        /// The node's public key, as `hidravpn-node pubkey` prints it.
+        #[arg(long, conflicts_with = "node_from_invite")]
+        node: Option<String>,
+        /// Read the node's public key from one of its invites.
+        #[arg(long)]
+        node_from_invite: Option<PathBuf>,
+    },
+    /// The pocket: the entry and exit nodes `up --privado`, `up --rapido`
+    /// and `new-identity` pick from.
+    Nodes {
+        #[command(subcommand)]
+        what: Nodes,
+    },
     /// Connect and route the whole machine through the circuit.
     Up {
         /// The exit node's invite: the node that reaches the internet.
-        invite: PathBuf,
+        #[arg(required_unless_present_any = ["privado", "rapido"])]
+        invite: Option<PathBuf>,
         /// An entry node's invite: two hops (Privado). The entry sees this
         /// machine's address but not where the traffic goes; the exit sees
         /// the traffic but gets it from the entry.
@@ -61,6 +93,17 @@ enum Cmd {
         /// given more than once. Used by the service only.
         #[arg(long = "alternate")]
         alternates: Vec<PathBuf>,
+        /// Another entry's invite that `new-identity` may rotate to. May be
+        /// given more than once; needs --via. Used by the service only.
+        #[arg(long = "alternate-entry", requires = "via")]
+        alternate_entries: Vec<PathBuf>,
+        /// Two hops through nodes picked at random from the pocket: an
+        /// entry and an exit, two different nodes.
+        #[arg(long, conflicts_with_all = ["invite", "via", "alternates", "alternate_entries", "rapido"])]
+        privado: bool,
+        /// One hop through an exit picked at random from the pocket.
+        #[arg(long, conflicts_with_all = ["invite", "via", "alternates", "alternate_entries"])]
+        rapido: bool,
         /// Leave IPv6 alone instead of routing it into the tunnel (where it is
         /// dropped in this phase). Only for diagnosis: with this, IPv6 traffic
         /// bypasses the VPN.
@@ -75,25 +118,36 @@ enum Cmd {
         #[arg(long)]
         no_kill_switch: bool,
     },
-    /// Rebuild the circuit through the next exit given with --alternate, so
-    /// the address the internet sees changes. Needs the service.
+    /// Rebuild the circuit through another exit (and another entry, when
+    /// the service holds more than one), so the address the internet sees
+    /// changes. Needs the service.
     NewIdentity,
     /// Undo the routes and DNS of a connection that did not end cleanly.
     Down,
-    /// Show the mode, the hops, the nodes and whether the kill switch is on.
+    /// Show the mode and what it hides, the hops and their handshakes, the
+    /// nodes and whether the kill switch is on.
     Status,
 }
 
+#[derive(Subcommand)]
+enum Nodes {
+    /// Add a node's invite to the pocket, as an entry or as an exit.
+    Add {
+        /// An invite to use as an entry node (the first hop of Privado).
+        #[arg(long, required_unless_present = "exit", conflicts_with = "exit")]
+        entry: Option<PathBuf>,
+        /// An invite to use as an exit node (the node that reaches the internet).
+        #[arg(long)]
+        exit: Option<PathBuf>,
+    },
+    /// The nodes in the pocket: names and endpoints, never keys.
+    List,
+    /// Remove a node from the pocket by its name.
+    Remove { name: String },
+}
+
 fn default_key_path() -> PathBuf {
-    #[cfg(windows)]
-    {
-        let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-        PathBuf::from(base).join("HidraVPN").join("client.key")
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from("/etc/hidravpn/client.key")
-    }
+    paths::client_key()
 }
 
 fn load_or_create_key(path: &PathBuf, create: bool) -> Result<ClientKey> {
@@ -105,7 +159,7 @@ fn load_or_create_key(path: &PathBuf, create: bool) -> Result<ClientKey> {
                 std::fs::create_dir_all(dir)
                     .with_context(|| format!("creating {}", dir.display()))?;
             }
-            write_secret(path, key.secret_base64().as_bytes())?;
+            write_private(path, key.secret_base64().as_bytes())?;
             Ok(key)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(anyhow!(
@@ -116,8 +170,8 @@ fn load_or_create_key(path: &PathBuf, create: bool) -> Result<ClientKey> {
     }
 }
 
-/// The secret is readable by this account only.
-fn write_secret(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+/// Readable by this account only.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -135,6 +189,21 @@ fn write_secret(path: &PathBuf, bytes: &[u8]) -> Result<()> {
         std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(())
+}
+
+fn load_pocket(path: &Path) -> Result<Pocket> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Pocket::from_json(&s).with_context(|| format!("reading {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Pocket::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    write_private(path, pocket.to_json().as_bytes())
 }
 
 fn require_admin() -> Result<()> {
@@ -174,37 +243,141 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let key_path = cli.key.clone().unwrap_or_else(default_key_path);
+    let pocket_path = cli.pocket.clone().unwrap_or_else(paths::circuit_pocket);
 
     match cli.cmd {
         Cmd::Keygen => {
             let existed = key_path.exists();
-            let key = load_or_create_key(&key_path, true)?;
+            load_or_create_key(&key_path, true)?;
             if existed {
-                eprintln!("a key already exists at {}; keeping it", key_path.display());
+                eprintln!(
+                    "a master key already exists at {}; keeping it",
+                    key_path.display()
+                );
             } else {
-                eprintln!("key written to {}", key_path.display());
+                eprintln!("master key written to {}", key_path.display());
             }
-            println!("{}", key.public_base64());
-            eprintln!("give this public key to the node's administrator (hidravpn-node admit)");
+            eprintln!(
+                "no node is shown this key. Each node gets its own, derived from it: for a node whose public key is KEY (its administrator gets it with `hidravpn-node pubkey`), run\n  hidravpn pubkey --node KEY\nand give the administrator the key it prints (hidravpn-node admit --pubkey ...)."
+            );
         }
-        Cmd::Pubkey => {
-            println!("{}", load_or_create_key(&key_path, false)?.public_base64());
+        Cmd::Pubkey {
+            node,
+            node_from_invite,
+        } => {
+            let key = load_or_create_key(&key_path, false)?;
+            let node = match (node, node_from_invite) {
+                (Some(k), _) => Some(k),
+                (None, Some(p)) => Some(read_invite(&p)?.node_public_key),
+                (None, None) => None,
+            };
+            match node {
+                Some(node) => println!(
+                    "{}",
+                    key.for_node_base64(&node)
+                        .context("--node is not a valid node public key")?
+                        .public_base64()
+                ),
+                None => {
+                    eprintln!("this is the master key's public half; no node admits it. For the key a node admits: hidravpn pubkey --node <that node's public key>");
+                    println!("{}", key.public_base64());
+                }
+            }
+        }
+        Cmd::Nodes { what } => {
+            require_admin()?;
+            let mut pocket = load_pocket(&pocket_path)?;
+            match what {
+                Nodes::Add { entry, exit } => {
+                    let (slot, path) = match (entry, exit) {
+                        (Some(p), _) => (Slot::Entry, p),
+                        (None, Some(p)) => (Slot::Exit, p),
+                        (None, None) => unreachable!("clap requires one of --entry and --exit"),
+                    };
+                    let invite = read_invite(&path)?;
+                    let name = invite.node_name.clone();
+                    pocket.add(slot, invite)?;
+                    save_pocket(&pocket_path, &pocket)?;
+                    println!(
+                        "added {} as an {} ({} entries, {} exits in the pocket)",
+                        name,
+                        hidravpn_core::pocket::slot_name(slot),
+                        pocket.entries.len(),
+                        pocket.exits.len()
+                    );
+                }
+                Nodes::List => {
+                    if pocket.is_empty() {
+                        println!("the pocket is empty: add nodes with `hidravpn nodes add --entry e.json` and `--exit x.json`");
+                    }
+                    for (slot, inv) in pocket.iter() {
+                        println!(
+                            "{:<6} {:<24} {}",
+                            hidravpn_core::pocket::slot_name(slot),
+                            inv.node_name,
+                            inv.endpoint
+                        );
+                    }
+                }
+                Nodes::Remove { name } => {
+                    let n = pocket.remove(&name);
+                    if n == 0 {
+                        return Err(anyhow!("no node named \"{name}\" in the pocket"));
+                    }
+                    save_pocket(&pocket_path, &pocket)?;
+                    println!(
+                        "removed {name} ({} entries, {} exits left)",
+                        pocket.entries.len(),
+                        pocket.exits.len()
+                    );
+                }
+            }
         }
         Cmd::Up {
             invite,
             via,
             alternates,
+            alternate_entries,
+            privado,
+            rapido,
             keep_ipv6,
             interface,
             no_kill_switch,
         } => {
-            let exit = read_invite(&invite)?;
-            let entry = via.as_deref().map(read_invite).transpose()?;
-            let alternates = alternates
-                .iter()
-                .map(|p| read_invite(p))
-                .collect::<Result<Vec<_>>>()?;
-            let spec = CircuitSpec { exit, entry };
+            let (spec, alternates, alternate_entries) = if privado || rapido {
+                let pocket = load_pocket(&pocket_path)?;
+                if pocket.is_empty() {
+                    return Err(anyhow!(
+                        "the pocket at {} is empty; add nodes with `hidravpn nodes add --entry e.json` and `--exit x.json`",
+                        pocket_path.display()
+                    ));
+                }
+                let pick = if privado {
+                    pocket.pick_privado()?
+                } else {
+                    pocket.pick_rapido()?
+                };
+                (
+                    CircuitSpec {
+                        exit: pick.exit,
+                        entry: pick.entry,
+                    },
+                    pick.other_exits,
+                    pick.other_entries,
+                )
+            } else {
+                let exit = read_invite(invite.as_deref().expect("clap requires the invite"))?;
+                let entry = via.as_deref().map(read_invite).transpose()?;
+                let alternates = alternates
+                    .iter()
+                    .map(|p| read_invite(p))
+                    .collect::<Result<Vec<_>>>()?;
+                let alternate_entries = alternate_entries
+                    .iter()
+                    .map(|p| read_invite(p))
+                    .collect::<Result<Vec<_>>>()?;
+                (CircuitSpec { exit, entry }, alternates, alternate_entries)
+            };
             spec.validate()?;
             // Prefer the installed service: it keeps the circuit after this
             // command returns. Only if it is not there do we hold it here.
@@ -216,6 +389,7 @@ async fn main() -> Result<()> {
                     keep_ipv6,
                     via: spec.entry.clone(),
                     alternates: alternates.clone(),
+                    alternate_entries: alternate_entries.clone(),
                 },
             )
             .await
@@ -225,8 +399,11 @@ async fn main() -> Result<()> {
                     if r.ok {
                         println!(
                             "connected through the HidraVPN service: {}",
-                            r.status.map(describe).unwrap_or_default()
+                            r.status.as_ref().map(describe).unwrap_or_default()
                         );
+                        if let Some(line) = r.status.as_ref().and_then(|s| s.explanation()) {
+                            println!("  {line}");
+                        }
                     } else {
                         return Err(anyhow!(r
                             .error
@@ -235,8 +412,8 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     require_admin()?;
-                    if !alternates.is_empty() {
-                        eprintln!("note: --alternate is used by the service's new-identity; in this process it does nothing");
+                    if !alternates.is_empty() || !alternate_entries.is_empty() {
+                        eprintln!("note: other nodes to rotate to are used by the service's new-identity; in this process they do nothing");
                     }
                     let key = load_or_create_key(&key_path, false)?;
                     up(
@@ -262,7 +439,7 @@ async fn main() -> Result<()> {
                 if r.ok {
                     println!("{}", r.note.unwrap_or_else(|| "reconnected".into()));
                     if let Some(s) = r.status {
-                        println!("{}", describe(s));
+                        println!("{}", describe(&s));
                     }
                 } else {
                     return Err(anyhow!(r
@@ -307,7 +484,7 @@ async fn main() -> Result<()> {
                 if s.connected {
                     println!(
                         "connected: {}; kill switch {}; up {}, down {}; last handshake {}",
-                        describe(s.clone()),
+                        describe(&s),
                         if s.killswitch { "on" } else { "OFF" },
                         fmt_bytes(s.tx_bytes),
                         fmt_bytes(s.rx_bytes),
@@ -315,12 +492,14 @@ async fn main() -> Result<()> {
                             .map(|n| format!("{n}s ago"))
                             .unwrap_or_else(|| "none".into()),
                     );
+                    print_detail(&s);
                 } else if s.hops > 0 {
                     println!(
                         "connecting: {}; no session with every node yet; kill switch {}",
-                        describe(s.clone()),
+                        describe(&s),
                         if s.killswitch { "on" } else { "OFF" }
                     );
+                    print_detail(&s);
                 } else {
                     println!(
                         "the service is running but not connected; kill switch {}",
@@ -345,20 +524,31 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn read_invite(path: &std::path::Path) -> Result<Invite> {
+fn read_invite(path: &Path) -> Result<Invite> {
     Invite::from_json(
         &std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
     )
 }
 
 /// One line about a circuit: its mode, its hops and its nodes.
-fn describe(s: StatusReport) -> String {
+fn describe(s: &StatusReport) -> String {
     let exit = s.node_name.as_deref().unwrap_or("?");
     let endpoint = s.endpoint.as_deref().unwrap_or("?");
     match (s.hops, s.entry_name.as_deref()) {
         (2, Some(entry)) => format!("privado, 2 hops: entry {entry} then exit {exit} ({endpoint})"),
         (1, _) => format!("rapido, 1 hop: {exit} ({endpoint})"),
         _ => format!("{} ({endpoint})", exit),
+    }
+}
+
+/// After the status line: what the mode hides and what it does not, and
+/// each hop's handshake age.
+fn print_detail(s: &StatusReport) {
+    if let Some(line) = s.explanation() {
+        println!("  {line}");
+    }
+    for line in s.hop_lines() {
+        println!("  {line}");
     }
 }
 
@@ -408,6 +598,15 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
         hops,
         if hops == 1 { "" } else { "s" }
     );
+    eprintln!(
+        "  {}",
+        match mode {
+            hidravpn_core::Mode::Privado =>
+                "privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic",
+            hidravpn_core::Mode::Rapido =>
+                "rapido: the node sees your address and your traffic; it hides them from your network, not from the node",
+        }
+    );
     if circuit.kill_switch_armed() {
         eprintln!("kill switch on: nothing leaves outside the tunnel");
     }
@@ -428,7 +627,7 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
                     waited += 1;
                     if waited == 15 {
                         let pending: Vec<&str> = s.hops.iter().filter(|h| !h.tunnel.connected).map(|h| h.node_name.as_str()).collect();
-                        eprintln!("no answer from {} after 15 s — is UDP {} open, and was this key admitted there?", pending.join(" and "), exit_port);
+                        eprintln!("no answer from {} after 15 s — is UDP {} open, and was this machine's key for that node (hidravpn pubkey --node ...) admitted there?", pending.join(" and "), exit_port);
                     }
                 }
                 if was_connected && waited.is_multiple_of(5) {

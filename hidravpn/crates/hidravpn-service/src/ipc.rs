@@ -35,8 +35,9 @@ pub enum Command {
     Ping,
     /// Connect: bring up the circuit, route the machine through it, arm the
     /// kill switch. `invite` is the exit node; `via` an entry node for two
-    /// hops; `alternates` other exits that `new_identity` may rotate to. The
-    /// last two are absent in requests from before phase 3, which still work.
+    /// hops; `alternates` other exits and `alternate_entries` other entries
+    /// that `new_identity` may rotate to. All but the first are absent in
+    /// requests from before phase 3, which still work.
     Up {
         invite: Invite,
         #[serde(default)]
@@ -47,15 +48,31 @@ pub enum Command {
         via: Option<Invite>,
         #[serde(default)]
         alternates: Vec<Invite>,
+        #[serde(default)]
+        alternate_entries: Vec<Invite>,
     },
     /// Disconnect and put the network back.
     Down,
     /// How things stand.
     Status,
-    /// Rebuild the circuit through the next exit node the service holds an
-    /// invite for, so the address the internet sees changes. With only one
-    /// exit it reconnects to the same one and the reply's `note` says so.
+    /// Rebuild the circuit through another exit node the service holds an
+    /// invite for (and another entry, when it holds more than one), so the
+    /// address the internet sees changes. With only one exit it reconnects
+    /// to the same one and the reply's `note` says so.
     NewIdentity,
+}
+
+/// One hop of the circuit, as `status` reports it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HopReport {
+    /// "entry" or "exit".
+    pub role: String,
+    pub node_name: String,
+    pub endpoint: String,
+    /// Seconds since this hop's last WireGuard handshake; none yet if absent.
+    pub last_handshake_secs: Option<u64>,
+    /// This hop has a live session.
+    pub connected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +93,45 @@ pub struct StatusReport {
     /// The entry node of a two-hop circuit.
     #[serde(default)]
     pub entry_name: Option<String>,
+    /// Every hop, entry first: its node, endpoint and handshake age.
+    #[serde(default)]
+    pub hops_detail: Vec<HopReport>,
+}
+
+impl StatusReport {
+    /// One honest line on what the current mode does and does not hide.
+    /// Strong privacy, never anonymity: it says what each node sees.
+    pub fn explanation(&self) -> Option<&'static str> {
+        match self.mode.as_str() {
+            "privado" => Some(
+                "privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic",
+            ),
+            "rapido" => Some(
+                "rapido: the node sees your address and your traffic; it hides them from your network, not from the node",
+            ),
+            _ => None,
+        }
+    }
+
+    /// One line per hop: its role, node, endpoint and how old its last
+    /// handshake is (a session is live for 180 s after a handshake).
+    pub fn hop_lines(&self) -> Vec<String> {
+        self.hops_detail
+            .iter()
+            .map(|h| {
+                format!(
+                    "{} {} ({}): last handshake {}{}",
+                    h.role,
+                    h.node_name,
+                    h.endpoint,
+                    h.last_handshake_secs
+                        .map(|n| format!("{n}s ago"))
+                        .unwrap_or_else(|| "none yet".into()),
+                    if h.connected { "" } else { ", no session" }
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -450,6 +506,7 @@ mod tests {
                 keep_ipv6: false,
                 via: Some(invite("entry", "5.6.7.8:51820")),
                 alternates: vec![invite("exit2", "9.9.9.9:51820")],
+                alternate_entries: vec![invite("entry2", "5.6.7.9:51820")],
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -457,11 +514,16 @@ mod tests {
         let again: Request = serde_json::from_str(&line).unwrap();
         match again.cmd {
             Command::Up {
-                via, alternates, ..
+                via,
+                alternates,
+                alternate_entries,
+                ..
             } => {
                 assert_eq!(via.unwrap().node_name, "entry");
                 assert_eq!(alternates.len(), 1);
                 assert_eq!(alternates[0].node_name, "exit2");
+                assert_eq!(alternate_entries.len(), 1);
+                assert_eq!(alternate_entries[0].node_name, "entry2");
             }
             other => panic!("parsed as {other:?}"),
         }
@@ -482,6 +544,13 @@ mod tests {
             hops: 2,
             mode: "privado".into(),
             entry_name: Some("entry".into()),
+            hops_detail: vec![HopReport {
+                role: "entry".into(),
+                node_name: "entry".into(),
+                endpoint: "5.6.7.8:51820".into(),
+                last_handshake_secs: Some(4),
+                connected: true,
+            }],
         };
         let r = Response::with_status(s).noting("rotated");
         let line = serde_json::to_string(&r).unwrap();
@@ -489,6 +558,7 @@ mod tests {
         assert!(line.contains(r#""mode":"privado""#));
         assert!(line.contains(r#""entry_name":"entry""#));
         assert!(line.contains(r#""note":"rotated""#));
+        assert!(line.contains(r#""hops_detail":[{"role":"entry""#));
         let plain = serde_json::to_string(&Response::ok()).unwrap();
         assert!(!plain.contains("note"));
         // A report from a phase-2 service, without the new fields, still reads.
@@ -497,5 +567,75 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.hops, 0);
+        assert!(old.hops_detail.is_empty());
+        assert!(old.explanation().is_none());
+        assert!(old.hop_lines().is_empty());
+    }
+
+    #[test]
+    fn the_explanation_says_what_each_node_sees_and_never_promises_anonymity() {
+        let mut s = StatusReport {
+            connected: true,
+            node_name: Some("exit".into()),
+            endpoint: Some("95.216.142.72:51820".into()),
+            last_handshake_secs: Some(3),
+            tx_bytes: 0,
+            rx_bytes: 0,
+            killswitch: true,
+            hops: 2,
+            mode: "privado".into(),
+            entry_name: Some("entry".into()),
+            hops_detail: vec![
+                HopReport {
+                    role: "entry".into(),
+                    node_name: "entry".into(),
+                    endpoint: "5.6.7.8:51820".into(),
+                    last_handshake_secs: Some(4),
+                    connected: true,
+                },
+                HopReport {
+                    role: "exit".into(),
+                    node_name: "exit".into(),
+                    endpoint: "95.216.142.72:51820".into(),
+                    last_handshake_secs: None,
+                    connected: false,
+                },
+            ],
+        };
+        let p = s.explanation().unwrap();
+        assert!(p.contains("no node sees both"));
+        assert!(p.contains("the entry sees your address"));
+        s.mode = "rapido".into();
+        let r = s.explanation().unwrap();
+        assert!(r.contains("the node sees your address and your traffic"));
+        for text in [p, r] {
+            assert!(!text.to_lowercase().contains("anonym"), "{text}");
+        }
+        let lines = s.hop_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("entry entry (5.6.7.8:51820): last handshake 4s ago"));
+        assert!(lines[1].ends_with("last handshake none yet, no session"));
+    }
+
+    #[test]
+    fn a_phase_3_up_request_without_alternate_entries_still_parses() {
+        let inv = invite("exit", "95.216.142.72:51820");
+        let old = format!(
+            r#"{{"token":"t","cmd":"up","invite":{},"via":{},"alternates":[]}}"#,
+            serde_json::to_string(&inv).unwrap(),
+            serde_json::to_string(&invite("entry", "5.6.7.8:51820")).unwrap()
+        );
+        let req: Request = serde_json::from_str(&old).unwrap();
+        match req.cmd {
+            Command::Up {
+                via,
+                alternate_entries,
+                ..
+            } => {
+                assert!(via.is_some());
+                assert!(alternate_entries.is_empty());
+            }
+            other => panic!("parsed as {other:?}"),
+        }
     }
 }
