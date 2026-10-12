@@ -22,3 +22,4 @@ Chromium aborted for want of a sandbox. start.sh now sets one up.
 run 4: 2026-10-12T01:39Z — apps keep their identity; chat, forum and site fixes
 run 5: 2026-10-12T01:41Z — run 4 stopped at the new storage test (no Electron in CI); fixed
 run 6: 2026-10-12T01:55Z — Tor no longer outlives a crashed browser
+run 7: 2026-10-12T02:28Z — the mail address survives a crash in its first seconds
