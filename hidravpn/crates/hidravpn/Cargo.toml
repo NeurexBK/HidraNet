@@ -1,0 +1,25 @@
+[package]
+name = "hidravpn"
+description = "The HidraVPN client, command line: keygen, up, down"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hidravpn"
+path = "src/main.rs"
+
+[dependencies]
+hidravpn-core = { path = "../hidravpn-core" }
+hidravpn-tun = { path = "../hidravpn-tun" }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

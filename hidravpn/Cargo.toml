@@ -1,0 +1,45 @@
+# HidraVPN — the decentralised VPN of the HidraNet network.
+#
+# Its own workspace, apart from hidra-node (the relay engine) on purpose: the
+# VPN must not change how anything that already ships is built or tested.
+[workspace]
+resolver = "2"
+members = [
+  "crates/hidravpn-tun",
+  "crates/hidravpn-core",
+  "crates/hidravpn-node",
+  "crates/hidravpn",
+  "crates/hidravpn-sign",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/NeurexBK/HidraNet"
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs", "process"] }
+boringtun = { version = "0.7", default-features = false }
+tun-rs = { version = "2", features = ["async_tokio"] }
+wireguard-control = "2"
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "https-ring"] }
+ed25519-dalek = "3"
+sha2 = "0.10"
+getrandom = "0.3"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

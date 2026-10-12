@@ -1,0 +1,20 @@
+[package]
+name = "hidravpn-sign"
+description = "Ed25519 signing and verification of HidraVPN release files; the private key lives offline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hidravpn-sign"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+clap = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }

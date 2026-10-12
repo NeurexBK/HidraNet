@@ -1,0 +1,46 @@
+# HidraVPN node — systemd unit.
+#
+# The node keeps nothing but its own key (/etc/hidravpn) and the current
+# leases (/run/hidravpn, which is RAM). It runs as root because it creates a
+# network interface, sets routes and firewall rules; everything else is taken
+# away below.
+[Unit]
+Description=HidraVPN node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hidravpn-node run
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=hidravpn
+RuntimeDirectoryMode=0700
+# Logs go to the journal: counts and states, never addresses or names.
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_LOG=hidravpn_node=info
+
+# Hardening. CAP_NET_ADMIN for the interface, routes and nftables;
+# CAP_NET_BIND_SERVICE for DNS on port 53; CAP_NET_RAW for the UDP socket
+# options WireGuard uses.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/hidravpn /var/run/wireguard /proc/sys/net
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+DeviceAllow=/dev/net/tun rw
+DevicePolicy=closed
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
