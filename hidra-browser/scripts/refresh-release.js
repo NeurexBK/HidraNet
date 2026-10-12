@@ -124,6 +124,12 @@ function verify(file) {
   if (!mac && !win) {
     check(mode('hidranet') === '755', 'hidranet is executable (mode ' + mode('hidranet') + ')');
     check(by.has('start.sh'), 'start.sh present');
+    // The launcher that keeps the sandbox working where user namespaces are
+    // restricted. Without it the browser aborts on Ubuntu 23.10 and later.
+    const launcher = by.get('start.sh');
+    check(!!launcher && contents(launcher).toString().indexOf(
+      require('./lib/linux-launcher').SANDBOX_MARKER) !== -1,
+      'start.sh handles the restricted-sandbox case (Ubuntu 23.10+)');
     check(by.has(LIBEVENT_IN_ZIP), 'libevent ships with Tor (it is not linked statically)');
   }
   if (mac) {

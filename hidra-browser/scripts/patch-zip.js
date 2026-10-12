@@ -38,6 +38,7 @@ const path = require('path');
 const { readZip, writeZip, mkFile, patchEntry, crc32 } = require('./lib/zip');
 const { inflateRawSync } = require('zlib');
 const { launcherScript, readmeText, patchPlist } = require('./lib/mac-extras');
+const linux = require('./lib/linux-launcher');
 
 const ROOT = path.join(__dirname, '..');
 const SRC  = path.join(ROOT, 'src');
@@ -73,39 +74,27 @@ const APP_NAME = 'HidraNet';
 const APP_ID   = 'net.hidra.browser';
 
 function replacementsFor(zipName) {
+  // Each launcher is keyed under the name it had in the September archive AND
+  // the name it has now. Keyed only under the old one, a package that had
+  // already been refreshed kept whatever launcher it carried, and any change
+  // made here never shipped.
+  const sh = { name: 'start.sh', body: linux.launcherScript('hidranet') };
+  // CRLF: read by cmd.exe.
+  const bat = {
+    name: 'Start HidraNet.bat',
+    body: [
+      '@echo off',
+      'title HidraNet Browser',
+      'echo Starting HidraNet Browser...',
+      'start "" "%~dp0HidraNet.exe"',
+      ''
+    ].join('\r\n')
+  };
   const r = {
-    'iniciar.sh': {
-      name: 'start.sh',
-      body: [
-        '#!/bin/bash',
-        '# Starts HidraNet. Run:  bash start.sh',
-        'DIR="$(cd "$(dirname "$0")" && pwd)"',
-        '',
-        '# The archive may arrive without permissions (some zip tools drop them),',
-        '# so set them here rather than assume.',
-        'chmod +x "$DIR/hidranet" 2>/dev/null',
-        'chmod +x "$DIR/resources/bin/hidra-node" 2>/dev/null',
-        'chmod +x "$DIR/resources/bin/tor/tor" 2>/dev/null',
-        '',
-        'if [ ! -f "$DIR/resources/bin/tor/tor" ]; then',
-        '  echo "WARNING: no Tor in this package. It provides no anonymity."',
-        'fi',
-        '',
-        'exec "$DIR/hidranet" "$@"',
-        ''
-      ].join('\n')
-    },
-    // CRLF: read by cmd.exe.
-    'Iniciar HidraNet.bat': {
-      name: 'Start HidraNet.bat',
-      body: [
-        '@echo off',
-        'title HidraNet Browser',
-        'echo Starting HidraNet Browser...',
-        'start "" "%~dp0HidraNet.exe"',
-        ''
-      ].join('\r\n')
-    }
+    'iniciar.sh': sh,
+    'start.sh': sh,
+    'Iniciar HidraNet.bat': bat,
+    'Start HidraNet.bat': bat,
   };
 
   const m = /-(\d+\.\d+\.\d+)-macOS-(arm64|x64)\./.exec(zipName);

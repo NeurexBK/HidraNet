@@ -322,26 +322,8 @@ async function buildArch(arch) {
   }
 
   // ── Launcher script (0o755) ───────────────────────────────────────────────
-  var launcher = [
-    '#!/bin/bash',
-    '# HidraNet Browser — Linux launcher',
-    'DIR="$(cd "$(dirname "$0")" && pwd)"',
-    'BIN="$DIR/' + APP_NAME + '"',
-    '',
-    '# Some zip tools drop Unix permissions, so set them here rather than',
-    '# assume. Without the execute bit on Tor the browser starts and then',
-    '# cannot connect to anything.',
-    'chmod +x "$BIN" 2>/dev/null',
-    'chmod +x "$DIR/resources/bin/hidra-node" 2>/dev/null',
-    'chmod +x "$DIR/resources/bin/tor/tor" 2>/dev/null',
-    '',
-    'if [ ! -f "$DIR/resources/bin/tor/tor" ]; then',
-    '  echo "WARNING: no Tor in this package. It provides no anonymity."',
-    'fi',
-    '',
-    'exec "$BIN" "$@"',
-    ''
-  ].join('\n');
+  // Shared with patch-zip.js and pack-portable.js — see lib/linux-launcher.js.
+  var launcher = require('./lib/linux-launcher').launcherScript(APP_NAME);
   outEntries.push(mkFile(PREFIX + 'start.sh', Buffer.from(launcher, 'utf8'), 0o755));
 
   // ── README ────────────────────────────────────────────────────────────────

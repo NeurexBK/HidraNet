@@ -254,22 +254,9 @@ function buildLinux() {
   copyTorBundle(path.join(outDir, 'resources', 'bin'), 'linux', 'x64');
 
   // Create launcher script
+  // Shared with patch-zip.js and build-linux.js — see lib/linux-launcher.js.
   fs.writeFileSync(path.join(outDir, 'start.sh'),
-    '#!/bin/bash\n' +
-    '# Starts HidraNet. Run:  bash start.sh\n' +
-    'DIR="$(cd "$(dirname "$0")" && pwd)"\n' +
-    '\n' +
-    '# Set the permissions here rather than assume them: not every zip tool\n' +
-    '# carries them, and an unexecutable Tor means nothing connects.\n' +
-    'chmod +x "$DIR/hidranet" 2>/dev/null\n' +
-    'chmod +x "$DIR/resources/bin/hidra-node" 2>/dev/null\n' +
-    'chmod +x "$DIR/resources/bin/tor/tor" 2>/dev/null\n' +
-    '\n' +
-    'if [ ! -f "$DIR/resources/bin/tor/tor" ]; then\n' +
-    '  echo "WARNING: no Tor in this package. It provides no anonymity."\n' +
-    'fi\n' +
-    '\n' +
-    'exec "$DIR/hidranet" "$@"\n',
+    require('./lib/linux-launcher').launcherScript('hidranet'),
     { mode: 0o755 }
   );
 
