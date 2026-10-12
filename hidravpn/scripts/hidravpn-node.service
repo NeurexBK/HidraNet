@@ -8,16 +8,23 @@
 Description=HidraVPN node
 After=network-online.target
 Wants=network-online.target
+# Five failed starts in a minute means something is wrong (no settings file,
+# no binary); stop and wait for a person instead of filling the journal.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/hidravpn-node run
 Restart=on-failure
 RestartSec=3
-RuntimeDirectory=hidravpn
-RuntimeDirectoryMode=0700
-# The leases live here (RAM). A restart of the service must not throw the
+# /run/hidravpn holds the leases (RAM); /run/wireguard holds the control
+# socket when WireGuard runs in userspace. systemd creates both, so they
+# exist whichever path the node takes, and makes them writable under the
+# read-only system below. A restart of the service must not throw the
 # admitted clients out; only a reboot does.
+RuntimeDirectory=hidravpn wireguard
+RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 # Logs go to the journal: counts and states, never addresses or names.
 StandardOutput=journal
@@ -31,7 +38,7 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/run/hidravpn /var/run/wireguard /proc/sys/net
+ReadWritePaths=/proc/sys/net
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=false
