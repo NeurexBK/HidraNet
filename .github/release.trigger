@@ -16,3 +16,6 @@ October.
 run 2 — 2026-10-11 — support moved from a Bitcoin address to an $HNET wallet on
 Solana, ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc. The packages published in
 run 1 still show the Bitcoin donate page.
+
+run 3 — 2026-10-12 — the Linux package did not open on Ubuntu 23.10 and later:
+Chromium aborted for want of a sandbox. start.sh now sets one up.
