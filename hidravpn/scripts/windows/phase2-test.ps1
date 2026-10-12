@@ -41,6 +41,20 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+# Keep this console out of QuickEdit "Select" mode: a click inside the window
+# would otherwise freeze the script at its next line of output until Esc.
+try {
+  $null = Add-Type -Namespace HidraVpnConsole -Name Mode -PassThru -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+'@
+  $hIn = [HidraVpnConsole.Mode]::GetStdHandle(-10); $mode = [uint32]0
+  if ([HidraVpnConsole.Mode]::GetConsoleMode($hIn, [ref]$mode)) {
+    # clear ENABLE_QUICK_EDIT_MODE (0x40); ENABLE_EXTENDED_FLAGS (0x80) makes it stick
+    [HidraVpnConsole.Mode]::SetConsoleMode($hIn, ($mode -band (-bnot [uint32]0x40)) -bor [uint32]0x80) | Out-Null
+  }
+} catch {}
 
 $LogDir = Join-Path $Dir 'logs'
 New-Item -ItemType Directory -Force -Path $Dir, $LogDir | Out-Null
@@ -114,6 +128,7 @@ function Place([string]$name, [string]$dest, [string]$wantHash) {
       if ((Get-FileHash $c.FullName -Algorithm SHA256).Hash -ieq $wantHash) { Copy-Item $c.FullName $dest -Force; return $true }
     }
   }
+  Log ("  (no local $name with the expected hash in Downloads, Desktop, Documents or OneDrive)")
   return $false
 }
 $haveCli = Place 'hidravpn.exe' $CliExe $ClientHash
@@ -132,7 +147,7 @@ if (-not (Test-Path $SvcExe)) { Stop-Now 'hidravpn-service.exe is not in place' 
 $sv = ''
 try { $sv = (& $SvcExe --version 2>&1 | Out-String).Trim() } catch { $sv = "ERROR: $($_.Exception.Message)" }
 if ($sv -notmatch 'hidravpn-service') {
-  Stop-Now ("hidravpn-service.exe did not run. On Windows 11 this is usually Smart App Control or an Application Control policy blocking an unsigned binary. Output was: " + $sv)
+  Stop-Now ("hidravpn-service.exe did not run. On Windows 11 this is usually Smart App Control blocking an unsigned binary. First line: " + (($sv -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 1))
 }
 Fact "service  $SvcExe  $sv  sha256 $((Get-FileHash $SvcExe -Algorithm SHA256).Hash)"
 

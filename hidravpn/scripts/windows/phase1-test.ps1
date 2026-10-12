@@ -52,6 +52,21 @@ $ProgressPreference = 'SilentlyContinue'
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
+try { $Host.UI.RawUI.FlushInputBuffer() } catch {}
+# Keep this console out of QuickEdit "Select" mode: a click inside the window
+# would otherwise freeze the script at its next line of output until Esc.
+try {
+  $null = Add-Type -Namespace HidraVpnConsole -Name Mode -PassThru -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+'@
+  $hIn = [HidraVpnConsole.Mode]::GetStdHandle(-10); $mode = [uint32]0
+  if ([HidraVpnConsole.Mode]::GetConsoleMode($hIn, [ref]$mode)) {
+    # clear ENABLE_QUICK_EDIT_MODE (0x40); ENABLE_EXTENDED_FLAGS (0x80) makes it stick
+    [HidraVpnConsole.Mode]::SetConsoleMode($hIn, ($mode -band (-bnot [uint32]0x40)) -bor [uint32]0x80) | Out-Null
+  }
+} catch {}
 
 # ---------------------------------------------------------------- report ----
 $LogDir = Join-Path $Dir 'logs'
