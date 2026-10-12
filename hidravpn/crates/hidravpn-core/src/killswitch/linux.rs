@@ -42,6 +42,17 @@ fn ruleset(cfg: &KillConfig) -> String {
         (String::new(), String::new())
     };
 
+    // Two-hop: the inner tunnel interface is allowed as well. Its packets go
+    // into the outer tunnel, never to the physical link, so this opens no
+    // new way out of the machine.
+    let (extra_out, extra_in) = match &cfg.extra_interface {
+        Some(x) => (
+            format!("    oifname \"{x}\" accept comment \"inner tunnel\"\n"),
+            format!("    iifname \"{x}\" accept comment \"inner tunnel\"\n"),
+        ),
+        None => (String::new(), String::new()),
+    };
+
     format!(
         r#"table {TABLE} {{
   chain output {{
@@ -51,7 +62,7 @@ fn ruleset(cfg: &KillConfig) -> String {
     tcp dport 53 ip daddr != {dns} drop comment "DNS only to the node"
     {node_rule_out}
     oifname "{iface}" accept
-    udp sport 68 udp dport 67 accept comment "DHCP client keeps the link up"
+{extra_out}    udp sport 68 udp dport 67 accept comment "DHCP client keeps the link up"
 {lan_out}    ct state established,related accept
     counter drop
   }}
@@ -60,7 +71,7 @@ fn ruleset(cfg: &KillConfig) -> String {
     iif "lo" accept
     {node_rule_in}
     iifname "{iface}" accept
-    udp sport 67 udp dport 68 accept comment "DHCP offers"
+{extra_in}    udp sport 67 udp dport 68 accept comment "DHCP offers"
 {lan_in}    ct state established,related accept
     counter drop
   }}
@@ -151,6 +162,7 @@ mod tests {
             node_endpoint: SocketAddr::from(([95, 216, 142, 72], 51820)),
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allow_lan,
+            extra_interface: None,
         }
     }
 
@@ -185,5 +197,19 @@ mod tests {
         assert!(r.contains(
             "ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept"
         ));
+    }
+
+    #[test]
+    fn a_second_tunnel_interface_is_allowed_both_ways_only_when_given() {
+        let single = ruleset(&cfg(false));
+        assert!(!single.contains("inner tunnel"));
+        let mut two = cfg(false);
+        two.extra_interface = Some("hvpn1".into());
+        let r = ruleset(&two);
+        assert!(r.contains(r#"oifname "hvpn1" accept comment "inner tunnel""#));
+        assert!(r.contains(r#"iifname "hvpn1" accept comment "inner tunnel""#));
+        // The entry node stays the only off-tunnel destination.
+        assert!(r.contains("ip daddr 95.216.142.72 udp dport 51820 accept"));
+        assert_eq!(r.matches("udp dport 51820 accept").count(), 1);
     }
 }

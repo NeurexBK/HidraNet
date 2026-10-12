@@ -58,13 +58,16 @@ const F_LOOPBACK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0002
 const F_TUNNEL_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0001);
 const F_NODE_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0001);
 const F_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0005_0001);
+/// The inner tunnel interface of a two-hop circuit.
+const F_TUNNEL2_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0002);
 
-const ALL_FILTER_KEYS: [GUID; 7] = [
+const ALL_FILTER_KEYS: [GUID; 8] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
     F_LOOPBACK_V6,
     F_TUNNEL_V4,
+    F_TUNNEL2_V4,
     F_NODE_V4,
     F_DHCP_V4,
 ];
@@ -232,6 +235,29 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
             }
             Err(e) => {
                 tracing::warn!("tunnel interface not up yet; its allow rule is skipped ({e})");
+            }
+        }
+
+        // Two-hop: the inner tunnel interface too. Its packets go into the
+        // outer tunnel, never to the physical link.
+        if let Some(extra) = &cfg.extra_interface {
+            match luid_of(extra) {
+                Ok(luid) => add_filter(
+                    engine,
+                    &Filter {
+                        key: F_TUNNEL2_V4,
+                        name: "allow the inner tunnel interface",
+                        layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                        weight: 10,
+                        block: false,
+                        conditions: &[Cond::LocalInterface(luid)],
+                    },
+                )?,
+                Err(e) => {
+                    tracing::warn!(
+                        "inner tunnel interface not up yet; its allow rule is skipped ({e})"
+                    );
+                }
             }
         }
 

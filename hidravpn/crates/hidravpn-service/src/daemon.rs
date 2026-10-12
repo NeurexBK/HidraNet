@@ -107,6 +107,7 @@ impl Daemon {
             node_ip: inv.endpoint_ip()?,
             dns: inv.dns,
             route_ipv6,
+            via_tunnel: Vec::new(),
         })
         .context("could not route the machine through the tunnel")?;
 
@@ -117,6 +118,7 @@ impl Daemon {
             node_endpoint: inv.endpoint_addr()?,
             dns: inv.dns,
             allow_lan,
+            extra_interface: None,
         };
         if let Err(e) = killswitch::apply(&ks) {
             let _ = netcfg::revert(&plan);

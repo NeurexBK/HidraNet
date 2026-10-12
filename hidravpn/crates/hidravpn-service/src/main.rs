@@ -77,6 +77,9 @@ enum Firewall {
         dns: std::net::Ipv4Addr,
         #[arg(long)]
         allow_lan: bool,
+        /// A second tunnel interface to allow (the inner tunnel of a two-hop circuit).
+        #[arg(long)]
+        extra_interface: Option<String>,
     },
     /// Lift the kill switch.
     Off,
@@ -173,12 +176,14 @@ fn main() -> Result<()> {
                     node,
                     dns,
                     allow_lan,
+                    extra_interface,
                 } => {
                     killswitch::apply(&KillConfig {
                         interface,
                         node_endpoint: node,
                         dns,
                         allow_lan,
+                        extra_interface,
                     })?;
                     println!("kill switch on");
                 }

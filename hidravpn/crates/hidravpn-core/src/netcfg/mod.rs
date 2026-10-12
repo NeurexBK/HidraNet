@@ -39,6 +39,20 @@ pub struct RevertPlan {
     pub resolv_conf_backup: Option<String>,
     /// Windows: the interface index of the tunnel adapter.
     pub if_index: Option<u32>,
+    /// Host routes added through a tunnel interface: a two-hop circuit sends
+    /// the exit node's endpoint through the entry tunnel. Absent in plans
+    /// written before phase 3.
+    #[serde(default)]
+    pub via_routes: Vec<ViaRouteAdded>,
+}
+
+/// A host route that was added through a tunnel interface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ViaRouteAdded {
+    pub prefix: String,
+    pub interface: String,
+    /// Windows: the tunnel adapter's interface index.
+    pub if_index: Option<u32>,
 }
 
 /// Where the plan is kept. On Linux `/run` is RAM, which is right: a reboot
@@ -85,10 +99,25 @@ pub fn clear_plan() {
 /// What the tunnel wants from the system.
 #[derive(Debug, Clone)]
 pub struct Wanted {
+    /// Where the default route goes: the inner tunnel of a two-hop circuit,
+    /// the only tunnel of a single hop.
     pub interface: String,
+    /// The node reached over the physical link: the entry node of a two-hop
+    /// circuit, the only node of a single hop.
     pub node_ip: IpAddr,
     pub dns: Ipv4Addr,
     pub route_ipv6: bool,
+    /// Hosts reached *through* a tunnel interface instead of the physical
+    /// link: the exit node's endpoint through the entry tunnel, so the inner
+    /// tunnel's packets ride inside the outer one. Empty for a single hop.
+    pub via_tunnel: Vec<ViaRoute>,
+}
+
+/// A host to route through a tunnel interface.
+#[derive(Debug, Clone)]
+pub struct ViaRoute {
+    pub host: IpAddr,
+    pub interface: String,
 }
 
 /// Routes everything through the tunnel. Returns the plan that undoes it,

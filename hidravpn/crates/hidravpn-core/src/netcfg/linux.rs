@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Context, Result};
 
-use super::{clear_plan, run, save_plan, RevertPlan, Wanted};
+use super::{clear_plan, run, save_plan, RevertPlan, ViaRouteAdded, Wanted};
 
 /// The default route's gateway and interface, from `ip route`.
 fn default_route() -> Result<(String, String)> {
@@ -75,6 +75,22 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
         save_plan(&plan)?;
     }
 
+    // Two-hop: the exit node's endpoint goes through the entry tunnel, so the
+    // inner tunnel's packets ride inside the outer one. Set before the
+    // default route, and before the inner tunnel opens its socket.
+    for v in &w.via_tunnel {
+        if v.host.is_ipv4() {
+            let r = format!("{}/32", v.host);
+            run("ip", &["-4", "route", "replace", &r, "dev", &v.interface])?;
+            plan.via_routes.push(ViaRouteAdded {
+                prefix: r,
+                interface: v.interface.clone(),
+                if_index: None,
+            });
+            save_plan(&plan)?;
+        }
+    }
+
     // Everything else goes into the tunnel.
     for r in ["0.0.0.0/1", "128.0.0.0/1"] {
         run("ip", &["-4", "route", "replace", r, "dev", &w.interface])?;
@@ -115,6 +131,18 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
 
 pub fn revert(plan: &RevertPlan) -> Result<()> {
     let mut problems = Vec::new();
+    for v in plan.via_routes.iter().rev() {
+        if let Err(e) = run(
+            "ip",
+            &["-4", "route", "del", &v.prefix, "dev", &v.interface],
+        ) {
+            // Gone with the interface is fine.
+            let s = e.to_string();
+            if !(s.contains("No such process") || s.contains("Cannot find device")) {
+                problems.push(s);
+            }
+        }
+    }
     for r in plan.routes_added.iter().rev() {
         let fam = if r.contains(':') { "-6" } else { "-4" };
         if let Err(e) = run("ip", &[fam, "route", "del", r]) {

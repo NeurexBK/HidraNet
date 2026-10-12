@@ -27,7 +27,12 @@ pub struct Leases {
 }
 
 fn path() -> PathBuf {
-    PathBuf::from("/run/hidravpn/peers.json")
+    // HIDRAVPN_RUN_DIR lets two nodes share one machine (the multi-hop test
+    // runs an entry and an exit side by side); the default is /run, RAM.
+    let dir = std::env::var_os("HIDRAVPN_RUN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run/hidravpn"));
+    dir.join("peers.json")
 }
 
 impl Leases {

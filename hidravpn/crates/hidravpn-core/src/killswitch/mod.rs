@@ -34,6 +34,10 @@ pub struct KillConfig {
     /// Let the local subnet through as well (a printer, a NAS). Off by default:
     /// strict is safer, and phase 1 users asked for the whole machine covered.
     pub allow_lan: bool,
+    /// A second tunnel interface to allow: the inner tunnel of a two-hop
+    /// circuit. The only address reachable off-tunnel is still `node_endpoint`,
+    /// the entry node. None for a single hop.
+    pub extra_interface: Option<String>,
 }
 
 /// Turns the kill switch on. Replaces any rules a previous run left behind, so

@@ -323,6 +323,7 @@ async fn up(
         node_ip: inv.endpoint_ip()?,
         dns: inv.dns,
         route_ipv6,
+        via_tunnel: Vec::new(),
     }) {
         Ok(p) => p,
         Err(e) => {
@@ -345,6 +346,7 @@ async fn up(
             node_endpoint: inv.endpoint_addr()?,
             dns: inv.dns,
             allow_lan: false,
+            extra_interface: None,
         }) {
             Ok(()) => {
                 eprintln!("kill switch on: nothing leaves outside the tunnel");

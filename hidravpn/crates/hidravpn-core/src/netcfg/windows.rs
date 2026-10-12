@@ -6,7 +6,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::{clear_plan, run, save_plan, RevertPlan, Wanted};
+use super::{clear_plan, run, save_plan, RevertPlan, ViaRouteAdded, Wanted};
 
 /// Runs one PowerShell statement; a failing cmdlet fails the call.
 fn ps(script: &str) -> Result<String> {
@@ -98,6 +98,22 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
         save_plan(&plan)?;
     }
 
+    // Two-hop: the exit node's endpoint goes through the entry tunnel adapter,
+    // so the inner tunnel's packets ride inside the outer one.
+    for v in &w.via_tunnel {
+        if v.host.is_ipv4() {
+            let r = format!("{}/32", v.host);
+            let vidx = if_index(&v.interface)?;
+            add_route(&r, vidx, "0.0.0.0")?;
+            plan.via_routes.push(ViaRouteAdded {
+                prefix: r,
+                interface: v.interface.clone(),
+                if_index: Some(vidx),
+            });
+            save_plan(&plan)?;
+        }
+    }
+
     // Everything else goes into the tunnel. A TUN adapter has no gateway of
     // its own, so the next hop is the unspecified address: "on this link".
     for r in ["0.0.0.0/1", "128.0.0.0/1"] {
@@ -130,6 +146,15 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
 pub fn revert(plan: &RevertPlan) -> Result<()> {
     let mut problems = Vec::new();
     let gw_idx: Option<u32> = plan.gateway_if.as_deref().and_then(|s| s.parse().ok());
+    for v in plan.via_routes.iter().rev() {
+        if let Err(e) = remove_route(&v.prefix, v.if_index) {
+            let s = e.to_string();
+            // Routes on an adapter that is gone went with it.
+            if !(s.contains("No matching") || s.contains("not found") || s.contains("não")) {
+                problems.push(s);
+            }
+        }
+    }
     for r in plan.routes_added.iter().rev() {
         let on = if r.ends_with("/32") {
             gw_idx
