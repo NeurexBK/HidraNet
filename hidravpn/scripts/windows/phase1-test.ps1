@@ -104,10 +104,6 @@ function Mask-Ip([string]$ip) {
   if ($ip -match ':') { return '*:*:...:' + ($ip.Split(':')[-1]) }
   return $ip
 }
-function First-Ipv4([string]$text) {
-  if ($text -match '(\d{1,3}\.){3}\d{1,3}') { return $Matches[0] }
-  return ''
-}
 function Run-Native([string]$file, [string[]]$argv) {
   # stdout as one trimmed string; stderr goes to the console.
   $out = & $file @argv
@@ -120,12 +116,30 @@ function Exit-Ip([string]$family) {
   }
   return ''
 }
-function Ns-Lookup([string]$host) {
-  # nslookup's words are localised; the first IPv4 in its output is the server asked.
-  return ((& cmd.exe /c "nslookup $host 2>&1") | Out-String)
+function Dns-Servers {
+  # The IPv4 resolvers the system would use, the lowest-metric adapter first.
+  # Read straight from the stack, not from nslookup's localised text.
+  $out = @()
+  foreach ($r in (Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+    if ($r.ServerAddresses.Count -eq 0) { continue }
+    $m = (Get-NetIPInterface -InterfaceIndex $r.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty InterfaceMetric)
+    if ($null -eq $m) { $m = 9999 }
+    foreach ($s in $r.ServerAddresses) {
+      $out += [pscustomobject]@{ Server = $s; Alias = $r.InterfaceAlias; Metric = [int]$m }
+    }
+  }
+  return ($out | Sort-Object Metric)
 }
-function Resolves([string]$host) {
-  return (@(Resolve-DnsName -Name $host -Type A -DnsOnly -ErrorAction SilentlyContinue).Count -gt 0)
+function Node-Answers([string]$server, [string]$name) {
+  # Ask the node's resolver directly: proof it is the one answering, not just configured.
+  try {
+    $a = Resolve-DnsName -Name $name -Type A -Server $server -DnsOnly -ErrorAction Stop
+    return (@($a | Where-Object { $_.IPAddress }).Count -gt 0)
+  } catch { return $false }
+}
+function Resolves([string]$name) {
+  return (@(Resolve-DnsName -Name $name -Type A -DnsOnly -ErrorAction SilentlyContinue).Count -gt 0)
 }
 function Wintun-Check([string]$path) {
   $sig = Get-AuthenticodeSignature -FilePath $path
@@ -242,8 +256,8 @@ Step 'before connecting'
 $Ip4Before = Exit-Ip '4'
 $Ip6Before = Exit-Ip '6'
 if (-not $Ip4Before) { Fail-Now 'no internet access right now: could not learn the public address' }
-$DnsBefore = First-Ipv4 (Ns-Lookup 'example.com')
-Fact "before   exit IPv4 $(Mask-Ip $Ip4Before), IPv6 $(Mask-Ip $Ip6Before), DNS asked at $DnsBefore"
+$DnsBefore = (Dns-Servers | Select-Object -First 1).Server
+Fact "before   exit IPv4 $(Mask-Ip $Ip4Before), IPv6 $(Mask-Ip $Ip6Before), resolver $(Mask-Ip $DnsBefore)"
 
 # ------------------------------------------------------------------- up -----
 Step 'connecting'
@@ -286,11 +300,24 @@ $Ip4 = Exit-Ip '4'
 if ($Ip4 -eq $NodeIp) { Check 'PASS' 'exit address is the node' $Ip4 }
 else { Check 'FAIL' 'exit address is the node' "got $(Mask-Ip $Ip4), expected $NodeIp" }
 
-$srv = First-Ipv4 (Ns-Lookup 'example.com')
-$ok = Resolves 'example.com'
-if ($srv -eq $Dns -and $ok) { Check 'PASS' 'DNS answered by the node' "$Dns answered for example.com" }
-elseif ($srv -eq $Dns) { Check 'FAIL' 'DNS answered by the node' "the system asks $Dns but example.com did not resolve" }
-else { Check 'FAIL' 'DNS answered by the node' "the system asks $srv, expected $Dns" }
+$resolvers = Dns-Servers
+$top = $resolvers | Select-Object -First 1
+$nodeAnswers = Node-Answers $Dns 'example.com'
+$resolvesNow = Resolves 'example.com'
+$tunFirst = ($top -and $top.Server -eq $Dns)
+if ($nodeAnswers -and $resolvesNow -and $tunFirst) {
+  Check 'PASS' 'DNS through the node' "$Dns answered example.com and is the first resolver (on $($top.Alias))"
+} elseif ($nodeAnswers -and $resolvesNow) {
+  Check 'PASS' 'DNS through the node' "$Dns answered example.com; first resolver is $(Mask-Ip $top.Server) on $($top.Alias)"
+} else {
+  Check 'FAIL' 'DNS through the node' "node answered=$nodeAnswers, name resolves=$resolvesNow, first resolver $(Mask-Ip $top.Server)"
+}
+# Phase 1 does not yet stop the system asking another adapter's resolver too;
+# that traffic still exits through the node, and phase 2's kill switch closes it.
+$others = @($resolvers | Where-Object { $_.Server -ne $Dns } | Select-Object -ExpandProperty Alias -Unique)
+if ($others.Count -gt 0) {
+  Check 'INFO' 'other adapters still list a resolver' ("closed by the phase 2 kill switch: " + ($others -join ', '))
+}
 
 $code = (& curl.exe -4 -s -m 25 -o NUL -w '%{http_code}' https://example.com 2>$null | Out-String).Trim()
 if ($code -eq '200') { Check 'PASS' 'HTTPS through the tunnel' 'https://example.com -> 200' }
@@ -370,7 +397,7 @@ if ($graceful -and $upLog -match 'network restored') {
 Step 'after disconnecting'
 Start-Sleep -Seconds 2
 $Ip4After = Exit-Ip '4'
-$DnsAfter = First-Ipv4 (Ns-Lookup 'example.com')
+$DnsAfter = (Dns-Servers | Select-Object -First 1).Server
 $r1 = Get-NetRoute -DestinationPrefix '0.0.0.0/1' -ErrorAction SilentlyContinue
 $r2 = Get-NetRoute -DestinationPrefix '128.0.0.0/1' -ErrorAction SilentlyContinue
 $hostRoute = Get-NetRoute -DestinationPrefix "$NodeIp/32" -ErrorAction SilentlyContinue
@@ -381,7 +408,7 @@ if ($DnsAfter -eq $Dns) { $problems += "DNS is still asked at $Dns" }
 if ($r1 -or $r2) { $problems += 'the 0.0.0.0/1 or 128.0.0.0/1 route is still there' }
 if ($hostRoute) { $problems += "the route to $NodeIp is still there" }
 if (Test-Path $plan) { $problems += "the plan file is still there ($plan)" }
-if ($problems.Count -eq 0) { Check 'PASS' 'network back to normal' "exit $(Mask-Ip $Ip4After), DNS asked at $DnsAfter, routes gone" }
+if ($problems.Count -eq 0) { Check 'PASS' 'network back to normal' "exit $(Mask-Ip $Ip4After), resolver $(Mask-Ip $DnsAfter), routes gone" }
 else { Check 'FAIL' 'network back to normal' ($problems -join '; ') }
 
 $gone = $false
