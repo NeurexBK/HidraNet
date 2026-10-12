@@ -16,6 +16,9 @@ Restart=on-failure
 RestartSec=3
 RuntimeDirectory=hidravpn
 RuntimeDirectoryMode=0700
+# The leases live here (RAM). A restart of the service must not throw the
+# admitted clients out; only a reboot does.
+RuntimeDirectoryPreserve=yes
 # Logs go to the journal: counts and states, never addresses or names.
 StandardOutput=journal
 StandardError=journal
