@@ -63,11 +63,11 @@ function Mask([string]$ip) {
   if ($ip -match '^(\d{1,3}\.){3}(\d{1,3})$') { return "*.*.*.$($Matches[2])" }
   return $ip
 }
-function Firewall-Off { & $SvcExe firewall off 2>&1 | Out-Null }
+function Firewall-Off { try { & $SvcExe firewall off 2>&1 | Out-Null } catch {} }
 function Service-Cleanup {
   if ($Full) {
-    & $SvcExe down 2>&1 | Out-Null
-    & $SvcExe uninstall 2>&1 | Out-Null
+    try { & $SvcExe down 2>&1 | Out-Null } catch {}
+    try { & $SvcExe uninstall 2>&1 | Out-Null } catch {}
   }
   Firewall-Off
 }
@@ -88,6 +88,7 @@ function Finish {
   Log '================ HidraVPN phase 2 - Windows test ================'
   foreach ($f in $script:Facts) { Log $f }
   foreach ($c in $script:Checks) { $l = '{0,-5} {1}' -f $c.R, $c.N; if ($c.D) { $l += "  ($($c.D))" }; Log $l }
+  if ($passes -eq 0 -and $fails -eq 0) { Log 'FAIL  no checks ran (the test stopped before it could test anything)'; $fails = 1 }
   $verdict = if ($fails -eq 0) { 'PASS' } else { 'FAIL' }
   Log ('RESULT: {0}  ({1} passed, {2} failed){3}' -f $verdict, $passes, $fails, $(if (-not $Full) { '  [kill-switch only; re-run with -Full for the service]' } else { '' }))
   Log '================================================================'
@@ -128,8 +129,11 @@ if (-not $haveSvc -or ($Full -and -not $haveCli)) {
 Unblock-File $SvcExe -ErrorAction SilentlyContinue
 if ($Full) { Unblock-File $CliExe -ErrorAction SilentlyContinue }
 if (-not (Test-Path $SvcExe)) { Stop-Now 'hidravpn-service.exe is not in place' }
-$sv = (& $SvcExe --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { Stop-Now "hidravpn-service.exe does not run (Defender may have blocked it)" }
+$sv = ''
+try { $sv = (& $SvcExe --version 2>&1 | Out-String).Trim() } catch { $sv = "ERROR: $($_.Exception.Message)" }
+if ($sv -notmatch 'hidravpn-service') {
+  Stop-Now ("hidravpn-service.exe did not run. On Windows 11 this is usually Smart App Control or an Application Control policy blocking an unsigned binary. Output was: " + $sv)
+}
 Fact "service  $SvcExe  $sv  sha256 $((Get-FileHash $SvcExe -Algorithm SHA256).Hash)"
 
 try {
