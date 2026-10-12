@@ -29,10 +29,25 @@ fn default_route() -> Result<(String, String)> {
 }
 
 fn resolved_active() -> bool {
-    std::process::Command::new("resolvectl")
+    // resolvectl must answer AND /etc/resolv.conf must be systemd-resolved's
+    // stub (127.0.0.53). If resolved is running but resolv.conf points
+    // somewhere else, a program that reads resolv.conf directly would ignore
+    // the DNS we set through resolvectl, so we fall back to swapping the file.
+    let resolvectl_ok = std::process::Command::new("resolvectl")
         .arg("status")
         .output()
         .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !resolvectl_ok {
+        return false;
+    }
+    std::fs::read_to_string("/etc/resolv.conf")
+        .map(|c| {
+            c.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with("nameserver") && l.contains("127.0.0.53")
+            })
+        })
         .unwrap_or(false)
 }
 
