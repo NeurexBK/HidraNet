@@ -13,8 +13,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use hidravpn_core::killswitch::{self, KillConfig};
 use hidravpn_core::netcfg::{self, Wanted};
 use hidravpn_core::{ClientConfig, ClientKey, Invite, Tunnel};
+use hidravpn_service::ipc::{self, Command};
 use hidravpn_tun::TunConfig;
 
 #[derive(Parser)]
@@ -27,6 +29,10 @@ struct Cli {
     /// Where this machine's key is kept.
     #[arg(long, global = true)]
     key: Option<PathBuf>,
+    /// Make the change in this process instead of asking the background
+    /// service, even if the service is running (phase-1 behaviour).
+    #[arg(long, global = true)]
+    direct: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -49,9 +55,15 @@ enum Cmd {
         /// Interface name.
         #[arg(long, default_value = "hvpn0")]
         interface: String,
+        /// Do not arm the kill switch (diagnosis only: without it, traffic can
+        /// leak to the open internet if the tunnel drops).
+        #[arg(long)]
+        no_kill_switch: bool,
     },
     /// Undo the routes and DNS of a connection that did not end cleanly.
     Down,
+    /// Show whether a tunnel is up and whether the kill switch is on.
+    Status,
 }
 
 fn default_key_path() -> PathBuf {
@@ -160,34 +172,106 @@ async fn main() -> Result<()> {
         Cmd::Pubkey => {
             println!("{}", load_or_create_key(&key_path, false)?.public_base64());
         }
-        Cmd::Down => {
-            require_admin()?;
-            match netcfg::load_plan()? {
-                None => println!("nothing to undo"),
-                Some(plan) => {
-                    netcfg::revert(&plan)?;
-                    println!("network restored");
-                }
-            }
-        }
         Cmd::Up {
             invite,
             keep_ipv6,
             interface,
+            no_kill_switch,
         } => {
-            require_admin()?;
             let inv = Invite::from_json(
                 &std::fs::read_to_string(&invite)
                     .with_context(|| format!("reading {}", invite.display()))?,
             )?;
-            let key = load_or_create_key(&key_path, false)?;
-            up(inv, key, interface, !keep_ipv6).await?;
+            // Prefer the installed service: it keeps the tunnel after this
+            // command returns. Only if it is not there do we hold it here.
+            match service_call(cli.direct, Command::Up { invite: inv.clone(), allow_lan: false, keep_ipv6 }).await {
+                Some(res) => {
+                    let r = res?;
+                    if r.ok {
+                        println!("connected through the HidraVPN service");
+                    } else {
+                        return Err(anyhow!(r.error.unwrap_or_else(|| "the service could not connect".into())));
+                    }
+                }
+                None => {
+                    require_admin()?;
+                    let key = load_or_create_key(&key_path, false)?;
+                    up(inv, key, interface, !keep_ipv6, !no_kill_switch).await?;
+                }
+            }
+        }
+        Cmd::Down => {
+            match service_call(cli.direct, Command::Down).await {
+                Some(res) => {
+                    let r = res?;
+                    if r.ok {
+                        println!("disconnected");
+                    } else {
+                        return Err(anyhow!(r.error.unwrap_or_else(|| "the service could not disconnect".into())));
+                    }
+                }
+                None => {
+                    require_admin()?;
+                    let _ = killswitch::remove();
+                    match netcfg::load_plan()? {
+                        None => println!("nothing to undo"),
+                        Some(plan) => {
+                            netcfg::revert(&plan)?;
+                            println!("network restored");
+                        }
+                    }
+                }
+            }
+        }
+        Cmd::Status => {
+            match service_call(cli.direct, Command::Status).await {
+                Some(res) => {
+                    let s = res?.status.ok_or_else(|| anyhow!("the service did not report a status"))?;
+                    if s.connected {
+                        println!(
+                            "connected through {} ({}); kill switch {}; up {}, down {}; last handshake {}",
+                            s.node_name.as_deref().unwrap_or("?"),
+                            s.endpoint.as_deref().unwrap_or("?"),
+                            if s.killswitch { "on" } else { "OFF" },
+                            fmt_bytes(s.tx_bytes),
+                            fmt_bytes(s.rx_bytes),
+                            s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
+                        );
+                    } else {
+                        println!("the service is running but not connected; kill switch {}", if s.killswitch { "on" } else { "off" });
+                    }
+                }
+                None => {
+                    let ks = killswitch::is_active();
+                    let has_plan = netcfg::load_plan()?.is_some();
+                    if has_plan {
+                        println!("a direct connection's network changes are in place (kill switch {}); run `hidravpn down` to undo", if ks { "on" } else { "off" });
+                    } else {
+                        println!("not connected (no service, no tunnel); kill switch {}", if ks { "on" } else { "off" });
+                    }
+                }
+            }
         }
     }
     Ok(())
 }
 
-async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool) -> Result<()> {
+/// Tries the background service. Returns None when it is not reachable (or when
+/// `--direct` asked us to skip it), so the caller can act in this process
+/// instead; Some(..) carries the service's answer to the command.
+async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response>> {
+    if direct {
+        return None;
+    }
+    // A cheap reachability probe first, so "service down" is told apart from
+    // "command failed".
+    match ipc::call(Command::Ping).await {
+        Ok(r) if r.ok => Some(ipc::call(cmd).await),
+        _ => None,
+    }
+}
+
+async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool, kill_switch: bool) -> Result<()> {
     // A plan from a connection that died is undone first; otherwise the new
     // routes would stack on the old ones.
     if let Some(old) = netcfg::load_plan()? {
@@ -230,6 +314,29 @@ async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool) ->
         inv.node_name, inv.endpoint
     );
 
+    // Arm the kill switch. If it will not arm, undo the routing and refuse:
+    // an unprotected tunnel is worse than no tunnel.
+    let ks_armed = if kill_switch {
+        match killswitch::apply(&KillConfig {
+            interface: ifname.clone(),
+            node_endpoint: inv.endpoint_addr()?,
+            dns: inv.dns,
+            allow_lan: false,
+        }) {
+            Ok(()) => {
+                eprintln!("kill switch on: nothing leaves outside the tunnel");
+                true
+            }
+            Err(e) => {
+                let _ = netcfg::revert(&plan);
+                return Err(e.context("could not arm the kill switch; connection refused"));
+            }
+        }
+    } else {
+        eprintln!("kill switch OFF (--no-kill-switch): traffic can leak if the tunnel drops");
+        false
+    };
+
     let runner = {
         let t = tunnel.clone();
         tokio::spawn(async move { t.run().await })
@@ -265,6 +372,9 @@ async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool) ->
     eprintln!("\ndisconnecting");
     tunnel.stop();
     runner.abort();
+    if ks_armed {
+        let _ = killswitch::remove();
+    }
     netcfg::revert(&plan).context("restoring the network")?;
     eprintln!("network restored");
     outcome

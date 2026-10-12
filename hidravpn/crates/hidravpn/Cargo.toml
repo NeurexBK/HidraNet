@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 hidravpn-core = { path = "../hidravpn-core" }
 hidravpn-tun = { path = "../hidravpn-tun" }
+hidravpn-service = { path = "../hidravpn-service" }
 tokio = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
