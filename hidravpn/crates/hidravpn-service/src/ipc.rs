@@ -25,23 +25,37 @@ pub struct Request {
     pub cmd: Command,
 }
 
+// `Up` carries up to a handful of invites and the others nothing; a request
+// is one short-lived value, so the size difference costs nothing worth boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     /// Is the service alive?
     Ping,
-    /// Connect: bring up the tunnel, route the machine through it, arm the kill switch.
+    /// Connect: bring up the circuit, route the machine through it, arm the
+    /// kill switch. `invite` is the exit node; `via` an entry node for two
+    /// hops; `alternates` other exits that `new_identity` may rotate to. The
+    /// last two are absent in requests from before phase 3, which still work.
     Up {
         invite: Invite,
         #[serde(default)]
         allow_lan: bool,
         #[serde(default)]
         keep_ipv6: bool,
+        #[serde(default)]
+        via: Option<Invite>,
+        #[serde(default)]
+        alternates: Vec<Invite>,
     },
     /// Disconnect and put the network back.
     Down,
     /// How things stand.
     Status,
+    /// Rebuild the circuit through the next exit node the service holds an
+    /// invite for, so the address the internet sees changes. With only one
+    /// exit it reconnects to the same one and the reply's `note` says so.
+    NewIdentity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +67,15 @@ pub struct StatusReport {
     pub tx_bytes: u64,
     pub rx_bytes: u64,
     pub killswitch: bool,
+    /// 1 (Rápido) or 2 (Privado); 0 when not connected.
+    #[serde(default)]
+    pub hops: u8,
+    /// "rapido" or "privado"; empty when not connected.
+    #[serde(default)]
+    pub mode: String,
+    /// The entry node of a two-hop circuit.
+    #[serde(default)]
+    pub entry_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +85,11 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<StatusReport>,
+    /// Something the person should know that is not an error: for instance
+    /// that a new identity could not change the exit because there is only
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Response {
@@ -70,6 +98,7 @@ impl Response {
             ok: true,
             error: None,
             status: None,
+            note: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -77,6 +106,7 @@ impl Response {
             ok: true,
             error: None,
             status: Some(s),
+            note: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -84,7 +114,12 @@ impl Response {
             ok: false,
             error: Some(msg.into()),
             status: None,
+            note: None,
         }
+    }
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
     }
 }
 
@@ -356,5 +391,111 @@ mod tests {
         let s = resp.status.expect("a status report");
         assert!(!s.connected);
         assert_eq!(s.tx_bytes, 0);
+        assert_eq!(s.hops, 0);
+        assert_eq!(s.mode, "");
+        assert!(s.entry_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn new_identity_with_nothing_up_is_an_error_not_a_crash() {
+        let sock = start("tok").await;
+        let resp = call_unix_at(&sock, "tok", Command::NewIdentity)
+            .await
+            .unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not connected"));
+    }
+
+    fn invite(name: &str, endpoint: &str) -> Invite {
+        Invite {
+            node_name: name.into(),
+            node_public_key: hidravpn_core::ClientKey::generate()
+                .unwrap()
+                .public_base64(),
+            endpoint: endpoint.into(),
+            client_address: "10.77.0.2/16".into(),
+            dns: std::net::Ipv4Addr::new(10, 77, 0, 1),
+            allowed_ips: vec!["0.0.0.0/0".into()],
+            mtu: 1420,
+            keepalive: 25,
+        }
+    }
+
+    #[test]
+    fn a_phase_2_up_request_still_parses_with_no_via_and_no_alternates() {
+        let inv = invite("exit", "95.216.142.72:51820");
+        let old = format!(
+            r#"{{"token":"t","cmd":"up","invite":{},"allow_lan":false}}"#,
+            serde_json::to_string(&inv).unwrap()
+        );
+        let req: Request = serde_json::from_str(&old).unwrap();
+        match req.cmd {
+            Command::Up {
+                via, alternates, ..
+            } => {
+                assert!(via.is_none());
+                assert!(alternates.is_empty());
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_two_hop_up_request_round_trips_with_its_alternates() {
+        let req = Request {
+            token: "t".into(),
+            cmd: Command::Up {
+                invite: invite("exit", "95.216.142.72:51820"),
+                allow_lan: false,
+                keep_ipv6: false,
+                via: Some(invite("entry", "5.6.7.8:51820")),
+                alternates: vec![invite("exit2", "9.9.9.9:51820")],
+            },
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""cmd":"up""#));
+        let again: Request = serde_json::from_str(&line).unwrap();
+        match again.cmd {
+            Command::Up {
+                via, alternates, ..
+            } => {
+                assert_eq!(via.unwrap().node_name, "entry");
+                assert_eq!(alternates.len(), 1);
+                assert_eq!(alternates[0].node_name, "exit2");
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        let ni: Request = serde_json::from_str(r#"{"token":"t","cmd":"new_identity"}"#).unwrap();
+        assert!(matches!(ni.cmd, Command::NewIdentity));
+    }
+
+    #[test]
+    fn the_status_report_carries_the_mode_and_the_hops_and_a_note_is_optional() {
+        let s = StatusReport {
+            connected: true,
+            node_name: Some("exit".into()),
+            endpoint: Some("95.216.142.72:51820".into()),
+            last_handshake_secs: Some(3),
+            tx_bytes: 1,
+            rx_bytes: 2,
+            killswitch: true,
+            hops: 2,
+            mode: "privado".into(),
+            entry_name: Some("entry".into()),
+        };
+        let r = Response::with_status(s).noting("rotated");
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(line.contains(r#""hops":2"#));
+        assert!(line.contains(r#""mode":"privado""#));
+        assert!(line.contains(r#""entry_name":"entry""#));
+        assert!(line.contains(r#""note":"rotated""#));
+        let plain = serde_json::to_string(&Response::ok()).unwrap();
+        assert!(!plain.contains("note"));
+        // A report from a phase-2 service, without the new fields, still reads.
+        let old: StatusReport = serde_json::from_str(
+            r#"{"connected":false,"node_name":null,"endpoint":null,"last_handshake_secs":null,"tx_bytes":0,"rx_bytes":0,"killswitch":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old.hops, 0);
     }
 }
