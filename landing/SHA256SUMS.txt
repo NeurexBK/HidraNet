@@ -12,17 +12,17 @@ If the value does not match the table below, do not run the file.
 ON THE RELEASE PAGE NOW
 -----------------------------------------------------------------------
 
-ac1d1a5445e68fad9fa33dff3a4161a906781a6aa121febddd43983a90a27a86  HidraNet-Browser-1.0.0-macOS-arm64.zip
-4205d7a4c33d1fed31e2f5c2500fa9626061135cb6769f61e0d62937113e68e0  HidraNet-Browser-1.0.0-macOS-x64.zip
-b0e384f3e8264def74a3acfa7d632a87b007ec474cba688326d59d4779572028  HidraNet-Browser-1.0.0-Linux-x64.zip
-ae4925cf3e98de0a1c55de0b5b385588afdbbdbc149198be97276e0cdbb399b0  HidraNet-Browser-1.0.0-Windows-x64.zip
+9b1f8b9023c6a3eb540ee49640bd3de2ec1d5fd609cb25086066852e95f0ad4b  HidraNet-Browser-1.0.0-macOS-arm64.zip
+920a6c8e2d255fff1cdabe4ada6201c768222f136e390792123475053fc2b7b5  HidraNet-Browser-1.0.0-macOS-x64.zip
+b4bea0915991c896397727a3ed55c0e80102943258800f003a7cff6997c84bec  HidraNet-Browser-1.0.0-Linux-x64.zip
+21ee133484bbe18410576b2cb42302aa3bf054b085d2ab6e94d589d77d2425af  HidraNet-Browser-1.0.0-Windows-x64.zip
 
-  macOS arm64    108,430,013 bytes  (103.4 MiB)
-  macOS x64      112,860,494 bytes  (107.6 MiB)
-  Linux x64      112,936,147 bytes  (107.7 MiB)
-  Windows x64    129,413,819 bytes  (123.4 MiB)
+  macOS arm64    108,430,393 bytes  (103.4 MiB)
+  macOS x64      112,860,874 bytes  (107.6 MiB)
+  Linux x64      112,936,527 bytes  (107.7 MiB)
+  Windows x64    129,414,390 bytes  (123.4 MiB)
 
-  Built from commit 1a93c2d. The three packages without the engine are a
+  Built from commit f4fe4e9. The three packages without the engine are a
   pure repack — rebuilding from the same tree reproduces these hashes
   byte for byte, which was checked by running the build twice. The
   Windows one carries a freshly compiled Rust engine, so a rebuild on
