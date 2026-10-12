@@ -89,10 +89,8 @@ impl NodeConfig {
         use std::os::unix::fs::OpenOptionsExt;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
-            let _ = std::fs::set_permissions(
-                dir,
-                std::fs::Permissions::from(std::os::unix::fs::PermissionsExt::from_mode(0o700)),
-            );
+            let _ =
+                std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         }
         let mut f = std::fs::OpenOptions::new()
             .write(true)

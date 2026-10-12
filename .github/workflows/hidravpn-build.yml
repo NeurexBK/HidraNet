@@ -1,0 +1,105 @@
+# HidraVPN — build, check and (once a certificate exists) sign the Windows
+# binaries from the checked-in source. This workflow only touches hidravpn/;
+# it does not build or change the browser, the relay engine or the site.
+#
+# Signing is off until a SignPath Foundation project exists. To turn it on,
+# add the repository variable SIGNPATH_ENABLED=true, the secret
+# SIGNPATH_API_TOKEN, and the SIGNPATH_* variables the SignPath project gives
+# you. Until then the build and checks run and the sign job is skipped.
+name: HidraVPN build
+
+on:
+  push:
+    branches: [feature/hidravpn]
+    paths:
+      - 'hidravpn/**'
+      - '.github/workflows/hidravpn-build.yml'
+  pull_request:
+    paths:
+      - 'hidravpn/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: format, lint and tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: format
+        run: cargo fmt --manifest-path hidravpn/Cargo.toml --all --check
+      - name: clippy
+        run: cargo clippy --manifest-path hidravpn/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: tests
+        run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
+
+  build-windows:
+    name: build Windows executables
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: MinGW cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: build the client and the service
+        run: >
+          cargo build --release
+          --manifest-path hidravpn/Cargo.toml
+          --target x86_64-pc-windows-gnu
+          -p hidravpn -p hidravpn-service
+      - name: collect
+        run: |
+          mkdir -p dist
+          cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn.exe dist/
+          cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn-service.exe dist/
+          (cd dist && sha256sum *.exe | tee SHA256SUMS.txt)
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidravpn-windows-unsigned
+          path: dist/
+          if-no-files-found: error
+
+  sign-windows:
+    name: sign with SignPath
+    needs: build-windows
+    # Off until the SignPath Foundation project is approved and configured.
+    if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The exact action version and the *-slug values come from the SignPath
+      # project you register; SignPath gives you the snippet to paste here.
+      - name: submit the build for signing
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_SLUG }}
+          github-artifact-id: ${{ needs.build-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hidravpn-windows-signed
+          path: signed/
+          if-no-files-found: error

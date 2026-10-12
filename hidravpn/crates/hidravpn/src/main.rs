@@ -184,13 +184,24 @@ async fn main() -> Result<()> {
             )?;
             // Prefer the installed service: it keeps the tunnel after this
             // command returns. Only if it is not there do we hold it here.
-            match service_call(cli.direct, Command::Up { invite: inv.clone(), allow_lan: false, keep_ipv6 }).await {
+            match service_call(
+                cli.direct,
+                Command::Up {
+                    invite: inv.clone(),
+                    allow_lan: false,
+                    keep_ipv6,
+                },
+            )
+            .await
+            {
                 Some(res) => {
                     let r = res?;
                     if r.ok {
                         println!("connected through the HidraVPN service");
                     } else {
-                        return Err(anyhow!(r.error.unwrap_or_else(|| "the service could not connect".into())));
+                        return Err(anyhow!(r
+                            .error
+                            .unwrap_or_else(|| "the service could not connect".into())));
                     }
                 }
                 None => {
@@ -200,35 +211,36 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Down => {
-            match service_call(cli.direct, Command::Down).await {
-                Some(res) => {
-                    let r = res?;
-                    if r.ok {
-                        println!("disconnected");
-                    } else {
-                        return Err(anyhow!(r.error.unwrap_or_else(|| "the service could not disconnect".into())));
-                    }
+        Cmd::Down => match service_call(cli.direct, Command::Down).await {
+            Some(res) => {
+                let r = res?;
+                if r.ok {
+                    println!("disconnected");
+                } else {
+                    return Err(anyhow!(r
+                        .error
+                        .unwrap_or_else(|| "the service could not disconnect".into())));
                 }
-                None => {
-                    require_admin()?;
-                    let _ = killswitch::remove();
-                    match netcfg::load_plan()? {
-                        None => println!("nothing to undo"),
-                        Some(plan) => {
-                            netcfg::revert(&plan)?;
-                            println!("network restored");
-                        }
+            }
+            None => {
+                require_admin()?;
+                let _ = killswitch::remove();
+                match netcfg::load_plan()? {
+                    None => println!("nothing to undo"),
+                    Some(plan) => {
+                        netcfg::revert(&plan)?;
+                        println!("network restored");
                     }
                 }
             }
-        }
-        Cmd::Status => {
-            match service_call(cli.direct, Command::Status).await {
-                Some(res) => {
-                    let s = res?.status.ok_or_else(|| anyhow!("the service did not report a status"))?;
-                    if s.connected {
-                        println!(
+        },
+        Cmd::Status => match service_call(cli.direct, Command::Status).await {
+            Some(res) => {
+                let s = res?
+                    .status
+                    .ok_or_else(|| anyhow!("the service did not report a status"))?;
+                if s.connected {
+                    println!(
                             "connected through {} ({}); kill switch {}; up {}, down {}; last handshake {}",
                             s.node_name.as_deref().unwrap_or("?"),
                             s.endpoint.as_deref().unwrap_or("?"),
@@ -237,21 +249,26 @@ async fn main() -> Result<()> {
                             fmt_bytes(s.rx_bytes),
                             s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
                         );
-                    } else {
-                        println!("the service is running but not connected; kill switch {}", if s.killswitch { "on" } else { "off" });
-                    }
-                }
-                None => {
-                    let ks = killswitch::is_active();
-                    let has_plan = netcfg::load_plan()?.is_some();
-                    if has_plan {
-                        println!("a direct connection's network changes are in place (kill switch {}); run `hidravpn down` to undo", if ks { "on" } else { "off" });
-                    } else {
-                        println!("not connected (no service, no tunnel); kill switch {}", if ks { "on" } else { "off" });
-                    }
+                } else {
+                    println!(
+                        "the service is running but not connected; kill switch {}",
+                        if s.killswitch { "on" } else { "off" }
+                    );
                 }
             }
-        }
+            None => {
+                let ks = killswitch::is_active();
+                let has_plan = netcfg::load_plan()?.is_some();
+                if has_plan {
+                    println!("a direct connection's network changes are in place (kill switch {}); run `hidravpn down` to undo", if ks { "on" } else { "off" });
+                } else {
+                    println!(
+                        "not connected (no service, no tunnel); kill switch {}",
+                        if ks { "on" } else { "off" }
+                    );
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -271,7 +288,13 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
     }
 }
 
-async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool, kill_switch: bool) -> Result<()> {
+async fn up(
+    inv: Invite,
+    key: ClientKey,
+    interface: String,
+    route_ipv6: bool,
+    kill_switch: bool,
+) -> Result<()> {
     // A plan from a connection that died is undone first; otherwise the new
     // routes would stack on the old ones.
     if let Some(old) = netcfg::load_plan()? {
@@ -360,7 +383,7 @@ async fn up(inv: Invite, key: ClientKey, interface: String, route_ipv6: bool, ki
                         eprintln!("no answer from the node after 15 s — is UDP {} open, and was this key admitted?", inv.endpoint_addr().map(|a| a.port()).unwrap_or(0));
                     }
                 }
-                if was_connected && waited % 5 == 0 {
+                if was_connected && waited.is_multiple_of(5) {
                     let hs = s.last_handshake.map(|d| format!("{}s ago", d.as_secs())).unwrap_or_else(|| "none".into());
                     eprint!("\r  {}  handshake {}  up {}  down {}      ", if s.connected { "connected   " } else { "reconnecting" }, hs, fmt_bytes(s.tx_bytes), fmt_bytes(s.rx_bytes));
                 }

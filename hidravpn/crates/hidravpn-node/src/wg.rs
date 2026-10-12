@@ -78,7 +78,7 @@ impl WgDevice {
                         .await?;
                 // The control socket is served by this process; configure
                 // it from a blocking thread so the server can answer.
-                let iface2 = iface.clone();
+                let iface2 = iface;
                 let upd = update();
                 tokio::task::spawn_blocking(move || upd.apply(&iface2, Backend::Userspace))
                     .await
@@ -120,7 +120,7 @@ impl WgDevice {
         if self.userspace.is_some() {
             // Same process as the control socket's server: do not block a
             // runtime thread on it.
-            let iface = self.iface.clone();
+            let iface = self.iface;
             let backend = self.backend;
             tokio::task::block_in_place(move || update.apply(&iface, backend))?;
             Ok(())

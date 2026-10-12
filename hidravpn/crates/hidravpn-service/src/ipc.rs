@@ -66,13 +66,25 @@ pub struct Response {
 
 impl Response {
     pub fn ok() -> Self {
-        Self { ok: true, error: None, status: None }
+        Self {
+            ok: true,
+            error: None,
+            status: None,
+        }
     }
     pub fn with_status(s: StatusReport) -> Self {
-        Self { ok: true, error: None, status: Some(s) }
+        Self {
+            ok: true,
+            error: None,
+            status: Some(s),
+        }
     }
     pub fn err(msg: impl Into<String>) -> Self {
-        Self { ok: false, error: Some(msg.into()), status: None }
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+            status: None,
+        }
     }
 }
 
@@ -90,8 +102,8 @@ pub fn write_token() -> Result<String> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -172,12 +184,11 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
 
 /// Sends one request to a given Unix socket path (used by tests).
 #[cfg(unix)]
-pub async fn call_unix_at(
-    path: &std::path::Path,
-    token: &str,
-    cmd: Command,
-) -> Result<Response> {
-    let req = Request { token: token.to_string(), cmd };
+pub async fn call_unix_at(path: &std::path::Path, token: &str, cmd: Command) -> Result<Response> {
+    let req = Request {
+        token: token.to_string(),
+        cmd,
+    };
     let mut line = serde_json::to_string(&req)?;
     line.push('\n');
     let stream = tokio::net::UnixStream::connect(path)
@@ -295,7 +306,6 @@ where
     serde_json::from_str(line.trim()).context("the service sent an unreadable answer")
 }
 
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -329,7 +339,9 @@ mod tests {
     #[tokio::test]
     async fn ping_needs_the_right_token() {
         let sock = start("the-secret").await;
-        let ok = call_unix_at(&sock, "the-secret", Command::Ping).await.unwrap();
+        let ok = call_unix_at(&sock, "the-secret", Command::Ping)
+            .await
+            .unwrap();
         assert!(ok.ok, "a correct token is accepted");
         let bad = call_unix_at(&sock, "wrong", Command::Ping).await.unwrap();
         assert!(!bad.ok, "a wrong token is refused");

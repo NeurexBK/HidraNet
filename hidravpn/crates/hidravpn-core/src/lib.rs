@@ -5,8 +5,8 @@
 //! Nothing here logs an address, a name looked up, or a byte of traffic.
 
 pub mod config;
-pub mod killswitch;
 pub mod keys;
+pub mod killswitch;
 pub mod netcfg;
 pub mod tunnel;
 

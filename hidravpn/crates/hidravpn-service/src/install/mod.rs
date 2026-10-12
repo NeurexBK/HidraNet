@@ -25,7 +25,9 @@ pub fn installed_binary() -> PathBuf {
     #[cfg(windows)]
     {
         let base = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
-        PathBuf::from(base).join("HidraVPN").join("hidravpn-service.exe")
+        PathBuf::from(base)
+            .join("HidraVPN")
+            .join("hidravpn-service.exe")
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {

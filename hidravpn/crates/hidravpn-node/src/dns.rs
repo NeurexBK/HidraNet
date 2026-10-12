@@ -73,7 +73,7 @@ fn build_resolver(upstreams: &[String]) -> Result<Resolver<TokioRuntimeProvider>
     opts.attempts = 2;
     opts.cache_size = 8192;
     opts.use_hosts_file = hickory_resolver::config::ResolveHosts::Never;
-    Ok(builder.build().context("building the resolver")?)
+    builder.build().context("building the resolver")
 }
 
 pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {

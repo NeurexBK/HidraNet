@@ -22,7 +22,11 @@ use hidravpn_service::daemon::Daemon;
 use hidravpn_service::{install, ipc};
 
 #[derive(Parser)]
-#[command(name = "hidravpn-service", version, about = "The HidraVPN background service")]
+#[command(
+    name = "hidravpn-service",
+    version,
+    about = "The HidraVPN background service"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -120,19 +124,31 @@ fn main() -> Result<()> {
                             s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
                         );
                     } else {
-                        println!("not connected; kill switch {}", if s.killswitch { "on" } else { "off" });
+                        println!(
+                            "not connected; kill switch {}",
+                            if s.killswitch { "on" } else { "off" }
+                        );
                     }
                     Ok(())
                 }
                 None => anyhow::bail!("the service did not report a status"),
             }
         }),
-        Cmd::Up { invite, allow_lan, keep_ipv6 } => client(async move {
+        Cmd::Up {
+            invite,
+            allow_lan,
+            keep_ipv6,
+        } => client(async move {
             let inv = Invite::from_json(
                 &std::fs::read_to_string(&invite)
                     .with_context(|| format!("reading {}", invite.display()))?,
             )?;
-            let resp = ipc::call(ipc::Command::Up { invite: inv, allow_lan, keep_ipv6 }).await?;
+            let resp = ipc::call(ipc::Command::Up {
+                invite: inv,
+                allow_lan,
+                keep_ipv6,
+            })
+            .await?;
             if resp.ok {
                 println!("connected");
                 Ok(())
@@ -152,8 +168,18 @@ fn main() -> Result<()> {
         Cmd::Firewall { what } => {
             require_admin()?;
             match what {
-                Firewall::On { interface, node, dns, allow_lan } => {
-                    killswitch::apply(&KillConfig { interface, node_endpoint: node, dns, allow_lan })?;
+                Firewall::On {
+                    interface,
+                    node,
+                    dns,
+                    allow_lan,
+                } => {
+                    killswitch::apply(&KillConfig {
+                        interface,
+                        node_endpoint: node,
+                        dns,
+                        allow_lan,
+                    })?;
                     println!("kill switch on");
                 }
                 Firewall::Off => {

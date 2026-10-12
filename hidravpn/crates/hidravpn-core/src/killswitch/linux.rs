@@ -125,7 +125,10 @@ pub fn remove() -> Result<()> {
     if err.contains("No such file or directory") || err.contains("does not exist") {
         Ok(())
     } else {
-        Err(anyhow!("nft could not remove the kill switch: {}", err.trim()))
+        Err(anyhow!(
+            "nft could not remove the kill switch: {}",
+            err.trim()
+        ))
     }
 }
 
@@ -179,6 +182,8 @@ mod tests {
     fn lan_is_off_unless_asked() {
         assert!(!ruleset(&cfg(false)).contains("allow LAN"));
         let r = ruleset(&cfg(true));
-        assert!(r.contains("ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept"));
+        assert!(r.contains(
+            "ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept"
+        ));
     }
 }

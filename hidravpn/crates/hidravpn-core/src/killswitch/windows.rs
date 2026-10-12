@@ -98,15 +98,8 @@ fn weight_u8(w: u8) -> FWP_VALUE0 {
 
 fn open_engine() -> Result<HANDLE> {
     let mut engine = HANDLE::default();
-    let code = unsafe {
-        FwpmEngineOpen0(
-            PCWSTR::null(),
-            RPC_C_AUTHN_WINNT,
-            None,
-            None,
-            &mut engine,
-        )
-    };
+    let code =
+        unsafe { FwpmEngineOpen0(PCWSTR::null(), RPC_C_AUTHN_WINNT, None, None, &mut engine) };
     ok(code)?;
     Ok(engine)
 }
@@ -116,7 +109,10 @@ fn luid_of(interface: &str) -> Result<u64> {
     let mut luid = NET_LUID_LH::default();
     let code = unsafe { ConvertInterfaceAliasToLuid(PCWSTR(w.as_ptr()), &mut luid) };
     if code.0 != ERROR_SUCCESS.0 {
-        bail!("the tunnel interface \"{interface}\" was not found (code {})", code.0);
+        bail!(
+            "the tunnel interface \"{interface}\" was not found (code {})",
+            code.0
+        );
     }
     // NET_LUID_LH is a union over a u64.
     Ok(unsafe { luid.Value })
@@ -167,40 +163,52 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         let _ = unsafe { FwpmSubLayerAdd0(engine, &sublayer, None) };
 
         // The catch-all blocks: lowest weight, no conditions, at both layers.
-        add_filter(engine, &Filter {
-            key: F_BLOCK_V4,
-            name: "block all IPv4",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-            weight: 0,
-            block: true,
-            conditions: &[],
-        })?;
-        add_filter(engine, &Filter {
-            key: F_BLOCK_V6,
-            name: "block all IPv6",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
-            weight: 0,
-            block: true,
-            conditions: &[],
-        })?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_BLOCK_V4,
+                name: "block all IPv4",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                weight: 0,
+                block: true,
+                conditions: &[],
+            },
+        )?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_BLOCK_V6,
+                name: "block all IPv6",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+                weight: 0,
+                block: true,
+                conditions: &[],
+            },
+        )?;
 
         // Loopback stays open, both families.
-        add_filter(engine, &Filter {
-            key: F_LOOPBACK_V4,
-            name: "allow loopback IPv4",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-            weight: 12,
-            block: false,
-            conditions: &[Cond::LoopbackFlag],
-        })?;
-        add_filter(engine, &Filter {
-            key: F_LOOPBACK_V6,
-            name: "allow loopback IPv6",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
-            weight: 12,
-            block: false,
-            conditions: &[Cond::LoopbackFlag],
-        })?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_LOOPBACK_V4,
+                name: "allow loopback IPv4",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                weight: 12,
+                block: false,
+                conditions: &[Cond::LoopbackFlag],
+            },
+        )?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_LOOPBACK_V6,
+                name: "allow loopback IPv6",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+                weight: 12,
+                block: false,
+                conditions: &[Cond::LoopbackFlag],
+            },
+        )?;
 
         // Everything on the tunnel interface — but only if it is already up.
         // When the kill switch is armed on its own (diagnostics) there is no
@@ -210,14 +218,17 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         // appears.
         match luid_of(&cfg.interface) {
             Ok(luid) => {
-                add_filter(engine, &Filter {
-                    key: F_TUNNEL_V4,
-                    name: "allow the tunnel interface",
-                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-                    weight: 10,
-                    block: false,
-                    conditions: &[Cond::LocalInterface(luid)],
-                })?;
+                add_filter(
+                    engine,
+                    &Filter {
+                        key: F_TUNNEL_V4,
+                        name: "allow the tunnel interface",
+                        layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                        weight: 10,
+                        block: false,
+                        conditions: &[Cond::LocalInterface(luid)],
+                    },
+                )?;
             }
             Err(e) => {
                 tracing::warn!("tunnel interface not up yet; its allow rule is skipped ({e})");
@@ -225,28 +236,34 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         }
 
         // The encrypted WireGuard packets to the node.
-        add_filter(engine, &Filter {
-            key: F_NODE_V4,
-            name: "allow WireGuard to the node",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-            weight: 11,
-            block: false,
-            conditions: &[
-                Cond::Protocol(IPPROTO_UDP),
-                Cond::RemoteAddrV4(node_addr_be),
-                Cond::RemotePort(port),
-            ],
-        })?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_NODE_V4,
+                name: "allow WireGuard to the node",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                weight: 11,
+                block: false,
+                conditions: &[
+                    Cond::Protocol(IPPROTO_UDP),
+                    Cond::RemoteAddrV4(node_addr_be),
+                    Cond::RemotePort(port),
+                ],
+            },
+        )?;
 
         // DHCP so the physical link can keep its address.
-        add_filter(engine, &Filter {
-            key: F_DHCP_V4,
-            name: "allow DHCP",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-            weight: 10,
-            block: false,
-            conditions: &[Cond::Protocol(IPPROTO_UDP), Cond::RemotePort(67)],
-        })?;
+        add_filter(
+            engine,
+            &Filter {
+                key: F_DHCP_V4,
+                name: "allow DHCP",
+                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                weight: 10,
+                block: false,
+                conditions: &[Cond::Protocol(IPPROTO_UDP), Cond::RemotePort(67)],
+            },
+        )?;
 
         ok(unsafe { FwpmTransactionCommit0(engine) })?;
         Ok(())
@@ -260,10 +277,7 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
 }
 
 pub fn remove() -> Result<()> {
-    let engine = match open_engine() {
-        Ok(e) => e,
-        Err(e) => return Err(e),
-    };
+    let engine = open_engine()?;
     let r = (|| -> Result<()> {
         ok(unsafe { FwpmTransactionBegin0(engine, 0) })?;
         for key in ALL_FILTER_KEYS.iter() {
@@ -338,7 +352,11 @@ fn add_filter(engine: HANDLE, f: &Filter) -> Result<()> {
 
     let mut name = wide(f.name);
     let action = FWPM_ACTION0 {
-        r#type: if f.block { FWP_ACTION_BLOCK } else { FWP_ACTION_PERMIT },
+        r#type: if f.block {
+            FWP_ACTION_BLOCK
+        } else {
+            FWP_ACTION_PERMIT
+        },
         Anonymous: FWPM_ACTION0_0 {
             filterType: GUID::default(),
         },
