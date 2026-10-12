@@ -109,26 +109,37 @@ impl Tunnel {
         self.initiate_handshake().await?;
 
         let mut stop_rx = self.stop.subscribe();
-        let to_net = tokio::spawn(tun_to_network(
+        let mut to_net = tokio::spawn(tun_to_network(
             self.tunn.clone(),
             self.sock.clone(),
             self.tun.clone(),
             self.tx.clone(),
         ));
-        let to_tun = tokio::spawn(network_to_tun(
+        let mut to_tun = tokio::spawn(network_to_tun(
             self.tunn.clone(),
             self.sock.clone(),
             self.tun.clone(),
             self.rx.clone(),
         ));
-        let timers = tokio::spawn(drive_timers(self.tunn.clone(), self.sock.clone()));
+        let mut timers = tokio::spawn(drive_timers(self.tunn.clone(), self.sock.clone()));
 
         let outcome = tokio::select! {
-            r = to_net => r.map_err(|e| anyhow!("TUN reader stopped: {e}"))?,
-            r = to_tun => r.map_err(|e| anyhow!("network reader stopped: {e}"))?,
-            r = timers => r.map_err(|e| anyhow!("timer stopped: {e}"))?,
+            r = &mut to_net => r.map_err(|e| anyhow!("TUN reader stopped: {e}"))?,
+            r = &mut to_tun => r.map_err(|e| anyhow!("network reader stopped: {e}"))?,
+            r = &mut timers => r.map_err(|e| anyhow!("timer stopped: {e}"))?,
             _ = stop_rx.changed() => Ok(()),
         };
+
+        // Stop the other two tasks and wait for them to let go. Each holds a
+        // clone of the TUN device; only once all are dropped does the kernel
+        // interface go away — which matters to the service, where the process
+        // keeps running after a disconnect instead of exiting.
+        to_net.abort();
+        to_tun.abort();
+        timers.abort();
+        let _ = to_net.await;
+        let _ = to_tun.await;
+        let _ = timers.await;
         outcome
     }
 

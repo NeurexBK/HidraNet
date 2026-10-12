@@ -9,6 +9,7 @@ members = [
   "crates/hidravpn-core",
   "crates/hidravpn-node",
   "crates/hidravpn",
+  "crates/hidravpn-service",
   "crates/hidravpn-sign",
 ]
 

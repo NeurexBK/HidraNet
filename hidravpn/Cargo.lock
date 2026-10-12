@@ -952,6 +952,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "hidravpn-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "getrandom 0.3.4",
+ "hidravpn-core",
+ "hidravpn-tun",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "hidravpn-sign"
 version = "0.1.0"
 dependencies = [
