@@ -51,5 +51,44 @@ if (isInternalPage) {
       start: () => ipcRenderer.invoke('sevennine:start'),
       stop: () => ipcRenderer.invoke('sevennine:stop'),
     },
+    vault: {
+      status: () => ipcRenderer.invoke('vault:status'),
+    },
+  });
+}
+
+// HidraNet's own apps — mail, chat, forum, the site publisher — are served by
+// the browser on a loopback origin, and they hold an identity. They get one
+// thing and one thing only: a compartment in the vault (src/main/vault.js),
+// where that identity is kept under the system keychain instead of in
+// localStorage. Nothing here can touch Tor, the proxy or the preferences.
+//
+// This decides whether the bridge is offered; it is not what protects the
+// vault. The main process checks the sender of every call against the
+// frame's own URL, so a page that is not one of these gets a refusal even if
+// it somehow had the bridge.
+const APPS_FLAG = '--hidra-apps-origin=';
+const appsOrigin = (process.argv.find((a) => a.startsWith(APPS_FLAG)) || '')
+  .slice(APPS_FLAG.length);
+// Keep in step with APP_NAMESPACES in tab-manager.js.
+const APP_PATHS = new Set(['/', '/mail', '/forum', '/publish', '/sites']);
+
+const isAppPage = (() => {
+  try {
+    const u = new URL(window.location.href);
+    return Boolean(appsOrigin) && u.origin === appsOrigin
+      && APP_PATHS.has(u.pathname.replace(/\/+$/, '') || '/');
+  } catch {
+    return false;
+  }
+})();
+
+if (isAppPage && !isInternalPage) {
+  contextBridge.exposeInMainWorld('hidra', {
+    vault: {
+      get: () => ipcRenderer.invoke('vault:get'),
+      set: (value) => ipcRenderer.invoke('vault:set', value),
+      status: () => ipcRenderer.invoke('vault:status'),
+    },
   });
 }

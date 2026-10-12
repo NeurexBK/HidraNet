@@ -28,6 +28,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hidra Forum</title>
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-store.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c;--warn:#f5a623}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -273,14 +274,24 @@ function md(s){ s=esc(s);
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
 
 // ───────── identity ─────────
-function loadMe(){ try{ state.me=JSON.parse(localStorage.getItem('hforum_me')||'null'); }catch(e){} }
+// The identity lives in the browser's vault (hidra-store.js), under the
+// system keychain where there is one. Not readable means not writable: a new
+// token saved over the old one would make every past post someone else's.
+var meLocked=false;
+async function loadMe(){
+  var raw=null;
+  try{ raw=await hidraStore.load('hforum_me'); }
+  catch(e){ meLocked=true; toast('Your forum identity could not be unlocked: '+e.message); return; }
+  try{ state.me=JSON.parse(raw||'null'); }catch(e){}
+}
 async function setNick(nick){
   nick=(nick||'').trim().slice(0,24); if(!nick) return false;
+  if(meLocked){ toast('Your forum identity could not be unlocked. Unlock your system keychain and reload.'); return false; }
   // changing nickname = a new anonymous identity (new token); re-saving the same nickname keeps the token
   var token = (state.me&&state.me.nick===nick&&state.me.token) || b32(crypto.getRandomValues(new Uint8Array(16)));
   var tokenHash=(await sha('hforum-tok:'+token)).slice(0,12);
   state.me={ nick:nick, token:token, tokenHash:tokenHash };
-  localStorage.setItem('hforum_me', JSON.stringify(state.me));
+  hidraStore.save('hforum_me', JSON.stringify(state.me));
   $('me-nick').textContent=nick; $('me-tag').textContent='#'+tokenHash.slice(0,6);
   return true;
 }
@@ -459,8 +470,8 @@ function ensureNick(){ if(!state.me){ openNick(false); return false; } return tr
 function openNick(first){ $('nick-in').value=state.me?state.me.nick:''; $('nick-x').style.display=first?'none':''; openM('m-nick'); setTimeout(function(){$('nick-in').focus();},50); }
 
 // init
-loadMe();
-(function init(){
+(async function init(){
+  await loadMe();
   $('n-cat').innerHTML=CATS.map(function(c){return '<option>'+esc(c)+'</option>';}).join('');
   if(state.me){ $('me-nick').textContent=state.me.nick; $('me-tag').textContent='#'+state.me.tokenHash.slice(0,6); }
   $('me-who').onclick=function(){ openNick(false); };

@@ -72,17 +72,39 @@ const SEARCH_URL = `${APPS_ORIGIN}/search`;
 // nothing, and the site viewer renders other people's content, so they stay
 // in a throwaway partition like any website.
 const APPS_PARTITION = 'persist:hidra-apps';
-const APP_STORAGE_PATHS = new Set(['/', '/mail', '/forum', '/publish', '/sites']);
 
-function wantsAppStorage(rawUrl) {
+// Each app that holds an identity, by the path it is served on. The name is
+// also the app's compartment in the vault (main.js, vault.js), so the forum
+// cannot read the mail keys, and a page on any other path reads nothing.
+const APP_NAMESPACES = {
+  '/': 'chat',
+  '/mail': 'mail',
+  '/forum': 'forum',
+  '/publish': 'publish',
+  '/sites': 'publish',
+};
+
+function appNamespace(rawUrl) {
   let u;
   try {
     u = new URL(rawUrl);
   } catch {
-    return false;
+    return null;
   }
-  if (u.origin !== APPS_ORIGIN) return false;
-  return APP_STORAGE_PATHS.has(u.pathname.replace(/\/+$/, '') || '/');
+  if (u.origin !== APPS_ORIGIN) return null;
+  return APP_NAMESPACES[u.pathname.replace(/\/+$/, '') || '/'] || null;
+}
+
+function wantsAppStorage(rawUrl) {
+  return appNamespace(rawUrl) !== null;
+}
+
+// The compartment an IPC call may open: the one belonging to the URL of the
+// top frame that sent it, or none. A subframe gets nothing, whatever it says.
+function vaultNamespaceOf(event) {
+  const frame = event && event.senderFrame;
+  if (!frame || !event.sender || frame !== event.sender.mainFrame) return null;
+  return appNamespace(frame.url);
 }
 
 class TabManager {
@@ -220,9 +242,13 @@ class TabManager {
     const view = new BrowserView({
       webPreferences: {
         preload: path.join(__dirname, '..', 'renderer', 'tab-preload.js'),
-        // Tells the preload which file:// URLs are our own shipped pages. It
-        // runs sandboxed and cannot work that out for itself.
-        additionalArguments: [`--hidra-ui-root=${UI_ROOT_URL}`],
+        // Tells the preload which file:// URLs are our own shipped pages, and
+        // which origin the apps are served from. It runs sandboxed and cannot
+        // work either out for itself.
+        additionalArguments: [
+          `--hidra-ui-root=${UI_ROOT_URL}`,
+          `--hidra-apps-origin=${APPS_ORIGIN}`,
+        ],
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -818,4 +844,13 @@ class TabManager {
   }
 }
 
-module.exports = { TabManager, INTERNAL_BY_NAME, wantsAppStorage, APPS_PARTITION };
+module.exports = {
+  TabManager,
+  INTERNAL_BY_NAME,
+  wantsAppStorage,
+  appNamespace,
+  vaultNamespaceOf,
+  APPS_PARTITION,
+  APPS_ORIGIN,
+  UI_ROOT_URL,
+};

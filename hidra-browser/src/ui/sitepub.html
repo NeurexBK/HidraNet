@@ -28,6 +28,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Publish a .hidra site</title>
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-store.js"></script>
 <style>
 :root{--bg:#06070d;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--danger:#ff5c6c}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -184,7 +185,7 @@ async function publish(){
     await doPublish(addr,bundle);
     // Re-read first: another tab may have published since this one loaded,
     // and saving this tab's copy would drop that site from the list.
-    loadMine(); published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
+    await loadMine(); published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
     lastAddr=addr;
     $('r-addr').textContent=addr;
     $('r-open').href='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
@@ -205,8 +206,20 @@ async function doPublish(addr,bundle){
 function repubAll(){ published.forEach(function(p){ doPublish(p.addr,p.bundle).catch(function(){}); }); }
 setInterval(repubAll,60000); // keeps the sites online
 
-function saveMine(){ try{ localStorage.setItem('hidra_pub_sites',JSON.stringify(published)); }catch(e){} }
-function loadMine(){ try{ published=JSON.parse(localStorage.getItem('hidra_pub_sites')||'[]'); }catch(e){ published=[]; } renderMine(); }
+// A site's address is the only key to it, so the list lives in the browser's
+// vault (hidra-store.js), under the system keychain where there is one. Not
+// readable means not writable: saving over a list that could not be read
+// would lose the sites in it.
+var mineLocked=false;
+function saveMine(){ if(mineLocked) return; hidraStore.save('hidra_pub_sites',JSON.stringify(published)); }
+async function loadMine(){
+  var raw=null;
+  try{ raw=await hidraStore.load('hidra_pub_sites'); }
+  catch(e){ mineLocked=true; showMsg('Your published sites could not be unlocked: '+e.message,'err'); return; }
+  try{ published=JSON.parse(raw||'[]'); }catch(e){ published=[]; }
+  if(!Array.isArray(published)) published=[];
+  renderMine();
+}
 function renderMine(){
   var el=$('mine');
   if(!published.length){ el.innerHTML='<div class="empty">No sites published yet.</div>'; return; }
@@ -225,7 +238,7 @@ function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s)
 
 $('btn-load').onclick=loadSelected;
 $('btn-pub').onclick=publish;
-loadMine(); connect(); loadFromSevenNine();
+loadMine().then(connect); loadFromSevenNine();
 </script>
 </body>
 </html>

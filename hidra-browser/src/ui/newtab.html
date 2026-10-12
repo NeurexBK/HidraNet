@@ -733,6 +733,13 @@
             </div>
             <div class="setting-badge">Not kept</div>
           </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">App Keys</span>
+              <span class="setting-desc" id="keys-desc">Mail keys, forum identity and site addresses</span>
+            </div>
+            <div class="setting-badge" id="keys-badge">—</div>
+          </div>
         </div>
       </div>
 
@@ -1412,5 +1419,17 @@
     if (typeof mqtt !== 'undefined') { start(); }
   })();
   </script>
+<script>
+// What protects the apps' keys, asked of the vault itself. A fixed badge here
+// would read "Keychain" on a machine that has none.
+(function(){
+  var b=document.getElementById('keys-badge'), d=document.getElementById('keys-desc');
+  if(!b||!window.hidra||!window.hidra.vault) return;
+  window.hidra.vault.status().then(function(s){
+    if(s.encrypted){ b.textContent='Keychain'; d.textContent='Mail keys, forum identity and site addresses, under '+s.backend; }
+    else { b.textContent='Unprotected'; b.style.color='#ffb020'; d.textContent='No system keychain found: mail keys, forum identity and site addresses are stored on this device as they are'; }
+  }).catch(function(){});
+})();
+</script>
 </body>
 </html>

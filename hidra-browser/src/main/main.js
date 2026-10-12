@@ -1,8 +1,9 @@
-const { app, BrowserWindow, session, ipcMain, protocol, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
-const { TabManager } = require('./tab-manager');
+const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
+const { VaultStore } = require('./vault');
 const { ProxyManager } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
 const { NetworkLock } = require('./network-lock');
@@ -55,6 +56,10 @@ let networkLock = new NetworkLock();
 // Whether the apps server actually got its port. A silent failure here
 // costs chat, mail, forum and search with no sign in the interface.
 let appsServer = { listening: false, error: null };
+
+// Where the apps keep what identifies you, under the system keychain. See
+// vault.js. Created once the app is ready, because safeStorage is not before.
+let vault = null;
 
 // Applies (or clears) the network proxy on every session the browser owns —
 // the default one plus each tab's isolated partition. New tabs pick the same
@@ -477,6 +482,24 @@ function startChatServer(attempt) {
     // anyone controlling that response read everything in plaintext. Now the
     // file comes from disk, at the version that was reviewed.
     //
+    // The shim the apps load to reach their vault compartment. A fixed name,
+    // like the vendor files below: nothing concatenates the request path.
+    if (p === '/hidra-store.js') {
+      try {
+        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', 'hidra-store.js'));
+        res.writeHead(200, {
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Cache-Control': 'no-cache',
+        });
+        res.end(body);
+      } catch (e) {
+        console.error('[srv] hidra-store.js', e.message);
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('could not read hidra-store.js');
+      }
+      return;
+    }
+
     // The list is fixed on purpose — nothing concatenates the request path, so
     // directory traversal is not possible.
     if (p.indexOf('/vendor/') === 0) {
@@ -604,6 +627,7 @@ protocol.registerSchemesAsPrivileged([{
 
 app.whenReady().then(async () => {
   loadPrefs();
+  vault = new VaultStore(path.join(app.getPath('userData'), 'vault'), safeStorage);
   startChatServer();
   proxyManager = new ProxyManager(PROXY_ADDR, PROXY_PORT);
   torManager = new TorManager();
@@ -678,6 +702,32 @@ function createMainWindow() {
 }
 
 function setupIPC(tabs, proxy) {
+  // The vault. Which compartment a page may open is decided here, from the
+  // URL of the frame that asked — never from anything the page sent. The
+  // preload only offers the bridge; this is what refuses.
+  const refused = () => new Error('only HidraNet apps have a vault compartment');
+
+  ipcMain.handle('vault:get', (event) => {
+    const ns = vaultNamespaceOf(event);
+    if (!ns) throw refused();
+    return vault.get(ns);
+  });
+
+  ipcMain.handle('vault:set', async (event, value) => {
+    const ns = vaultNamespaceOf(event);
+    if (!ns) throw refused();
+    await vault.set(ns, value);
+    return true;
+  });
+
+  // Whether the keychain is protecting the data is not a secret, but it is
+  // still only for our own pages: the apps, and the new tab page's panel.
+  ipcMain.handle('vault:status', (event) => {
+    const url = event.senderFrame ? event.senderFrame.url : '';
+    if (!appNamespace(url) && !url.startsWith(UI_ROOT_URL)) throw refused();
+    return vault.status();
+  });
+
   ipcMain.handle('tab:create', async (_event, url) => {
     return await tabs.createTab(url || 'hidra://newtab');
   });

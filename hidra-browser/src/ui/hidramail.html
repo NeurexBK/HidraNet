@@ -28,6 +28,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraMail</title>
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-store.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -183,6 +184,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
       <div class="opt" id="set-aliases"></div>
       <button class="btn btn-p" id="set-new" style="margin-top:6px">＋ Generate a new anonymous address</button>
       <div class="muted" style="margin-top:6px">⚠️ Keep HidraMail open to receive. Incoming mail is stored on this device.</div>
+      <div class="muted" style="margin-top:6px" id="key-protect"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Shown when the keys are stored but cannot be read -->
+<div class="modal modal-sm hidden" id="m-locked">
+  <div class="compose">
+    <div class="c-head"><h3>Your keys could not be unlocked</h3></div>
+    <div class="c-body">
+      <div class="muted" id="lock-why"></div>
+      <div class="muted" style="margin-top:6px">HidraMail will not create a new address over the one it cannot read. Unlock your system keychain, then reload this page.</div>
     </div>
   </div>
 </div>
@@ -354,8 +367,28 @@ async function inboxTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-2
 async function dirTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode('hmaildir:'+addr))); var s='';for(var i=0;i<16;i++)s+=h[i].toString(16).padStart(2,'0'); return 'hmaildir/'+s; }
 
 // ───────── storage ─────────
-function save(){ try{ localStorage.setItem('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box})); }catch(e){} }
-function load(){ try{ var s=JSON.parse(localStorage.getItem('hmail_state')||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!state.box[k])state.box[k]=[]; } }catch(e){} }
+// The keys and the mailbox live in the browser's vault (hidra-store.js), under
+// the system keychain where there is one. If they are there but cannot be
+// read — a locked keyring, say — nothing is created and nothing is saved:
+// a new address written over the old one would lose every mail sent to it.
+var locked=false;
+function save(){ if(locked) return; hidraStore.save('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box})).catch(function(e){ toast('Could not save: '+e.message); }); }
+async function load(){
+  var raw=null;
+  try{ raw=await hidraStore.load('hmail_state'); }
+  catch(e){ locked=true; $('cdot').className='dot'; $('ctxt').textContent='keys locked'; $('lock-why').textContent=e.message; $('m-locked').classList.remove('hidden'); return false; }
+  try{ var s=JSON.parse(raw||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!state.box[k])state.box[k]=[]; } }catch(e){}
+  return true;
+}
+function showKeyProtection(){
+  hidraStore.status().then(function(s){
+    $('key-protect').textContent = s.encrypted
+      ? 'Your keys and mail are stored under '+s.backend+'. Only this login can read them.'
+      : (hidraStore.inVault
+        ? 'No system keychain was found on this computer, so your keys and mail are stored on this device as they are. Anyone who can read this account\'s files can read them.'
+        : 'Your keys and mail are stored in this browser\'s own storage.');
+  });
+}
 function activeId(){ return state.ids[state.active]; }
 
 // ───────── mqtt ─────────
@@ -542,7 +575,6 @@ function notify(m){
 }
 
 // init
-load();
 // One HidraMail per mailbox. Two tabs on the same one share a broker client
 // id, so each connection knocks the other off every few seconds; and each tab
 // keeps its own copy of the mailbox in memory and saves it over the other's,
@@ -558,12 +590,14 @@ function runMailbox(start){
     $('m-elsewhere').classList.remove('hidden');
     navigator.locks.request('hidramail-mailbox',function(){
       $('m-elsewhere').classList.add('hidden');
-      load(); start(); return forever();
+      start(); return forever();
     });
   });
 }
 
 runMailbox(async function init(){
+  if(!(await load())) return;
+  showKeyProtection();
   // An address made before signing existed is derived from the encryption key
   // alone, so it cannot be upgraded in place — a signing key bolted on would
   // change the address. Those stay in the list so old mail still decrypts, and

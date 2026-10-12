@@ -245,6 +245,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 <div class="copied-toast" id="toast">Copied!</div>
 
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-store.js"></script>
 <script>
 (function(){
 'use strict';
@@ -524,20 +525,22 @@ $('btnGen').onclick=function(){ inPass.value=genPassword(); inPass.focus(); };
 $('btnCopyPass').onclick=function(){ copyText(inPass.value); };
 
 // ── Recent rooms (last 5 passwords, kept on this device only) ──
+//
+// Room passwords are the rooms: anyone holding one reads everything said in
+// it. They live in the browser's vault (hidra-store.js), under the system
+// keychain where there is one, and are never written out if they could not
+// be read in — that would replace the list with an empty one.
+var recentRooms=[], recentLocked=false;
+function persistRecent(){ if(recentLocked) return; hidraStore.save('hidra_recent', JSON.stringify(recentRooms.slice(0,5))); }
 function saveRecent(pass, nk){
-  try{
-    var list=JSON.parse(localStorage.getItem('hidra_recent')||'[]');
-    list=list.filter(function(x){return x.pass!==pass;});
-    list.unshift({pass:pass,nick:nk||'',ts:Date.now()});
-    localStorage.setItem('hidra_recent', JSON.stringify(list.slice(0,5)));
-  }catch(e){}
+  recentRooms=recentRooms.filter(function(x){return x.pass!==pass;});
+  recentRooms.unshift({pass:pass,nick:nk||'',ts:Date.now()});
+  recentRooms=recentRooms.slice(0,5);
+  persistRecent();
 }
-function removeRecent(i){
-  try{ var l=JSON.parse(localStorage.getItem('hidra_recent')||'[]'); l.splice(i,1); localStorage.setItem('hidra_recent',JSON.stringify(l)); renderRecent(); }catch(e){}
-}
+function removeRecent(i){ recentRooms.splice(i,1); persistRecent(); renderRecent(); }
 function renderRecent(){
-  var list=[];
-  try{ list=JSON.parse(localStorage.getItem('hidra_recent')||'[]'); }catch(e){}
+  var list=recentRooms;
   if(!list.length){ $('recentBox').classList.add('hidden'); return; }
   $('recentBox').classList.remove('hidden');
   $('recentList').innerHTML=list.map(function(x,i){
@@ -548,12 +551,16 @@ function renderRecent(){
     el.onclick=function(ev){
       var i=parseInt(el.getAttribute('data-i'),10);
       if(ev.target.hasAttribute('data-rm')){ ev.stopPropagation(); removeRecent(i); return; }
-      var item=null; try{ item=JSON.parse(localStorage.getItem('hidra_recent')||'[]')[i]; }catch(e){}
+      var item=recentRooms[i];
       if(item){ inPass.value=item.pass; if(item.nick&&!inNick.value) inNick.value=item.nick; inNick.focus(); }
     };
   });
 }
-renderRecent();
+hidraStore.load('hidra_recent').then(function(raw){
+  try{ recentRooms=JSON.parse(raw||'[]'); }catch(e){ recentRooms=[]; }
+  if(!Array.isArray(recentRooms)) recentRooms=[];
+  renderRecent();
+}).catch(function(e){ recentLocked=true; });
 
 // Show the host's shareable LAN address so they can invite friends
 (function showMyAddr(){
