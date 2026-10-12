@@ -15,14 +15,14 @@ ON THE RELEASE PAGE NOW
 38cec48d2c217b031b344e5becce810c6d7b58fd91d2059c92335c2041dd29b3  HidraNet-Browser-1.0.0-macOS-arm64.zip
 db485f5378b5ce67a26d649eb8ea4b79dd2a464954fe08f3e0337af1a6e4e216  HidraNet-Browser-1.0.0-macOS-x64.zip
 e37d3b0211ecfe5d03a452822754144800e522f5d54bc159d6194d3f06e62698  HidraNet-Browser-1.0.0-Linux-x64.zip
-e0132f3e49118d8f504b61113218d27fa59fdfbc0212b535df5df694a686b57b  HidraNet-Browser-1.0.0-Windows-x64.zip
+df2b2fb0d174d4ac62c838e1e1f48e94472fc07e81f190341e48c6d1ae704a08  HidraNet-Browser-1.0.0-Windows-x64.zip
 
   macOS arm64    108,437,314 bytes  (103.4 MiB)
   macOS x64      112,867,795 bytes  (107.6 MiB)
   Linux x64      112,943,360 bytes  (107.7 MiB)
-  Windows x64    129,421,114 bytes  (123.4 MiB)
+  Windows x64    129,421,056 bytes  (123.4 MiB)
 
-  Built from commit 25152cc. The three packages without the engine are a
+  Built from commit 92610d6. The three packages without the engine are a
   pure repack — rebuilding from the same tree reproduces these hashes
   byte for byte, which was checked by running the build twice. The
   Windows one carries a freshly compiled Rust engine, so a rebuild on
