@@ -124,6 +124,9 @@ mod node {
                     .add_directive("hidravpn_node=info".parse()?),
             )
             .with_target(false)
+            // Logs go to stderr so that what `admit` and `invite` print on
+            // stdout is the invite and nothing else.
+            .with_writer(std::io::stderr)
             .init();
         let cli = Cli::parse();
 

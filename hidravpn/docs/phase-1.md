@@ -20,6 +20,8 @@ hidravpn/
   crates/hidravpn         the client command line
   crates/hidravpn-sign    Ed25519 signing of release files (key stays offline)
   scripts/test-netns.sh   the whole path on one Linux machine, in three network namespaces
+  scripts/windows/phase1-test.ps1   the whole path from a real Windows client to a real node
+  scripts/build-windows-client.sh   cross-builds hidravpn.exe on the node, for scp
   scripts/hidravpn-node.service   systemd unit
 ```
 
@@ -82,9 +84,23 @@ Ctrl+C disconnects and restores routes and DNS. If the process was killed,
 `hidravpn down` (as administrator) restores them from the plan it saved.
 
 Windows needs `wintun.dll` beside `hidravpn.exe`. It is Microsoft-signed and
-comes from https://www.wintun.net (the `amd64` file inside the zip); its
-SHA-256 is published there — check it. Without a code signature of our own
-yet, SmartScreen may warn when the exe is first run.
+comes from https://www.wintun.net (the `amd64` file inside the zip); check its
+Authenticode signature before using it (`Get-AuthenticodeSignature`: Valid,
+signed by WireGuard LLC). Without a code signature of our own yet, SmartScreen
+may warn when the exe is first run.
+
+The whole Windows check runs from one script, in a PowerShell opened "as
+Administrator" on the client machine:
+
+    scripts/windows/phase1-test.ps1 [-Server NODE] [-Name NAME] [-Manual]
+
+It puts the exe in `C:\HidraVPN` (a downloaded copy, found by its SHA-256,
+or one built on the node by `scripts/build-windows-client.sh` over ssh and
+fetched with scp), fetches and verifies `wintun.dll`, makes the key, admits
+it on the node over ssh, connects, runs the checks below plus a 2 MB transfer
+and an IPv6 leak check, disconnects with Ctrl+C (or waits for yours, with
+`-Manual`), checks that the network is back as it was, and prints a report
+that masks the machine's own address.
 
 What the client changes while connected: a route to the node through the
 original gateway; `0.0.0.0/1` and `128.0.0.0/1` into the tunnel (more specific
@@ -116,5 +132,5 @@ download against `FILE.sig`. The public key goes into the browser in phase 4.
 
 - The data plane is boringtun's WireGuard implementation; the protocol is not ours.
 - Phase 1 admission is a static key per client. With passes, every connection will use a fresh key.
-- The client's Windows network setup uses `route`/`netsh`; phase 2 moves to the IP Helper and WFP APIs with the kill switch.
+- The client's Windows network setup goes through the NetTCPIP and DnsClient PowerShell cmdlets, in the active store only (nothing survives a reboot); phase 2 moves to the IP Helper and WFP APIs with the kill switch.
 - Nothing logs an address, a name looked up or a packet.
