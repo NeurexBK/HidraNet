@@ -142,7 +142,12 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         let provider = FWPM_PROVIDER0 {
             providerKey: PROVIDER_KEY,
             displayData: display(&mut prov_name),
-            flags: windows::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_PROVIDER_FLAG_PERSISTENT,
+            // Not persistent: these objects survive the service dying (so a
+            // dropped tunnel stays blocked), but are cleared on reboot, so a
+            // crash-then-reboot restores connectivity instead of bricking the
+            // machine. This matches the Linux nftables table, which is kernel
+            // state that a reboot also clears.
+            flags: 0,
             ..Default::default()
         };
         // Already-exists is fine.
@@ -154,7 +159,7 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         let sublayer = FWPM_SUBLAYER0 {
             subLayerKey: SUBLAYER_KEY,
             displayData: display(&mut sub_name),
-            flags: windows::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_SUBLAYER_FLAG_PERSISTENT,
+            flags: 0,
             providerKey: &mut provider_key,
             weight: 0xFFFF,
             ..Default::default()
@@ -341,7 +346,7 @@ fn add_filter(engine: HANDLE, f: &Filter) -> Result<()> {
     let filter = FWPM_FILTER0 {
         filterKey: f.key,
         displayData: display(&mut name),
-        flags: windows::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_FILTER_FLAG_PERSISTENT,
+        flags: windows::Win32::NetworkManagement::WindowsFilteringPlatform::FWPM_FILTER_FLAGS(0),
         layerKey: f.layer,
         subLayerKey: SUBLAYER_KEY,
         weight: weight_u8(f.weight),

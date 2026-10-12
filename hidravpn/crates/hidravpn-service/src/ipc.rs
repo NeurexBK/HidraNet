@@ -248,10 +248,24 @@ pub async fn call(cmd: Command) -> Result<Response> {
     }
     #[cfg(windows)]
     {
+        use std::time::Duration;
         use tokio::net::windows::named_pipe::ClientOptions;
-        let stream = ClientOptions::new()
-            .open(paths::CONTROL_PIPE)
-            .map_err(|e| anyhow!("the HidraVPN service is not running ({e})"))?;
+        // ERROR_PIPE_BUSY: every instance is serving another client for the
+        // moment. The server makes a new instance right after it accepts one,
+        // so the wait is tiny; retry briefly rather than report the service
+        // down. A missing pipe (service really not running) fails at once.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let mut tries = 0u32;
+        let stream = loop {
+            match ClientOptions::new().open(paths::CONTROL_PIPE) {
+                Ok(s) => break s,
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 40 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(anyhow!("the HidraVPN service is not running ({e})")),
+            }
+        };
         round_trip(stream, line.as_bytes()).await
     }
     #[cfg(not(any(unix, windows)))]

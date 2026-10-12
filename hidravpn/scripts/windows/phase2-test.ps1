@@ -29,8 +29,8 @@ param(
   [string]$Name = $env:USERNAME,
   [string]$Dir = 'C:\HidraVPN',
   [string]$ServerSource = '/opt/hidranet-src',
-  [string]$ClientHash = 'C1B0F3FDE26AB3E63C37C27571693926E5DCA601267FDF72C33C0D80F2733556',
-  [string]$ServiceHash = '193EBC0464F2314EF307B16369D77449741817015561CAAA0F60666D9A7FFE20',
+  [string]$ClientHash = '9EC1496A6EB9ABE3D53E75DEA47567A6F0E19A51D5F6361BC7787ACC63B8FF9D',
+  [string]$ServiceHash = 'C23B9A161B1232457FC0E8FED418F6E96362E7E3E8AE8177A0D3EDFEF92996D6',
   [string]$WintunUrl = 'https://www.wintun.net/builds/wintun-0.14.1.zip',
   [switch]$Full
 )
