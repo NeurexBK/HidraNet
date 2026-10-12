@@ -904,7 +904,6 @@ dependencies = [
  "clap",
  "hidravpn-core",
  "hidravpn-service",
- "hidravpn-tun",
  "libc",
  "serde",
  "serde_json",

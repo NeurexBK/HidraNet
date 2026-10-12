@@ -1,29 +1,34 @@
-//! HidraVPN client, command line. Phase 1: one hop, the whole machine.
+//! HidraVPN client, command line: the whole machine, one hop or two.
 //!
 //!   hidravpn keygen                 make this machine's key, print the public half
-//!   hidravpn up <invite.json>       connect; Ctrl+C disconnects and restores the network
-//!   hidravpn down                   restore the network after a crash or a kill
+//!   hidravpn up <exit.json>         connect, one hop (Rápido)
+//!   hidravpn up <exit.json> --via <entry.json>
+//!                                   connect, two hops (Privado): the entry sees who,
+//!                                   the exit sees where, neither sees both
+//!   hidravpn up ... --alternate <other-exit.json>
+//!                                   more exits for `new-identity` to rotate to
+//!   hidravpn new-identity           rebuild the circuit through the next exit
+//!   hidravpn status                 mode, hops, nodes, kill switch
+//!   hidravpn down                   disconnect, or restore the network after a crash
 //!
 //! `up` and `down` need administrator rights (a TUN interface, routes, DNS).
 //! Nothing here records where the traffic went.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use hidravpn_core::killswitch::{self, KillConfig};
-use hidravpn_core::netcfg::{self, Wanted};
-use hidravpn_core::{ClientConfig, ClientKey, Invite, Tunnel};
-use hidravpn_service::ipc::{self, Command};
-use hidravpn_tun::TunConfig;
+use hidravpn_core::killswitch;
+use hidravpn_core::netcfg;
+use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite};
+use hidravpn_service::ipc::{self, Command, StatusReport};
 
 #[derive(Parser)]
 #[command(
     name = "hidravpn",
     version,
-    about = "HidraVPN client (phase 1: single hop)"
+    about = "HidraVPN client: one hop (Rápido) or two (Privado)"
 )]
 struct Cli {
     /// Where this machine's key is kept.
@@ -43,16 +48,26 @@ enum Cmd {
     Keygen,
     /// Print this machine's public key.
     Pubkey,
-    /// Connect to the node in the invite and route the whole machine through it.
+    /// Connect and route the whole machine through the circuit.
     Up {
-        /// The invite the node printed when it admitted this machine's key.
+        /// The exit node's invite: the node that reaches the internet.
         invite: PathBuf,
+        /// An entry node's invite: two hops (Privado). The entry sees this
+        /// machine's address but not where the traffic goes; the exit sees
+        /// the traffic but gets it from the entry.
+        #[arg(long)]
+        via: Option<PathBuf>,
+        /// Another exit's invite that `new-identity` may rotate to. May be
+        /// given more than once. Used by the service only.
+        #[arg(long = "alternate")]
+        alternates: Vec<PathBuf>,
         /// Leave IPv6 alone instead of routing it into the tunnel (where it is
         /// dropped in this phase). Only for diagnosis: with this, IPv6 traffic
         /// bypasses the VPN.
         #[arg(long)]
         keep_ipv6: bool,
-        /// Interface name.
+        /// Name of the outer (or only) tunnel interface; the inner one of a
+        /// two-hop circuit takes the next number (hvpn0 → hvpn1).
         #[arg(long, default_value = "hvpn0")]
         interface: String,
         /// Do not arm the kill switch (diagnosis only: without it, traffic can
@@ -60,9 +75,12 @@ enum Cmd {
         #[arg(long)]
         no_kill_switch: bool,
     },
+    /// Rebuild the circuit through the next exit given with --alternate, so
+    /// the address the internet sees changes. Needs the service.
+    NewIdentity,
     /// Undo the routes and DNS of a connection that did not end cleanly.
     Down,
-    /// Show whether a tunnel is up and whether the kill switch is on.
+    /// Show the mode, the hops, the nodes and whether the kill switch is on.
     Status,
 }
 
@@ -174,22 +192,30 @@ async fn main() -> Result<()> {
         }
         Cmd::Up {
             invite,
+            via,
+            alternates,
             keep_ipv6,
             interface,
             no_kill_switch,
         } => {
-            let inv = Invite::from_json(
-                &std::fs::read_to_string(&invite)
-                    .with_context(|| format!("reading {}", invite.display()))?,
-            )?;
-            // Prefer the installed service: it keeps the tunnel after this
+            let exit = read_invite(&invite)?;
+            let entry = via.as_deref().map(read_invite).transpose()?;
+            let alternates = alternates
+                .iter()
+                .map(|p| read_invite(p))
+                .collect::<Result<Vec<_>>>()?;
+            let spec = CircuitSpec { exit, entry };
+            spec.validate()?;
+            // Prefer the installed service: it keeps the circuit after this
             // command returns. Only if it is not there do we hold it here.
             match service_call(
                 cli.direct,
                 Command::Up {
-                    invite: inv.clone(),
+                    invite: spec.exit.clone(),
                     allow_lan: false,
                     keep_ipv6,
+                    via: spec.entry.clone(),
+                    alternates: alternates.clone(),
                 },
             )
             .await
@@ -197,7 +223,10 @@ async fn main() -> Result<()> {
                 Some(res) => {
                     let r = res?;
                     if r.ok {
-                        println!("connected through the HidraVPN service");
+                        println!(
+                            "connected through the HidraVPN service: {}",
+                            r.status.map(describe).unwrap_or_default()
+                        );
                     } else {
                         return Err(anyhow!(r
                             .error
@@ -206,11 +235,47 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     require_admin()?;
+                    if !alternates.is_empty() {
+                        eprintln!("note: --alternate is used by the service's new-identity; in this process it does nothing");
+                    }
                     let key = load_or_create_key(&key_path, false)?;
-                    up(inv, key, interface, !keep_ipv6, !no_kill_switch).await?;
+                    up(
+                        spec,
+                        key,
+                        CircuitOptions {
+                            route_ipv6: !keep_ipv6,
+                            allow_lan: false,
+                            kill_switch: !no_kill_switch,
+                            interface_base: interface
+                                .strip_suffix('0')
+                                .unwrap_or(&interface)
+                                .to_string(),
+                        },
+                    )
+                    .await?;
                 }
             }
         }
+        Cmd::NewIdentity => match service_call(cli.direct, Command::NewIdentity).await {
+            Some(res) => {
+                let r = res?;
+                if r.ok {
+                    println!("{}", r.note.unwrap_or_else(|| "reconnected".into()));
+                    if let Some(s) = r.status {
+                        println!("{}", describe(s));
+                    }
+                } else {
+                    return Err(anyhow!(r
+                        .error
+                        .unwrap_or_else(|| "the service could not rotate".into())));
+                }
+            }
+            None => {
+                return Err(anyhow!(
+                    "a new identity needs the HidraVPN service; without it, stop `hidravpn up` and run it again with another exit's invite"
+                ));
+            }
+        },
         Cmd::Down => match service_call(cli.direct, Command::Down).await {
             Some(res) => {
                 let r = res?;
@@ -241,14 +306,21 @@ async fn main() -> Result<()> {
                     .ok_or_else(|| anyhow!("the service did not report a status"))?;
                 if s.connected {
                     println!(
-                            "connected through {} ({}); kill switch {}; up {}, down {}; last handshake {}",
-                            s.node_name.as_deref().unwrap_or("?"),
-                            s.endpoint.as_deref().unwrap_or("?"),
-                            if s.killswitch { "on" } else { "OFF" },
-                            fmt_bytes(s.tx_bytes),
-                            fmt_bytes(s.rx_bytes),
-                            s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
-                        );
+                        "connected: {}; kill switch {}; up {}, down {}; last handshake {}",
+                        describe(s.clone()),
+                        if s.killswitch { "on" } else { "OFF" },
+                        fmt_bytes(s.tx_bytes),
+                        fmt_bytes(s.rx_bytes),
+                        s.last_handshake_secs
+                            .map(|n| format!("{n}s ago"))
+                            .unwrap_or_else(|| "none".into()),
+                    );
+                } else if s.hops > 0 {
+                    println!(
+                        "connecting: {}; no session with every node yet; kill switch {}",
+                        describe(s.clone()),
+                        if s.killswitch { "on" } else { "OFF" }
+                    );
                 } else {
                     println!(
                         "the service is running but not connected; kill switch {}",
@@ -273,6 +345,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn read_invite(path: &std::path::Path) -> Result<Invite> {
+    Invite::from_json(
+        &std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
+    )
+}
+
+/// One line about a circuit: its mode, its hops and its nodes.
+fn describe(s: StatusReport) -> String {
+    let exit = s.node_name.as_deref().unwrap_or("?");
+    let endpoint = s.endpoint.as_deref().unwrap_or("?");
+    match (s.hops, s.entry_name.as_deref()) {
+        (2, Some(entry)) => format!("privado, 2 hops: entry {entry} then exit {exit} ({endpoint})"),
+        (1, _) => format!("rapido, 1 hop: {exit} ({endpoint})"),
+        _ => format!("{} ({endpoint})", exit),
+    }
+}
+
 /// Tries the background service. Returns None when it is not reachable (or when
 /// `--direct` asked us to skip it), so the caller can act in this process
 /// instead; Some(..) carries the service's answer to the command.
@@ -288,84 +377,40 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
     }
 }
 
-async fn up(
-    inv: Invite,
-    key: ClientKey,
-    interface: String,
-    route_ipv6: bool,
-    kill_switch: bool,
-) -> Result<()> {
-    // A plan from a connection that died is undone first; otherwise the new
-    // routes would stack on the old ones.
-    if let Some(old) = netcfg::load_plan()? {
+/// Holds the circuit in this process until Ctrl+C, then puts the network back.
+async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<()> {
+    if netcfg::load_plan()?.is_some() {
         eprintln!("undoing the network changes of a previous connection first");
-        let _ = netcfg::revert(&old);
     }
-
-    let (ip, prefix) = inv.client_ip()?;
-    let tun = hidravpn_tun::open(&TunConfig {
-        name: interface.clone(),
-        ipv4: (ip, prefix),
-        ipv6: None,
-        mtu: inv.mtu,
-    })?;
-    let ifname = hidravpn_tun::name(&tun).unwrap_or(interface);
-    eprintln!("tunnel interface {ifname} up with {ip}/{prefix}");
-
-    let cfg = ClientConfig {
-        invite: inv.clone(),
-        key,
-    };
-    let tunnel = Arc::new(Tunnel::new(&cfg, tun).await?);
-
-    let plan = match netcfg::apply(&Wanted {
-        interface: ifname.clone(),
-        node_ip: inv.endpoint_ip()?,
-        dns: inv.dns,
-        route_ipv6,
-        via_tunnel: Vec::new(),
-    }) {
-        Ok(p) => p,
-        Err(e) => {
-            if let Ok(Some(p)) = netcfg::load_plan() {
-                let _ = netcfg::revert(&p);
-            }
-            return Err(e.context("could not route the machine through the tunnel"));
-        }
-    };
-    eprintln!(
-        "routes and DNS set: everything now goes through {} ({})",
-        inv.node_name, inv.endpoint
-    );
-
-    // Arm the kill switch. If it will not arm, undo the routing and refuse:
-    // an unprotected tunnel is worse than no tunnel.
-    let ks_armed = if kill_switch {
-        match killswitch::apply(&KillConfig {
-            interface: ifname.clone(),
-            node_endpoint: inv.endpoint_addr()?,
-            dns: inv.dns,
-            allow_lan: false,
-            extra_interface: None,
-        }) {
-            Ok(()) => {
-                eprintln!("kill switch on: nothing leaves outside the tunnel");
-                true
-            }
-            Err(e) => {
-                let _ = netcfg::revert(&plan);
-                return Err(e.context("could not arm the kill switch; connection refused"));
-            }
-        }
-    } else {
+    let mode = spec.mode();
+    let hops = spec.hops();
+    let exit_port = spec.exit.endpoint_addr().map(|a| a.port()).unwrap_or(0);
+    if !opts.kill_switch {
         eprintln!("kill switch OFF (--no-kill-switch): traffic can leak if the tunnel drops");
-        false
-    };
-
-    let runner = {
-        let t = tunnel.clone();
-        tokio::spawn(async move { t.run().await })
-    };
+    }
+    let circuit = Circuit::up(spec, key, opts).await?;
+    let st = circuit.status();
+    for h in &st.hops {
+        eprintln!(
+            "tunnel interface {} up, {} to {} ({})",
+            h.interface,
+            match h.role {
+                hidravpn_core::Role::Entry => "outer tunnel",
+                hidravpn_core::Role::Exit => "tunnel",
+            },
+            h.node_name,
+            h.endpoint
+        );
+    }
+    eprintln!(
+        "routes and DNS set: everything now goes through the {} ({} hop{})",
+        mode.label(),
+        hops,
+        if hops == 1 { "" } else { "s" }
+    );
+    if circuit.kill_switch_armed() {
+        eprintln!("kill switch on: nothing leaves outside the tunnel");
+    }
 
     // Report until Ctrl+C, then put everything back.
     let mut was_connected = false;
@@ -375,32 +420,29 @@ async fn up(
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break Ok(()),
             _ = tick.tick() => {
-                let s = tunnel.status();
+                let s = circuit.status();
                 if s.connected && !was_connected {
                     was_connected = true;
                     eprintln!("connected");
                 } else if !s.connected {
                     waited += 1;
                     if waited == 15 {
-                        eprintln!("no answer from the node after 15 s — is UDP {} open, and was this key admitted?", inv.endpoint_addr().map(|a| a.port()).unwrap_or(0));
+                        let pending: Vec<&str> = s.hops.iter().filter(|h| !h.tunnel.connected).map(|h| h.node_name.as_str()).collect();
+                        eprintln!("no answer from {} after 15 s — is UDP {} open, and was this key admitted there?", pending.join(" and "), exit_port);
                     }
                 }
                 if was_connected && waited.is_multiple_of(5) {
-                    let hs = s.last_handshake.map(|d| format!("{}s ago", d.as_secs())).unwrap_or_else(|| "none".into());
-                    eprint!("\r  {}  handshake {}  up {}  down {}      ", if s.connected { "connected   " } else { "reconnecting" }, hs, fmt_bytes(s.tx_bytes), fmt_bytes(s.rx_bytes));
+                    let exit = s.exit();
+                    let hs = exit.tunnel.last_handshake.map(|d| format!("{}s ago", d.as_secs())).unwrap_or_else(|| "none".into());
+                    eprint!("\r  {}  handshake {}  up {}  down {}      ", if s.connected { "connected   " } else { "reconnecting" }, hs, fmt_bytes(exit.tunnel.tx_bytes), fmt_bytes(exit.tunnel.rx_bytes));
                 }
-                if runner.is_finished() { break Err(anyhow!("the tunnel stopped")); }
+                if circuit.is_finished() { break Err(anyhow!("the tunnel stopped")); }
             }
         }
     };
 
     eprintln!("\ndisconnecting");
-    tunnel.stop();
-    runner.abort();
-    if ks_armed {
-        let _ = killswitch::remove();
-    }
-    netcfg::revert(&plan).context("restoring the network")?;
+    circuit.down().await.context("restoring the network")?;
     eprintln!("network restored");
     outcome
 }

@@ -4,7 +4,9 @@
 //!   hidravpn-service install|uninstall   register / remove the OS service
 //!   hidravpn-service start|stop          start / stop the OS service
 //!   hidravpn-service status              ask the running service how things stand
-//!   hidravpn-service up <invite.json>    connect through the running service
+//!   hidravpn-service up <exit.json> [--via entry.json] [--alternate other.json]...
+//!                                        connect through the running service
+//!   hidravpn-service new-identity        rebuild the circuit through the next exit
 //!   hidravpn-service down                disconnect
 //!   hidravpn-service firewall on|off     the kill switch on its own (diagnostics)
 //!
@@ -48,12 +50,24 @@ enum Cmd {
     Status,
     /// Connect through the running service.
     Up {
+        /// The exit node's invite: the node that reaches the internet.
         invite: PathBuf,
+        /// An entry node's invite: two hops (Privado), the client talks to
+        /// this node and, through it, to the exit.
+        #[arg(long)]
+        via: Option<PathBuf>,
+        /// Another exit node's invite that `new-identity` may rotate to.
+        /// May be given more than once.
+        #[arg(long = "alternate")]
+        alternates: Vec<PathBuf>,
         #[arg(long)]
         allow_lan: bool,
         #[arg(long)]
         keep_ipv6: bool,
     },
+    /// Rebuild the circuit through the next exit node given with --alternate,
+    /// so the address the internet sees changes.
+    NewIdentity,
     /// Disconnect.
     Down,
     /// The kill switch on its own, without a tunnel (diagnostics and tests).
@@ -118,13 +132,25 @@ fn main() -> Result<()> {
                 Some(s) => {
                     if s.connected {
                         println!(
-                            "connected through {} ({}); kill switch {}; up {} B, down {} B; last handshake {}",
+                            "connected through {}{} ({}), {}, {} hop{}; kill switch {}; up {} B, down {} B; last handshake {}",
+                            s.entry_name.as_deref().map(|e| format!("{e} then ")).unwrap_or_default(),
                             s.node_name.as_deref().unwrap_or("?"),
                             s.endpoint.as_deref().unwrap_or("?"),
+                            if s.mode.is_empty() { "?" } else { s.mode.as_str() },
+                            s.hops,
+                            if s.hops == 1 { "" } else { "s" },
                             if s.killswitch { "on" } else { "OFF" },
                             s.tx_bytes,
                             s.rx_bytes,
                             s.last_handshake_secs.map(|n| format!("{n}s ago")).unwrap_or_else(|| "none".into()),
+                        );
+                    } else if s.hops > 0 {
+                        println!(
+                            "connecting: {}, {} hop{}, no session with every node yet; kill switch {}",
+                            s.mode,
+                            s.hops,
+                            if s.hops == 1 { "" } else { "s" },
+                            if s.killswitch { "on" } else { "OFF" }
                         );
                     } else {
                         println!(
@@ -139,24 +165,50 @@ fn main() -> Result<()> {
         }),
         Cmd::Up {
             invite,
+            via,
+            alternates,
             allow_lan,
             keep_ipv6,
         } => client(async move {
-            let inv = Invite::from_json(
-                &std::fs::read_to_string(&invite)
-                    .with_context(|| format!("reading {}", invite.display()))?,
-            )?;
+            let inv = read_invite(&invite)?;
+            let via = via.as_deref().map(read_invite).transpose()?;
+            let alternates = alternates
+                .iter()
+                .map(|p| read_invite(p))
+                .collect::<Result<Vec<_>>>()?;
             let resp = ipc::call(ipc::Command::Up {
                 invite: inv,
                 allow_lan,
                 keep_ipv6,
+                via,
+                alternates,
             })
             .await?;
             if resp.ok {
-                println!("connected");
+                match resp.status {
+                    Some(s) if s.hops == 2 => println!(
+                        "connected: privado, 2 hops, entry {} then exit {}",
+                        s.entry_name.as_deref().unwrap_or("?"),
+                        s.node_name.as_deref().unwrap_or("?")
+                    ),
+                    Some(s) => println!(
+                        "connected: rapido, 1 hop, through {}",
+                        s.node_name.as_deref().unwrap_or("?")
+                    ),
+                    None => println!("connected"),
+                }
                 Ok(())
             } else {
                 anyhow::bail!(resp.error.unwrap_or_else(|| "connect failed".into()))
+            }
+        }),
+        Cmd::NewIdentity => client(async {
+            let resp = ipc::call(ipc::Command::NewIdentity).await?;
+            if resp.ok {
+                println!("{}", resp.note.unwrap_or_else(|| "reconnected".into()));
+                Ok(())
+            } else {
+                anyhow::bail!(resp.error.unwrap_or_else(|| "new identity failed".into()))
             }
         }),
         Cmd::Down => client(async {
@@ -195,6 +247,12 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn read_invite(path: &std::path::Path) -> Result<Invite> {
+    Invite::from_json(
+        &std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?,
+    )
 }
 
 /// Runs an async client command on a small runtime.
