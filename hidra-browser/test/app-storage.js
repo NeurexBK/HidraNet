@@ -100,21 +100,22 @@ check(!belongs('shop.hidra'), 'and a .hidra name is never kept');
 function disposed(persistent) {
   let cleared = false;
   let closed = false;
+  let flushed = false;
   TabManager.prototype._dispose.call(
-    { window: { removeBrowserView() {} } },
+    { window: { removeBrowserView() {} }, _flushApps() { flushed = true; } },
     {
       view: { webContents: { close() { closed = true; } } },
       session: { clearStorageData() { cleared = true; } },
       persistent,
     }
   );
-  return { cleared, closed };
+  return { cleared, closed, flushed };
 }
 const keptTab = disposed(true);
 const webTab = disposed(false);
-check(keptTab.closed && !keptTab.cleared, 'closing an app tab keeps the apps\' storage',
-  'it would delete the mail address along with the tab');
-check(webTab.closed && webTab.cleared, 'closing a website tab clears what the site stored');
+check(keptTab.closed && !keptTab.cleared && keptTab.flushed, 'closing an app tab keeps the apps\' storage, and writes it out',
+  'it would delete the mail address along with the tab, or leave it unwritten');
+check(webTab.closed && webTab.cleared && !webTab.flushed, 'closing a website tab clears what the site stored');
 
 // ── Every session follows the network route ──────────────────────────────
 
@@ -123,6 +124,17 @@ const all = TabManager.prototype.getAllSessions.call(fake);
 check(all.includes('apps') && all.length === 2,
   'the apps\' session gets the proxy even with no app tab open, once each',
   JSON.stringify(all));
+
+// ── What the apps store reaches the disk before a crash can take it ──────
+//
+// Chromium commits DOM storage on a delay of several seconds. Killed inside
+// it, the browser loses the change — and on first open that change is the
+// mail address. Measured on the published build: a SIGKILL a few seconds
+// after opening mail lost the address; the fix flushes pending changes.
+
+const tabManagerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'tab-manager.js'), 'utf8');
+check(/flushStorageData\(\)/.test(tabManagerSrc) && /setInterval\([^;]*_flushApps/.test(tabManagerSrc),
+  'the apps\' storage is flushed to disk on a cycle, not left to Chromium\'s delay');
 
 // ── Two HidraMail tabs do not fight over one mailbox ─────────────────────
 //

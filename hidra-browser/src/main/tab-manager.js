@@ -209,8 +209,10 @@ class TabManager {
     } catch (e) {}
     view.webContents.close();
     // The apps' partition is shared and kept on purpose: clearing it here
-    // would delete the mail address along with the tab.
-    if (!persistent) tabSession.clearStorageData();
+    // would delete the mail address along with the tab. What the tab wrote
+    // goes to disk now instead.
+    if (persistent) this._flushApps();
+    else tabSession.clearStorageData();
   }
 
   _buildView(tab, tabSession, fingerprint) {
@@ -256,6 +258,11 @@ class TabManager {
         const u = view.webContents.getURL();
         if (u.includes('127.0.0.1:8084')) this._injectSevenNinePublish(view);
       } catch (e) {}
+      // An app writes its identity right after it loads (HidraMail generates
+      // the address on first open). Get that to disk sooner than the cycle
+      // above would, so the window in which a crash loses it is as small as
+      // it can be made.
+      if (tab.persistent) setTimeout(() => this._flushApps(), 1500);
     });
 
     // A page can take the tab across the line between the apps and the web
@@ -557,8 +564,25 @@ class TabManager {
     if (!this.appsSession) {
       this.appsSession = session.fromPartition(APPS_PARTITION, { cache: false });
       this._secureSession(this.appsSession, this._appsFingerprint());
+      // Chromium writes DOM storage to disk on a delay of several seconds,
+      // batching changes. A browser that is killed inside that window —
+      // crash, force quit, power loss — loses them, and for HidraMail the
+      // change in that window is the address itself: open mail for the first
+      // time, lose power, come back to a different address. Measured on the
+      // published build: a SIGKILL a few seconds after opening mail lost the
+      // address every time; thirty seconds later it was safe. So pending
+      // changes are flushed on a short cycle, which costs nothing when there
+      // are none.
+      this._appsFlushTimer = setInterval(() => this._flushApps(), 3000);
     }
     return this.appsSession;
+  }
+
+  _flushApps() {
+    if (!this.appsSession) return;
+    try {
+      this.appsSession.flushStorageData();
+    } catch (e) {}
   }
 
   _appsFingerprint() {
