@@ -449,7 +449,7 @@ function render() {
 
   var acts = [], where = [biz.addr, biz.city].filter(Boolean).join(', ');
   if (where) acts.push('<a class="act" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/search?query=' +
-    encodeURIComponent(where) + '"><span class="ic">◎</span><span><span class="t">Como chegar</span>' +
+    encodeURIComponent(where) + '"><span class="ic">◎</span><span><span class="t">Get directions</span>' +
     '<span class="v">' + esc(where) + '</span></span></a>');
   if (biz.phone) acts.push('<a class="act" href="tel:' + esc(biz.phone.replace(/[^+0-9]/g, '')) +
     '"><span class="ic">☎</span><span><span class="t">Phone</span><span class="v">' +

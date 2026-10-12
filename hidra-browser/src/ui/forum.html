@@ -411,12 +411,12 @@ function renderList(){
     var rs=repliesOf(t.id).filter(function(r){return !state.hidden[r.id];});
     var flagged=state.reports[t.id]&&Object.keys(state.reports[t.id]).length;
     return '<div class="topic-item'+(t.id===state.sel?' sel':'')+'" data-id="'+t.id+'">'+
-      '<span class="ti-cat"><span class="cdot" style="background:'+catColor(t.cat)+'"></span>'+esc(t.cat)+'</span>'+(flagged?'<span class="flag">'+svg(IC.flag,11)+'Reportado</span>':'')+
+      '<span class="ti-cat"><span class="cdot" style="background:'+catColor(t.cat)+'"></span>'+esc(t.cat)+'</span>'+(flagged?'<span class="flag">'+svg(IC.flag,11)+'Reported</span>':'')+
       '<div class="ti-title">'+esc(t.title)+'</div>'+
       '<div class="ti-meta"><span class="who-n">'+esc(t.nick)+'</span><span>·</span><span>'+fmtDate(lastActivity(t))+'</span><span class="rc">'+svg(IC.comment,13)+rs.length+'</span></div></div>';
   }).join('');
   Array.prototype.forEach.call(el.querySelectorAll('.topic-item'),function(it){ it.onclick=function(){ openTopic(it.getAttribute('data-id')); }; });
-  $('pager').innerHTML='<button '+(state.page<=0?'disabled':'')+' id="pg-prev">Previous</button><span>'+(state.page+1)+' de '+pages+'</span><button '+(state.page>=pages-1?'disabled':'')+' id="pg-next">Next</button>';
+  $('pager').innerHTML='<button '+(state.page<=0?'disabled':'')+' id="pg-prev">Previous</button><span>'+(state.page+1)+' of '+pages+'</span><button '+(state.page>=pages-1?'disabled':'')+' id="pg-next">Next</button>';
   if($('pg-prev'))$('pg-prev').onclick=function(){ if(state.page>0){state.page--;renderList();} };
   if($('pg-next'))$('pg-next').onclick=function(){ if(state.page<pages-1){state.page++;renderList();} };
 }
@@ -424,8 +424,8 @@ function openTopic(id){ state.sel=id; state.rpage=0; renderList(); renderTopicVi
 function postHTML(p,isOp,kind,tid){
   var mine=state.me&&p.tag===state.me.tokenHash;
   var foot='';
-  foot+='<a onclick="report(\''+(p._t||'')+'\',\''+p.id+'\')">'+svg(IC.flag,14)+'Denunciar</a>';
-  if(state.mod) foot+='<a class="del" onclick="modHide(\''+p.id+'\')">'+svg(IC.eye,14)+'Ocultar</a>';
+  foot+='<a onclick="report(\''+(p._t||'')+'\',\''+p.id+'\')">'+svg(IC.flag,14)+'Report</a>';
+  if(state.mod) foot+='<a class="del" onclick="modHide(\''+p.id+'\')">'+svg(IC.eye,14)+'Hide</a>';
   if(mine) foot+='<a class="del" onclick="delOwn(\''+kind+'\',\''+p.id+'\',\''+(tid||'')+'\')">'+svg(IC.trash,14)+'Delete</a>';
   return '<div class="post'+(isOp?' op':'')+'">'+
     '<div class="p-head"><div class="p-av" style="background:'+avColor(p.tag||'')+'">'+esc((p.nick||'?').slice(0,1).toUpperCase())+'</div>'+
@@ -441,9 +441,9 @@ function renderTopicView(id){
   var pr=rs.slice(state.rpage*RPER_PAGE,(state.rpage+1)*RPER_PAGE);
   var h='<div class="v-cat"><span class="cdot" style="background:'+catColor(t.cat)+'"></span>'+esc(t.cat)+'</div><div class="v-title">'+esc(t.title)+'</div>';
   h+=postHTML(t,true,'t','');
-  h+='<div class="reply-count">'+rs.length+' resposta'+(rs.length===1?'':'s')+'</div>';
+  h+='<div class="reply-count">'+rs.length+' repl'+(rs.length===1?'y':'ies')+'</div>';
   h+=pr.map(function(r){ return postHTML(r,false,'r',id); }).join('');
-  if(pages>1) h+='<div class="pager"><button '+(state.rpage<=0?'disabled':'')+' id="rp-prev">Previous</button><span>'+(state.rpage+1)+' de '+pages+'</span><button '+(state.rpage>=pages-1?'disabled':'')+' id="rp-next">Next</button></div>';
+  if(pages>1) h+='<div class="pager"><button '+(state.rpage<=0?'disabled':'')+' id="rp-prev">Previous</button><span>'+(state.rpage+1)+' of '+pages+'</span><button '+(state.rpage>=pages-1?'disabled':'')+' id="rp-next">Next</button></div>';
   h+='<div class="reply-box"><textarea id="reply-in" placeholder="Write a reply…"></textarea><div class="row"><button class="btn btn-p" id="btn-reply">Reply</button><span class="mdhint">Supports **bold** · *italic* · `code` · [link](url) · ![image](url)</span></div></div>';
   $('view').innerHTML=h;
   if($('rp-prev'))$('rp-prev').onclick=function(){ if(state.rpage>0){state.rpage--;renderTopicView(id);} };

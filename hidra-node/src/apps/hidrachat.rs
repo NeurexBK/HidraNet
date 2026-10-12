@@ -1166,12 +1166,15 @@ $('advToggle').onclick=function(){$('advBox').classList.toggle('hidden')};
 if(DEFAULT_HUB){ inServer.value=DEFAULT_HUB; }
 
 // ── Generate / copy password ──
-var GENWORDS=['tigre','vento','lua','rio','pedra','fogo','neve','onda','raio','folha','ouro','prata','noite','sol','mar','flor','gelo','trem','nuvem','pinha','aguia','lobo','vale','monte','chama'];
+var GENWORDS=['tiger','wind','moon','river','stone','fire','snow','wave','storm','leaf','gold','silver','night','sun','sea','flower','ice','train','cloud','pine','eagle','wolf','valley','mountain','flame'];
+// Anyone can subscribe to the whole relay and try passwords against what they
+// collect, offline, so a generated one has to be out of reach of that: ten
+// random characters plus three words is about 65 bits.
 function genPassword(){
-  var w=function(){return GENWORDS[Math.floor(Math.random()*GENWORDS.length)];};
-  var r=crypto.getRandomValues(new Uint8Array(5)),suf='';
-  for(var i=0;i<5;i++) suf+=(r[i]%36).toString(36);
-  return w()+'-'+w()+'-'+w()+'-'+suf;
+  var r=crypto.getRandomValues(new Uint8Array(13)),suf='';
+  var w=function(i){return GENWORDS[r[i]%GENWORDS.length];};
+  for(var i=3;i<13;i++) suf+=(r[i]%36).toString(36);
+  return w(0)+'-'+w(1)+'-'+w(2)+'-'+suf;
 }
 function copyText(s){ if(s&&navigator.clipboard){ navigator.clipboard.writeText(s).then(function(){showToast()}); } }
 $('btnGen').onclick=function(){ inPass.value=genPassword(); inPass.focus(); };

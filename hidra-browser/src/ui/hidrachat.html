@@ -183,7 +183,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
     <p class="sub">End-to-end encrypted chat on the HidraNet network</p>
     <input type="text" id="inNick" placeholder="Your nickname" maxlength="24" autofocus>
     <div class="pass-row">
-      <input type="text" id="inPass" placeholder="Room password (agree it with your friends)" maxlength="128" autocomplete="off" spellcheck="false">
+      <input type="text" id="inPass" placeholder="Room password: agree one with your friends, or leave empty for a new room" maxlength="128" autocomplete="off" spellcheck="false">
       <button id="btnGen" class="mini" title="Generate a strong password">🎲</button>
       <button id="btnCopyPass" class="mini" title="Copy password">⧉</button>
     </div>
@@ -456,6 +456,14 @@ async function doJoin(){
   }
   serverAddr=sv;
   var pass=inPass.value;
+  // No password and no server of your own used to mean "host it yourself": a
+  // WebSocket back to this page's own host, which worked when the engine
+  // served this page and ran that socket. The browser serves it now and has
+  // no such socket, so the room sat on "Disconnected" for good. An empty
+  // password now opens a new private room instead, with a strong password to
+  // pass on to whoever should join.
+  var created=false;
+  if(!pass && !serverAddr){ pass=genPassword(); inPass.value=pass; created=true; }
   if(pass.length>0){
     try{
       cryptoKey=await deriveKey(pass);
@@ -482,12 +490,11 @@ async function doJoin(){
   msgInput.focus();
   if(serverAddr){
     connectWS();                          // direct server / LAN / fixed hub
-  }else if(e2e){
+  }else{
     relayTopic=await computeTopic(pass);
     connectRelay();                       // public relay, keyed by password
-  }else{
-    connectWS();                          // no password and no server: host locally
   }
+  if(created) addSys('New private room. To invite someone, give them this password: '+pass);
 }
 
 $('btnJoin').onclick=doJoin;
@@ -501,12 +508,16 @@ $('advToggle').onclick=function(){$('advBox').classList.toggle('hidden')};
 if(DEFAULT_HUB){ inServer.value=DEFAULT_HUB; }
 
 // ── Generate / copy password ──
-var GENWORDS=['tigre','vento','lua','rio','pedra','fogo','neve','onda','raio','folha','ouro','prata','noite','sol','mar','flor','gelo','trem','nuvem','pinha','aguia','lobo','vale','monte','chama'];
+var GENWORDS=['tiger','wind','moon','river','stone','fire','snow','wave','storm','leaf','gold','silver','night','sun','sea','flower','ice','train','cloud','pine','eagle','wolf','valley','mountain','flame'];
+// Anyone can subscribe to the whole relay and try passwords against what they
+// collect, offline and at leisure, so a generated one has to be out of reach
+// of that: ten random characters plus three words is about 65 bits. Five
+// characters was about 40, which a rented GPU farm gets through.
 function genPassword(){
-  var w=function(){return GENWORDS[Math.floor(Math.random()*GENWORDS.length)];};
-  var r=crypto.getRandomValues(new Uint8Array(5)),suf='';
-  for(var i=0;i<5;i++) suf+=(r[i]%36).toString(36);
-  return w()+'-'+w()+'-'+w()+'-'+suf;
+  var r=crypto.getRandomValues(new Uint8Array(13)),suf='';
+  var w=function(i){return GENWORDS[r[i]%GENWORDS.length];};
+  for(var i=3;i<13;i++) suf+=(r[i]%36).toString(36);
+  return w(0)+'-'+w(1)+'-'+w(2)+'-'+suf;
 }
 function copyText(s){ if(s&&navigator.clipboard){ navigator.clipboard.writeText(s).then(function(){showToast()}); } }
 $('btnGen').onclick=function(){ inPass.value=genPassword(); inPass.focus(); };
@@ -734,7 +745,7 @@ async function sendMessage(){
   if(mode==='relay'){
     var ts=Date.now();
     relayPublish({k:'msg',nick:nick,color:myColor,text:text,t:ts,cid:myCid});
-    renderChatMsg({nick:nick,color:myColor,text:text,time:ts,cid:myCid}); // eco local: aparece na hora
+    renderChatMsg({nick:nick,color:myColor,text:text,time:ts,cid:myCid}); // shown here at once, not on the echo
     msgInput.value='';
     sendTypingState(false);
     return;

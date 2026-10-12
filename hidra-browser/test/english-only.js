@@ -90,10 +90,20 @@ const WORDS = new RegExp(
       'salvar', 'secao', 'seguranca', 'senha', 'servicos', 'subtitulo',
       'procura', 'tecnica', 'telefone', 'tema', 'titulo', 'trafego', 'usuarios?',
       'visitantes', 'visitas', 'voltar',
+      // Found later, in the forum and on the review landing page.
+      'reportad\\w*', 'denunci\\w*', 'ocultar', 'respostas?', 'chegar', 'arq',
+      // The words HidraChat used to build room passwords from, which a user
+      // reads and passes on.
+      'tigre', 'vento', 'pedra', 'nuvem', 'aguia', 'prata', 'folha', 'chama',
+      'noite',
     ].join('|') +
     ')\\b',
   'i'
 );
+
+// A Portuguese joining word alone in a string with space on both sides, which
+// only ever means it sits between two concatenated values.
+const BARE_JOINER = /^\s+(?:de|da|dos|das|em|ou|com|para|por)\s+$/i;
 
 // A Portuguese locale formats dates and numbers in Portuguese however the text
 // around them reads, so it is the same bug wearing a different hat.
@@ -210,6 +220,13 @@ for (const file of files) {
         return;
       }
       for (const raw of displayed(line)) {
+        // A joining word on its own, between two values being concatenated:
+        // the pager read "1 de 3", and a two-letter string is otherwise too
+        // short to judge.
+        if (BARE_JOINER.test(raw)) {
+          offences.push(`${rel}:${n + 1}  a Portuguese joining word: '${raw}'`);
+          continue;
+        }
         const s = raw.trim();
         if (s.length < 3) continue;
         if (/^https?:|^\/\/|^#|^var\(/.test(s)) continue;

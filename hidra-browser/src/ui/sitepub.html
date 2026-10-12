@@ -143,11 +143,12 @@ function connect(){
   mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconnecting…'; });
 }
 
+var snSites=[], loaded={name:'',pages:{}};
 async function loadFromSevenNine(){
   try{
     var r=await fetch('http://127.0.0.1:8084/api/sites'); var d=await r.json();
     var sel=$('sn-sites');
-    if(d&&d.ok&&d.sites&&d.sites.length){ sel.innerHTML='<option value="">— choose a site —</option>'+d.sites.map(function(s){return '<option value="'+esc(s.name)+'">'+esc(s.name)+' ('+s.files.length+' arq.)</option>';}).join(''); }
+    if(d&&d.ok&&d.sites&&d.sites.length){ snSites=d.sites; sel.innerHTML='<option value="">— choose a site —</option>'+d.sites.map(function(s){return '<option value="'+esc(s.name)+'">'+esc(s.name)+' ('+s.files.length+' file'+(s.files.length===1?'':'s')+')</option>';}).join(''); }
     else sel.innerHTML='<option value="">— no site in SevenNine —</option>';
   }catch(e){ $('sn-sites').innerHTML='<option value="">— SevenNine offline —</option>'; }
 }
@@ -155,6 +156,17 @@ async function loadSelected(){
   var name=$('sn-sites').value; if(!name) return;
   try{
     var r=await fetch('http://127.0.0.1:8084/sites/'+name+'/'); var html=await r.text();
+    // The other pages come along too, as the hint under the editor promises;
+    // only the home page used to, so a link to shop.html led nowhere.
+    var pages={}, site=snSites.filter(function(s){ return s.name===name; })[0];
+    if(site&&site.files){
+      for(var i=0;i<site.files.length;i++){
+        var f=site.files[i];
+        if(f==='index.html'||!/^[\w.-]+\.html$/i.test(f)) continue;
+        try{ pages[f]=await (await fetch('http://127.0.0.1:8084/sites/'+name+'/'+f)).text(); }catch(e){}
+      }
+    }
+    loaded={name:name,pages:pages};
     $('site-name').value=name; $('site-html').value=html;
     showMsg('Site "'+name+'" loaded from SevenNine.','ok');
   }catch(e){ showMsg('Could not load from SevenNine.','err'); }
@@ -168,8 +180,11 @@ async function publish(){
   try{
     var addr=newAddr();
     var bundle={'index.html':html};
+    if(loaded.name===name){ for(var f in loaded.pages) bundle[f]=loaded.pages[f]; }
     await doPublish(addr,bundle);
-    published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
+    // Re-read first: another tab may have published since this one loaded,
+    // and saving this tab's copy would drop that site from the list.
+    loadMine(); published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
     lastAddr=addr;
     $('r-addr').textContent=addr;
     $('r-open').href='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);

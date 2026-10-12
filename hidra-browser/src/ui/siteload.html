@@ -101,12 +101,24 @@ async function start(){
 function normalize(p){ p=(p||'').split('#')[0].split('?')[0]; if(p.indexOf('/')>=0)p=p.split('/').pop(); if(!p||p==='')p='index.html'; return p; }
 function render(path){
   if(!bundle) return;
-  var html=bundle[path]||bundle['index.html']||'<h1>Page not found</h1>';
-  // injeta interceptador de links internos
-  var inject='<scr'+'ipt>document.addEventListener("click",function(e){var a=e.target.closest("a");if(!a)return;var h=a.getAttribute("href")||"";if(/^https?:|^mailto:|^#/.test(h))return;e.preventDefault();parent.postMessage({hnav:h},"*");},true);</scr'+'ipt>';
-  $('frame').srcdoc=html.replace(/<\/body>/i, inject+'</body>') === html ? html+inject : html.replace(/<\/body>/i, inject+'</body>');
+  $('frame').srcdoc=bundle[path]||bundle['index.html']||'<h1>Page not found</h1>';
 }
-window.addEventListener('message',function(ev){ var m=ev.data||{}; if(m.hnav){ render(normalize(m.hnav)); } });
+// A published site runs with no scripts at all — the frame has no
+// allow-scripts, so nothing a stranger publishes can run in this page's
+// origin. Links between the site's own pages used to be followed by a script
+// injected into the site, which for that same reason never ran: clicking
+// shop.html loaded this browser's own apps server into the frame instead. So
+// they are followed from out here, where scripts do run.
+$('frame').addEventListener('load',function(){
+  var doc; try{ doc=$('frame').contentDocument; }catch(e){ return; }
+  if(!doc) return;
+  doc.addEventListener('click',function(e){
+    var a=e.target&&e.target.closest?e.target.closest('a'):null; if(!a) return;
+    var h=a.getAttribute('href')||'';
+    if(/^(https?:|mailto:|#)/i.test(h)) return;
+    e.preventDefault(); render(normalize(h));
+  });
+});
 
 start();
 </script>
