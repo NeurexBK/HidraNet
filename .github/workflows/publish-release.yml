@@ -78,6 +78,12 @@ jobs:
           node test/anonymity-claims.js
           node test/mqtt-worker-csp.js
 
+      - name: The apps keep their storage and websites keep none
+        working-directory: hidra-browser
+        run: |
+          node test/app-storage.js
+          node test/display-url.js
+
       - name: No addresses or content in the logs
         working-directory: hidra-node
         run: cargo test --test no_addresses_in_logs

@@ -27,15 +27,19 @@ const INTERNAL_PAGES = {
   'donate.html': 'donate',
 };
 
-// The reverse of INTERNAL_PAGES: what to load when someone types the name.
+// What to load when someone types the name. Only the new tab page comes from
+// disk; every app comes from the apps server, so it has one origin — and one
+// store — however it was opened. Typing hidra://mail used to load the copy on
+// disk, a file:// page with storage of its own, and so a different mail
+// address from the one behind the new tab page's Mail card.
 const INTERNAL_BY_NAME = {
   newtab: 'newtab.html',
-  mail: 'hidramail.html',
-  chat: 'hidrachat.html',
-  forum: 'forum.html',
-  reviews: 'hidrareview.html',
-  publish: 'sitepub.html',
-  donate: 'donate.html',
+  mail: '/mail',
+  chat: '/',
+  forum: '/forum',
+  reviews: '/reviews',
+  publish: '/publish',
+  donate: '/donate',
 };
 
 // The same, for the pages the apps server hands out on the loopback port.
@@ -53,6 +57,34 @@ const APPS_ROUTES = {
 const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
 const SEARCH_URL = `${APPS_ORIGIN}/search`;
 
+// HidraNet's own apps keep what they store. Websites do not.
+//
+// Every tab used to get a fresh, random, in-memory partition. That is right
+// for websites, which should forget you when the tab closes, and it was wrong
+// for the apps, which hold an identity: the mail address and its keys, the
+// mail received, the forum name, the list of sites you published. Opening
+// HidraMail in a second tab gave you a second address, and every restart gave
+// you another, so anything sent to the first one went to a mailbox that no
+// longer existed. The forum forgot who you were the same way.
+//
+// So those pages, and only those, share one partition kept on disk. It is
+// chosen by path and not just by origin: search, reviews and donate store
+// nothing, and the site viewer renders other people's content, so they stay
+// in a throwaway partition like any website.
+const APPS_PARTITION = 'persist:hidra-apps';
+const APP_STORAGE_PATHS = new Set(['/', '/mail', '/forum', '/publish', '/sites']);
+
+function wantsAppStorage(rawUrl) {
+  let u;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (u.origin !== APPS_ORIGIN) return false;
+  return APP_STORAGE_PATHS.has(u.pathname.replace(/\/+$/, '') || '/');
+}
+
 class TabManager {
   constructor(parentWindow, proxyManager, networkLock) {
     this.window = parentWindow;
@@ -64,6 +96,11 @@ class TabManager {
     // Set while connected, so tabs opened after connecting inherit the same
     // network route instead of quietly going out direct.
     this.proxyRules = null;
+    // The apps' shared partition, made on first use, and the one fingerprint
+    // every tab in it presents: a session has one user agent, so tabs sharing
+    // it cannot each claim a different one.
+    this.appsSession = null;
+    this.appsFingerprint = null;
 
     // A BrowserView keeps whatever bounds it was given, so without this the
     // page stays at the size the window had when the tab opened: resize the
@@ -94,9 +131,90 @@ class TabManager {
 
   async createTab(url) {
     const tabId = this.nextId++;
-    const fingerprint = FingerprintEngine.generate();
-    const tabSession = this._createIsolatedSession(tabId, fingerprint);
+    const first = url || 'hidra://newtab';
 
+    const tabInfo = {
+      id: tabId,
+      view: null,
+      session: null,
+      fingerprint: null,
+      // Whether the view sits in the apps' partition, the one kept on disk.
+      persistent: false,
+      // Pages left behind when the tab moved between partitions. A view
+      // cannot change partition, so the tab gets a new view instead, and the
+      // old view's history goes with it; this is the way back.
+      backStack: [],
+      // Bumped by every navigation, so one that finishes late can tell it
+      // has been overtaken and not load over the newer one.
+      navSeq: 0,
+      closed: false,
+      title: 'New Tab',
+      url: first,
+      loading: false,
+    };
+
+    await this._attach(tabInfo, this._belongsInApps(this._resolve(first)));
+
+    this.tabs.set(tabId, tabInfo);
+
+    // The UI creates the tab strip element on 'tab:created', so it has to arrive
+    // before 'tab:activated' — otherwise activateTab marks a tab that is not in
+    // the DOM yet and the new tab never gets the active highlight.
+    this._notifyUI('tab:created', { tabId, title: tabInfo.title, url: tabInfo.url });
+    this.activateTab(tabId);
+    this.navigate(tabId, first);
+
+    return tabId;
+  }
+
+  // Gives the tab a view in the right partition: the apps' persistent one, or
+  // a fresh throwaway one. Replaces the tab's current view if it has one.
+  async _attach(tab, persistent) {
+    const fingerprint = persistent ? this._appsFingerprint() : FingerprintEngine.generate();
+    const tabSession = persistent
+      ? this._appsSession()
+      : this._createIsolatedSession(tab.id, fingerprint);
+
+    // Routed before anything is created that could load, so nothing in this
+    // view ever goes out on a route other than the one every tab is on.
+    await this._applyProxy(tabSession);
+
+    if (tab.closed) {
+      if (!persistent) tabSession.clearStorageData();
+      return false;
+    }
+
+    const view = this._buildView(tab, tabSession, fingerprint);
+    const old = { view: tab.view, session: tab.session, persistent: tab.persistent };
+
+    tab.view = view;
+    tab.session = tabSession;
+    tab.fingerprint = fingerprint;
+    tab.persistent = persistent;
+
+    if (old.view) {
+      if (this.activeTabId === tab.id && this.tabs.get(tab.id) === tab) {
+        this.window.addBrowserView(view);
+        this._resizeView(view);
+        view.setAutoResize({ width: true, height: true });
+      }
+      this._dispose(old);
+    }
+    return true;
+  }
+
+  _dispose({ view, session: tabSession, persistent }) {
+    try {
+      this.window.removeBrowserView(view);
+    } catch (e) {}
+    view.webContents.close();
+    // The apps' partition is shared and kept on purpose: clearing it here
+    // would delete the mail address along with the tab.
+    if (!persistent) tabSession.clearStorageData();
+  }
+
+  _buildView(tab, tabSession, fingerprint) {
+    const tabId = tab.id;
     const view = new BrowserView({
       webPreferences: {
         preload: path.join(__dirname, '..', 'renderer', 'tab-preload.js'),
@@ -112,7 +230,9 @@ class TabManager {
       },
     });
 
-    await this._applyProxy(tabSession);
+    // A replaced view can still fire an event or two while it closes. Only
+    // the view the tab currently shows gets to speak for it.
+    const live = () => tab.view === view;
 
     // WebRTC can reveal the real IP through ICE candidates, going around the
     // proxy. The injected page deletes window.RTCPeerConnection, but that runs
@@ -138,50 +258,59 @@ class TabManager {
       } catch (e) {}
     });
 
-    const tabInfo = {
-      id: tabId,
-      view,
-      session: tabSession,
-      fingerprint,
-      title: 'New Tab',
-      url: url || 'hidra://newtab',
-      loading: false,
-    };
+    // A page can take the tab across the line between the apps and the web
+    // itself — a link out of an app, the new tab page's Mail card, a site
+    // redirecting to the apps server. The view it is in cannot change
+    // partition, so the navigation is stopped here and repeated in a view
+    // that is in the right one. Without this, a website opened from inside an
+    // app would run in the partition kept on disk and could keep cookies
+    // across restarts, and the Mail card would open a mailbox that is gone
+    // when the tab closes.
+    const crossing = (target) => live() && this._belongsInApps({ kind: 'url', url: target }) !== tab.persistent;
+    view.webContents.on('will-navigate', (event, legacyUrl) => {
+      const target = event.url || legacyUrl;
+      if (!crossing(target)) return;
+      event.preventDefault();
+      this.navigate(tabId, target);
+    });
+    view.webContents.on('will-redirect', (event, legacyUrl, _inPlace, legacyMainFrame) => {
+      const mainFrame = event.isMainFrame !== undefined ? event.isMainFrame : legacyMainFrame;
+      const target = event.url || legacyUrl;
+      if (!mainFrame || !crossing(target)) return;
+      event.preventDefault();
+      this.navigate(tabId, target);
+    });
 
     view.webContents.on('did-start-loading', () => {
-      tabInfo.loading = true;
+      if (!live()) return;
+      tab.loading = true;
       this._notifyUI('tab:loading', { tabId, loading: true });
     });
 
     view.webContents.on('did-stop-loading', () => {
-      tabInfo.loading = false;
+      if (!live()) return;
+      tab.loading = false;
       this._notifyUI('tab:loading', { tabId, loading: false });
     });
 
     view.webContents.on('page-title-updated', (_event, title) => {
-      tabInfo.title = title;
+      if (!live()) return;
+      tab.title = title;
       this._notifyUI('tab:title', { tabId, title });
     });
 
-    view.webContents.on('did-navigate', (_event, navUrl) => {
-      tabInfo.url = this._displayUrl(navUrl);
+    const navigated = (_event, navUrl) => {
+      if (!live()) return;
+      tab.url = this._displayUrl(navUrl);
       this._notifyUI('tab:navigated', {
         tabId,
-        url: tabInfo.url,
-        canGoBack: view.webContents.navigationHistory.canGoBack(),
+        url: tab.url,
+        canGoBack: this._canGoBack(tab),
         canGoForward: view.webContents.navigationHistory.canGoForward(),
       });
-    });
-
-    view.webContents.on('did-navigate-in-page', (_event, navUrl) => {
-      tabInfo.url = this._displayUrl(navUrl);
-      this._notifyUI('tab:navigated', {
-        tabId,
-        url: tabInfo.url,
-        canGoBack: view.webContents.navigationHistory.canGoBack(),
-        canGoForward: view.webContents.navigationHistory.canGoForward(),
-      });
-    });
+    };
+    view.webContents.on('did-navigate', navigated);
+    view.webContents.on('did-navigate-in-page', navigated);
 
     // Cancelling in onBeforeRequest returns ERR_BLOCKED_BY_CLIENT (-20) and the
     // user saw a Chromium error screen with no explanation. Tell them why.
@@ -190,7 +319,7 @@ class TabManager {
       if (!this.networkLock || !this.networkLock.engaged) return;
       const reason = this.networkLock.reason || 'the anonymous connection is not ready';
       view.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
-        `<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8"><style>
+        `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><style>
           body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
                display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
           .box{max-width:460px}
@@ -214,25 +343,15 @@ class TabManager {
       return { action: 'deny' };
     });
 
-    this.tabs.set(tabId, tabInfo);
-
-    // The UI creates the tab strip element on 'tab:created', so it has to arrive
-    // before 'tab:activated' — otherwise activateTab marks a tab that is not in
-    // the DOM yet and the new tab never gets the active highlight.
-    this._notifyUI('tab:created', { tabId, title: tabInfo.title, url: tabInfo.url });
-    this.activateTab(tabId);
-    this.navigate(tabId, url || 'hidra://newtab');
-
-    return tabId;
+    return view;
   }
 
   closeTab(tabId) {
     const tab = this.tabs.get(tabId);
     if (!tab) return;
 
-    this.window.removeBrowserView(tab.view);
-    tab.view.webContents.close();
-    tab.session.clearStorageData();
+    tab.closed = true;
+    this._dispose(tab);
     this.tabs.delete(tabId);
 
     if (this.activeTabId === tabId) {
@@ -268,7 +387,7 @@ class TabManager {
       tabId,
       url: tab.url,
       title: tab.title,
-      canGoBack: tab.view.webContents.navigationHistory.canGoBack(),
+      canGoBack: this._canGoBack(tab),
       canGoForward: tab.view.webContents.navigationHistory.canGoForward(),
     });
   }
@@ -303,10 +422,9 @@ class TabManager {
     return rawUrl;
   }
 
-  navigate(tabId, url) {
-    const tab = this.tabs.get(tabId);
-    if (!tab) return;
-
+  // Turns what was typed or clicked into what to load: a page on disk, a URL,
+  // or a .hidra name that still has to be looked up.
+  _resolve(url) {
     let finalUrl = url;
     if (!url.includes('://') && !url.startsWith('hidra://')) {
       if (url.endsWith('.hidra') || url.includes('.hidra/')) {
@@ -318,45 +436,79 @@ class TabManager {
       }
     }
 
+    if (!finalUrl.startsWith('hidra://')) return { kind: 'url', url: finalUrl, finalUrl };
+
+    const rest = finalUrl.slice('hidra://'.length);
+    const name = rest.split(/[/?#]/)[0];
+
+    if (name === 'search') {
+      const searchQuery = finalUrl.includes('?q=') ? finalUrl.split('?q=')[1] : '';
+      const url = searchQuery ? SEARCH_URL + '?q=' + searchQuery : SEARCH_URL;
+      return { kind: 'url', url, finalUrl };
+    }
+
     // The built-in apps, by name. The address bar reports these names when
     // you are on one of these pages, so they have to work typed back in —
     // showing a user an address they cannot use is worse than showing them
     // the raw path.
-    const internal = INTERNAL_BY_NAME[
-      finalUrl.replace(/^hidra:\/\//, '').split(/[/?#]/)[0]
-    ];
-    if (internal && !finalUrl.startsWith('hidra://search')) {
-      tab.view.webContents.loadFile(path.join(__dirname, '..', 'ui', internal));
-      tab.url = finalUrl;
-      return;
+    const route = INTERNAL_BY_NAME[name];
+    if (route && route.endsWith('.html')) return { kind: 'file', file: route, finalUrl };
+    if (route) {
+      const tail = rest.slice(name.length);
+      const query = /^[?#]/.test(tail) ? tail : '';
+      return { kind: 'url', url: APPS_ORIGIN + route + query, finalUrl };
     }
 
-    if (finalUrl.startsWith('hidra://newtab')) {
-      tab.view.webContents.loadFile(
-        path.join(__dirname, '..', 'ui', 'newtab.html')
-      );
-    } else if (finalUrl.startsWith('hidra://search')) {
-      const searchQuery = finalUrl.includes('?q=')
-        ? finalUrl.split('?q=')[1]
-        : '';
-      const searchUrl = searchQuery
-        ? SEARCH_URL + '?q=' + searchQuery
-        : SEARCH_URL;
-      tab.view.webContents.loadURL(searchUrl);
-    } else if (finalUrl.startsWith('hidra://')) {
-      this._resolveHidraDomain(tab, finalUrl);
+    return { kind: 'domain', url: finalUrl, finalUrl };
+  }
+
+  // Only a URL can be one of the apps; a page on disk and a .hidra name are
+  // not (a .hidra name resolves to a website, the site viewer or reviews).
+  _belongsInApps(target) {
+    return target.kind === 'url' && wantsAppStorage(target.url);
+  }
+
+  _canGoBack(tab) {
+    return tab.view.webContents.navigationHistory.canGoBack() || tab.backStack.length > 0;
+  }
+
+  async navigate(tabId, url, { returning = false } = {}) {
+    const tab = this.tabs.get(tabId);
+    if (!tab) return;
+
+    const seq = ++tab.navSeq;
+    const target = this._resolve(url);
+    tab.url = target.finalUrl;
+
+    const persistent = this._belongsInApps(target);
+    if (persistent !== tab.persistent) {
+      // Moving partition replaces the view, and its history with it. Keep the
+      // page being left, so Back still goes somewhere.
+      const leaving = tab.view.webContents.getURL();
+      if (!returning && leaving && !leaving.startsWith('data:')) tab.backStack.push(leaving);
+      if (!(await this._attach(tab, persistent))) return;
+      if (tab.navSeq !== seq) return;
+    }
+
+    const wc = tab.view.webContents;
+    if (target.kind === 'file') {
+      wc.loadFile(path.join(__dirname, '..', 'ui', target.file)).catch(() => {});
+    } else if (target.kind === 'domain') {
+      this._resolveHidraDomain(tab, target.url, seq);
     } else {
-      tab.view.webContents.loadURL(finalUrl);
+      wc.loadURL(target.url).catch(() => {});
     }
-
-    tab.url = finalUrl;
   }
 
   goBack(tabId) {
     const tab = this.tabs.get(tabId);
-    if (tab && tab.view.webContents.navigationHistory.canGoBack()) {
+    if (!tab) return;
+    if (tab.view.webContents.navigationHistory.canGoBack()) {
       tab.view.webContents.navigationHistory.goBack();
+      return;
     }
+    const previous = tab.backStack.pop();
+    if (previous) this.navigate(tabId, previous, { returning: true });
   }
 
   goForward(tabId) {
@@ -373,8 +525,12 @@ class TabManager {
     }
   }
 
+  // Every session that has to follow the network route. The apps' one is in
+  // here even with no app open, so an app opened later is already routed.
   getAllSessions() {
-    return [...this.tabs.values()].map(t => t.session).filter(Boolean);
+    const all = new Set([...this.tabs.values()].map(t => t.session).filter(Boolean));
+    if (this.appsSession) all.add(this.appsSession);
+    return [...all];
   }
 
   listTabs() {
@@ -390,9 +546,31 @@ class TabManager {
   _createIsolatedSession(tabId, fingerprint) {
     const partition = `tab-${tabId}-${crypto.randomBytes(8).toString('hex')}`;
     const tabSession = session.fromPartition(partition, { cache: false });
+    this._secureSession(tabSession, fingerprint);
+    return tabSession;
+  }
 
-    // Every tab gets its own session, so every one of them needs the filter:
-    // a session without it is a way straight around the kill switch.
+  // The apps' partition: on disk, so what the apps store survives the tab and
+  // the restart. No HTTP cache is kept even so — the only thing worth keeping
+  // is what the apps put in their own storage.
+  _appsSession() {
+    if (!this.appsSession) {
+      this.appsSession = session.fromPartition(APPS_PARTITION, { cache: false });
+      this._secureSession(this.appsSession, this._appsFingerprint());
+    }
+    return this.appsSession;
+  }
+
+  _appsFingerprint() {
+    if (!this.appsFingerprint) this.appsFingerprint = FingerprintEngine.generate();
+    return this.appsFingerprint;
+  }
+
+  // What every session gets, throwaway or kept: the kill switch, the spoofed
+  // user agent, the header stripping and the permission lockdown.
+  _secureSession(tabSession, fingerprint) {
+    // Every session needs the filter: a session without it is a way straight
+    // around the kill switch.
     if (this.networkLock) this.networkLock.protect(tabSession);
 
     // Without this every request advertises the real Electron user agent
@@ -504,18 +682,31 @@ class TabManager {
     } catch (e) {}
   }
 
-  async _resolveHidraDomain(tab, hidraUrl) {
+  // A load decided after the navigation started, once a lookup came back. It
+  // is dropped if the user has gone somewhere else in the meantime, and goes
+  // through navigate() if it lands on the other side of the line between the
+  // apps and the web.
+  _loadLater(tab, seq, url) {
+    if (tab.closed || tab.navSeq !== seq) return;
+    if (wantsAppStorage(url) !== tab.persistent) {
+      this.navigate(tab.id, url);
+      return;
+    }
+    tab.view.webContents.loadURL(url).catch(() => {});
+  }
+
+  async _resolveHidraDomain(tab, hidraUrl, seq = tab.navSeq) {
     const hostname = hidraUrl.replace('hidra://', '').split('/')[0];
     const pathPart = hidraUrl.replace('hidra://', '').substring(hostname.length);
 
     // Network .hidra address (encrypted site on the relay): long base32 label.
     const label = hostname.replace('.hidra', '');
     if (label.length >= 24 && /^[a-z2-7]+$/.test(label)) {
-      tab.view.webContents.loadURL(APPS_ORIGIN + '/site?addr=' + encodeURIComponent(hostname));
+      this._loadLater(tab, seq, APPS_ORIGIN + '/site?addr=' + encodeURIComponent(hostname));
       return;
     }
 
-    tab.view.webContents.loadURL('data:text/html,' + encodeURIComponent(
+    this._loadLater(tab, seq, 'data:text/html,' + encodeURIComponent(
       `<!DOCTYPE html><html><head><style>
         body { background: #06060b; color: #e0e0e8; font-family: -apple-system, sans-serif;
                display: flex; align-items: center; justify-content: center; height: 100vh; }
@@ -548,7 +739,7 @@ class TabManager {
       if (response && response.ok) {
         const data = await response.json();
         if (data.address) {
-          tab.view.webContents.loadURL(`http://${data.address}${pathPart}`);
+          this._loadLater(tab, seq, `http://${data.address}${pathPart}`);
           return;
         }
       }
@@ -567,7 +758,7 @@ class TabManager {
         if (res && res.ok) {
           const data = await res.json();
           if (data.found) {
-            tab.view.webContents.loadURL(`http://${data.address}${data.path || ''}`);
+            this._loadLater(tab, seq, `http://${data.address}${data.path || ''}`);
             return;
           }
         }
@@ -580,7 +771,7 @@ class TabManager {
     // <slug>.hidra address to write onto NFC cards, and the page resolves it
     // against the network — if it does not exist, it says so with a way back
     // to the directory, instead of a dead end.
-    tab.view.webContents.loadURL(
+    this._loadLater(tab, seq, 
       `${APPS_ORIGIN}/reviews?b=${encodeURIComponent(siteName)}`
     );
   }
@@ -603,4 +794,4 @@ class TabManager {
   }
 }
 
-module.exports = { TabManager, INTERNAL_BY_NAME };
+module.exports = { TabManager, INTERNAL_BY_NAME, wantsAppStorage, APPS_PARTITION };

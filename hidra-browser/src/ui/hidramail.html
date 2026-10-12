@@ -187,6 +187,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   </div>
 </div>
 
+<!-- Shown by a second tab while another one runs the mailbox -->
+<div class="modal modal-sm hidden" id="m-elsewhere">
+  <div class="compose">
+    <div class="c-head"><h3>HidraMail is open in another tab</h3></div>
+    <div class="c-body">
+      <div class="muted">Use that tab to read and send. If you close it, this one takes over by itself, with all your mail.</div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -533,7 +543,27 @@ function notify(m){
 
 // init
 load();
-(async function init(){
+// One HidraMail per mailbox. Two tabs on the same one share a broker client
+// id, so each connection knocks the other off every few seconds; and each tab
+// keeps its own copy of the mailbox in memory and saves it over the other's,
+// so mail that arrived in one tab disappears when the other saves. The tab
+// holding this lock runs the mailbox. Any other tab says so and waits, and
+// when the first one closes it re-reads the mailbox and takes over.
+function runMailbox(start){
+  var forever=function(){ return new Promise(function(){}); };
+  if(!navigator.locks){ start(); return; }
+  navigator.locks.request('hidramail-mailbox',{ifAvailable:true},function(lock){
+    if(lock){ start(); return forever(); }
+    $('ctxt').textContent='open in another tab';
+    $('m-elsewhere').classList.remove('hidden');
+    navigator.locks.request('hidramail-mailbox',function(){
+      $('m-elsewhere').classList.add('hidden');
+      load(); start(); return forever();
+    });
+  });
+}
+
+runMailbox(async function init(){
   // An address made before signing existed is derived from the encryption key
   // alone, so it cannot be upgraded in place — a signing key bolted on would
   // change the address. Those stay in the list so old mail still decrypts, and
@@ -558,7 +588,7 @@ load();
   $('my-addr').onclick=function(){ var me=activeId(); if(me){ if(navigator.clipboard)navigator.clipboard.writeText(me.addr); toast('Address copied.'); } };
   $('search').oninput=function(){ state.search=this.value; renderList(); };
   connect();
-})();
+});
 </script>
 </body>
 </html>
