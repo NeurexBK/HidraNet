@@ -186,6 +186,29 @@ fn truncated(raw: &[u8]) -> Vec<u8> {
     resp.to_vec().unwrap_or_default()
 }
 
+/// Resolves one name through the given upstreams and prints what came back:
+/// the way to prove, from the node itself, that DNS-over-HTTPS works — the
+/// TLS roots, the route out, the resolver — before a client depends on it.
+pub async fn check(upstreams: &[String], name: &str) -> Result<()> {
+    let resolver = build_resolver(upstreams)?;
+    let t0 = std::time::Instant::now();
+    let lookup = resolver.lookup(name, RecordType::A).await.map_err(|e| {
+        anyhow!(
+            "{name} could not be resolved through {}: {e}",
+            upstreams.join(", ")
+        )
+    })?;
+    for r in lookup.answers() {
+        println!("{r}");
+    }
+    println!(
+        "answered in {} ms through {}",
+        t0.elapsed().as_millis(),
+        upstreams.join(", ")
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

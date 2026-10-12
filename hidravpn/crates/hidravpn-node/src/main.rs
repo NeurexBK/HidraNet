@@ -99,6 +99,14 @@ mod node {
         },
         /// Peers, handshakes and bytes.
         Status,
+        /// Resolve a name through the DNS upstreams, to prove they work from here.
+        DnsCheck {
+            #[arg(default_value = "example.com")]
+            name: String,
+            /// Upstreams to try instead of the configured ones.
+            #[arg(long, num_args = 1..)]
+            dns: Vec<String>,
+        },
     }
 
     fn require_root() -> Result<()> {
@@ -178,6 +186,16 @@ mod node {
                     .find(&pubkey)
                     .ok_or_else(|| anyhow!("that key is not admitted"))?;
                 println!("{}", invite_for(&cfg, lease)?.to_json());
+            }
+            Cmd::DnsCheck { name, dns } => {
+                let upstreams = if dns.is_empty() {
+                    NodeConfig::load(&cli.config)
+                        .map(|c| c.dns)
+                        .unwrap_or_else(|_| NodeConfig::default_dns())
+                } else {
+                    dns
+                };
+                crate::dns::check(&upstreams, &name).await?;
             }
             Cmd::Status => {
                 require_root()?;

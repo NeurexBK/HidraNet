@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 boringtun = { version = "0.7", default-features = false }
 tun-rs = { version = "2", features = ["async_tokio"] }
 wireguard-control = "2"
-hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "https-ring"] }
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "https-ring", "webpki-roots"] }
 ed25519-dalek = "3"
 sha2 = "0.10"
 getrandom = "0.3"
