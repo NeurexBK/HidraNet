@@ -108,6 +108,15 @@ class TorManager {
     };
   }
 
+  async _waitPortFree(ms) {
+    const until = Date.now() + ms;
+    while (!(await this._portFree())) {
+      if (Date.now() >= until) return false;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return true;
+  }
+
   _portFree() {
     return new Promise((resolve) => {
       const socket = new net.Socket();
@@ -133,7 +142,11 @@ class TorManager {
       return { ok: false, error: this.lastError };
     }
 
-    if (!(await this._portFree())) {
+    // A Tor left behind by a browser that never got to shut down — killed,
+    // crashed, logged out — holds the port until it notices its owner is gone
+    // (see __OwningControllerProcess below), which takes it up to about
+    // fifteen seconds. Wait that out instead of failing the connection.
+    if (!(await this._waitPortFree(20000))) {
       this.state = 'failed';
       this.lastError = `port ${this.socksPort} is already in use`;
       return { ok: false, error: this.lastError };
@@ -165,6 +178,12 @@ class TorManager {
       '--SocksPolicy', 'reject *',
       '--AvoidDiskWrites', '1',
       '--Log', 'notice stdout',
+      // Tor exits by itself when this process does. It is only ever stopped
+      // from the window-all-closed handler, so a browser that was killed,
+      // crashed or lost its session left Tor running — holding the port, so
+      // the next start failed with "port 9052 is already in use" until the
+      // user found and killed it. Tor Browser starts its tor the same way.
+      '__OwningControllerProcess', String(process.pid),
     ];
     if (geoip) args.push('--GeoIPFile', geoip);
     if (geoip6) args.push('--GeoIPv6File', geoip6);
