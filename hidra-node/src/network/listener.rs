@@ -78,7 +78,7 @@ pub async fn connect_to_peer(
     let _span = tracing::info_span!(
         "session",
         session_id = %session_id,
-        remote_addr = %addr,
+        remote_addr = %sensitive(&addr),
         role = "initiator",
     )
     .entered();

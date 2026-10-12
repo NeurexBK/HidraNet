@@ -30,6 +30,8 @@ enabled = false
 local_port = 8080
 # app = "hidrachat"  # uncomment to run HidraChat on this node
 
+# Optional noise_pubkey: base64-encoded 32-byte X25519 static public key.
+# Nonempty keys are verified during connection setup; empty keys are unpinned.
 [[relays]]
 name = "relay-1"
 addr = "127.0.0.1:7001"

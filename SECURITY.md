@@ -23,6 +23,12 @@ wrong is high.
 
 ## What the current design does defend against
 
+- **A relay with a different configured identity.** When a relay entry sets
+  `noise_pubkey`, both client paths compare it with the X25519 static key
+  authenticated by the handshake. A mismatch or malformed key stops the
+  connection before the client sends its own static identity. Empty keys
+  keep the existing unpinned discovery mode; they do not authenticate which
+  relay operator is being contacted. Obtain pins over a trusted channel.
 - **An observer on one link.** Traffic between hops is a Noise `XXhfs`
   handshake over X25519 + ML-KEM-1024, then ChaCha20-Poly1305. An observer on
   one hop sees ciphertext and the two endpoints of that hop.

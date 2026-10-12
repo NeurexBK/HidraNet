@@ -63,7 +63,7 @@ impl RelayRouter {
         let span = tracing::info_span!(
             "relay_session",
             session_id = %session_id,
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
             role = "relay_responder",
         );
         let circuits = Arc::clone(&self.circuits);
@@ -94,7 +94,7 @@ impl RelayRouter {
     ) {
         let span = tracing::info_span!(
             "forwarded_cell",
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
         );
         let circuits = Arc::clone(&self.circuits);
         let intro_reg = Arc::clone(&self.intro_registry);

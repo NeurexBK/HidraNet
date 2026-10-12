@@ -1,16 +1,11 @@
-use std::net::SocketAddr;
-
 use rand::Rng;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tracing::{debug, info};
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
-use crate::crypto::handshake::{HandshakeState, Role};
+use crate::client::handshake::handshake_with_relay;
 use crate::error::{HidraError, Result};
-use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
-use crate::network::listener::PROTO_NOISE_SESSION;
+use crate::network::connection::{Message, SecureConnection};
 use crate::onion::builder::{build_onion, peel_response_layers};
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::relay::registry::RelayEntry;
@@ -36,8 +31,8 @@ pub async fn run_client_session(
     for (i, relay) in relays.iter().take(3).enumerate() {
         info!(
             hop = i,
-            relay = %relay.name,
-            addr = %relay.addr,
+            relay = %sensitive(&relay.name),
+            addr = %sensitive(&relay.addr),
             "establishing Noise XX handshake with relay"
         );
 
@@ -46,7 +41,7 @@ pub async fn run_client_session(
         secret_bytes.zeroize();
 
         let (conn, session_key) =
-            handshake_with_relay(relay.addr, hop_secret, circuit_id).await?;
+            handshake_with_relay(relay, hop_secret, circuit_id).await?;
 
         hops.push(CircuitHop {
             addr: relay.addr,
@@ -56,14 +51,14 @@ pub async fn run_client_session(
 
         info!(
             hop = i,
-            relay = %relay.name,
+            relay = %sensitive(&relay.name),
             "handshake completed, circuit extended"
         );
     }
 
     let circuit = Circuit::new(circuit_id, hops);
 
-    info!(circuit_id, payload, "building onion packet");
+    info!(circuit_id, bytes = payload.len(), "building onion packet");
     let onion_data = build_onion(&circuit, payload.as_bytes())?;
     debug!(circuit_id, onion_size = onion_data.len(), "onion built");
 
@@ -93,52 +88,4 @@ pub async fn run_client_session(
 
     info!(circuit_id, bytes = response_str.len(), "circuit complete");
     Ok(response_str)
-}
-
-async fn handshake_with_relay(
-    addr: SocketAddr,
-    static_secret: StaticSecret,
-    circuit_id: u32,
-) -> Result<(SecureConnection, [u8; 32])> {
-    let mut stream = TcpStream::connect(addr).await.map_err(|e| {
-        HidraError::Relay(format!("failed to connect to relay {addr}: {e}"))
-    })?;
-
-    stream.write_all(&[PROTO_NOISE_SESSION]).await?;
-
-    let mut handshake = HandshakeState::new(Role::Initiator, static_secret);
-
-    let msg_a = handshake.write_message_a()?;
-    write_frame(&mut stream, &msg_a).await?;
-
-    let msg_b = read_frame(&mut stream).await?;
-    handshake.read_message_b(&msg_b)?;
-
-    let msg_c = handshake.write_message_c()?;
-    write_frame(&mut stream, &msg_c).await?;
-
-    debug!(relay = %sensitive(&addr), "handshake done, extracting session key");
-
-    let (send_cipher, recv_cipher) = handshake.into_transport()?;
-    let session_key = send_cipher.session_key()?;
-    let mut conn = SecureConnection::new(stream, send_cipher, recv_cipher);
-
-    conn.send_message(&Message::CreateCircuit { circuit_id })
-        .await?;
-
-    let response = conn.recv_message().await?;
-    match response {
-        Message::CircuitCreated {
-            circuit_id: cid, ..
-        } if cid == circuit_id => {
-            debug!(circuit_id, "circuit registered at relay");
-        }
-        other => {
-            return Err(HidraError::Circuit(format!(
-                "expected CircuitCreated, got: {other:?}"
-            )));
-        }
-    }
-
-    Ok((conn, session_key))
 }
