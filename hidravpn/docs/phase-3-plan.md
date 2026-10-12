@@ -1,6 +1,10 @@
 # HidraVPN — Phase 3 plan: two hops, two modes, a new identity
 
-**Status.** The groundwork is in (`bf198e9`): the client's network plan can
+**Done.** Everything below is implemented and proved by
+`scripts/test-multihop-netns.sh`; `phase-3.md` is the page to read now. This
+plan stays as the record of why things are built the way they are.
+
+**Status when written.** The groundwork was in (`bf198e9`): the client's network plan can
 route a host through a tunnel interface, the kill switch can allow a second
 tunnel interface, and a node's run directory is configurable so two nodes can
 share one test machine. The circuit itself, the service wiring, the end-to-end
