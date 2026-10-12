@@ -7,6 +7,7 @@
 //
 //   cd hidra-browser && node test/display-url.js
 
+require('./lib/no-electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { TabManager } = require('../src/main/tab-manager');

@@ -10,6 +10,7 @@
 //
 //   cd hidra-browser && node test/app-storage.js
 
+require('./lib/no-electron');
 const fs = require('fs');
 const path = require('path');
 const {
