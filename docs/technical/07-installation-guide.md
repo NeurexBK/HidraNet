@@ -35,11 +35,18 @@ worst possible case.
 
 3. Extract and run:
 
-| System | Executable |
+| System | Open |
 |---|---|
-| Windows | `HidraNet.exe` |
-| macOS | `HidraNet.app` |
-| Linux | `./hidranet` (or `bash start.sh`) |
+| Windows | `Start HidraNet.bat` (or `HidraNet.exe`) |
+| macOS | `Start HidraNet.command` (see below) |
+| Linux | `bash start.sh` |
+
+On Linux, use `start.sh` rather than the `hidranet` binary directly. Chromium
+sandboxes every page, and Ubuntu 23.10 and later restrict the mechanism it
+normally uses for that; run directly, the browser aborts before a window opens.
+`start.sh` detects this and sets up the helper the sandbox needs instead, which
+takes one `sudo` command and asks for your password once. It never turns the
+sandbox off.
 
 ### First run
 

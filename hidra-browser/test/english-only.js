@@ -30,6 +30,8 @@ const TREES = [
   ['hidra-node/src', /\.rs$/],
   ['hidra-node/assets', /\.(html|js|css)$/],
   ['landing', /\.(html|js)$/],
+  // The release page's description, shown to everyone who downloads.
+  ['.github', /^release-notes\.md$/],
 ];
 const EXCLUDE = /node_modules|[/\\]vendor[/\\]|\.min\.(js|css)$/;
 
@@ -219,7 +221,10 @@ for (const file of files) {
         );
         return;
       }
-      for (const raw of displayed(line)) {
+      // Prose in a Markdown file is all displayed; there are no quotes or tags
+      // to pull it out of.
+      const segments = /\.md$/.test(file) ? [line] : displayed(line);
+      for (const raw of segments) {
         // A joining word on its own, between two values being concatenated:
         // the pager read "1 de 3", and a two-letter string is otherwise too
         // short to judge.
