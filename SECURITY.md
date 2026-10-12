@@ -40,6 +40,16 @@ wrong is high.
   `open(2)` and the keys directory is `0700`. With `HIDRA_KEY_PASSPHRASE` set
   they are also encrypted at rest, which extends this to a stolen disk or a
   copied backup.
+- **Another account on the same machine, on the browser side.** The identities
+  the browser's apps hold — HidraMail's key pair, the forum token, the chat's
+  remembered room passwords, the addresses of published sites — are kept in a
+  vault written through the operating system's keychain: the macOS Keychain,
+  Windows DPAPI, GNOME Keyring or KWallet on Linux. The key is the OS's, tied
+  to the user's login, and never passes through the browser. Each app opens
+  only its own compartment, decided from the page's own URL. Where a Linux
+  system has no keyring, the data is written as it is and the mail settings
+  and the privacy panel say so — Chromium's fixed fallback key is not called
+  protection.
 - **A log that outlives its usefulness.** Peer addresses, the hostnames asked
   for at an exit, HidraMail addresses, chat nicknames and room ids are scrubbed
   before they reach the log. Content never reaches it at all: an exit relay
@@ -65,6 +75,10 @@ wrong is high.
 - **A malicious exit.** An exit relay sees traffic as it leaves the network.
   Anything not end-to-end encrypted — plain HTTP, DNS — is readable there.
   Use HTTPS.
+- **Code running as you.** The keychain unlocks for your login, so anything
+  running under your account — malware, a browser exploit that escapes the
+  sandbox — can read what the vault protects, the same as it could read the
+  keychain itself. The vault defends the files, not the session.
 - **Traffic analysis by shape.** Packets are not padded to a fixed size and
   there is no cover traffic, so the size and timing pattern of a page load
   crosses the network largely intact.
