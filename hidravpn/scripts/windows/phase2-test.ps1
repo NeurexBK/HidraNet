@@ -29,8 +29,8 @@ param(
   [string]$Name = $env:USERNAME,
   [string]$Dir = 'C:\HidraVPN',
   [string]$ServerSource = '/opt/hidranet-src',
-  [string]$ClientHash = '44149DB033224CFD0F91FCE2F2705B34B97F14D53091B14DB30C650930901FE8',
-  [string]$ServiceHash = '39F36C243A2A8F83C22775C0A920B8250694CAB74923382322AEC4B97FAC5B92',
+  [string]$ClientHash = 'C1B0F3FDE26AB3E63C37C27571693926E5DCA601267FDF72C33C0D80F2733556',
+  [string]$ServiceHash = '193EBC0464F2314EF307B16369D77449741817015561CAAA0F60666D9A7FFE20',
   [string]$WintunUrl = 'https://www.wintun.net/builds/wintun-0.14.1.zip',
   [switch]$Full
 )
@@ -134,7 +134,7 @@ Fact "service  $SvcExe  $sv  sha256 $((Get-FileHash $SvcExe -Algorithm SHA256).H
 
 try {
   # ======================================================= PART A: WFP ====
-  Step 'kill switch on its own (no tunnel) — the safe check'
+  Step 'kill switch on its own (no tunnel) - the safe check'
   Firewall-Off
   $base = Exit-Ip
   if (-not $base) { Stop-Now 'no internet right now: cannot learn the baseline public address' }

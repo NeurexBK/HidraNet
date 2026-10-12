@@ -197,16 +197,27 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
             conditions: &[Cond::LoopbackFlag],
         })?;
 
-        // Everything on the tunnel interface.
-        let luid = luid_of(&cfg.interface)?;
-        add_filter(engine, &Filter {
-            key: F_TUNNEL_V4,
-            name: "allow the tunnel interface",
-            layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-            weight: 10,
-            block: false,
-            conditions: &[Cond::LocalInterface(luid)],
-        })?;
+        // Everything on the tunnel interface — but only if it is already up.
+        // When the kill switch is armed on its own (diagnostics) there is no
+        // tunnel yet, so there is nothing to allow; in the normal flow the
+        // interface exists by the time we get here. Linux is the same: its
+        // rule matches by name and simply catches nothing until the interface
+        // appears.
+        match luid_of(&cfg.interface) {
+            Ok(luid) => {
+                add_filter(engine, &Filter {
+                    key: F_TUNNEL_V4,
+                    name: "allow the tunnel interface",
+                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                    weight: 10,
+                    block: false,
+                    conditions: &[Cond::LocalInterface(luid)],
+                })?;
+            }
+            Err(e) => {
+                tracing::warn!("tunnel interface not up yet; its allow rule is skipped ({e})");
+            }
+        }
 
         // The encrypted WireGuard packets to the node.
         add_filter(engine, &Filter {
