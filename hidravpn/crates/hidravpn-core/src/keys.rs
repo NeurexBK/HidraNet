@@ -10,6 +10,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use boringtun::x25519::{PublicKey, StaticSecret};
 
+/// Clone so the two hops of a circuit can share the one key the nodes admit.
+#[derive(Clone)]
 pub struct ClientKey {
     secret: StaticSecret,
 }
