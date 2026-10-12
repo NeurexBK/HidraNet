@@ -162,7 +162,19 @@ async fn streaming_circuit_echo_through_three_relays() {
     let large_data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
     circuit.send_data(&large_data).await.unwrap();
 
-    let received_large = circuit.recv_data().await.unwrap().unwrap();
+    // TCP is a byte stream. The echo server may return an 8 KiB write in
+    // several reads, so a single relay response need not carry all of it.
+    let received_large = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut received = Vec::new();
+        while received.len() < large_data.len() {
+            received.extend(
+                circuit.recv_data().await.unwrap().expect("echo stream closed early"),
+            );
+        }
+        received
+    })
+    .await
+    .expect("echo response timed out");
     assert_eq!(received_large, large_data);
 
     circuit.send_end().await.unwrap();

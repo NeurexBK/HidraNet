@@ -111,10 +111,12 @@ async fn discover_relays(
         Ok(nodes) if nodes.len() >= MIN_RELAYS => {
             let entries: Vec<RelayEntry> = nodes
                 .into_iter()
-                .map(|n| RelayEntry {
-                    name: format!("{}", n.id),
-                    addr: n.relay_addr.unwrap_or(n.dht_addr),
-                    noise_pubkey_b64: String::new(),
+                .map(|n| {
+                    discovered_relay(
+                        n.id.to_string(),
+                        n.relay_addr.unwrap_or(n.dht_addr),
+                        static_relays,
+                    )
                 })
                 .collect();
             info!(count = entries.len(), "discovered relays via DHT");
@@ -131,11 +133,7 @@ async fn discover_relays(
                 let addr =
                     n.relay_addr.unwrap_or(n.dht_addr);
                 if !all.iter().any(|r| r.addr == addr) {
-                    all.push(RelayEntry {
-                        name: format!("{}", n.id),
-                        addr,
-                        noise_pubkey_b64: String::new(),
-                    });
+                    all.push(discovered_relay(n.id.to_string(), addr, static_relays));
                 }
             }
             all
@@ -144,5 +142,51 @@ async fn discover_relays(
             warn!(error = %e, "DHT relay discovery failed");
             static_relays.to_vec()
         }
+    }
+}
+
+fn discovered_relay(name: String, addr: SocketAddr, static_relays: &[RelayEntry]) -> RelayEntry {
+    // Discovery supplies availability, not permission to replace an identity
+    // the operator explicitly configured for this address.
+    static_relays
+        .iter()
+        .find(|entry| entry.addr == addr)
+        .cloned()
+        .unwrap_or(RelayEntry {
+            name,
+            addr,
+            noise_pubkey_b64: String::new(),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_preserves_configured_identity() {
+        let configured = RelayEntry {
+            name: "trusted-relay".into(),
+            addr: "127.0.0.1:9150".parse().unwrap(),
+            noise_pubkey_b64: "configured-pin".into(),
+        };
+        let discovered = discovered_relay("discovered-name".into(), configured.addr, &[configured]);
+        assert_eq!(discovered.noise_pubkey_b64, "configured-pin");
+        assert_eq!(discovered.name, "trusted-relay");
+    }
+
+    #[test]
+    fn discovery_does_not_assign_another_relays_pin() {
+        let configured = RelayEntry {
+            name: "trusted-relay".into(),
+            addr: "127.0.0.1:9150".parse().unwrap(),
+            noise_pubkey_b64: "configured-pin".into(),
+        };
+        let discovered = discovered_relay(
+            "new-relay".into(),
+            "127.0.0.1:9151".parse().unwrap(),
+            &[configured],
+        );
+        assert!(discovered.noise_pubkey_b64.is_empty());
     }
 }

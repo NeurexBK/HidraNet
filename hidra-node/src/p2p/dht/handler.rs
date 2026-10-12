@@ -5,6 +5,7 @@ use tracing::{debug, info};
 use crate::p2p::dht::kbuckets::{RoutingTable, UpdateResult, K};
 use crate::p2p::dht::message::DhtMessage;
 use crate::p2p::dht::node::NodeInfo;
+use crate::safelog::sensitive;
 
 const GOSSIP_FANOUT: usize = 3;
 
@@ -76,7 +77,7 @@ impl DhtHandler {
                 info!(
                     dht_message_type = "FIND_NODE",
                     node_id = %sender.id,
-                    target = %target,
+                    target = %sensitive(&target),
                     bucket_index = ?bucket_index,
                     peer_count = table.total_nodes(),
                     "received FIND_NODE"

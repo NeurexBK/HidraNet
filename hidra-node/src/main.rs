@@ -281,7 +281,7 @@ async fn spawn_local_relays(
 
         tokio::spawn(async move {
             if let Err(e) = listener.accept_loop().await {
-                tracing::error!(relay = relay_num, error = %e, "local relay error");
+                tracing::error!(relay_index = relay_num, error = %e, "local relay error");
             }
         });
 

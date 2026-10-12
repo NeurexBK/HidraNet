@@ -133,7 +133,7 @@ impl DhtNode {
         self.socket.send_to(&packet, addr).await?;
         debug!(
             dht_message_type = msg.message_type(),
-            target = %addr,
+            target = %sensitive(&addr),
             "sent DHT message"
         );
         Ok(())
@@ -313,7 +313,7 @@ impl DhtNode {
             {
                 debug!(
                     error = %e,
-                    peer = %node.id,
+                    peer = %sensitive(&node.id),
                     "failed to announce to peer"
                 );
             }
@@ -449,7 +449,7 @@ async fn process_packet(
         {
             debug!(
                 error = %e,
-                target = %target.id,
+                target = %sensitive(&target.id),
                 "gossip forwarding failed"
             );
         }
