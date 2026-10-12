@@ -10,6 +10,9 @@
 //! The entry sees who the client is but not where the traffic goes; the exit
 //! sees the traffic but gets it from the entry's address.
 //!
+//! Each hop is shown its own key, derived from the client's master key for
+//! that node (see `keys`): the entry and the exit have no key in common.
+//!
 //! With no entry the circuit is exactly the single tunnel of phases 1 and 2.
 //!
 //! Nothing here logs an address, a name looked up or a byte of traffic.

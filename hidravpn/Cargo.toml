@@ -28,6 +28,7 @@ wireguard-control = "2"
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "https-ring", "webpki-roots"] }
 ed25519-dalek = "3"
 sha2 = "0.10"
+hkdf = "0.12"
 getrandom = "0.3"
 anyhow = "1"
 thiserror = "2"

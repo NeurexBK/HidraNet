@@ -65,8 +65,10 @@ impl Tunnel {
             .await
             .with_context(|| format!("could not address the node at {endpoint}"))?;
 
+        // The key shown to this node is the one derived for it; the master
+        // key's public half never leaves the client.
         let tunn = Tunn::new(
-            cfg.key.secret(),
+            cfg.node_key()?.secret(),
             node_key,
             None,
             Some(cfg.invite.keepalive),

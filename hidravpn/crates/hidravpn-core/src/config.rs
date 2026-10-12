@@ -93,10 +93,21 @@ impl Invite {
     }
 }
 
-/// An invite plus the client's own key: everything the tunnel needs.
+/// An invite plus the client's master key: everything the tunnel needs.
 pub struct ClientConfig {
     pub invite: Invite,
+    /// The master key. The tunnel never presents it: it presents
+    /// `node_key`, derived for the invite's node.
     pub key: ClientKey,
+}
+
+impl ClientConfig {
+    /// The key this node is shown: the master key derived for the invite's
+    /// node public key. This is the only key a tunnel ever uses, so the
+    /// master key's public half reaches no node.
+    pub fn node_key(&self) -> Result<ClientKey> {
+        self.key.for_node_base64(&self.invite.node_public_key)
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +136,28 @@ mod tests {
             again.client_ip().unwrap(),
             (Ipv4Addr::new(10, 77, 0, 2), 16)
         );
+    }
+
+    #[test]
+    fn the_tunnel_key_is_the_one_derived_for_the_invites_node_not_the_master() {
+        let key = ClientKey::generate().unwrap();
+        let inv = sample();
+        let cfg = ClientConfig {
+            invite: inv.clone(),
+            key: key.clone(),
+        };
+        let shown = cfg.node_key().unwrap();
+        assert_ne!(shown.public_base64(), key.public_base64());
+        assert_eq!(
+            shown.public_base64(),
+            key.for_node_base64(&inv.node_public_key)
+                .unwrap()
+                .public_base64()
+        );
+        let mut other = sample();
+        other.node_public_key = ClientKey::generate().unwrap().public_base64();
+        let other_shown = ClientConfig { invite: other, key }.node_key().unwrap();
+        assert_ne!(other_shown.public_base64(), shown.public_base64());
     }
 
     #[test]
