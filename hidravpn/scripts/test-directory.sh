@@ -64,4 +64,14 @@ $HV nodes add --exit "$W/invite.json" >/dev/null 2>&1 && pass "admission on node
 [ "$($HV nodes list 2>/dev/null | grep -c "^known  ")" = 2 ] && $HV nodes list 2>/dev/null | grep -q "^exit   node-1 " && pass "node-1 is now an exit and no longer merely known" || fail "promotion: $($HV nodes list 2>&1)"
 OUT=$($HV nodes import "$W/nodes.json" --pubkey "$PUB" 2>&1); echo "$OUT" | grep -q "added 0 node(s), skipped 3" && echo "$OUT" | grep -q "node-1: already admitted" && pass "importing the list again does not demote an admitted node" || fail "re-import: $OUT"
 
+# ── A newer list follows a node that moved: the same key, a new address ────
+sed -e 's/"generated": "2026-10-13T00:00:00Z"/"generated": "2026-11-01T00:00:00Z", "sequence": 2/' -e 's/203.0.113.11/203.0.113.12/' "$W/nodes.json" > "$W/nodes2.json"
+"$BIN/hidravpn-sign" sign --key "$W/release.key" "$W/nodes2.json" >/dev/null 2>&1
+# node-2 moved; and node-1, admitted from an invite that named no operator,
+# now gets the operator the list vouches for. node-3 is as it was.
+OUT=$($HV nodes import "$W/nodes2.json" --pubkey "$PUB" 2>&1); echo "$OUT" | grep -q "added 0 node(s), updated 2, skipped 1" && echo "$OUT" | grep -q "~ node-2: endpoint" && echo "$OUT" | grep -q "~ node-1: operator" && pass "a newer list (sequence 2): node-2 at its new address and node-1's operator filled in, and it says what changed" || fail "newer list: $OUT"
+$HV nodes list 2>/dev/null | grep -q "^known  node-2 .*203.0.113.12:51820" && pass "nodes list now shows node-2 at its new address" || fail "list after the update: $($HV nodes list 2>&1)"
+OUT=$($HV nodes import "$W/nodes2.json" --pubkey "$PUB" 2>&1); echo "$OUT" | grep -q "added 0 node(s), skipped 3" && pass "the same list again (same sequence) changes nothing" || fail "same sequence: $OUT"
+OUT=$($HV nodes import "$W/nodes.json" --pubkey "$PUB" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "older" && pass "the first list (no sequence) is now older than the one held: refused" || fail "older list: $OUT"
+
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

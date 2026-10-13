@@ -114,14 +114,25 @@ nodes, they do.
 
 ## New identity
 
-`hidravpn new-identity` takes the circuit down completely — the exit's
-session, the routes, the kill switch — and builds it again through a
-**different** exit, chosen at random among the others the service holds, and
-through a different entry too when it holds more than one. The address the
-internet sees changes because the exit did. With only one exit it reconnects
-to the same one and **says so**; with only one entry it says the entry stays.
-The reply carries the note, and the command prints it. It never claims a new
-address it did not get.
+`hidravpn new-identity` takes the circuit down — the exit's session, the
+routes — and builds it again through a **different** exit, chosen at random
+among the others the service holds, and through a different entry too when it
+holds more than one. The address the internet sees changes because the exit
+did. With only one exit it reconnects to the same one and **says so**; with
+only one entry it says the entry stays. The reply carries the note, and the
+command prints it. It never claims a new address it did not get.
+
+The kill switch does not come down with the circuit. Before the old circuit
+goes, its rules are replaced, in one nftables transaction, by a *hold* that
+lets only the encrypted packets to the old and the new first hop leave the
+machine — no tunnel interface, no DNS, nothing else — and the new circuit's
+own rules replace the hold once it is up, in one step again. So there is no
+moment on the open network between two identities, and the same holds for a
+connect over a running circuit. A rotation that fails leaves the machine
+blocked, with the hold in place, until `down` or another connect, and the
+error says so; it never falls back to the open network. The multi-hop suite
+knocks on a host on the physical link throughout a rotation and counts the
+requests that get through: zero.
 
 ## What `status` says
 

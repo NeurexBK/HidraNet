@@ -123,6 +123,102 @@ impl Pocket {
         Ok(())
     }
 
+    /// Brings what the pocket holds about a node up to date with its record
+    /// in a newer signed list: the same key, newer facts. A known record is
+    /// replaced. An admitted invite keeps what the node's admission gave it
+    /// (the client's address, the DNS, the MTU) and takes the list's
+    /// endpoint, operator, role and name; its slots follow the role when the
+    /// list gives one. Returns what changed, in words for a person; empty
+    /// when nothing did, or when the key is not in the pocket at all.
+    pub fn refresh(&mut self, record: &NodeRecord) -> Vec<String> {
+        let key = record.node_public_key.trim();
+        let mut changed: Vec<String> = Vec::new();
+        if let Some(k) = self
+            .known
+            .iter_mut()
+            .find(|k| k.node_public_key.trim() == key)
+        {
+            let fields = [
+                ("name", k.node_name.trim() != record.node_name.trim()),
+                ("endpoint", k.endpoint.trim() != record.endpoint.trim()),
+                ("operator", k.operator != record.operator),
+                ("contact", k.contact != record.contact),
+                ("role", k.role != record.role),
+                ("admission", k.admission != record.admission),
+                ("admission port", k.admission_port != record.admission_port),
+            ];
+            changed.extend(
+                fields
+                    .iter()
+                    .filter(|(_, differs)| *differs)
+                    .map(|(name, _)| name.to_string()),
+            );
+            if !changed.is_empty() {
+                *k = record.clone();
+            }
+            return changed;
+        }
+        if !self.iter().any(|(_, i)| i.node_public_key.trim() == key) {
+            return changed;
+        }
+        // Another node may already carry the name the list gives this one;
+        // then the name stays, since it is the handle `remove` uses.
+        let name_taken = self.iter().any(|(_, i)| {
+            i.node_name.trim() == record.node_name.trim() && i.node_public_key.trim() != key
+        });
+        for inv in self
+            .entries
+            .iter_mut()
+            .chain(self.exits.iter_mut())
+            .filter(|i| i.node_public_key.trim() == key)
+        {
+            if inv.endpoint.trim() != record.endpoint.trim() {
+                inv.endpoint = record.endpoint.clone();
+                changed.push("endpoint".into());
+            }
+            if inv.operator != record.operator {
+                inv.operator = record.operator.clone();
+                changed.push("operator".into());
+            }
+            if inv.role != record.role {
+                inv.role = record.role.clone();
+                changed.push("role".into());
+            }
+            if !name_taken && inv.node_name.trim() != record.node_name.trim() {
+                inv.node_name = record.node_name.clone();
+                changed.push("name".into());
+            }
+        }
+        changed.sort();
+        changed.dedup();
+        // The slots follow the role the list gives, when it gives one: a
+        // node that became an entry is no longer offered as an exit.
+        if record.role.is_some() {
+            let allowed = slots_for_role(record.role.as_deref());
+            let copy = self
+                .iter()
+                .find(|(_, i)| i.node_public_key.trim() == key)
+                .map(|(_, i)| i.clone());
+            for slot in [Slot::Entry, Slot::Exit] {
+                let has = self
+                    .list_mut(slot)
+                    .iter()
+                    .any(|i| i.node_public_key.trim() == key);
+                if allowed.contains(&slot) && !has {
+                    if let Some(inv) = copy.clone() {
+                        self.list_mut(slot).push(inv);
+                        changed.push(format!("now also an {}", slot_name(slot)));
+                    }
+                } else if !allowed.contains(&slot) && has {
+                    self.list_mut(slot)
+                        .retain(|i| i.node_public_key.trim() != key);
+                    changed.push(format!("no longer an {}", slot_name(slot)));
+                }
+            }
+        }
+        changed
+    }
+
     /// Removes every node with that name, from both lists. Returns how many.
     pub fn remove(&mut self, name: &str) -> usize {
         let name = name.trim();

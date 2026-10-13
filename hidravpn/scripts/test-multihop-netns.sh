@@ -225,6 +225,11 @@ grep -q 'oifname "hvpn1" accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" acce
 $C curl -s --max-time 3 http://10.200.0.1:8081/ >/dev/null 2>&1 && fail "a plain request to the physical link got through the kill switch" || pass "a plain request to a host on the physical link is blocked"
 
 echo "── new identity: the exit changes"
+# While the circuit is rebuilt, a tight loop knocks on the host on the
+# physical link: the kill switch is held across the change, so none of these
+# may get through — not even in the moment between the old circuit and the new.
+$C bash -c 'n=0; end=$((SECONDS+8)); while [ $SECONDS -lt $end ]; do c=$(curl -s --connect-timeout 0.1 --max-time 0.3 -o /dev/null -w "%{http_code}" http://10.200.0.1:8081/ 2>/dev/null); [ "$c" = 200 ] && n=$((n+1)); done; echo $n' > "$WORK/leaks-during-rotation" 2>/dev/null & KNOCK=$!
+sleep 0.5
 $C "$BIN/hidravpn" new-identity > "$WORK/ni.log" 2>&1 && grep -q "the exit is now exit-two (was exit-node)" "$WORK/ni.log" && pass "new-identity: $(head -1 "$WORK/ni.log")" || { cat "$WORK/ni.log" "$WORK/svc.log"; fail "new-identity"; }
 wait_connected && grep -q "entry entry-node then exit exit-two" "$WORK/st.log" && pass "both hops have a session again, now through exit-two" || { cat "$WORK/st.log"; fail "not connected through exit-two"; }
 EXIT_IP2=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)
@@ -232,6 +237,9 @@ EXIT_IP2=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)
 [ "$(obs to-exit2)" -gt 0 ] && [ "$(obs any-tcp)" = 0 ] && pass "the entry forwarded $(obs to-exit2) encrypted packets to exit-two and still no plaintext" || fail "entry after rotation: to-exit2=$(obs to-exit2) tcp=$(obs any-tcp)"
 $C ip -4 route | grep -q "^10.202.0.3 dev hvpn0" && ! $C ip -4 route | grep -q "^10.202.0.1 " && pass "the via route moved to the new exit; the old one is gone" || fail "routes after rotation: $($C ip -4 route | tr '\n' ';')"
 $C nft list table inet hidravpn_ks >/dev/null 2>&1 && pass "the kill switch stayed armed across the rotation" || fail "the kill switch was lost in the rotation"
+wait $KNOCK
+LEAKS=$(cat "$WORK/leaks-during-rotation" 2>/dev/null)
+[ "$LEAKS" = 0 ] && pass "the kill switch held while the circuit was rebuilt: 0 requests reached the physical link during the rotation" || fail "$LEAKS request(s) reached the physical link while the circuit was being rebuilt"
 
 echo "── down"
 $C "$BIN/hidravpn" down > "$WORK/down.log" 2>&1 && pass "down through the service" || { cat "$WORK/down.log"; fail "down"; }

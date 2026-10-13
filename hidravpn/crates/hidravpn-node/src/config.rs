@@ -95,6 +95,11 @@ impl NodeConfig {
         dns: Vec<String>,
         out_interface: Option<String>,
     ) -> Result<Self> {
+        if !public_endpoint.is_ipv4() {
+            return Err(anyhow!(
+                "the endpoint {public_endpoint} is an IPv6 address; clients reach a node over IPv4 in this phase (an IPv6 endpoint would route their tunnel's own packets into the tunnel)"
+            ));
+        }
         let cfg = Self {
             name,
             private_key: Key::generate_private().to_base64(),
@@ -256,6 +261,21 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn an_ipv6_endpoint_is_refused_at_init() {
+        let e = NodeConfig::fresh(
+            "n".into(),
+            "[2001:db8::4]:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("IPv6") && e.contains("IPv4"), "{e}");
     }
 
     #[test]

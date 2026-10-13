@@ -535,6 +535,9 @@ async fn main() -> Result<()> {
                     for n in &merge.added {
                         println!("  + {n}");
                     }
+                    for (n, what) in &merge.updated {
+                        println!("  ~ {n}: {what}");
+                    }
                     for (n, why) in &merge.skipped {
                         println!("  - {n}: {why}");
                     }

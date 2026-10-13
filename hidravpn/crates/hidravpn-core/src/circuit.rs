@@ -17,6 +17,7 @@
 //!
 //! Nothing here logs an address, a name looked up or a byte of traffic.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -105,6 +106,16 @@ impl CircuitSpec {
             mtu = mtu.min(entry.mtu.saturating_sub(OUTER_OVERHEAD));
         }
         mtu.max(MIN_MTU)
+    }
+
+    /// The node reached over the physical link: the entry when there are two
+    /// hops, the exit when there is one. The one address the kill switch lets
+    /// packets go to off-tunnel.
+    pub fn first_hop_endpoint(&self) -> Result<SocketAddr> {
+        match &self.entry {
+            Some(entry) => entry.endpoint_addr(),
+            None => self.exit.endpoint_addr(),
+        }
     }
 
     /// Both invites must be valid, and with two hops they must be two
@@ -270,7 +281,9 @@ impl Circuit {
     /// 4. only then the inner tunnel's socket, so its first packet already
     ///    goes into the outer interface (a connected UDP socket caches its
     ///    route);
-    /// 5. the kill switch, allowing both interfaces and the entry's endpoint.
+    /// 5. the kill switch, allowing both interfaces and the entry's endpoint,
+    ///    in place of whatever was armed before, in one step;
+    /// 6. the inner tunnel's first packet.
     pub async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<Self> {
         spec.validate()?;
         let mut steps = Steps::default();
@@ -372,7 +385,10 @@ impl Circuit {
         .context("could not route the machine through the tunnel")?;
         steps.plan = Some(plan);
 
-        // 4. The inner tunnel's socket, now that its route exists.
+        // 4. The inner tunnel's socket, now that its route exists. It is not
+        // run yet: its first packet waits for the kill switch below, because
+        // during a rotation the hold in force lets nothing out on a tunnel
+        // interface, and a handshake dropped there would cost a retry.
         let cfg = ClientConfig {
             invite: spec.exit.clone(),
             key,
@@ -382,17 +398,12 @@ impl Circuit {
                 .await
                 .context("the tunnel to the exit")?,
         );
-        let runner = spawn_runner(&tunnel);
-        steps.inner = Some(Hop {
-            role: Role::Exit,
-            invite: spec.exit.clone(),
-            interface: inner_ifname.clone(),
-            tunnel,
-            runner,
-        });
 
-        // 5. The kill switch. If it will not arm, the whole circuit is undone
-        // by the caller: an unprotected tunnel is worse than no tunnel.
+        // 5. The kill switch, replacing in one step whatever is armed (a
+        // rotation's hold, a crashed run's rules). If it will not arm, the
+        // whole circuit is undone by the caller: an unprotected tunnel is
+        // worse than no tunnel. (`tunnel` is dropped on the way out, which
+        // closes its socket and removes the interface.)
         if opts.kill_switch {
             let (interface, extra_interface, node_endpoint) = match (&spec.entry, &steps.outer) {
                 (Some(entry), Some(outer)) => (
@@ -412,6 +423,16 @@ impl Circuit {
             .context("could not arm the kill switch; connection refused")?;
             steps.kill_switch = true;
         }
+
+        // 6. Only now the inner tunnel runs and shakes hands.
+        let runner = spawn_runner(&tunnel);
+        steps.inner = Some(Hop {
+            role: Role::Exit,
+            invite: spec.exit.clone(),
+            interface: inner_ifname,
+            tunnel,
+            runner,
+        });
         Ok(())
     }
 
@@ -464,7 +485,15 @@ impl Circuit {
     /// DNS, the inner tunnel, the outer one. Every step is attempted; the
     /// first error is reported once all are done.
     pub async fn down(self) -> Result<()> {
-        let ks = if self.kill_switch {
+        self.down_with(true).await
+    }
+
+    /// `down`, with the choice of leaving the kill switch as it stands: for a
+    /// rotation, where `killswitch::hold` is already in place and the next
+    /// circuit's own rules will replace it, so the machine is never on the
+    /// open network in between.
+    pub async fn down_with(self, lift_kill_switch: bool) -> Result<()> {
+        let ks = if self.kill_switch && lift_kill_switch {
             killswitch::remove()
         } else {
             Ok(())
@@ -515,6 +544,11 @@ mod tests {
         assert_eq!(spec.mode(), Mode::Rapido);
         assert_eq!(spec.inner_mtu(), 1420);
         spec.validate().unwrap();
+        assert_eq!(
+            spec.first_hop_endpoint().unwrap(),
+            SocketAddr::from(([203, 0, 113, 10], 51820)),
+            "one hop: the exit is reached over the physical link"
+        );
     }
 
     #[test]
@@ -527,6 +561,11 @@ mod tests {
         assert_eq!(spec.mode(), Mode::Privado);
         assert_eq!(spec.inner_mtu(), 1340);
         spec.validate().unwrap();
+        assert_eq!(
+            spec.first_hop_endpoint().unwrap(),
+            SocketAddr::from(([203, 0, 113, 20], 51820)),
+            "two hops: the entry is the node on the physical link"
+        );
     }
 
     #[test]

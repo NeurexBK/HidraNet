@@ -76,8 +76,14 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   whose sequence is older than the one it already holds, and strikes from
   its pocket every node the list names under `removed`. A refused list leaves
   the pocket on disk untouched; a node admitted by hand or openly is not
-  demoted by a later import. A list nobody signed, or changed after signing,
-  or signed with another key, goes nowhere.
+  demoted by a later import. A newer list (a higher sequence) brings what the
+  pocket holds about a node that kept its key up to date — its endpoint,
+  operator, role, contact and admission, known or admitted — so a node that
+  moves servers is followed without a key rotation; an admitted node's slots
+  follow its role, and what its admission gave the client (its tunnel
+  address, the DNS) stays. The import says what changed about each. A list
+  nobody signed, or changed after signing, or signed with another key, goes
+  nowhere.
 - **Open admission** (`hidravpn-core/src/admission.rs`,
   `hidravpn-node/src/admission.rs`). This is what lets a stranger connect. A
   node started with `--open-admission` runs a small HTTP service on TCP 51821

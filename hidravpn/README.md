@@ -32,8 +32,11 @@ Only what the code proves, and the test scripts check:
   it from the entry. The test watches the entry and counts zero plaintext
   packets leaving it.
 - **Kill switch by default, and a leak test.** Nothing leaves outside the
-  tunnel; if the circuit cannot be protected, it is refused. A test proves a
-  request to the open network is blocked while connected.
+  tunnel; if the circuit cannot be protected, it is refused. It holds across
+  a new identity or a reconnect too: the machine is never on the open network
+  between two circuits. A test proves a request to the open network is
+  blocked while connected, another that a connection opened before the VPN
+  is cut off, and another that nothing gets out while a circuit is rebuilt.
 - **Nothing recorded.** No node or service log names an address, a name
   looked up or a byte of traffic; the tests grep the logs for them.
 - **The browser asks, the service decides.** The HidraNet Browser's VPN page

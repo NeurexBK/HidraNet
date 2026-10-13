@@ -11,7 +11,11 @@
 //! written down as *known*. A list nobody signed, or that was changed after
 //! signing, or that was signed with another key, or that expired, or that is
 //! older than the one already held, goes nowhere; a node the list names
-//! under `removed` is struck from the pocket.
+//! under `removed` is struck from the pocket. A list newer than the one held
+//! (a higher `sequence`) also brings up to date what the pocket holds about
+//! a node that kept its key — its endpoint, operator, role, contact,
+//! admission — known or admitted, so a node that moves servers is followed
+//! without anyone rotating its key.
 //!
 //! ```json
 //! { "version": 1,
@@ -109,9 +113,18 @@ impl NodeRecord {
         }
         public_key_from_base64(&self.node_public_key)
             .with_context(|| format!("the key of {} in the list", self.node_name))?;
-        self.endpoint
+        let endpoint = self
+            .endpoint
             .parse::<SocketAddr>()
             .with_context(|| format!("the endpoint of {} is not ip:port", self.node_name))?;
+        if !endpoint.is_ipv4() {
+            // A client routes all of IPv6 into the tunnel, so its own packets
+            // to an IPv6 node would never reach it.
+            return Err(anyhow!(
+                "the endpoint of {} is an IPv6 address; a node is reached over IPv4 in this phase",
+                self.node_name
+            ));
+        }
         if let Some(r) = self.role.as_deref() {
             if !matches!(
                 r.trim().to_ascii_lowercase().as_str(),
@@ -175,11 +188,18 @@ pub struct Merge {
     pub skipped: Vec<(String, String)>,
     #[serde(default)]
     pub removed: Vec<String>,
+    /// Nodes already in the pocket whose record a newer list brought up to
+    /// date, and what changed about each.
+    #[serde(default)]
+    pub updated: Vec<(String, String)>,
 }
 
 impl Merge {
     pub fn summary(&self) -> String {
         let mut s = format!("added {} node(s)", self.added.len());
+        if !self.updated.is_empty() {
+            s.push_str(&format!(", updated {}", self.updated.len()));
+        }
         if !self.skipped.is_empty() {
             s.push_str(&format!(", skipped {}", self.skipped.len()));
         }
@@ -233,11 +253,14 @@ impl Directory {
 
     /// Applies the list to the pocket: withdrawn nodes go, known or
     /// admitted; the rest are written down as known. A node this machine is
-    /// already admitted on, or already knows, is skipped and said so;
+    /// already admitted on, or already knows, is brought up to date when the
+    /// list is newer than the one the pocket holds (its sequence is higher)
+    /// and its record changed, and skipped, with the reason, otherwise;
     /// nothing else is removed or reordered, so what the person added by
     /// hand stays. The pocket remembers the list's sequence.
     pub fn merge_into(&self, pocket: &mut Pocket) -> Merge {
         let mut m = Merge::default();
+        let newer = self.sequence > pocket.list_sequence;
         for key in &self.removed {
             m.removed.extend(pocket.remove_by_key(key));
         }
@@ -251,7 +274,14 @@ impl Directory {
             }
             match pocket.learn(n.clone()) {
                 Ok(()) => m.added.push(n.node_name.clone()),
-                Err(e) => m.skipped.push((n.node_name.clone(), e.to_string())),
+                Err(e) => {
+                    let changed = if newer { pocket.refresh(n) } else { Vec::new() };
+                    if changed.is_empty() {
+                        m.skipped.push((n.node_name.clone(), e.to_string()));
+                    } else {
+                        m.updated.push((n.node_name.clone(), changed.join(", ")));
+                    }
+                }
             }
         }
         if self.sequence > pocket.list_sequence {
@@ -483,6 +513,101 @@ mod tests {
         let mut d = directory();
         d.nodes[2].node_name = " ".into();
         assert!(Directory::from_json_unchecked(&d.to_json()).is_err());
+        let mut d = directory();
+        d.nodes[0].endpoint = "[2001:db8::10]:51820".into();
+        let e = Directory::from_json_unchecked(&d.to_json())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("IPv6") && e.contains("node-1"), "{e}");
+    }
+
+    #[test]
+    fn a_newer_list_follows_a_node_that_kept_its_key_and_the_same_list_does_not() {
+        let signer = TestSigner::new();
+        let dir = directory(); // sequence 3
+        let json = dir.to_json();
+        let now = crate::timefmt::rfc3339_to_unix("2026-10-13T12:00:00Z").unwrap();
+        let mut pocket = Pocket::default();
+        import_signed_at(
+            &mut pocket,
+            json.as_bytes(),
+            &signer.sign(json.as_bytes()),
+            Some(&signer.public()),
+            now,
+        )
+        .unwrap();
+        // node-2 admitted this machine: it is an exit now.
+        pocket.add(Slot::Exit, invite_for(&dir.nodes[1])).unwrap();
+
+        // The same sequence with a changed address is a maintainer's slip,
+        // not a newer list: skipped, and the pocket keeps what it had.
+        let mut same = directory();
+        same.nodes = dir.nodes.clone();
+        same.nodes[0].endpoint = "203.0.113.99:51820".into();
+        let j = same.to_json();
+        let m = import_signed_at(
+            &mut pocket,
+            j.as_bytes(),
+            &signer.sign(j.as_bytes()),
+            Some(&signer.public()),
+            now,
+        )
+        .unwrap();
+        assert!(m.updated.is_empty(), "{m:?}");
+        assert_eq!(m.skipped.len(), 3);
+        assert_eq!(pocket.known[0].endpoint, "203.0.113.10:51820");
+
+        // A newer list: node-1 moved servers; node-2 moved too and is now an
+        // entry only; node-3 is as it was.
+        let mut next = directory();
+        next.sequence = 4;
+        next.nodes = dir.nodes.clone();
+        next.nodes[0].endpoint = "203.0.113.99:51820".into();
+        next.nodes[1].endpoint = "203.0.113.98:51820".into();
+        next.nodes[1].role = Some("entry".into());
+        let j = next.to_json();
+        let m = import_signed_at(
+            &mut pocket,
+            j.as_bytes(),
+            &signer.sign(j.as_bytes()),
+            Some(&signer.public()),
+            now,
+        )
+        .unwrap();
+        assert!(m.added.is_empty());
+        assert_eq!(m.skipped.len(), 1, "{m:?}");
+        assert_eq!(m.updated.len(), 2, "{m:?}");
+        assert_eq!(m.updated[0].0, "node-1");
+        assert_eq!(m.updated[0].1, "endpoint");
+        assert_eq!(m.updated[1].0, "node-2");
+        assert!(
+            m.updated[1].1.contains("endpoint") && m.updated[1].1.contains("role"),
+            "{}",
+            m.updated[1].1
+        );
+        assert!(
+            m.updated[1].1.contains("no longer an exit")
+                && m.updated[1].1.contains("now also an entry"),
+            "{}",
+            m.updated[1].1
+        );
+        assert!(m.summary().contains("updated 2"), "{}", m.summary());
+        let known1 = pocket
+            .known
+            .iter()
+            .find(|k| k.node_name == "node-1")
+            .unwrap();
+        assert_eq!(known1.endpoint, "203.0.113.99:51820");
+        assert!(
+            pocket.exits.is_empty(),
+            "node-2 is no longer offered as an exit"
+        );
+        assert_eq!(pocket.entries.len(), 1);
+        assert_eq!(pocket.entries[0].endpoint, "203.0.113.98:51820");
+        assert_eq!(pocket.entries[0].role.as_deref(), Some("entry"));
+        // What the node's admission gave stays.
+        assert_eq!(pocket.entries[0].client_address, "10.77.0.2/16");
+        assert_eq!(pocket.list_sequence, 4);
     }
 
     #[test]

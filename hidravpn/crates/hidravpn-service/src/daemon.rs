@@ -54,6 +54,10 @@ pub struct Daemon {
     pocket_lock: Mutex<()>,
 }
 
+/// What a person is told when a circuit could not be built while the kill
+/// switch was held across a change: the machine is blocked, not open.
+const HELD: &str = "the kill switch stays armed: nothing leaves this machine until `hidravpn down` or another connect";
+
 /// The same bytes, compared without a short cut: the comparison takes the
 /// same time whether the first byte or the last one differs.
 fn same_token(a: &[u8], b: &[u8]) -> bool {
@@ -248,12 +252,41 @@ impl Daemon {
             }
         }
 
-        let mut guard = self.state.lock().await;
-        if let Some(old) = guard.take() {
-            // Replace an existing connection cleanly.
-            let _ = old.circuit.down().await;
+        let next_first_hop = CircuitSpec {
+            exit: pool[0].clone(),
+            entry: entries.first().cloned(),
         }
-        let circuit = connect(&pool[0], entries.first(), &opts).await?;
+        .first_hop_endpoint()?;
+
+        let mut guard = self.state.lock().await;
+        // Replacing a running circuit: the kill switch is held across the
+        // change — only the old and the new first hop may be reached — before
+        // the old circuit comes down, and the new circuit's own rules replace
+        // the hold once it is up. There is no moment on the open network; if
+        // the new circuit cannot be built, the machine stays blocked until
+        // `down`, never open.
+        let held = match guard.take() {
+            Some(old) => {
+                let mut allowed = vec![next_first_hop];
+                if let Ok(current) = old.circuit.spec().first_hop_endpoint() {
+                    allowed.push(current);
+                }
+                if let Err(e) = killswitch::hold(&allowed) {
+                    *guard = Some(old);
+                    return Err(e.context(
+                        "could not hold the kill switch across the change; staying on the current circuit",
+                    ));
+                }
+                let _ = old.circuit.down_with(false).await;
+                true
+            }
+            None => false,
+        };
+        let circuit = match connect(&pool[0], entries.first(), &opts, held).await {
+            Ok(c) => c,
+            Err(e) if held => return Err(e.context(HELD)),
+            Err(e) => return Err(e),
+        };
         *guard = Some(Active {
             owner: caller.filter(|&u| u != 0),
             circuit,
@@ -370,6 +403,7 @@ impl Daemon {
         save_pocket(&self.pocket_path, &pocket)?;
         tracing::info!(
             added = merge.added.len(),
+            updated = merge.updated.len(),
             skipped = merge.skipped.len(),
             "node list imported"
         );
@@ -385,6 +419,38 @@ impl Daemon {
         let active = guard
             .take()
             .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
+        let next =
+            random::index_other_than(active.pool.len(), active.current)?.unwrap_or(active.current);
+        let next_entry = random::index_other_than(active.entries.len(), active.current_entry)?
+            .unwrap_or(active.current_entry);
+
+        // The kill switch is held across the change: before the old circuit
+        // comes down, the rules allow only the old and the new first hop, so
+        // nothing else leaves while the new circuit is built; its own rules
+        // replace the hold once it is up. A rotation that fails leaves the
+        // machine blocked, never open.
+        let mut allowed = Vec::with_capacity(2);
+        if let Ok(current) = active.circuit.spec().first_hop_endpoint() {
+            allowed.push(current);
+        }
+        match (CircuitSpec {
+            exit: active.pool[next].clone(),
+            entry: active.entries.get(next_entry).cloned(),
+        })
+        .first_hop_endpoint()
+        {
+            Ok(a) => allowed.push(a),
+            Err(e) => {
+                *guard = Some(active);
+                return Err(e);
+            }
+        }
+        if let Err(e) = killswitch::hold(&allowed) {
+            *guard = Some(active);
+            return Err(e.context(
+                "could not hold the kill switch across the rotation; staying on the current circuit",
+            ));
+        }
         let Active {
             owner: active_owner,
             circuit,
@@ -394,15 +460,12 @@ impl Daemon {
             current,
             opts,
         } = active;
-        let next = random::index_other_than(pool.len(), current)?.unwrap_or(current);
-        let next_entry =
-            random::index_other_than(entries.len(), current_entry)?.unwrap_or(current_entry);
 
         // The old circuit goes down completely before the new one comes up:
-        // the exit's session, its routes and the kill switch all belong to
-        // the old identity.
-        let _ = circuit.down().await;
-        match connect(&pool[next], entries.get(next_entry), &opts).await {
+        // the exit's session and its routes belong to the old identity. The
+        // kill switch stays, as the hold.
+        let _ = circuit.down_with(false).await;
+        match connect(&pool[next], entries.get(next_entry), &opts, true).await {
             Ok(circuit) => {
                 let exit_note = if pool.len() == 1 {
                     "only one exit node is configured; reconnected to the same one, so the address the internet sees has not changed".to_string()
@@ -436,9 +499,11 @@ impl Daemon {
                 Ok(format!("{exit_note}{entry_note}"))
             }
             Err(e) => {
-                // The machine is back on its own network, with nothing left
-                // armed; say so rather than pretend a circuit is up.
-                Err(e.context("the new circuit could not be built; disconnected"))
+                // Nothing is up, and the hold still blocks the machine: say
+                // so rather than pretend a circuit is up, or that it is open.
+                Err(e.context(format!(
+                    "the new circuit could not be built; disconnected, and {HELD}"
+                )))
             }
         }
     }
@@ -646,11 +711,20 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
         .collect()
 }
 
-/// Brings a circuit up with the service's key. Any plan or kill switch a
-/// crashed run left behind is undone first.
-async fn connect(exit: &Invite, entry: Option<&Invite>, opts: &CircuitOptions) -> Result<Circuit> {
+/// Brings a circuit up with the service's key. A kill switch a crashed run
+/// left behind is undone first — unless one is `held` on purpose across a
+/// change, in which case it stays until the new circuit's own rules replace
+/// it in one step.
+async fn connect(
+    exit: &Invite,
+    entry: Option<&Invite>,
+    opts: &CircuitOptions,
+    held: bool,
+) -> Result<Circuit> {
     let key = load_key()?;
-    let _ = killswitch::remove();
+    if !held {
+        let _ = killswitch::remove();
+    }
     Circuit::up(
         CircuitSpec {
             exit: exit.clone(),

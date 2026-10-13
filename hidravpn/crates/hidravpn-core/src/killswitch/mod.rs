@@ -61,6 +61,28 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
     }
 }
 
+/// Holds the line while a circuit is replaced: the encrypted WireGuard
+/// packets to `node_endpoints` — the first hop of the circuit coming down and
+/// of the one going up — may leave, and nothing else; no tunnel interface is
+/// allowed, because none is trusted yet. `apply` replaces it once the new
+/// circuit is up, in one step; `remove` lifts it. So a new identity, or a
+/// reconnect over a running circuit, never has a moment on the open network.
+pub fn hold(node_endpoints: &[SocketAddr]) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::hold(node_endpoints)
+    }
+    #[cfg(windows)]
+    {
+        windows::hold(node_endpoints)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = node_endpoints;
+        anyhow::bail!("the kill switch is not built for this operating system yet")
+    }
+}
+
 /// Turns the kill switch off. Succeeds even if it was already off, so `down`
 /// and cleanup can always call it.
 pub fn remove() -> Result<()> {

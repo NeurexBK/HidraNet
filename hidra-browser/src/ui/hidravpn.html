@@ -365,7 +365,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     act(function () { return api.disconnect(); }, 'Disconnecting and putting the network back.');
   });
   $('btn-identity').addEventListener('click', function () {
-    act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection drops for a moment.');
+    act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection pauses for a moment; the kill switch stays armed throughout.');
   });
 
   async function joinNodes(name) {

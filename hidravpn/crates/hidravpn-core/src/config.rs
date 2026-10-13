@@ -65,7 +65,17 @@ impl Invite {
 
     pub fn validate(&self) -> Result<()> {
         public_key_from_base64(&self.node_public_key)?;
-        self.endpoint_addr()?;
+        let endpoint = self.endpoint_addr()?;
+        if !endpoint.is_ipv4() {
+            // The client routes all of IPv6 into the tunnel, so the tunnel's
+            // own packets to an IPv6 node would go into the tunnel too and
+            // never reach it. Refused here, where the invite is read, rather
+            // than failing silently when the circuit comes up.
+            return Err(anyhow!(
+                "the endpoint \"{}\" is an IPv6 address; a node is reached over IPv4 in this phase",
+                self.endpoint
+            ));
+        }
         self.client_ip()?;
         if self.mtu < 1280 || self.mtu > 1500 {
             return Err(anyhow!("the MTU must be between 1280 and 1500"));
@@ -180,5 +190,11 @@ mod tests {
         let mut inv = sample();
         inv.client_address = "10.77.0.2".into();
         assert!(inv.validate().is_err());
+        // An IPv6 endpoint parses, and is refused with the reason: the
+        // tunnel's own packets would be routed into the tunnel.
+        let mut inv = sample();
+        inv.endpoint = "[2001:db8::10]:51820".into();
+        let e = inv.validate().unwrap_err().to_string();
+        assert!(e.contains("IPv6") && e.contains("IPv4"), "{e}");
     }
 }

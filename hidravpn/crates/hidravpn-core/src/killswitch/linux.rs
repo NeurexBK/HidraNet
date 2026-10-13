@@ -4,9 +4,20 @@
 //! `drop` policy blocks IPv6 the moment the table exists: nothing accepts it,
 //! so nothing leaves over it. IPv4 is allowed only on the tunnel, to the node,
 //! and for the few things that keep the physical link usable.
+//!
+//! Every allowed path is named in both directions, so there is no blanket
+//! "established connections pass" rule: with one, a flow opened through the
+//! tunnel could find its way out on the physical link once the tunnel was
+//! gone, and a connection from before the VPN could carry on in the clear.
+//! The one use of connection tracking is ICMP errors answering our own
+//! packets (a router saying one was too big), which nothing else lets in.
+//!
+//! The table is always replaced in one nftables transaction — declare,
+//! delete, create — never deleted and then created, so there is no instant
+//! with no table while the rules change.
 
 use std::io::Write;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -14,22 +25,59 @@ use super::KillConfig;
 
 const TABLE: &str = "inet hidravpn_ks";
 
+/// The one off-tunnel destination per node: its WireGuard endpoint, matched
+/// with the right address family, both ways.
+fn node_rules(endpoints: &[SocketAddr]) -> (String, String) {
+    let mut out = String::new();
+    let mut inp = String::new();
+    for ep in endpoints {
+        let port = ep.port();
+        match ep.ip() {
+            IpAddr::V4(a) => {
+                out.push_str(&format!("    ip daddr {a} udp dport {port} accept\n"));
+                inp.push_str(&format!("    ip saddr {a} udp sport {port} accept\n"));
+            }
+            IpAddr::V6(a) => {
+                out.push_str(&format!("    ip6 daddr {a} udp dport {port} accept\n"));
+                inp.push_str(&format!("    ip6 saddr {a} udp sport {port} accept\n"));
+            }
+        }
+    }
+    (out, inp)
+}
+
+/// The table around a set of output and input rules: loopback first, the
+/// rules, then what keeps the physical link usable, then drop.
+fn table(output: &str, input: &str, why_dropped: &str) -> String {
+    format!(
+        r#"table {TABLE} {{
+  chain output {{
+    type filter hook output priority 0; policy drop;
+    oif "lo" accept
+{output}    udp sport 68 udp dport 67 accept comment "DHCP client keeps the link up"
+    meta l4proto icmp ct state related accept comment "ICMP errors about our own packets"
+    counter drop comment "{why_dropped}"
+  }}
+  chain input {{
+    type filter hook input priority 0; policy drop;
+    iif "lo" accept
+{input}    udp sport 67 udp dport 68 accept comment "DHCP offers"
+    meta l4proto icmp ct state related accept comment "ICMP errors about our own packets"
+    counter drop comment "{why_dropped}"
+  }}
+  chain forward {{
+    type filter hook forward priority 0; policy drop;
+  }}
+}}
+"#
+    )
+}
+
 /// The nftables ruleset for this configuration. Pure, so it can be tested.
 fn ruleset(cfg: &KillConfig) -> String {
     let iface = &cfg.interface;
     let dns = cfg.dns;
-    // The node's endpoint: an IPv4 or IPv6 literal, matched with the right
-    // address family so the one off-tunnel destination always gets through.
-    let node_ip = cfg.node_endpoint.ip();
-    let port = cfg.node_endpoint.port();
-    let node_rule_out = match node_ip {
-        IpAddr::V4(a) => format!("ip daddr {a} udp dport {port} accept"),
-        IpAddr::V6(a) => format!("ip6 daddr {a} udp dport {port} accept"),
-    };
-    let node_rule_in = match node_ip {
-        IpAddr::V4(a) => format!("ip saddr {a} udp sport {port} accept"),
-        IpAddr::V6(a) => format!("ip6 saddr {a} udp sport {port} accept"),
-    };
+    let (node_out, node_in) = node_rules(&[cfg.node_endpoint]);
 
     // Optionally let the private LAN ranges through, both ways.
     let (lan_out, lan_in) = if cfg.allow_lan {
@@ -53,34 +101,26 @@ fn ruleset(cfg: &KillConfig) -> String {
         None => (String::new(), String::new()),
     };
 
-    format!(
-        r#"table {TABLE} {{
-  chain output {{
-    type filter hook output priority 0; policy drop;
-    oif "lo" accept
-    udp dport 53 ip daddr != {dns} drop comment "DNS only to the node"
-    tcp dport 53 ip daddr != {dns} drop comment "DNS only to the node"
-    {node_rule_out}
-    oifname "{iface}" accept
-{extra_out}    udp sport 68 udp dport 67 accept comment "DHCP client keeps the link up"
-{lan_out}    ct state established,related accept
-    counter drop
-  }}
-  chain input {{
-    type filter hook input priority 0; policy drop;
-    iif "lo" accept
-    {node_rule_in}
-    iifname "{iface}" accept
-{extra_in}    udp sport 67 udp dport 68 accept comment "DHCP offers"
-{lan_in}    ct state established,related accept
-    counter drop
-  }}
-  chain forward {{
-    type filter hook forward priority 0; policy drop;
-  }}
-}}
-"#
-    )
+    let output = format!(
+        "    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{node_out}    oifname \"{iface}\" accept\n{extra_out}{lan_out}"
+    );
+    let input = format!("{node_in}    iifname \"{iface}\" accept\n{extra_in}{lan_in}");
+    table(&output, &input, "nothing leaves outside the tunnel")
+}
+
+/// The ruleset that holds the line while a circuit is replaced: the
+/// encrypted packets to the given nodes and nothing else, no tunnel
+/// interface, because there is none to trust yet.
+fn hold_ruleset(endpoints: &[SocketAddr]) -> String {
+    let (node_out, node_in) = node_rules(endpoints);
+    table(&node_out, &node_in, "held: the circuit is being rebuilt")
+}
+
+/// `body` installed in place of whatever table is there, in one transaction:
+/// the first line makes sure the table exists, the second deletes it, the
+/// rest creates it again — all or nothing, with no gap.
+fn replace_script(body: &str) -> String {
+    format!("table {TABLE} {{}}\ndelete table {TABLE}\n{body}")
 }
 
 fn nft(input: &str) -> Result<()> {
@@ -107,9 +147,16 @@ fn nft(input: &str) -> Result<()> {
 }
 
 pub fn apply(cfg: &KillConfig) -> Result<()> {
-    // Replace, never stack: a table from an earlier run is dropped first.
-    let _ = remove();
-    nft(&ruleset(cfg))
+    // Replace, never stack, and never with a moment in between: a table from
+    // an earlier run, or the hold of a rotation, goes in the same transaction.
+    nft(&replace_script(&ruleset(cfg)))
+}
+
+pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
+    if endpoints.is_empty() {
+        return Err(anyhow!("a hold needs at least one node endpoint to allow"));
+    }
+    nft(&replace_script(&hold_ruleset(endpoints)))
 }
 
 pub fn remove() -> Result<()> {
@@ -211,5 +258,50 @@ mod tests {
         // The entry node stays the only off-tunnel destination.
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
         assert_eq!(r.matches("udp dport 51820 accept").count(), 1);
+    }
+
+    #[test]
+    fn no_flow_passes_only_for_being_established() {
+        // A connection opened before the VPN, or through a tunnel that is
+        // gone, has a conntrack entry; that alone must open nothing. ICMP
+        // errors about our own packets are the one related thing let in.
+        for r in [
+            ruleset(&cfg(true)),
+            hold_ruleset(&[cfg(false).node_endpoint]),
+        ] {
+            assert!(!r.contains("established"), "{r}");
+            assert_eq!(
+                r.matches("meta l4proto icmp ct state related accept")
+                    .count(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn a_hold_allows_only_the_given_nodes_and_no_tunnel() {
+        let old = SocketAddr::from(([203, 0, 113, 10], 51820));
+        let new = SocketAddr::from(([198, 51, 100, 7], 51820));
+        let r = hold_ruleset(&[old, new]);
+        assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
+        assert!(r.contains("ip daddr 198.51.100.7 udp dport 51820 accept"));
+        assert!(r.contains("ip saddr 198.51.100.7 udp sport 51820 accept"));
+        assert!(!r.contains("oifname"), "a hold trusts no tunnel interface");
+        assert!(!r.contains("dport 53"), "no DNS leaves during a hold");
+        assert!(r.contains("policy drop"));
+        assert!(r.contains("held: the circuit is being rebuilt"));
+        assert!(
+            hold(&[]).is_err(),
+            "a hold with nothing to allow is refused before nft is run"
+        );
+    }
+
+    #[test]
+    fn the_table_is_replaced_in_one_transaction() {
+        let s = replace_script(&ruleset(&cfg(false)));
+        assert!(s.starts_with(
+            "table inet hidravpn_ks {}\ndelete table inet hidravpn_ks\ntable inet hidravpn_ks {"
+        ));
+        assert_eq!(s.matches("delete table").count(), 1);
     }
 }

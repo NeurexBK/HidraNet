@@ -17,7 +17,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, bail, Result};
 use windows::core::{GUID, PCWSTR};
@@ -56,19 +56,29 @@ const F_BLOCK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0001_00
 const F_LOOPBACK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0002_0001);
 const F_LOOPBACK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0002_0002);
 const F_TUNNEL_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0001);
-const F_NODE_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0001);
+/// The nodes reached off-tunnel: one for a circuit, two while one circuit
+/// is replaced by another (`hold`), with room to spare.
+const F_NODE_V4: [GUID; 4] = [
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0001),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0002),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0003),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0004),
+];
 const F_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0005_0001);
 /// The inner tunnel interface of a two-hop circuit.
 const F_TUNNEL2_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0002);
 
-const ALL_FILTER_KEYS: [GUID; 8] = [
+const ALL_FILTER_KEYS: [GUID; 11] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
     F_LOOPBACK_V6,
     F_TUNNEL_V4,
     F_TUNNEL2_V4,
-    F_NODE_V4,
+    F_NODE_V4[0],
+    F_NODE_V4[1],
+    F_NODE_V4[2],
+    F_NODE_V4[3],
     F_DHCP_V4,
 ];
 
@@ -121,16 +131,40 @@ fn luid_of(interface: &str) -> Result<u64> {
     Ok(unsafe { luid.Value })
 }
 
-pub fn apply(cfg: &KillConfig) -> Result<()> {
+/// What a rule set lets through besides loopback and DHCP.
+struct Allow<'a> {
+    /// Tunnel interfaces, by alias: the outer (or only) one first. One that
+    /// is not up yet is skipped, with a warning (see below).
+    tunnels: &'a [&'a str],
+    /// The nodes reached off-tunnel, IPv4: one for a circuit, the old and
+    /// the new first hop while a circuit is replaced.
+    nodes: &'a [SocketAddr],
+}
+
+/// The whole kill switch, for a running circuit (`apply`) or for the hold
+/// across a rotation (`hold`): the catch-all blocks, loopback, the tunnel
+/// interfaces given, the nodes given, DHCP.
+fn install(allow: &Allow<'_>) -> Result<()> {
     // Start clean so a half-applied earlier run cannot leave stray filters.
+    // A few milliseconds pass with no filters; Linux replaces its table in
+    // one transaction, and this is to be done the same way once the Windows
+    // half has run on a real machine.
     let _ = remove();
 
-    let node_ip = match cfg.node_endpoint.ip() {
-        IpAddr::V4(a) => a,
-        IpAddr::V6(_) => bail!("the kill switch needs an IPv4 node endpoint in this phase"),
-    };
-    let node_addr_be = u32::from(node_ip); // host order; WFP wants host order for UINT32
-    let port = cfg.node_endpoint.port();
+    if allow.nodes.len() > F_NODE_V4.len() {
+        bail!(
+            "the kill switch allows at most {} node endpoints at once",
+            F_NODE_V4.len()
+        );
+    }
+    let mut nodes = Vec::with_capacity(allow.nodes.len());
+    for ep in allow.nodes {
+        match ep.ip() {
+            // Host order; WFP wants host order for UINT32.
+            IpAddr::V4(a) => nodes.push((u32::from(a), ep.port())),
+            IpAddr::V6(_) => bail!("the kill switch needs an IPv4 node endpoint in this phase"),
+        }
+    }
 
     let engine = open_engine()?;
     let result = (|| -> Result<()> {
@@ -213,40 +247,25 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
             },
         )?;
 
-        // Everything on the tunnel interface — but only if it is already up.
+        // Everything on the tunnel interfaces — but only those already up.
         // When the kill switch is armed on its own (diagnostics) there is no
         // tunnel yet, so there is nothing to allow; in the normal flow the
         // interface exists by the time we get here. Linux is the same: its
         // rule matches by name and simply catches nothing until the interface
-        // appears.
-        match luid_of(&cfg.interface) {
-            Ok(luid) => {
-                add_filter(
-                    engine,
-                    &Filter {
-                        key: F_TUNNEL_V4,
-                        name: "allow the tunnel interface",
-                        layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-                        weight: 10,
-                        block: false,
-                        conditions: &[Cond::LocalInterface(luid)],
-                    },
-                )?;
-            }
-            Err(e) => {
-                tracing::warn!("tunnel interface not up yet; its allow rule is skipped ({e})");
-            }
-        }
-
-        // Two-hop: the inner tunnel interface too. Its packets go into the
-        // outer tunnel, never to the physical link.
-        if let Some(extra) = &cfg.extra_interface {
-            match luid_of(extra) {
+        // appears. The inner tunnel of a two-hop circuit sends into the outer
+        // tunnel, never to the physical link.
+        for (i, iface) in allow.tunnels.iter().enumerate() {
+            let (key, name) = if i == 0 {
+                (F_TUNNEL_V4, "allow the tunnel interface")
+            } else {
+                (F_TUNNEL2_V4, "allow the inner tunnel interface")
+            };
+            match luid_of(iface) {
                 Ok(luid) => add_filter(
                     engine,
                     &Filter {
-                        key: F_TUNNEL2_V4,
-                        name: "allow the inner tunnel interface",
+                        key,
+                        name,
                         layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
                         weight: 10,
                         block: false,
@@ -255,28 +274,30 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
                 )?,
                 Err(e) => {
                     tracing::warn!(
-                        "inner tunnel interface not up yet; its allow rule is skipped ({e})"
+                        "tunnel interface {iface} not up yet; its allow rule is skipped ({e})"
                     );
                 }
             }
         }
 
-        // The encrypted WireGuard packets to the node.
-        add_filter(
-            engine,
-            &Filter {
-                key: F_NODE_V4,
-                name: "allow WireGuard to the node",
-                layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
-                weight: 11,
-                block: false,
-                conditions: &[
-                    Cond::Protocol(IPPROTO_UDP),
-                    Cond::RemoteAddrV4(node_addr_be),
-                    Cond::RemotePort(port),
-                ],
-            },
-        )?;
+        // The encrypted WireGuard packets to the node(s).
+        for (i, (addr, port)) in nodes.iter().enumerate() {
+            add_filter(
+                engine,
+                &Filter {
+                    key: F_NODE_V4[i],
+                    name: "allow WireGuard to the node",
+                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                    weight: 11,
+                    block: false,
+                    conditions: &[
+                        Cond::Protocol(IPPROTO_UDP),
+                        Cond::RemoteAddrV4(*addr),
+                        Cond::RemotePort(*port),
+                    ],
+                },
+            )?;
+        }
 
         // DHCP so the physical link can keep its address.
         add_filter(
@@ -300,6 +321,29 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
     }
     let _ = unsafe { FwpmEngineClose0(engine) };
     result
+}
+
+pub fn apply(cfg: &KillConfig) -> Result<()> {
+    let mut tunnels: Vec<&str> = vec![cfg.interface.as_str()];
+    if let Some(extra) = &cfg.extra_interface {
+        tunnels.push(extra.as_str());
+    }
+    install(&Allow {
+        tunnels: &tunnels,
+        nodes: &[cfg.node_endpoint],
+    })
+}
+
+/// The hold across a rotation: the given nodes and nothing else, no tunnel
+/// interface, because there is none to trust yet.
+pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
+    if endpoints.is_empty() {
+        bail!("a hold needs at least one node endpoint to allow");
+    }
+    install(&Allow {
+        tunnels: &[],
+        nodes: endpoints,
+    })
 }
 
 pub fn remove() -> Result<()> {

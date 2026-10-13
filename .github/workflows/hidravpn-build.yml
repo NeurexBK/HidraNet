@@ -10,7 +10,7 @@ name: HidraVPN build
 
 on:
   push:
-    branches: [feature/hidravpn]
+    branches: [feature/hidravpn, main]
     # A tag hidravpn-vX.Y.Z runs this too and, once signing is on, cuts the
     # Windows release (release-windows below). Path filters do not apply to
     # tag pushes, so a tag always builds.

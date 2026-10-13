@@ -62,6 +62,7 @@ ip netns exec ks python3 -m http.server 9900 --bind 127.0.0.1 >/dev/null 2>&1 &
 
 echo "── starting the internet, the node endpoint and a public resolver in gw"
 ip netns exec gw python3 -m http.server 8080 --bind 10.90.0.1 >/dev/null 2>&1 &
+ip netns exec gw python3 "$PY/keepalive-http.py" 10.90.0.1 8082 >/dev/null 2>&1 &
 ip netns exec gw python3 "$PY/udp-echo.py" 10.90.0.1 51820 >/dev/null 2>&1 &
 ip netns exec gw python3 "$PY/dns-stub.py" 10.90.0.1 >/dev/null 2>&1 &
 sleep 1
@@ -71,6 +72,23 @@ code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/d
 [ "$code" = 200 ] && ok "HTTP to the internet works (a leak path exists)" || no "HTTP should work before the kill switch (got $code)"
 cq python3 "$PY/udp-ping.py" 10.90.0.1 53 && ok "DNS to a public resolver works" || no "DNS should work before the kill switch"
 cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "the node endpoint answers" || no "the node endpoint should answer"
+# A connection to the internet that is open before the kill switch, and kept
+# open across it: an established flow, the kind a blanket "established
+# connections pass" rule would let carry on in the clear. A desktop firewall
+# (ufw, firewalld) tracks connections before the VPN ever runs; this table
+# stands in for one, so the flow is tracked the way it would be there.
+cq nft -f - <<'NFT'
+table inet hv_desktop_firewall {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    ct state established,related accept
+  }
+}
+NFT
+REUSE_DIR=$(mktemp -d /tmp/hidravpn-ks.XXXXXX)
+cq python3 "$PY/tcp-reuse.py" 10.90.0.1 8082 "$REUSE_DIR/go" > "$REUSE_DIR/log" 2>&1 & REUSE=$!
+for _ in $(seq 1 30); do grep -q "^first ok" "$REUSE_DIR/log" 2>/dev/null && break; sleep 0.2; done
+grep -q "^first ok" "$REUSE_DIR/log" && ok "a connection to the internet is open before the kill switch, and stays open" || no "the keep-alive connection did not work before the kill switch: $(cat "$REUSE_DIR/log")"
 
 echo "── arming the kill switch"
 cq "$SVC" firewall on --interface hvpn0 --node 10.90.0.1:51820 --dns 10.77.0.1 >/dev/null 2>&1 && ok "kill switch armed" || no "could not arm the kill switch"
@@ -83,6 +101,9 @@ cq python3 "$PY/udp-ping.py" 10.90.0.1 53 && no "DNS to a public resolver leaked
 cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "the node endpoint is still reachable" || no "the node endpoint should stay reachable"
 lo_code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://127.0.0.1:9900 2>/dev/null)
 [ "$lo_code" = 200 ] && ok "loopback still works" || no "loopback should work (got $lo_code)"
+touch "$REUSE_DIR/go"; wait $REUSE; REUSE_RC=$?
+[ "$REUSE_RC" = 0 ] && grep -q "^second blocked" "$REUSE_DIR/log" && ok "the connection opened before the kill switch is cut off too: being established opens nothing" || no "an established connection carried on through the kill switch: $(cat "$REUSE_DIR/log")"
+rm -rf "$REUSE_DIR"
 
 echo "── lifting the kill switch"
 cq "$SVC" firewall off >/dev/null 2>&1 && ok "kill switch lifted" || no "could not lift the kill switch"
