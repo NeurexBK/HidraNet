@@ -19,8 +19,9 @@ difference, written down so anyone can hold us to it.
 | **No NAT traversal exists.** | No STUN, hole punching, UPnP or WebRTC anywhere in the tree | "Portless" volunteering is a roadmap item, not a feature |
 
 What the criticism gets wrong is the deployment model: the nodes are built to
-run on **servers** (`hidravpn-node init` and a systemd unit exist; the
-one-command installer is for the client), not behind a living-room router. A server has no router to open, and an open
+run on **servers** (`hidravpn-node init`, a systemd unit and a one-command
+installer, `hidravpn/scripts/install-node-linux.sh`), not behind a living-room
+router. A server has no router to open, and an open
 port on a server is as dangerous as the software behind it, no more. The real
 danger of hosting is not the port. It is being an **exit** and receiving the
 abuse complaints, which [10](10-legal-and-regulatory-risk.md) treats as an
@@ -70,17 +71,43 @@ depend on volunteers early.**
 - The two exits in this phase are run by the founders **as individuals, in
   jurisdictions where hosting Tor exits is established practice** (the
   Netherlands, Germany, Sweden, Finland), with a published abuse contact
-  answered within one working day and an exit policy that blocks outbound mail
-  (port 25) and the usual abuse ports. We know what this means. The
-  alternative is launching with no exits, which is not a VPN.
-- The client ships with these nodes as its **default pocket**, and
-  `bootstrap_nodes` ships filled with the relays. A new user connects on the
-  first try without knowing any of this.
+  answered within one working day. Every node's firewall blocks outbound
+  mail (port 25) and the usual abuse ports from the tunnel, an entry-role
+  node forwards nothing but WireGuard, and the reply to an abuse complaint is
+  written down in `hidravpn/docs/operators/abuse-response.md`, template
+  included. We know what this means. The alternative is launching with no
+  exits, which is not a VPN.
+- The client learns of these nodes from a **signed node list** the
+  maintainers publish (`nodes.json` + `nodes.json.sig`, made with
+  `hidravpn/scripts/make-node-list.sh` from the records the nodes print):
+  the client checks the signature against the list key built into it before
+  reading a byte, refuses a list that expired or is older than the one it
+  holds, strikes the nodes the list withdrew, and writes the rest down as
+  known. The browser fetches the list by itself from
+  `https://hidranet.org/vpn/nodes.json` and hands it to the service to
+  verify; the command line takes the file.
+- **A stranger connects on the first try** because every Phase 0 node runs
+  with **open admission** (`--open-admission`): a small service beside the
+  tunnel that hands an invite to any client that asks, three per address and
+  120 per node every ten minutes, up to 4000 clients per node, with a lease
+  that lapses after thirty days without use. The client asks every known
+  open node on its own when it connects. Admission by hand
+  (`hidravpn-node admit`) stays for nodes whose operator wants it: the list
+  says which is which, and the client tells the person whom to ask. Phase
+  5's passes are what will make admission accountable; open admission is
+  what makes it exist now. The relay engine's `bootstrap_nodes` is still
+  empty and is to ship filled with the relays.
+- **What ten nodes cost and how to get them** is in
+  `hidravpn/docs/running-nodes.md`: a small VPS per node, one command to
+  install it (`install-node-linux.sh --role exit|entry --operator ...
+  --contact ... --open-admission`), its record into the list, the list
+  signed and published, and `probe-nodes.sh` run from a machine that is not
+  a node so "uptime above 99%" is a measured number.
 - The test node that exists today is the first of the ten.
 
-**Done when:** ten nodes, three jurisdictions, thirty days of measured uptime
-above 99%, a stranger connects with the default pocket and passes the leak
-test.
+**Done when:** ten nodes, three jurisdictions, thirty days of uptime above
+99% as the prober measures it, a stranger connects with the published list
+alone and passes the leak test.
 
 ---
 
@@ -109,8 +136,19 @@ Volunteers arrive when the software has a name, an audit, and a story of nodes
 that stayed up. We prepare for them now and promise them only what exists:
 
 - **A one-command node install** and documentation that assumes a rented
-  server, not a home connection. The service file and the init command exist;
-  the installer for nodes is the piece to finish.
+  server, not a home connection: `hidravpn/scripts/install-node-linux.sh`,
+  which installs the node with its role (entry, exit or both), its
+  operator's name and contact, and open or by-hand admission; opens the one
+  UDP port (and the admission port, if open); prints the node's record for
+  the list; and says in plain words what running an exit means.
+  `hidravpn/docs/running-nodes.md` is the guide, and
+  `docs/operators/abuse-response.md` is what an exit operator reads first.
+- **An entry needs less courage than an exit.** A volunteer who will not run
+  an exit can run an entry: it forwards only WireGuard to other nodes, sees
+  the client's address and nothing of what they do, and draws no abuse mail.
+  Entries run by people other than the founders are what make Privado's
+  "no node sees both" true of the operators and not only of the nodes; the
+  client already prefers such a pair and says when it could not find one.
 - **Recognition, not payment.** A public operator list, the operator's chosen
   name on the node, a yearly report that names them. Nothing financial is
   promised until it is real.
@@ -141,8 +179,8 @@ servers.
 | **Browser proxy** | A tab or extension relays the first hop over WebRTC to a server-side entry; the volunteer's address is what the network sees | Snowflake | A broker service, a WebRTC transport, a browser extension |
 | **UDP hole punching** | The client and a home entry meet through a rendezvous server; works through most home NATs, not through carrier-grade NAT | WireGuard-based mesh VPNs | A rendezvous service and a fallback relay |
 
-Proposed for the roadmap after Phase 0 is done; it does not go on the roadmap
-before, because a portless entry with no exits behind it protects nobody.
+On the roadmap as a proposal scheduled after Phase 0 is done, not before,
+because a portless entry with no exits behind it protects nobody.
 
 ---
 

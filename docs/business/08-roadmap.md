@@ -48,6 +48,7 @@ scale a funnel that does not retain.
 | 3 | Public browser launch — only after the audit |
 | 4 | HidraReview mobile apps (the end customer is on a phone) |
 | 5 | Volunteer relay programme — **makes the network real** |
+| 6 | Portless entry nodes for volunteers at home (Snowflake-style WebRTC, or UDP hole punching), entry only, never exits — see [16 §7](16-network-bootstrap.md). Only after the maintainers' own nodes (Phase 0 of 16) are up: a portless entry with no exits behind it protects nobody |
 
 **End of Q3:** a repeatable channel, the browser launched with an audit behind
 it.
