@@ -15,6 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Invite;
+use crate::directory::NodeRecord;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Pocket {
@@ -22,6 +23,21 @@ pub struct Pocket {
     pub entries: Vec<Invite>,
     #[serde(default)]
     pub exits: Vec<Invite>,
+    /// Nodes this machine knows of but is not admitted on: what a signed
+    /// node list brings. They cannot be connected to; once the node's
+    /// operator admits this machine's key and the invite is added above, the
+    /// record here goes away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known: Vec<NodeRecord>,
+    /// The sequence number of the last node list imported; an older list is
+    /// refused, so a list someone kept from before a node was withdrawn
+    /// cannot bring it back.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub list_sequence: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Which list of the pocket a node goes in.
@@ -39,6 +55,9 @@ pub struct Pick {
     pub entry: Option<Invite>,
     pub other_exits: Vec<Invite>,
     pub other_entries: Vec<Invite>,
+    /// Two hops: are both run by the same operator, as far as the invites
+    /// say? `None` for one hop, or when either invite does not say.
+    pub same_operator: Option<bool>,
 }
 
 impl Pocket {
@@ -55,18 +74,20 @@ impl Pocket {
         serde_json::to_string_pretty(self).expect("a pocket always serialises")
     }
 
-    /// Adds an invite to one list. A name is the handle `remove` uses, so it
-    /// must be unique in the pocket; the same node (same key) may be in both
-    /// lists but not twice in one.
+    /// Adds an invite to one list. A name is the handle `remove` uses, so
+    /// two different nodes cannot share one; the same node (same key) may be
+    /// in both lists under its one name, but not twice in one list.
     pub fn add(&mut self, slot: Slot, invite: Invite) -> Result<()> {
         invite.validate()?;
         let name = invite.node_name.trim();
         if name.is_empty() {
             return Err(anyhow!("the invite has no node name"));
         }
-        if self.iter().any(|(_, i)| i.node_name.trim() == name) {
+        if self.iter().any(|(_, i)| {
+            i.node_name.trim() == name && i.node_public_key.trim() != invite.node_public_key.trim()
+        }) {
             return Err(anyhow!(
-                "a node named \"{name}\" is already in the pocket; remove it first"
+                "another node named \"{name}\" is already in the pocket; remove it first"
             ));
         }
         let list = self.list_mut(slot);
@@ -79,21 +100,73 @@ impl Pocket {
                 slot_name(slot)
             ));
         }
+        let key = invite.node_public_key.trim().to_string();
         list.push(invite);
+        // Admitted now: no longer merely known.
+        self.known.retain(|k| k.node_public_key.trim() != key);
+        Ok(())
+    }
+
+    /// A node from a signed list, not yet admitted. Skipped, with the
+    /// reason, when the machine is already admitted on it or already knows
+    /// it.
+    pub fn learn(&mut self, record: NodeRecord) -> Result<()> {
+        record.validate()?;
+        let key = record.node_public_key.trim();
+        if self.iter().any(|(_, i)| i.node_public_key.trim() == key) {
+            return Err(anyhow!("already admitted on this node"));
+        }
+        if self.known.iter().any(|k| k.node_public_key.trim() == key) {
+            return Err(anyhow!("already known"));
+        }
+        self.known.push(record);
         Ok(())
     }
 
     /// Removes every node with that name, from both lists. Returns how many.
     pub fn remove(&mut self, name: &str) -> usize {
         let name = name.trim();
-        let before = self.entries.len() + self.exits.len();
+        let before = self.entries.len() + self.exits.len() + self.known.len();
         self.entries.retain(|i| i.node_name.trim() != name);
         self.exits.retain(|i| i.node_name.trim() != name);
-        before - self.entries.len() - self.exits.len()
+        self.known.retain(|k| k.node_name.trim() != name);
+        before - self.entries.len() - self.exits.len() - self.known.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.exits.is_empty()
+    }
+
+    /// Removes every node with that key, admitted or known. Returns the
+    /// names removed.
+    pub fn remove_by_key(&mut self, key: &str) -> Vec<String> {
+        let key = key.trim();
+        let mut names = Vec::new();
+        for i in self.iter().filter(|(_, i)| i.node_public_key.trim() == key) {
+            names.push(i.1.node_name.clone());
+        }
+        for k in self
+            .known
+            .iter()
+            .filter(|k| k.node_public_key.trim() == key)
+        {
+            names.push(k.node_name.clone());
+        }
+        self.entries.retain(|i| i.node_public_key.trim() != key);
+        self.exits.retain(|i| i.node_public_key.trim() != key);
+        self.known.retain(|k| k.node_public_key.trim() != key);
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Known nodes this machine could ask admission from without meeting
+    /// anyone: the ones whose record says admission is open.
+    pub fn joinable(&self) -> Vec<&NodeRecord> {
+        self.known
+            .iter()
+            .filter(|k| k.admission.as_deref() == Some("open"))
+            .collect()
     }
 
     /// Every node in the pocket with its slot, entries first.
@@ -118,6 +191,7 @@ impl Pocket {
             entry: None,
             other_exits: exits,
             other_entries: Vec::new(),
+            same_operator: None,
         })
     }
 
@@ -134,8 +208,10 @@ impl Pocket {
                 "the pocket has no entry node; add one with `hidravpn nodes add --entry entry.json`"
             ));
         }
-        // Every (entry, exit) pair of two different nodes; one of them at
-        // random, so no pair is favoured.
+        // Every (entry, exit) pair of two different nodes; among them, the
+        // pairs run by two different operators when there are any, because
+        // two hops under one operator are one operator's view. One of those
+        // at random, so no pair is favoured.
         let pairs: Vec<(usize, usize)> = (0..self.entries.len())
             .flat_map(|e| (0..self.exits.len()).map(move |x| (e, x)))
             .filter(|&(e, x)| !same_node(&self.entries[e], &self.exits[x]))
@@ -145,7 +221,18 @@ impl Pocket {
                 "every entry in the pocket is the same node as every exit; two hops need two different nodes"
             ));
         }
+        let different: Vec<(usize, usize)> = pairs
+            .iter()
+            .copied()
+            .filter(|&(e, x)| same_operator(&self.entries[e], &self.exits[x]) == Some(false))
+            .collect();
+        let pairs = if different.is_empty() {
+            pairs
+        } else {
+            different
+        };
         let (e, x) = pairs[crate::random::index(pairs.len())?];
+        let same_operator = same_operator(&self.entries[e], &self.exits[x]);
         let mut exits = self.exits.clone();
         let exit = exits.remove(x);
         let mut entries = self.entries.clone();
@@ -155,6 +242,7 @@ impl Pocket {
             entry: Some(entry),
             other_exits: exits,
             other_entries: entries,
+            same_operator,
         })
     }
 
@@ -171,6 +259,27 @@ impl Pocket {
 pub fn same_node(a: &Invite, b: &Invite) -> bool {
     a.node_public_key.trim() == b.node_public_key.trim()
         || matches!((a.endpoint_addr(), b.endpoint_addr()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Whether two invites name the same operator: `Some(true)` or `Some(false)`
+/// when both say who runs them, `None` when either does not.
+pub fn same_operator(a: &Invite, b: &Invite) -> Option<bool> {
+    match (a.operator.as_deref(), b.operator.as_deref()) {
+        (Some(x), Some(y)) if !x.trim().is_empty() && !y.trim().is_empty() => {
+            Some(x.trim().eq_ignore_ascii_case(y.trim()))
+        }
+        _ => None,
+    }
+}
+
+/// The lists a node of a given role goes in: an entry in the entries, an
+/// exit in the exits, a node that is both in both.
+pub fn slots_for_role(role: Option<&str>) -> Vec<Slot> {
+    match role.map(|r| r.trim().to_ascii_lowercase()).as_deref() {
+        Some("entry") => vec![Slot::Entry],
+        Some("exit") => vec![Slot::Exit],
+        _ => vec![Slot::Entry, Slot::Exit],
+    }
 }
 
 pub fn slot_name(slot: Slot) -> &'static str {
@@ -196,7 +305,77 @@ mod tests {
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu: 1420,
             keepalive: 25,
+            operator: None,
+            role: None,
         }
+    }
+
+    fn run_by(mut inv: Invite, op: &str) -> Invite {
+        inv.operator = Some(op.into());
+        inv
+    }
+
+    #[test]
+    fn two_hops_prefer_two_operators_and_say_when_they_could_not() {
+        let mut p = Pocket::default();
+        p.add(
+            Slot::Entry,
+            run_by(invite("e-a", "203.0.113.20:51820"), "alice"),
+        )
+        .unwrap();
+        p.add(
+            Slot::Exit,
+            run_by(invite("x-a", "203.0.113.10:51820"), "alice"),
+        )
+        .unwrap();
+        p.add(
+            Slot::Exit,
+            run_by(invite("x-b", "203.0.113.11:51820"), "bob"),
+        )
+        .unwrap();
+        for _ in 0..30 {
+            let pick = p.pick_privado().unwrap();
+            assert_eq!(
+                pick.exit.node_name, "x-b",
+                "the pair under two operators is the one taken"
+            );
+            assert_eq!(pick.same_operator, Some(false));
+        }
+        p.remove("x-b");
+        let pick = p.pick_privado().unwrap();
+        assert_eq!(
+            pick.same_operator,
+            Some(true),
+            "with no other choice, it says so"
+        );
+        p.remove("x-a");
+        p.add(Slot::Exit, invite("x-c", "203.0.113.12:51820"))
+            .unwrap();
+        assert_eq!(
+            p.pick_privado().unwrap().same_operator,
+            None,
+            "an invite that does not say leaves it unknown"
+        );
+        assert_eq!(p.pick_rapido().unwrap().same_operator, None);
+    }
+
+    #[test]
+    fn one_node_may_serve_as_entry_and_exit_under_its_one_name() {
+        let mut p = Pocket::default();
+        let both = invite("both", "203.0.113.30:51820");
+        p.add(Slot::Exit, both.clone()).unwrap();
+        p.add(Slot::Entry, both.clone()).unwrap();
+        assert!(p.add(Slot::Entry, both).is_err(), "not twice in one list");
+        let mut other = invite("both", "203.0.113.31:51820");
+        other.node_name = "both".into();
+        assert!(
+            p.add(Slot::Exit, other).is_err(),
+            "another node may not take the name"
+        );
+        assert_eq!(p.remove("both"), 2);
+        assert_eq!(slots_for_role(Some("entry")), vec![Slot::Entry]);
+        assert_eq!(slots_for_role(Some("Exit")), vec![Slot::Exit]);
+        assert_eq!(slots_for_role(None), vec![Slot::Entry, Slot::Exit]);
     }
 
     #[test]

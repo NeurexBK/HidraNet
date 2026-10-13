@@ -27,7 +27,7 @@ cleanup() {
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /etc/hidravpn/client.key
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT

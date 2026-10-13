@@ -24,10 +24,51 @@ pub struct NodeConfig {
     pub out_interface: Option<String>,
     /// DNS upstreams, tried in order: https://host/path@ip[,ip...] or udp://ip.
     pub dns: Vec<String>,
+    /// "entry", "exit" or "both": what this node lets itself be used as. An
+    /// entry's firewall forwards only WireGuard to other nodes; an exit's
+    /// forwards the internet (minus mail and the usual abuse ports).
+    #[serde(default = "default_role")]
+    pub role: String,
+    /// Who runs this node, for clients and lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// How to reach that person: an address, a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// "manual": the operator admits by hand. "open": any client that asks
+    /// on the admission port is admitted (rate-limited, capped).
+    #[serde(default = "default_admission")]
+    pub admission: String,
+    /// TCP port of the admission service (it also describes the node).
+    #[serde(default = "default_admission_port")]
+    pub admission_port: u16,
+    /// How many clients may hold a lease at once.
+    #[serde(default = "default_max_clients")]
+    pub max_clients: u32,
+    /// An openly admitted client that has not completed a handshake for this
+    /// long loses its lease, so the subnet is not used up by people who
+    /// tried once. Manually admitted clients are never expired.
+    #[serde(default = "default_idle_days")]
+    pub idle_days: u32,
 }
 
 fn default_interface() -> String {
     "hvpn0".into()
+}
+fn default_role() -> String {
+    "both".into()
+}
+fn default_admission() -> String {
+    "manual".into()
+}
+fn default_admission_port() -> u16 {
+    hidravpn_core::admission::DEFAULT_ADMISSION_PORT
+}
+fn default_max_clients() -> u32 {
+    4000
+}
+fn default_idle_days() -> u32 {
+    30
 }
 
 /// The tunnel subnet, worked out once.
@@ -63,6 +104,13 @@ impl NodeConfig {
             interface: default_interface(),
             out_interface,
             dns,
+            role: default_role(),
+            operator: None,
+            contact: None,
+            admission: default_admission(),
+            admission_port: default_admission_port(),
+            max_clients: default_max_clients(),
+            idle_days: default_idle_days(),
         };
         cfg.tunnel_network()?;
         for d in &cfg.dns {
@@ -100,6 +148,44 @@ impl NodeConfig {
             .with_context(|| format!("writing {}", path.display()))?;
         f.write_all(toml::to_string_pretty(self)?.as_bytes())?;
         Ok(())
+    }
+
+    pub fn admission_is_open(&self) -> bool {
+        self.admission.trim().eq_ignore_ascii_case("open")
+    }
+
+    pub fn set_role(&mut self, role: &str) -> Result<()> {
+        let r = role.trim().to_ascii_lowercase();
+        if !matches!(r.as_str(), "entry" | "exit" | "both") {
+            return Err(anyhow!("the role must be entry, exit or both"));
+        }
+        self.role = r;
+        Ok(())
+    }
+
+    /// How a signed list would describe this node.
+    pub fn record(&self) -> Result<hidravpn_core::NodeRecord> {
+        Ok(hidravpn_core::NodeRecord {
+            node_name: self.name.clone(),
+            node_public_key: self.public_key()?,
+            endpoint: self.public_endpoint.to_string(),
+            operator: self.operator.clone(),
+            contact: self.contact.clone(),
+            role: Some(self.role.clone()),
+            admission: Some(
+                if self.admission_is_open() {
+                    "open"
+                } else {
+                    "manual"
+                }
+                .into(),
+            ),
+            admission_port: if self.admission_port == default_admission_port() {
+                None
+            } else {
+                Some(self.admission_port)
+            },
+        })
     }
 
     pub fn public_key(&self) -> Result<String> {

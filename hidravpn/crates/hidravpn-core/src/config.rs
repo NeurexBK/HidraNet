@@ -33,6 +33,13 @@ pub struct Invite {
     /// Seconds between keepalives, so the node's NAT mapping stays open.
     #[serde(default = "default_keepalive")]
     pub keepalive: u16,
+    /// Who runs the node, as the node says. Two hops under one operator are
+    /// one operator's view, and the client is told so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// "entry", "exit" or "both": what the node's own firewall lets it be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 fn default_allowed() -> Vec<String> {
@@ -124,6 +131,8 @@ mod tests {
             allowed_ips: default_allowed(),
             mtu: 1420,
             keepalive: 25,
+            operator: None,
+            role: None,
         }
     }
 

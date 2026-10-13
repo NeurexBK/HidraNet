@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+  HidraVPN, inside the browser. This page does not contain the VPN: it drives
+  the HidraVPN service installed on this machine, through the browser's main
+  process (src/main/vpn-manager.js). Everything shown here is read from the
+  service: the state, the kill switch, the hops, the bytes. Nothing on this
+  page is a fixed badge, because a fixed badge is a promise the service may
+  not be keeping.
+
+  The policy below leaves the page no way out: it talks to nothing
+  (connect-src 'none'), loads nothing remote, cannot be framed and submits
+  nothing. The one thing it can do is call window.hidra.vpn, which the main
+  process only offers to our own pages.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraVPN</title>
+<style>
+:root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--brand:#00d4aa;--brand2:#3df5c4;--warn:#f5b83d;--danger:#ff5c6c}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#0d1020,#06070d);color:var(--txt);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:42px 20px;-webkit-font-smoothing:antialiased}
+svg{display:block}
+.wrap{width:100%;max-width:640px}
+.hero{text-align:center;margin-bottom:26px}
+.logo{width:64px;height:64px;border-radius:18px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:flex;align-items:center;justify-content:center;color:#032018;margin:0 auto 16px;box-shadow:0 10px 30px rgba(0,212,170,.25)}
+.hero h1{font-size:1.65em;font-weight:650;letter-spacing:-.3px;margin-bottom:8px}
+.lead{color:var(--txt2);font-size:.92em;line-height:1.65;max-width:520px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:22px 24px;box-shadow:0 20px 50px rgba(0,0,0,.35);margin-bottom:16px}
+.card h2{font-size:.78em;text-transform:uppercase;letter-spacing:.08em;color:var(--txt3);margin-bottom:14px;font-weight:600}
+.state{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--txt3);flex:none}
+.dot.on{background:var(--brand);box-shadow:0 0 0 4px rgba(0,212,170,.18)}
+.dot.mid{background:var(--warn);box-shadow:0 0 0 4px rgba(245,184,61,.18)}
+.dot.bad{background:var(--danger)}
+.state .label{font-size:1.25em;font-weight:650}
+.explain{color:var(--txt2);font-size:.9em;line-height:1.55;min-height:1.4em}
+.msg{margin-top:12px;padding:10px 12px;border-radius:10px;font-size:.86em;line-height:1.5;display:none}
+.msg.show{display:block}
+.msg.err{background:rgba(255,92,108,.1);border:1px solid rgba(255,92,108,.3);color:#ffb3bb}
+.msg.note{background:rgba(0,212,170,.08);border:1px solid rgba(0,212,170,.25);color:var(--brand2)}
+.msg code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.95em;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:5px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--border);font-size:.9em}
+.row:first-of-type{border-top:0}
+.row .k{color:var(--txt2)}
+.badge{font-size:.76em;font-weight:650;padding:3px 9px;border-radius:999px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt2)}
+.badge.on{color:var(--brand2);border-color:rgba(0,212,170,.4);background:rgba(0,212,170,.08)}
+.badge.off{color:var(--txt3)}
+.badge.warn{color:var(--warn);border-color:rgba(245,184,61,.4);background:rgba(245,184,61,.08)}
+.hops{margin-top:6px}
+.hop{display:grid;grid-template-columns:62px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--border);font-size:.88em}
+.hop .role{text-transform:uppercase;font-size:.72em;letter-spacing:.06em;color:var(--txt3);font-weight:650}
+.hop .node{font-weight:600}
+.hop .ep{color:var(--txt3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;margin-top:2px}
+.hop .hs{color:var(--txt2);font-size:.86em;white-space:nowrap}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.mode{display:block;cursor:pointer;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;transition:.15s}
+.mode:hover{border-color:var(--border2)}
+.mode.active{border-color:var(--brand);background:rgba(0,212,170,.08)}
+.mode input{position:absolute;opacity:0;pointer-events:none}
+.mode .name{font-weight:650;font-size:.95em;display:flex;justify-content:space-between}
+.mode .name small{color:var(--txt3);font-weight:500}
+.mode .what{color:var(--txt2);font-size:.82em;line-height:1.5;margin-top:4px}
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+button{font-family:inherit;font-size:.9em;font-weight:650;padding:11px 16px;border-radius:11px;border:1px solid var(--border2);background:var(--bg2);color:var(--txt);cursor:pointer;transition:.15s}
+button:hover:not(:disabled){border-color:var(--brand)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:linear-gradient(135deg,var(--brand),var(--brand2));color:#032018;border-color:transparent}
+button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
+.nodes .n{display:grid;grid-template-columns:62px 1fr auto auto;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:.88em;align-items:center}
+.nodes .n:first-child{border-top:0}
+.nodes .ep{color:var(--txt3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em}
+.empty{color:var(--txt3);font-size:.88em;line-height:1.55}
+.foot{color:var(--txt3);font-size:.8em;line-height:1.6;text-align:center;padding:6px 10px 0}
+.foot code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="logo"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+    <h1>HidraVPN</h1>
+    <p class="lead">The whole machine through the network, not just this browser. One hop or two through nodes this machine has been admitted to; a kill switch that holds when the tunnel drops. Everything below is read from the service on this machine, not assumed.</p>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div class="state"><span class="dot" id="dot"></span><span class="label" id="state-label">Checking</span></div>
+    <div class="explain" id="explain"></div>
+    <div class="row"><span class="k">Kill switch</span><span class="badge" id="vpn-killswitch">Unknown</span></div>
+    <div class="row"><span class="k">Mode</span><span id="mode-now">-</span></div>
+    <div class="row"><span class="k">Traffic</span><span id="bytes">-</span></div>
+    <div class="row" id="operator-row" style="display:none"><span class="k">Operators</span><span class="badge warn" id="operator-badge"></span></div>
+    <div class="hops" id="hops"></div>
+    <div class="empty" id="legend" style="margin-top:8px;display:none">entry: sees your address, not where you go. exit: sees where you go, not your address.</div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Connect</h2>
+    <div class="modes">
+      <label class="mode active" id="mode-rapido"><input type="radio" name="mode" value="rapido" checked>
+        <span class="name">Fast, one hop <small>Rapido</small></span>
+        <span class="what">Faster. The node sees your address and your traffic; it hides them from your network, not from the node.</span>
+      </label>
+      <label class="mode" id="mode-privado"><input type="radio" name="mode" value="privado">
+        <span class="name">Private, two hops <small>Privado</small></span>
+        <span class="what">No node sees both who you are and where you go. The entry sees your address, the exit sees your traffic. Needs an entry and an exit this machine is admitted to. Two hops run by one operator are one operator's view.</span>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btn-connect" disabled>Connect</button>
+      <button id="btn-identity" disabled>New identity</button>
+      <button class="danger" id="btn-disconnect" disabled>Disconnect</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Nodes on this machine</h2>
+    <div class="nodes" id="nodes"><div class="empty">Checking</div></div>
+    <div class="actions" style="margin-top:14px">
+      <button class="primary" id="btn-fetch" disabled>Get the maintainers' list</button>
+      <button id="btn-join-all" disabled>Join every open node</button>
+      <button id="btn-import" disabled>Import a signed list from a file</button>
+    </div>
+    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly admits this machine when you join it, or when you press Connect with nothing joined yet; a node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
+    </div>
+    <div class="msg" id="nodes-msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Release files</h2>
+    <p class="empty" style="margin-bottom:12px">A downloaded HidraVPN file is only worth running if its signature checks out against the release key built into this browser. Choose the file; its .sig must sit beside it.</p>
+    <div class="actions">
+      <button id="btn-verify">Verify a downloaded file</button>
+    </div>
+    <div class="msg" id="verify-msg"></div>
+  </div>
+
+  <p class="foot">This page does not contain the VPN. It drives the HidraVPN service installed on this machine; with no service, nothing here can connect. Anyone with an account on this computer, and any program they run, can switch HidraVPN on or off for the whole machine. Strong privacy, not anonymity: the service says what each node sees, and so does this page.</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  // The same two sentences the service prints (hidravpn-service/src/ipc.rs),
+  // so the page never claims more than the command line does.
+  var EXPLAIN = {
+    privado: 'privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic',
+    rapido: 'rapido: the node sees your address and your traffic; it hides them from your network, not from the node'
+  };
+  var LABELS = {
+    'connected': 'Connected',
+    'connecting': 'Connecting',
+    'disconnected': 'Disconnected',
+    'stopped': 'Service not running',
+    'not-installed': 'HidraVPN is not installed',
+    'no-permission': 'No permission to drive the service',
+    'unauthorised': 'The service refused the token',
+    'unavailable': 'Service unavailable',
+    'bad-answer': 'The service answered something unreadable',
+    'timeout': 'The service did not answer'
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var api = window.hidra && window.hidra.vpn;
+  var busy = false;
+  var lastState = null;
+  var hasOpenKnown = false;
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KiB';
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MiB';
+    return (n / 1073741824).toFixed(2) + ' GiB';
+  }
+
+  function message(kind, text, id) {
+    var m = $(id || 'msg');
+    if (!text) { m.className = 'msg'; m.textContent = ''; return; }
+    m.className = 'msg show ' + kind;
+    m.textContent = text;
+  }
+
+  function selectedMode() {
+    var r = document.querySelector('input[name="mode"]:checked');
+    return r ? r.value : 'rapido';
+  }
+
+  function render(s) {
+    lastState = s.state;
+    var r = s.report;
+    var dot = $('dot');
+    dot.className = 'dot' + (s.state === 'connected' ? ' on' : s.state === 'connecting' ? ' mid' : (s.state === 'disconnected' || s.state === 'stopped') ? '' : ' bad');
+    $('state-label').textContent = LABELS[s.state] || s.state;
+
+    // The kill switch is whatever the service says it is, including when
+    // the service cannot be reached: then nobody knows, and the page says so.
+    var ks = $('vpn-killswitch');
+    if (r) {
+      ks.textContent = r.killswitch ? 'Armed' : 'Off';
+      ks.className = 'badge ' + (r.killswitch ? 'on' : 'off');
+    } else {
+      ks.textContent = 'Unknown';
+      ks.className = 'badge warn';
+    }
+
+    // Two hops under one operator are one operator's view: say so, from
+    // what the invites say, and say when they do not say.
+    var orow = $('operator-row');
+    if (r && r.connected && r.hops === 2) {
+      orow.style.display = '';
+      var ob = $('operator-badge');
+      if (r.same_operator === true) { ob.textContent = 'One operator runs both hops: together they see who and where'; ob.className = 'badge warn'; }
+      else if (r.same_operator === false) { ob.textContent = 'Two different operators'; ob.className = 'badge on'; }
+      else { ob.textContent = 'Unknown: a node did not say who runs it'; ob.className = 'badge'; }
+    } else {
+      orow.style.display = 'none';
+    }
+    if (r && r.mode) {
+      $('mode-now').textContent = (r.mode === 'privado' ? 'Privado, two hops' : 'Rapido, one hop');
+      $('explain').textContent = EXPLAIN[r.mode] || '';
+    } else {
+      $('mode-now').textContent = '-';
+      $('explain').textContent = r ? 'Not routed through HidraVPN. This machine is on its own network.' : '';
+    }
+    $('bytes').textContent = r && r.connected ? ('up ' + fmtBytes(r.tx_bytes) + ', down ' + fmtBytes(r.rx_bytes)) : '-';
+
+    var hops = $('hops');
+    hops.textContent = '';
+    $('legend').style.display = (r && r.hops_detail && r.hops_detail.length) ? '' : 'none';
+    if (r && r.hops_detail && r.hops_detail.length) {
+      r.hops_detail.forEach(function (h) {
+        var el = document.createElement('div'); el.className = 'hop';
+        var role = document.createElement('span'); role.className = 'role'; role.textContent = h.role;
+        var node = document.createElement('span');
+        var name = document.createElement('div'); name.className = 'node'; name.textContent = h.node_name;
+        var ep = document.createElement('div'); ep.className = 'ep'; ep.textContent = h.endpoint;
+        node.appendChild(name); node.appendChild(ep);
+        var hs = document.createElement('span'); hs.className = 'hs';
+        hs.textContent = h.connected
+          ? ('handshake ' + (h.last_handshake_secs == null ? 'none yet' : h.last_handshake_secs + 's ago'))
+          : 'no session';
+        el.appendChild(role); el.appendChild(node); el.appendChild(hs);
+        hops.appendChild(el);
+      });
+    }
+
+    if (s.error && s.state !== 'disconnected') {
+      message('err', s.error + (s.hint ? ' ' + s.hint : ''));
+    } else if (!busy && (lastState === 'disconnected' || lastState === 'connected')) {
+      // Keep a note from the last action; clear stale errors.
+      var m = $('msg');
+      if (m.classList.contains('err')) message('', '');
+    }
+
+    var reachable = Boolean(r);
+    $('btn-import').disabled = busy || !reachable;
+    $('btn-fetch').disabled = busy || !reachable;
+    $('btn-join-all').disabled = busy || !reachable || !hasOpenKnown;
+    $('btn-connect').disabled = busy || !reachable;
+    $('btn-connect').textContent = (r && r.connected) ? 'Reconnect' : 'Connect';
+    $('btn-disconnect').disabled = busy || !reachable || !(r.connected || r.hops > 0 || r.killswitch);
+    $('btn-identity').disabled = busy || !reachable || !r.connected;
+  }
+
+  function renderNodes(answer) {
+    var box = $('nodes');
+    box.textContent = '';
+    if (!answer || !answer.ok) {
+      var e = document.createElement('div'); e.className = 'empty';
+      e.textContent = (answer && answer.error) ? answer.error : 'Could not read the pocket.';
+      box.appendChild(e);
+      return;
+    }
+    var list = answer.nodes || [];
+    hasOpenKnown = list.some(function (n) { return n.admitted === false && n.admission === 'open'; });
+    $('btn-join-all').disabled = busy || !hasOpenKnown;
+    if (!list.length) {
+      var em = document.createElement('div'); em.className = 'empty';
+      em.textContent = 'No node yet. A node\'s operator admits this machine\'s key and hands you an invite: hidravpn nodes add --exit invite.json (or --entry). Import a signed node list to see which nodes exist.';
+      box.appendChild(em);
+      return;
+    }
+    list.forEach(function (n) {
+      var known = n.admitted === false;
+      var el = document.createElement('div'); el.className = 'n';
+      var slot = document.createElement('span'); slot.className = 'role badge ' + (known ? 'warn' : n.slot === 'exit' ? 'on' : ''); slot.textContent = known ? 'known' : n.slot;
+      var name = document.createElement('span');
+      var nm = document.createElement('div'); nm.textContent = n.node_name; name.appendChild(nm);
+      if (known) {
+        var why = document.createElement('div'); why.className = 'empty';
+        var open = n.admission === 'open';
+        why.textContent = (open ? 'admits openly' : 'admits by hand') + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + (open ? '' : '; ask its operator, then add the invite');
+        name.appendChild(why);
+      } else if (n.operator || n.role) {
+        var who = document.createElement('div'); who.className = 'empty';
+        who.textContent = (n.operator ? 'run by ' + n.operator : '') + (n.role ? (n.operator ? ', ' : '') + n.role : '');
+        name.appendChild(who);
+      }
+      var ep = document.createElement('span'); ep.className = 'ep'; ep.textContent = n.endpoint;
+      el.appendChild(slot); el.appendChild(name); el.appendChild(ep);
+      if (known && n.admission === 'open') {
+        var jb = document.createElement('button'); jb.textContent = 'Join'; jb.style.padding = '6px 10px'; jb.style.fontSize = '.8em';
+        jb.addEventListener('click', function () { joinNodes(n.node_name); });
+        el.appendChild(jb);
+      }
+      box.appendChild(el);
+    });
+  }
+
+  async function refresh() {
+    if (!api) return;
+    try {
+      render(await api.status());
+    } catch (e) {
+      render({ state: 'unavailable', report: null, error: String(e && e.message || e), hint: '' });
+    }
+  }
+
+  async function refreshNodes() {
+    if (!api) return;
+    try { renderNodes(await api.nodes()); } catch (e) { renderNodes({ ok: false, error: String(e && e.message || e) }); }
+  }
+
+  async function act(fn, pending) {
+    if (!api || busy) return;
+    busy = true;
+    message('note', pending);
+    $('btn-connect').disabled = $('btn-disconnect').disabled = $('btn-identity').disabled = true;
+    try {
+      var r = await fn();
+      if (r && r.ok === false) {
+        message('err', (r.error || 'the service refused') + (r.hint ? ' ' + r.hint : ''));
+      } else if (r && r.note) {
+        message('note', r.note);
+      } else {
+        message('', '');
+      }
+    } catch (e) {
+      message('err', String(e && e.message || e));
+    } finally {
+      busy = false;
+      await refresh();
+      await refreshNodes();
+    }
+  }
+
+  document.querySelectorAll('.mode').forEach(function (el) {
+    el.addEventListener('click', function () {
+      document.querySelectorAll('.mode').forEach(function (m) { m.classList.remove('active'); });
+      el.classList.add('active');
+      el.querySelector('input').checked = true;
+    });
+  });
+
+  $('btn-connect').addEventListener('click', function () {
+    var mode = selectedMode();
+    act(function () { return api.connect(mode); }, 'Connecting (' + mode + '). The kill switch arms as the last step; until this page shows it Armed, nothing is protected.');
+  });
+  $('btn-disconnect').addEventListener('click', function () {
+    act(function () { return api.disconnect(); }, 'Disconnecting and putting the network back.');
+  });
+  $('btn-identity').addEventListener('click', function () {
+    act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection drops for a moment.');
+  });
+
+  async function joinNodes(name) {
+    if (!api || busy) return;
+    busy = true;
+    message('note', name ? 'Asking ' + name + ' to admit this machine.' : 'Asking every open node to admit this machine.', 'nodes-msg');
+    var r;
+    try { r = await api.join(name || ''); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      message('note', r.note || 'Joined.', 'nodes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) || 'Could not join.', 'nodes-msg');
+    }
+    await refresh();
+  }
+  $('btn-join-all').addEventListener('click', function () { joinNodes(''); });
+
+  $('btn-fetch').addEventListener('click', async function () {
+    if (!api || busy) return;
+    message('', '', 'nodes-msg');
+    var r;
+    try { r = await api.fetchList(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    if (r && r.ok) {
+      message('note', (r.note || 'Imported.') + ' From ' + r.url + '; checked against the list key built into this machine before a byte was read.', 'nodes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) || 'The list was not fetched.', 'nodes-msg');
+    }
+  });
+
+  $('btn-import').addEventListener('click', async function () {
+    if (!api || busy) return;
+    message('', '', 'nodes-msg');
+    var r;
+    try { r = await api.importNodes(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    if (r && r.cancelled) return;
+    if (r && r.ok) {
+      message('note', (r.note || 'Imported.') + ' Nothing was read from the list before its signature checked out.', 'nodes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) || 'The list was not imported.', 'nodes-msg');
+    }
+  });
+
+  $('btn-verify').addEventListener('click', async function () {
+    if (!api) return;
+    message('', '', 'verify-msg');
+    var r;
+    try { r = await api.verifyFile(); } catch (e) { r = { ok: false, reason: 'error', detail: String(e && e.message || e) }; }
+    if (r && r.cancelled) return;
+    if (r && r.ok) {
+      message('note', r.file + ': the signature checks out against the release key. SHA-256 ' + r.sha256, 'verify-msg');
+    } else {
+      message('err', (r && r.file ? r.file + ': ' : '') + ((r && r.detail) || 'not verified'), 'verify-msg');
+    }
+  });
+
+  if (!api) {
+    render({ state: 'unavailable', report: null, error: 'Open this page inside HidraNet Browser; outside it there is no bridge to the service.', hint: '' });
+    renderNodes({ ok: false, error: 'Not available outside the browser.' });
+  } else {
+    refresh();
+    refreshNodes();
+    setInterval(function () { if (document.visibilityState === 'visible' && !busy) refresh(); }, 2000);
+    setInterval(function () { if (document.visibilityState === 'visible' && !busy) refreshNodes(); }, 15000);
+  }
+})();
+</script>
+</body>
+</html>

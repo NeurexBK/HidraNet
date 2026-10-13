@@ -19,6 +19,7 @@ use hickory_resolver::proto::rr::RecordType;
 use hickory_resolver::Resolver;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 /// What fits in a UDP answer without fragmentation trouble.
@@ -93,8 +94,13 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
-                let Ok((n, from)) = udp.recv_from(&mut buf).await else {
-                    continue;
+                let (n, from) = match udp.recv_from(&mut buf).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        // An error here (out of buffers) is waited out, not spun on.
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
                 };
                 let q = buf[..n].to_vec();
                 let udp = udp.clone();
@@ -113,26 +119,44 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
 
     let tcp_task = {
         let resolver = resolver.clone();
+        // At most this many TCP queries at once, each given a few seconds: a
+        // client holding connections open cannot run the node out of
+        // descriptors, and an accept error is waited out, never spun on.
+        const TCP_CONNECTIONS: usize = 64;
+        const TCP_QUERY: Duration = Duration::from_secs(5);
+        let slots = Arc::new(Semaphore::new(TCP_CONNECTIONS));
         tokio::spawn(async move {
             loop {
-                let Ok((mut stream, _)) = tcp.accept().await else {
+                let Ok(slot) = slots.clone().acquire_owned().await else {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     continue;
+                };
+                let (mut stream, _) = match tcp.accept().await {
+                    Ok(c) => c,
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
                 };
                 let resolver = resolver.clone();
                 tokio::spawn(async move {
-                    let mut len = [0u8; 2];
-                    if stream.read_exact(&mut len).await.is_err() {
-                        return;
-                    }
-                    let n = u16::from_be_bytes(len) as usize;
-                    let mut q = vec![0u8; n];
-                    if stream.read_exact(&mut q).await.is_err() {
-                        return;
-                    }
-                    if let Some(resp) = answer(&resolver, &q).await {
-                        let _ = stream.write_all(&(resp.len() as u16).to_be_bytes()).await;
-                        let _ = stream.write_all(&resp).await;
-                    }
+                    let _slot = slot;
+                    let _ = tokio::time::timeout(TCP_QUERY, async move {
+                        let mut len = [0u8; 2];
+                        if stream.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        let n = u16::from_be_bytes(len) as usize;
+                        let mut q = vec![0u8; n];
+                        if stream.read_exact(&mut q).await.is_err() {
+                            return;
+                        }
+                        if let Some(resp) = answer(&resolver, &q).await {
+                            let _ = stream.write_all(&(resp.len() as u16).to_be_bytes()).await;
+                            let _ = stream.write_all(&resp).await;
+                        }
+                    })
+                    .await;
                 });
             }
         })

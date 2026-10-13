@@ -16,13 +16,19 @@ StartLimitBurst=5
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/hidravpn-node run
-Restart=on-failure
+# Always: a node that stopped for any reason comes back; the burst limit
+# above still stops a crash loop. Enough descriptors that no client can run
+# the node out of them.
+Restart=always
 RestartSec=3
-# /run/hidravpn holds the leases (RAM); /run/wireguard holds the control
-# socket when WireGuard runs in userspace. systemd creates both, so they
-# exist whichever path the node takes, and makes them writable under the
-# read-only system below. A restart of the service must not throw the
-# admitted clients out; only a reboot does.
+LimitNOFILE=65536
+# /var/lib/hidravpn holds the leases (the admitted clients), which survive a
+# restart and a reboot alike; /run/hidravpn and /run/wireguard hold what is
+# only for this boot (the userspace WireGuard control socket). systemd
+# creates them, so they exist whichever path the node takes, and makes them
+# writable under the read-only system below.
+StateDirectory=hidravpn
+StateDirectoryMode=0700
 RuntimeDirectory=hidravpn wireguard
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes

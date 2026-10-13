@@ -56,7 +56,25 @@ WantedBy=multi-user.target
     )
 }
 
+/// The group whose members may drive the service without being root (the
+/// browser runs as the person). Made once; a machine that refuses to make it
+/// still gets a working, root-only service.
+fn ensure_control_group() {
+    if crate::paths::control_gid().is_some() {
+        return;
+    }
+    if run("groupadd", &["--system", crate::paths::CONTROL_GROUP]).is_err()
+        || crate::paths::control_gid().is_none()
+    {
+        eprintln!(
+            "note: the {} group could not be made; only root will be able to drive the service (the browser's VPN page needs a member of that group)",
+            crate::paths::CONTROL_GROUP
+        );
+    }
+}
+
 pub fn install(bin: &Path) -> Result<()> {
+    ensure_control_group();
     std::fs::write(UNIT_PATH, unit(bin))?;
     run("systemctl", &["daemon-reload"])?;
     run("systemctl", &["enable", "--now", "hidravpn"])?;

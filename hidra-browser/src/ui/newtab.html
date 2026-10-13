@@ -518,6 +518,17 @@
             <span class="app-desc">Support HidraNet with $HNET</span>
             <span class="app-badge online">HNET</span>
           </a>
+          <a class="app-shortcut" href="#" data-url="hidravpn.html" id="app-vpn">
+            <div class="app-icon" style="background: linear-gradient(135deg, #00d4aa, #3df5c4); color: #032018;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraVPN</span>
+            <span class="app-desc">Whole machine. Strong privacy, not anonymity</span>
+            <span class="app-badge" id="vpn-badge">Checking…</span>
+          </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/search">
             <div class="app-icon search-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -991,7 +1002,37 @@
       return { chat: false, sevennine: false, error: null };
     }
 
+    // The VPN badge says what the service on this machine says, and nothing
+    // when there is no service to ask: a fixed "On" would be a promise this
+    // page cannot keep.
+    async function detectVpn() {
+      var badge = document.getElementById('vpn-badge');
+      if (!badge) return;
+      if (!(window.hidra && window.hidra.vpn)) {
+        badge.textContent = 'Unavailable'; badge.className = 'app-badge offline'; return;
+      }
+      try {
+        var s = await window.hidra.vpn.status();
+        if (s.state === 'connected') {
+          badge.textContent = s.report && s.report.mode === 'privado' ? 'On, two hops' : 'On, one hop';
+          badge.className = 'app-badge online';
+        } else if (s.state === 'connecting') {
+          badge.textContent = 'Connecting'; badge.className = 'app-badge';
+        } else if (s.state === 'disconnected') {
+          badge.textContent = 'Off'; badge.className = 'app-badge offline';
+        } else if (s.state === 'not-installed') {
+          badge.textContent = 'Not installed'; badge.className = 'app-badge offline';
+        } else {
+          badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
+        }
+        badge.title = s.error || '';
+      } catch (e) {
+        badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
+      }
+    }
+
     async function detectApps() {
+      detectVpn();
       var status = await appsStatus();
       var chatOk = status.chat;
       var chatBadge = document.getElementById('chat-badge');

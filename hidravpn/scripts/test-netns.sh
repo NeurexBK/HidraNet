@@ -28,7 +28,7 @@ cleanup() {
   sleep 1
   for p in "${PIDS[@]}"; do kill -9 "$p" 2>/dev/null; done
   ip netns del hv-client 2>/dev/null; ip netns del hv-node 2>/dev/null; ip netns del hv-inet 2>/dev/null
-  rm -rf /etc/netns/hv-client /run/hidravpn/peers.json /run/hidravpn/netcfg.json /var/run/wireguard/hvpn0.sock
+  rm -rf /etc/netns/hv-client /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /run/hidravpn/netcfg.json /var/run/wireguard/hvpn0.sock
   rm -rf "$WORK"
 }
 trap cleanup EXIT

@@ -30,13 +30,37 @@ pub fn default_interface() -> Result<String> {
         .ok_or_else(|| anyhow!("no default route: set out_interface in the settings"))
 }
 
-fn ruleset(tun_if: &str, out_if: &str, cidr: &str) -> String {
+fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
+    // What may leave the tunnel. An entry carries nothing but WireGuard to
+    // other nodes; an exit carries the internet, minus mail and the ports
+    // abuse comes from.
+    let policy = if role.eq_ignore_ascii_case("entry") {
+        format!(
+            r#"    iifname "{tun_if}" oifname "{out_if}" udp dport 51820 accept comment "an entry forwards only WireGuard, to other nodes"
+    iifname "{tun_if}" oifname "{out_if}" drop comment "entry policy: nothing else leaves"
+"#
+        )
+    } else {
+        format!(
+            r#"    iifname "{tun_if}" oifname "{out_if}" tcp dport {{ 25, 135-139, 445, 1433, 3389 }} drop comment "exit policy: mail and the usual abuse ports never leave a node"
+    iifname "{tun_if}" oifname "{out_if}" udp dport {{ 135-139, 445 }} drop comment "exit policy"
+    iifname "{tun_if}" oifname "{out_if}" accept
+"#
+        )
+    };
     format!(
         r#"table {TABLE} {{
+  chain input {{
+    type filter hook input priority filter; policy accept;
+    iifname "{tun_if}" udp dport 53 accept comment "the node's DNS forwarder"
+    iifname "{tun_if}" tcp dport 53 accept comment "the node's DNS forwarder"
+    iifname "{tun_if}" icmp type echo-request accept comment "a client may ping the node"
+    iifname "{tun_if}" drop comment "no other service of this host is reachable from the tunnel"
+  }}
   chain forward {{
     type filter hook forward priority filter; policy accept;
     iifname "{tun_if}" oifname "{tun_if}" drop comment "clients do not see each other"
-    iifname "{tun_if}" oifname "{out_if}" accept
+{policy}    iifname "{tun_if}" drop comment "the tunnel reaches the outside interface and nothing else of this host"
     iifname "{out_if}" oifname "{tun_if}" ct state established,related accept
   }}
   chain postrouting {{
@@ -66,10 +90,10 @@ fn nft(input: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply(tun_if: &str, out_if: &str, cidr: &str) -> Result<()> {
+pub fn apply(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> Result<()> {
     // Replace, never stack: a table from an earlier run is dropped first.
     let _ = remove();
-    nft(&ruleset(tun_if, out_if, cidr))
+    nft(&ruleset(tun_if, out_if, cidr, role))
 }
 
 pub fn remove() -> Result<()> {
@@ -82,9 +106,37 @@ mod tests {
 
     #[test]
     fn the_ruleset_isolates_clients_and_masquerades_their_subnet() {
-        let r = ruleset("hvpn0", "eth0", "10.77.0.0/16");
+        let r = ruleset("hvpn0", "eth0", "10.77.0.0/16", "both");
         assert!(r.contains(r#"iifname "hvpn0" oifname "hvpn0" drop"#));
         assert!(r.contains(r#"ip saddr 10.77.0.0/16 oifname "eth0" masquerade"#));
         assert!(r.starts_with("table inet hidravpn {"));
+    }
+
+    #[test]
+    fn an_exit_forwards_the_internet_minus_abuse_ports_and_an_entry_only_wireguard() {
+        let exit = ruleset("hvpn0", "eth0", "10.77.0.0/16", "exit");
+        assert!(exit.contains("tcp dport { 25, 135-139, 445, 1433, 3389 } drop"));
+        assert!(exit.contains(r#"iifname "hvpn0" oifname "eth0" accept"#));
+        let entry = ruleset("hvpn0", "eth0", "10.77.0.0/16", "entry");
+        assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" udp dport 51820 accept"#));
+        assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" drop"#));
+        assert!(
+            !entry.contains(r#"iifname "hvpn0" oifname "eth0" accept"#),
+            "nothing else leaves an entry"
+        );
+        // The reply direction stays open for both; nothing from the tunnel
+        // reaches another interface of the host, and on the host itself only
+        // the DNS forwarder (and a ping) answers the tunnel.
+        for r in [&exit, &entry] {
+            assert!(r.contains("ct state established,related accept"));
+            assert!(r.contains(
+                r#"iifname "hvpn0" drop comment "the tunnel reaches the outside interface"#
+            ));
+            assert!(r.contains(r#"iifname "hvpn0" udp dport 53 accept"#));
+            assert!(r.contains(r#"iifname "hvpn0" drop comment "no other service of this host"#));
+            let input = r.find("chain input").unwrap();
+            let forward = r.find("chain forward").unwrap();
+            assert!(input < forward);
+        }
     }
 }

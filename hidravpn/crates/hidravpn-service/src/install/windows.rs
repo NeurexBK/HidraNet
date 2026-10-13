@@ -34,6 +34,32 @@ pub fn install(bin: &Path) -> Result<()> {
         }
     }
 
+    // The folder under ProgramData holds the client key and the pocket.
+    // ProgramData lets any user create files in a new folder there, and a
+    // file a user made first stays that user's: so the folder is taken
+    // (in case someone made it before us) and given rights inherited from
+    // nowhere, SYSTEM and administrators only. The service then grants
+    // interactive users read on the token alone, when it writes it.
+    let data = crate::paths::control_token()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\ProgramData\\HidraVPN"));
+    std::fs::create_dir_all(&data)?;
+    let dir = data.to_string_lossy().into_owned();
+    let _ = run("takeown", &["/F", &dir, "/R", "/A", "/D", "Y"]);
+    run(
+        "icacls",
+        &[
+            &dir,
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "/T",
+        ],
+    )
+    .context("protecting the HidraVPN data folder")?;
+
     let tr = format!("\"{}\" run", bin.display());
     // /rl HIGHEST + /ru SYSTEM: full rights, no interactive logon needed.
     run(

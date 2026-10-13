@@ -8,17 +8,23 @@
 //!
 //! Nothing here logs an address, a name looked up, or a byte of traffic.
 
+pub mod admission;
 pub mod circuit;
 pub mod config;
+pub mod directory;
 pub mod keys;
 pub mod killswitch;
 pub mod netcfg;
 pub mod pocket;
 pub mod random;
+pub mod release;
+pub mod timefmt;
 pub mod tunnel;
 
 pub use circuit::{Circuit, CircuitOptions, CircuitSpec, CircuitStatus, HopStatus, Mode, Role};
 pub use config::{ClientConfig, Invite};
+pub use directory::{Directory, Merge, NodeRecord};
 pub use keys::ClientKey;
 pub use pocket::{Pick, Pocket, Slot};
+pub use release::ReleaseKey;
 pub use tunnel::{Tunnel, TunnelStatus};

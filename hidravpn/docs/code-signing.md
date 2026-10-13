@@ -101,15 +101,39 @@ hidravpn-sign sign --key hidravpn-release.key SHA256SUMS-hidravpn-v0.3.0.txt
 
 Attach the resulting `SHA256SUMS-hidravpn-v0.3.0.txt.sig` to the GitHub
 Release. Users then verify the download with the project's public key (the one
-`hidravpn-sign keygen` printed; it is published on the site and, in phase 4,
-embedded in the browser):
+`hidravpn-sign keygen` printed; it is published on the site and embedded in
+the client and the browser — `RELEASE_PUBLIC_KEY_B64` in
+`crates/hidravpn-core/src/release.rs` and `RELEASE_PUBLIC_KEY` in
+`hidra-browser/src/main/release-verify.js`, which a test keeps identical):
 
 ```
 hidravpn-sign verify --pubkey <project public key> SHA256SUMS-hidravpn-v0.3.0.txt
 ```
 
-If the key does not exist yet, make it now, offline, and keep it backed up in
-two places: `hidravpn-sign keygen --out hidravpn-release.key`.
+There are **two keys**, and they are made the same way:
+
+```
+hidravpn-sign keygen --out hidravpn-release.key   # signs release files
+hidravpn-sign keygen --out hidravpn-list.key      # signs the node list (scripts/make-node-list.sh)
+hidravpn/scripts/embed-release-key.sh --release <release public key> --list <list public key>
+```
+
+`embed-release-key.sh` pastes the public halves into the Rust constants
+(`RELEASE_PUBLIC_KEY_B64`, `LIST_PUBLIC_KEY_B64` in `release.rs`) and the
+JavaScript ones (`release-verify.js`) together, and the tests keep each pair
+identical. Both keys exist and their public halves are embedded; a build
+with an empty constant verifies nothing and refuses everything, on purpose.
+The secret halves were made offline and are backed up in two places; the
+same script embeds a replacement when a key is rotated.
+
+Know what each key is worth. The release key says "the maintainers built
+this"; whoever held it could ship a client. The list key says "the
+maintainers vouch for these nodes"; whoever held it could publish a list
+naming nodes of their own, and every client that imported it would know
+them — and, with open admission, could join them. The list key is used far
+more often (every list, not every release), which is why it is a separate
+key: losing it means a new list key and a client release, not a new
+identity for the project.
 
 ## What SignPath checks (so the application goes through)
 

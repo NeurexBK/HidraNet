@@ -25,6 +25,7 @@ const INTERNAL_PAGES = {
   'sitepub.html': 'publish',
   'siteload.html': 'site',
   'donate.html': 'donate',
+  'hidravpn.html': 'vpn',
 };
 
 // What to load when someone types the name. Only the new tab page comes from
@@ -40,6 +41,9 @@ const INTERNAL_BY_NAME = {
   reviews: '/reviews',
   publish: '/publish',
   donate: '/donate',
+  // The VPN page comes from disk like the new tab page: it holds no identity
+  // and needs the privileged bridge, which only our own pages get.
+  vpn: 'hidravpn.html',
 };
 
 // The same, for the pages the apps server hands out on the loopback port.

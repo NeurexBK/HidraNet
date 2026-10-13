@@ -9,7 +9,7 @@
 //!   hidravpn-node status                                peers, handshakes, bytes — never addresses
 //!
 //! What it keeps: its own key and settings in /etc/hidravpn, and the current
-//! leases in /run/hidravpn, which is RAM. It logs counts, never who did what.
+//! leases in /var/lib/hidravpn, which survive a reboot. It logs counts, never who did what.
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -17,6 +17,8 @@ fn main() {
     std::process::exit(1);
 }
 
+#[cfg(target_os = "linux")]
+mod admission;
 #[cfg(target_os = "linux")]
 mod config;
 #[cfg(target_os = "linux")]
@@ -37,6 +39,8 @@ mod node {
 
     use anyhow::{anyhow, Context, Result};
     use clap::{Parser, Subcommand};
+    use std::time::Duration;
+
     use hidravpn_core::Invite;
     use tracing::{info, warn};
 
@@ -79,9 +83,35 @@ mod node {
             /// The interface traffic leaves through; detected from the default route if absent.
             #[arg(long)]
             out_interface: Option<String>,
+            /// What this node is for: entry (forwards only WireGuard to other
+            /// nodes), exit (forwards the internet), or both.
+            #[arg(long, default_value = "both")]
+            role: String,
+            /// Who runs this node, as clients and lists will show it.
+            #[arg(long)]
+            operator: Option<String>,
+            /// How to reach the operator: an address or a page.
+            #[arg(long)]
+            contact: Option<String>,
+            /// Admit any client that asks on the admission port, rate-limited
+            /// and capped, instead of by hand.
+            #[arg(long)]
+            open_admission: bool,
+            /// TCP port of the admission service.
+            #[arg(long, default_value_t = hidravpn_core::admission::DEFAULT_ADMISSION_PORT)]
+            admission_port: u16,
+            /// How many clients may hold a lease at once.
+            #[arg(long, default_value_t = 4000)]
+            max_clients: u32,
+            /// Days without a handshake after which an openly admitted client
+            /// loses its lease (0: never).
+            #[arg(long, default_value_t = 30)]
+            idle_days: u32,
         },
         /// Bring the tunnel up and serve until SIGTERM or Ctrl+C.
         Run,
+        /// Print this node's record: what a signed node list carries about it.
+        Record,
         /// Print this node's public key. A client derives, from this, the
         /// key it presents here (`hidravpn pubkey --node KEY`); that is the
         /// key to admit.
@@ -144,6 +174,13 @@ mod node {
                 tunnel,
                 dns,
                 out_interface,
+                role,
+                operator,
+                contact,
+                open_admission,
+                admission_port,
+                max_clients,
+                idle_days,
             } => {
                 require_root()?;
                 if cli.config.exists() {
@@ -152,10 +189,25 @@ mod node {
                         cli.config.display()
                     ));
                 }
-                let cfg = NodeConfig::fresh(name, endpoint, port, &tunnel, dns, out_interface)?;
+                let mut cfg = NodeConfig::fresh(name, endpoint, port, &tunnel, dns, out_interface)?;
+                cfg.set_role(&role)?;
+                cfg.operator = operator.filter(|s| !s.trim().is_empty());
+                cfg.contact = contact.filter(|s| !s.trim().is_empty());
+                cfg.admission = if open_admission { "open" } else { "manual" }.into();
+                cfg.admission_port = admission_port;
+                cfg.max_clients = max_clients;
+                cfg.idle_days = idle_days;
                 cfg.save(&cli.config)?;
                 println!("node public key: {}", cfg.public_key()?);
                 println!("settings written to {}", cli.config.display());
+                println!(
+                    "role {}; admission {}; admission port TCP {}",
+                    cfg.role, cfg.admission, cfg.admission_port
+                );
+            }
+            Cmd::Record => {
+                let cfg = NodeConfig::load(&cli.config)?;
+                println!("{}", serde_json::to_string_pretty(&cfg.record()?)?);
             }
             Cmd::Run => {
                 require_root()?;
@@ -235,7 +287,7 @@ mod node {
                         s.map(|s| s.tx_bytes).unwrap_or(0)
                     );
                 }
-                if leases.iter().count() == 0 {
+                if leases.is_empty() {
                     println!("(no clients admitted)");
                 }
             }
@@ -254,6 +306,8 @@ mod node {
             allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
             mtu: 1420,
             keepalive: 25,
+            operator: cfg.operator.clone(),
+            role: Some(cfg.role.clone()),
         })
     }
 
@@ -273,10 +327,13 @@ mod node {
             cfg.listen_port
         );
 
-        crate::nat::apply(&cfg.interface, &out_if, &net.cidr)?;
-        info!("forwarding and NAT set through {out_if}");
+        crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &cfg.role)?;
+        info!(
+            "forwarding and NAT set through {out_if} (role: {})",
+            cfg.role
+        );
 
-        let leases = Leases::load()?;
+        let mut leases = Leases::load()?;
         let mut n = 0;
         for l in leases.iter() {
             dev.add_peer(&l.public_key, l.ip)?;
@@ -285,17 +342,95 @@ mod node {
         info!("{n} admitted client(s) loaded");
 
         let dns_addr = SocketAddr::new(IpAddr::V4(net.node_ip), 53);
-        let dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
+        let mut dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
         info!("DNS forwarder on {dns_addr} → {}", cfg.dns.join(", "));
 
+        // The admission service: describes the node always, admits when open.
+        let (admit_tx, mut admit_rx) = tokio::sync::mpsc::channel::<crate::admission::Admit>(64);
+        let shared = std::sync::Arc::new(cfg.clone());
+        let admission_addr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            cfg.admission_port,
+        );
+        let mut admission = tokio::spawn(crate::admission::serve(admission_addr, shared, admit_tx));
+
+        // The reaper: openly admitted clients that never came, or stopped
+        // coming, lose their lease. HIDRAVPN_IDLE_SECS shortens the window
+        // for tests.
+        let idle_secs: u64 = std::env::var("HIDRAVPN_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::from(cfg.idle_days) * 86_400);
+        // At most a quarter of an hour between checks, so a lease that never
+        // came (leases::NEVER_CAME_SECS) is gone soon after it lapses.
+        let period = Duration::from_secs((idle_secs / 4).clamp(2, 900));
+        let mut reaper = tokio::time::interval(period);
+        reaper.tick().await; // the first tick is immediate; skip it
+
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {},
-            _ = term.recv() => {},
-            r = dns => { if let Err(e) = r { warn!("DNS forwarder stopped: {e}"); } },
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                _ = term.recv() => break,
+                r = &mut dns => { if let Err(e) = r { warn!("DNS forwarder stopped: {e}"); } break; },
+                r = &mut admission => {
+                    // The tunnel outlives the admission service: without it
+                    // the node admits nobody new, which is better than
+                    // serving nobody at all.
+                    match r { Ok(Err(e)) => warn!("admission service stopped: {e:#}; the node keeps serving admitted clients"), Err(e) => warn!("admission service task: {e}"), Ok(Ok(())) => {} }
+                    admission = tokio::spawn(std::future::pending());
+                },
+                Some(req) = admit_rx.recv() => {
+                    let answer = if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
+                        Err((503, "this node is full; try another".to_string()))
+                    } else {
+                        match leases.admit_open(&req.name, &req.public_key, &net) {
+                            Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip)) {
+                                Ok(()) => { info!("admitted a client through the admission service ({} leases)", leases.len()); invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}"))) }
+                                Err(e) => Err((500, format!("could not admit: {e:#}"))),
+                            },
+                            Err(e) => Err((400, e.to_string())),
+                        }
+                    };
+                    let _ = req.reply.send(answer);
+                }
+                _ = reaper.tick() => {
+                    if idle_secs > 0 {
+                        match dev.peer_stats() {
+                            Ok(stats) => {
+                                let ages = stats.iter().map(|(k, s)| (k.clone(), s.last_handshake)).collect();
+                                let now = crate::leases::now_unix();
+                                let touched = leases.note_handshakes(now, &ages);
+                                let gone = leases.expire_idle(now, idle_secs);
+                                for l in &gone { let _ = dev.remove_peer(&l.public_key); }
+                                if touched || !gone.is_empty() {
+                                    if let Err(e) = leases.save() { warn!("saving leases: {e}"); }
+                                }
+                                if !gone.is_empty() {
+                                    info!("{} idle openly-admitted client(s) expired ({} leases left)", gone.len(), leases.len());
+                                }
+                            }
+                            Err(e) => warn!("reading peer stats for expiry: {e}"),
+                        }
+                    }
+                }
+            }
         }
+        admission.abort();
 
         info!("stopping");
+        // Write down the last handshakes, so a restart is not idleness.
+        if let Ok(stats) = dev.peer_stats() {
+            let ages = stats
+                .iter()
+                .map(|(k, s)| (k.clone(), s.last_handshake))
+                .collect();
+            if leases.note_handshakes(crate::leases::now_unix(), &ages) {
+                if let Err(e) = leases.save() {
+                    warn!("saving leases at shutdown: {e}");
+                }
+            }
+        }
         if let Err(e) = crate::nat::remove() {
             warn!("removing NAT rules: {e}");
         }

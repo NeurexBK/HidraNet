@@ -42,6 +42,18 @@ install -m 0755 "$BIN/hidravpn-service" "$PREFIX/hidravpn-service"
 echo ">> installing and starting the service"
 "$PREFIX/hidravpn-service" install
 
+# The browser runs as the person, not as root, and drives the service through
+# its control channel; membership of the hidravpn group is what lets it. The
+# service's installer made the group; this puts the person who ran sudo in it.
+if [ -n "${SUDO_USER:-}" ] && getent group hidravpn >/dev/null 2>&1; then
+  if id -nG "$SUDO_USER" | tr ' ' '\n' | grep -qx hidravpn; then
+    echo ">> $SUDO_USER is already in the hidravpn group"
+  else
+    usermod -aG hidravpn "$SUDO_USER"
+    echo ">> added $SUDO_USER to the hidravpn group (log out and in once for it to take effect)"
+  fi
+fi
+
 install -d -m 0755 /etc/hidravpn
 if [ -f /etc/hidravpn/client.key ]; then
   echo ">> keeping the existing key at /etc/hidravpn/client.key"

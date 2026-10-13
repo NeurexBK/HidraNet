@@ -9,19 +9,26 @@
 //! exit nodes it was given, and which of each is in use, so `new_identity`
 //! can rotate to another exit — and another entry, when it has more than one.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
-use hidravpn_core::{random, Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Role};
+use hidravpn_core::{
+    random, Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Merge, Pocket, ReleaseKey,
+    Role,
+};
 use tokio::sync::Mutex;
 
-use crate::ipc::{Command, HopReport, Request, Response, StatusReport};
+use crate::ipc::{Command, HopReport, NodeReport, Request, Response, StatusReport};
 use crate::paths;
 
 struct Active {
+    /// The account that switched the circuit on (a uid; None on Windows or
+    /// for root), so another account cannot switch it off.
+    owner: Option<u32>,
     circuit: Circuit,
     /// The entry nodes, when there are two hops; `current_entry` is the one
     /// in use. Empty for one hop.
@@ -36,24 +43,76 @@ struct Active {
 pub struct Daemon {
     token: String,
     state: Mutex<Option<Active>>,
+    /// The pocket `connect` picks from (`hidravpn nodes`), normally the one
+    /// next to the key; a test gives its own.
+    pocket_path: PathBuf,
+    /// The LIST key a signed node list is checked against: the one this
+    /// build embeds (not the release key, which signs release files). None
+    /// means no list is ever accepted.
+    release_key: Option<ReleaseKey>,
+    /// One import at a time: load, merge and write back are one step.
+    pocket_lock: Mutex<()>,
+}
+
+/// The same bytes, compared without a short cut: the comparison takes the
+/// same time whether the first byte or the last one differs.
+fn same_token(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 impl Daemon {
     pub fn new(token: String) -> Arc<Self> {
+        Self::with_pocket(token, paths::circuit_pocket())
+    }
+
+    pub fn with_pocket(token: String, pocket_path: PathBuf) -> Arc<Self> {
+        Self::with_pocket_and_key(token, pocket_path, ReleaseKey::embedded_list_key())
+    }
+
+    /// The key this daemon checks node lists against, for tests.
+    pub fn list_key_base64(&self) -> Option<String> {
+        self.release_key.as_ref().map(|k| k.to_base64())
+    }
+
+    /// A daemon with a given list key, for tests; the service itself only
+    /// ever trusts the embedded one.
+    pub fn with_pocket_and_key(
+        token: String,
+        pocket_path: PathBuf,
+        release_key: Option<ReleaseKey>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             token,
             state: Mutex::new(None),
+            pocket_path,
+            release_key,
+            pocket_lock: Mutex::new(()),
         })
     }
 
-    pub async fn handle(&self, req: Request) -> Response {
-        // Constant-ish check: the token is compared in full before anything else.
-        if req.token.as_bytes() != self.token.as_bytes() {
+    /// `caller` is the account asking: `Some(0)` for root (an elevated
+    /// process on Windows), another uid for a member of the group, `None`
+    /// when the channel cannot tell. The channel is shared with the group,
+    /// whose members may connect through the pocket, disconnect what they
+    /// switched on, rotate, join, and import a signed list — but never hand
+    /// the service an invite of their own, which would route the whole
+    /// machine through a node nobody vetted, and never switch off what
+    /// another account switched on.
+    pub async fn handle(&self, req: Request, caller: Option<u32>) -> Response {
+        let privileged = caller == Some(0);
+        // The token is compared in full, in constant time, before anything else.
+        if !same_token(req.token.as_bytes(), self.token.as_bytes()) {
             return Response::err("unauthorised: wrong or missing control token");
         }
         match req.cmd {
             Command::Ping => Response::ok(),
             Command::Status => self.status().await,
+            Command::Up { .. } if !privileged => Response::err(
+                "`up` with an invite needs root (an administrator prompt on Windows): only root may hand the service a node to route the machine through. Members of the hidravpn group use `connect`, which picks from the pocket root filled.",
+            ),
             Command::Up {
                 invite,
                 allow_lan,
@@ -68,21 +127,88 @@ impl Daemon {
                     ..CircuitOptions::default()
                 };
                 match self
-                    .up(invite, via, alternates, alternate_entries, opts)
+                    .up(invite, via, alternates, alternate_entries, opts, caller)
                     .await
                 {
                     Ok(()) => self.status().await,
                     Err(e) => Response::err(format!("{e:#}")),
                 }
             }
-            Command::Down => match self.down().await {
-                Ok(_) => Response::ok(),
+            Command::Connect {
+                mode,
+                allow_lan,
+                keep_ipv6,
+            } => {
+                // Connecting replaces the circuit that is up: that is a
+                // `down` of it, so the same rule applies.
+                if let Err(e) = self.owned_by(caller).await {
+                    return Response::err(format!("{e:#}"));
+                }
+                let opts = CircuitOptions {
+                    route_ipv6: !keep_ipv6,
+                    allow_lan,
+                    ..CircuitOptions::default()
+                };
+                match self.connect_from_pocket(&mode, opts, caller).await {
+                    Ok(joined) => {
+                        let s = self.status().await;
+                        match joined {
+                            Some(note) => s.noting(note),
+                            None => s,
+                        }
+                    }
+                    Err(e) => Response::err(format!("{e:#}")),
+                }
+            }
+            Command::Join { name } => match self.join(name.as_deref()).await {
+                Ok((pocket, outcome)) => Response::with_nodes(node_reports(&pocket)).noting(outcome),
                 Err(e) => Response::err(format!("{e:#}")),
             },
-            Command::NewIdentity => match self.new_identity().await {
-                Ok(note) => self.status().await.noting(note),
+            Command::Nodes => match load_pocket(&self.pocket_path) {
+                Ok(p) => Response::with_nodes(node_reports(&p)),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Command::ImportNodes { list, signature } => {
+                match self.import_nodes(&list, &signature).await {
+                    Ok((pocket, merge)) => {
+                        Response::with_nodes(node_reports(&pocket)).noting(merge.summary())
+                    }
+                    Err(e) => Response::err(format!("{e:#}")),
+                }
+            }
+            Command::Down => {
+                if let Err(e) = self.owned_by(caller).await {
+                    return Response::err(format!("{e:#}"));
+                }
+                match self.down().await {
+                    Ok(_) => Response::ok(),
+                    Err(e) => Response::err(format!("{e:#}")),
+                }
+            }
+            Command::NewIdentity => {
+                if let Err(e) = self.owned_by(caller).await {
+                    return Response::err(format!("{e:#}"));
+                }
+                match self.new_identity().await {
+                    Ok(note) => self.status().await.noting(note),
+                    Err(e) => Response::err(format!("{e:#}")),
+                }
+            }
+        }
+    }
+
+    /// Root, or the account that switched the circuit on, or nobody has it
+    /// on: otherwise this caller may not switch it off or rotate it.
+    async fn owned_by(&self, caller: Option<u32>) -> Result<()> {
+        if caller == Some(0) {
+            return Ok(());
+        }
+        let guard = self.state.lock().await;
+        match guard.as_ref().and_then(|a| a.owner) {
+            Some(owner) if Some(owner) != caller => Err(anyhow!(
+                "the VPN was switched on by another account on this computer; only that account or root may switch it off"
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -93,6 +219,7 @@ impl Daemon {
         alternates: Vec<Invite>,
         alternate_entries: Vec<Invite>,
         opts: CircuitOptions,
+        caller: Option<u32>,
     ) -> Result<()> {
         // Everything is checked before anything is touched: every exit with
         // every entry, since any pair may be built later.
@@ -128,6 +255,7 @@ impl Daemon {
         }
         let circuit = connect(&pool[0], entries.first(), &opts).await?;
         *guard = Some(Active {
+            owner: caller.filter(|&u| u != 0),
             circuit,
             entries,
             current_entry: 0,
@@ -137,6 +265,115 @@ impl Daemon {
         });
         tracing::info!("connected");
         Ok(())
+    }
+
+    /// Connects through nodes picked from the pocket: one exit for Rápido, an
+    /// entry and an exit for Privado, each at random, the rest kept for
+    /// `new_identity` to rotate to. The caller never sees an invite. With no
+    /// admitted node but known nodes that admit openly, it asks them first:
+    /// that is how a machine that only imported the list connects at all.
+    /// Returns a note about what it joined, if it joined anything.
+    async fn connect_from_pocket(
+        &self,
+        mode: &str,
+        opts: CircuitOptions,
+        caller: Option<u32>,
+    ) -> Result<Option<String>> {
+        let mut pocket = load_pocket(&self.pocket_path)?;
+        let mut joined_note = None;
+        if pocket.is_empty() && !pocket.joinable().is_empty() {
+            let (p, note) = self.join(None).await?;
+            pocket = p;
+            joined_note = Some(note);
+        }
+        let plan = plan_connect(&pocket, mode)?;
+        self.up(
+            plan.exit,
+            plan.entry,
+            plan.alternates,
+            plan.alternate_entries,
+            opts,
+            caller,
+        )
+        .await?;
+        Ok(joined_note)
+    }
+
+    /// Asks admission from the known nodes that admit openly (one by name,
+    /// or all), with the key derived for each; a node that admits goes into
+    /// the pocket under the role it declares. One node's refusal does not
+    /// stop the others. Returns the pocket and a line per node.
+    async fn join(&self, name: Option<&str>) -> Result<(Pocket, String)> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let mut pocket = load_pocket(&self.pocket_path)?;
+        let targets: Vec<hidravpn_core::NodeRecord> = pocket
+            .joinable()
+            .into_iter()
+            .filter(|r| {
+                name.map(|n| n.trim().eq_ignore_ascii_case(r.node_name.trim()))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return Err(anyhow!(match name {
+                Some(n) => format!("no known node named \"{n}\" admits openly; `nodes list` says whom to ask"),
+                None => "no known node admits openly; import a node list, or ask an operator for an invite".to_string(),
+            }));
+        }
+        let key = load_key()?;
+        // The name a node files the lease under is a label for its operator,
+        // not this machine's name: nothing identifying leaves here.
+        let host = "client".to_string();
+        let mut lines = Vec::new();
+        let mut joined = 0;
+        for rec in targets {
+            let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
+            match hidravpn_core::admission::request_admission(&rec, &shown, &host).await {
+                Ok(invite) => {
+                    let mut added = 0;
+                    for slot in hidravpn_core::pocket::slots_for_role(rec.role.as_deref()) {
+                        if pocket.add(slot, invite.clone()).is_ok() {
+                            added += 1;
+                        }
+                    }
+                    joined += 1;
+                    lines.push(format!(
+                        "{}: admitted as {}",
+                        rec.node_name,
+                        rec.role.as_deref().unwrap_or("both")
+                    ));
+                    let _ = added;
+                }
+                Err(e) => lines.push(format!("{}: {e:#}", rec.node_name)),
+            }
+        }
+        if joined > 0 {
+            save_pocket(&self.pocket_path, &pocket)?;
+            tracing::info!(joined, "joined node(s) through open admission");
+        }
+        Ok((pocket, lines.join("; ")))
+    }
+
+    /// Checks a signed node list against the embedded release key, and only
+    /// then puts its nodes into the pocket and writes the pocket back. The
+    /// pocket on disk is untouched by a list that is refused.
+    async fn import_nodes(&self, list: &str, signature: &str) -> Result<(Pocket, Merge)> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let mut pocket = load_pocket(&self.pocket_path)?;
+        let merge = hidravpn_core::directory::import_signed(
+            &mut pocket,
+            list.as_bytes(),
+            signature,
+            self.release_key.as_ref(),
+        )?;
+        save_pocket(&self.pocket_path, &pocket)?;
+        tracing::info!(
+            added = merge.added.len(),
+            skipped = merge.skipped.len(),
+            "node list imported"
+        );
+        Ok((pocket, merge))
     }
 
     /// Rebuilds the circuit through another exit of the pool, chosen at
@@ -149,6 +386,7 @@ impl Daemon {
             .take()
             .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
         let Active {
+            owner: active_owner,
             circuit,
             entries,
             current_entry,
@@ -186,6 +424,7 @@ impl Daemon {
                     ),
                 };
                 *guard = Some(Active {
+                    owner: active_owner,
                     circuit,
                     entries,
                     current_entry: next_entry,
@@ -242,10 +481,14 @@ impl Daemon {
                 mode: String::new(),
                 entry_name: None,
                 hops_detail: Vec::new(),
+                same_operator: None,
             }),
             Some(a) => {
                 let s = a.circuit.status();
                 let exit = s.exit();
+                let same_operator = a.entries.get(a.current_entry).and_then(|entry| {
+                    hidravpn_core::pocket::same_operator(entry, &a.pool[a.current])
+                });
                 Response::with_status(StatusReport {
                     connected: s.connected,
                     node_name: Some(exit.node_name.clone()),
@@ -274,6 +517,7 @@ impl Daemon {
                             connected: h.tunnel.connected,
                         })
                         .collect(),
+                    same_operator,
                 })
             }
         }
@@ -283,6 +527,123 @@ impl Daemon {
     pub async fn shutdown(&self) {
         let _ = self.down().await;
     }
+}
+
+/// What `connect` will build, decided before anything is touched.
+#[derive(Debug)]
+pub struct Plan {
+    pub exit: Invite,
+    pub entry: Option<Invite>,
+    pub alternates: Vec<Invite>,
+    pub alternate_entries: Vec<Invite>,
+    pub same_operator: Option<bool>,
+}
+
+/// Picks from the pocket for a mode: "rapido" is one hop through an exit,
+/// "privado" two hops through an entry and an exit that are different nodes.
+/// Choices are uniform and never logged.
+pub fn plan_connect(pocket: &Pocket, mode: &str) -> Result<Plan> {
+    if pocket.is_empty() && !pocket.known.is_empty() {
+        return Err(anyhow!(
+            "this machine knows {} node(s) from the node list but is admitted on none yet: a node that admits openly is joined with `hidravpn nodes join --all` (the service tries that itself when it connects, so if you see this, those nodes refused or did not answer); for one that admits by hand, run `hidravpn pubkey --node <its key>`, send the result to its operator (`hidravpn nodes list` names them) and add the invite with `hidravpn nodes add`",
+            pocket.known.len()
+        ));
+    }
+    if pocket.is_empty() {
+        return Err(anyhow!(
+            "the pocket has no nodes; add some with `hidravpn nodes add --entry e.json` and `--exit x.json`, or import a signed node list with `hidravpn nodes import nodes.json`"
+        ));
+    }
+    let pick = match mode.trim().to_ascii_lowercase().as_str() {
+        "rapido" => pocket.pick_rapido()?,
+        "privado" => pocket.pick_privado()?,
+        other => {
+            return Err(anyhow!(
+                "unknown mode \"{other}\": use \"rapido\" (one hop) or \"privado\" (two hops)"
+            ))
+        }
+    };
+    Ok(Plan {
+        exit: pick.exit,
+        entry: pick.entry,
+        alternates: pick.other_exits,
+        alternate_entries: pick.other_entries,
+        same_operator: pick.same_operator,
+    })
+}
+
+/// The pocket at a path. A file that is not there is an empty pocket.
+pub fn load_pocket(path: &Path) -> Result<Pocket> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Pocket::from_json(&s).with_context(|| format!("reading {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Pocket::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Writes the pocket where `connect` reads it, readable by root only, and
+/// atomically: the new file is written beside the old one and renamed over
+/// it, so a reader never sees a half-written pocket and a crash mid-write
+/// leaves the old one in place.
+pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let bytes = pocket.to_json();
+    let tmp = {
+        let mut s = path.as_os_str().to_owned();
+        s.push(".tmp");
+        std::path::PathBuf::from(s)
+    };
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes.as_bytes())?;
+        f.sync_all()?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Explicitly, in case the file was already there with wider rights.
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("moving {} into place", path.display()))?;
+    Ok(())
+}
+
+/// Slots, names and endpoints; never a key. Admitted nodes first, then the
+/// ones this machine only knows of.
+pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
+    pocket
+        .iter()
+        .map(|(slot, inv)| NodeReport {
+            slot: hidravpn_core::pocket::slot_name(slot).to_string(),
+            node_name: inv.node_name.clone(),
+            endpoint: inv.endpoint.clone(),
+            admitted: true,
+            operator: inv.operator.clone(),
+            role: inv.role.clone(),
+            admission: None,
+        })
+        .chain(pocket.known.iter().map(|k| NodeReport {
+            slot: "known".to_string(),
+            node_name: k.node_name.clone(),
+            endpoint: k.endpoint.clone(),
+            admitted: false,
+            operator: k.operator.clone(),
+            role: k.role.clone(),
+            admission: k.admission.clone(),
+        }))
+        .collect()
 }
 
 /// Brings a circuit up with the service's key. Any plan or kill switch a
@@ -316,4 +677,229 @@ fn load_key() -> Result<ClientKey> {
 #[allow(dead_code)]
 pub async fn settle() {
     tokio::time::sleep(Duration::from_millis(200)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hidravpn_core::Slot;
+
+    fn invite(name: &str, endpoint: &str) -> Invite {
+        Invite {
+            node_name: name.into(),
+            node_public_key: ClientKey::generate().unwrap().public_base64(),
+            endpoint: endpoint.into(),
+            client_address: "10.77.0.2/16".into(),
+            dns: std::net::Ipv4Addr::new(10, 77, 0, 1),
+            allowed_ips: vec!["0.0.0.0/0".into()],
+            mtu: 1420,
+            keepalive: 25,
+            operator: None,
+            role: None,
+        }
+    }
+
+    fn pocket(entries: &[&str], exits: &[&str]) -> Pocket {
+        let mut p = Pocket::default();
+        for (i, e) in entries.iter().enumerate() {
+            p.add(
+                Slot::Entry,
+                invite(e, &format!("203.0.113.{}:51820", 20 + i)),
+            )
+            .unwrap();
+        }
+        for (i, x) in exits.iter().enumerate() {
+            p.add(
+                Slot::Exit,
+                invite(x, &format!("203.0.113.{}:51820", 10 + i)),
+            )
+            .unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn rapido_plans_one_exit_and_keeps_the_others_for_rotation() {
+        let p = pocket(&["e1"], &["x1", "x2", "x3"]);
+        let plan = plan_connect(&p, "rapido").unwrap();
+        assert!(plan.entry.is_none(), "one hop has no entry");
+        assert_eq!(plan.alternates.len(), 2);
+        assert!(plan.alternate_entries.is_empty());
+        assert!(!plan
+            .alternates
+            .iter()
+            .any(|a| a.node_name == plan.exit.node_name));
+        // Case and spacing do not matter to the mode.
+        assert!(plan_connect(&p, " Rapido ").is_ok());
+    }
+
+    #[test]
+    fn privado_plans_an_entry_and_an_exit_that_are_different_nodes() {
+        let p = pocket(&["e1", "e2"], &["x1", "x2"]);
+        for _ in 0..50 {
+            let plan = plan_connect(&p, "privado").unwrap();
+            let entry = plan.entry.expect("two hops have an entry");
+            assert_ne!(entry.node_public_key, plan.exit.node_public_key);
+            assert_eq!(plan.alternates.len(), 1);
+            assert_eq!(plan.alternate_entries.len(), 1);
+        }
+    }
+
+    #[test]
+    fn an_empty_pocket_and_an_unknown_mode_are_refused_with_a_way_forward() {
+        let e = plan_connect(&Pocket::default(), "rapido")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("no nodes") && e.contains("hidravpn nodes add"),
+            "{e}"
+        );
+        let e = plan_connect(&pocket(&[], &["x1"]), "fast")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("rapido") && e.contains("privado"), "{e}");
+        let e = plan_connect(&pocket(&[], &["x1"]), "privado")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no entry node"), "{e}");
+    }
+
+    #[test]
+    fn a_pocket_that_only_knows_nodes_says_who_to_ask() {
+        let mut p = Pocket::default();
+        p.learn(hidravpn_core::NodeRecord {
+            node_name: "node-1".into(),
+            node_public_key: ClientKey::generate().unwrap().public_base64(),
+            endpoint: "203.0.113.10:51820".into(),
+            operator: None,
+            contact: None,
+            role: None,
+            admission: None,
+            admission_port: None,
+        })
+        .unwrap();
+        let e = plan_connect(&p, "rapido").unwrap_err().to_string();
+        assert!(
+            e.contains("knows 1 node(s)") && e.contains("hidravpn pubkey --node"),
+            "{e}"
+        );
+        let r = node_reports(&p);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].slot, "known");
+        assert!(!r[0].admitted);
+    }
+
+    #[test]
+    fn node_reports_name_every_node_with_its_slot_and_carry_no_key() {
+        let p = pocket(&["e1"], &["x1", "x2"]);
+        let reports = node_reports(&p);
+        assert_eq!(reports.len(), 3);
+        assert!(reports.iter().all(|r| r.admitted));
+        assert_eq!(reports[0].slot, "entry");
+        assert_eq!(reports[0].node_name, "e1");
+        assert_eq!(reports[2].slot, "exit");
+        assert_eq!(reports[2].endpoint, "203.0.113.11:51820");
+        let line = serde_json::to_string(&reports).unwrap();
+        for inv in p.iter().map(|(_, i)| i) {
+            assert!(!line.contains(&inv.node_public_key));
+        }
+    }
+
+    #[test]
+    fn a_pocket_file_that_is_not_there_is_an_empty_pocket_and_a_broken_one_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-daemon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = load_pocket(&dir.join("nothing-here.json")).unwrap();
+        assert!(p.is_empty());
+        let broken = dir.join("broken.json");
+        std::fs::write(&broken, "{ not json").unwrap();
+        let e = load_pocket(&broken).unwrap_err().to_string();
+        assert!(e.contains("broken.json"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn only_root_may_hand_the_service_an_invite() {
+        let d = Daemon::with_pocket(
+            "tok".to_string(),
+            std::env::temp_dir().join("never-read.json"),
+        );
+        let up = || Request {
+            token: "tok".into(),
+            cmd: Command::Up {
+                invite: invite("x", "203.0.113.10:51820"),
+                allow_lan: false,
+                keep_ipv6: false,
+                via: None,
+                alternates: vec![],
+                alternate_entries: vec![],
+            },
+        };
+        let r = d.handle(up(), Some(1000)).await;
+        assert!(!r.ok);
+        assert!(
+            r.error.as_deref().unwrap().contains("needs root"),
+            "{:?}",
+            r.error
+        );
+        // The unprivileged refusal comes before any pocket or network is touched,
+        // and the token is still checked first.
+        let wrong = Request {
+            token: "nope".into(),
+            cmd: Command::Status,
+        };
+        assert!(d
+            .handle(wrong, Some(1000))
+            .await
+            .error
+            .unwrap()
+            .contains("unauthorised"));
+        let ok = d
+            .handle(
+                Request {
+                    token: "tok".into(),
+                    cmd: Command::Ping,
+                },
+                Some(1000),
+            )
+            .await;
+        assert!(ok.ok, "a group member may still ping");
+    }
+
+    #[test]
+    fn the_token_comparison_treats_every_difference_the_same() {
+        assert!(same_token(b"abc", b"abc"));
+        assert!(!same_token(b"abc", b"abd"));
+        assert!(!same_token(b"abc", b"xbc"));
+        assert!(!same_token(b"abc", b"abcd"));
+        assert!(!same_token(b"", b"a"));
+        assert!(same_token(b"", b""));
+    }
+}
+
+#[cfg(test)]
+mod key_choice_tests {
+    use super::*;
+
+    #[test]
+    fn the_service_checks_node_lists_against_the_list_key_not_the_release_key() {
+        let d = Daemon::with_pocket(
+            "t".into(),
+            std::env::temp_dir().join("hidravpn-list-key-choice.json"),
+        );
+        let want = ReleaseKey::embedded_list_key().map(|k| k.to_base64());
+        assert_eq!(
+            d.list_key_base64(),
+            want,
+            "the daemon must use LIST_PUBLIC_KEY_B64"
+        );
+        if let (Some(list), Some(release)) =
+            (ReleaseKey::embedded_list_key(), ReleaseKey::embedded())
+        {
+            assert_ne!(
+                list.to_base64(),
+                release.to_base64(),
+                "the list key and the release key are two keys"
+            );
+        }
+    }
 }

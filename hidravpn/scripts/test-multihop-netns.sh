@@ -53,7 +53,7 @@ cleanup() {
     ip netns del "$ns" 2>/dev/null
   done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/circuit.json \
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/circuit.json \
          /var/run/wireguard/hvpn0.sock /var/run/wireguard/hvx0.sock /var/run/wireguard/hvx1.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }

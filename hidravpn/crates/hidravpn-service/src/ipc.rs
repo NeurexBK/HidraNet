@@ -2,8 +2,8 @@
 //! browser in phase 4) and the service.
 //!
 //! One request, one response, one connection, each a single line of JSON. On
-//! Unix it is a socket in /run that only root may open (mode 0660); on Windows
-//! a named pipe. Either way every request must carry the control token, a
+//! Unix it is a socket in /run that root and the `hidravpn` group may open
+//! (mode 0660); on Windows a named pipe. Either way every request must carry the control token, a
 //! secret the service writes where only the owner can read it, so a web page
 //! that guesses the address still cannot drive the tunnel.
 
@@ -60,6 +60,56 @@ pub enum Command {
     /// address the internet sees changes. With only one exit it reconnects
     /// to the same one and the reply's `note` says so.
     NewIdentity,
+    /// Connect through nodes picked at random from the pocket this machine
+    /// holds (`hidravpn nodes`), so the caller never handles an invite or a
+    /// key: `mode` is "rapido" (one hop) or "privado" (two hops). This is
+    /// how the browser connects.
+    Connect {
+        mode: String,
+        #[serde(default)]
+        allow_lan: bool,
+        #[serde(default)]
+        keep_ipv6: bool,
+    },
+    /// The nodes in the pocket: slots, names and endpoints, never keys.
+    Nodes,
+    /// Put a signed node list into the pocket. `list` is the exact text of
+    /// the published list and `signature` the text of its .sig; the service
+    /// checks the signature against the list key it carries and only then
+    /// reads the list. The answer carries the pocket as `nodes` and what
+    /// happened as `note`. A list nobody signed goes nowhere.
+    ImportNodes { list: String, signature: String },
+    /// Ask admission from known nodes whose operators admit openly: one by
+    /// name, or every one when `name` is absent. The service shows each node
+    /// the key derived for it and checks the invite it gets against the
+    /// list's record of that node. The answer carries the pocket as `nodes`
+    /// and what happened as `note`.
+    Join {
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+/// One node of the pocket, as `nodes` reports it. No key leaves the service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeReport {
+    /// "entry" or "exit" for a node this machine is admitted on; "known" for
+    /// one it only knows of, from a signed list.
+    pub slot: String,
+    pub node_name: String,
+    pub endpoint: String,
+    /// False for a known node: it cannot be connected to until its operator
+    /// admits this machine's key.
+    #[serde(default)]
+    pub admitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    /// "entry", "exit" or "both", when the node said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// For a known node: "open" means `join` can admit this machine on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<String>,
 }
 
 /// One hop of the circuit, as `status` reports it.
@@ -96,6 +146,10 @@ pub struct StatusReport {
     /// Every hop, entry first: its node, endpoint and handshake age.
     #[serde(default)]
     pub hops_detail: Vec<HopReport>,
+    /// Two hops: both run by the same operator, as far as the invites say.
+    /// Absent for one hop or when either node did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_operator: Option<bool>,
 }
 
 impl StatusReport {
@@ -146,6 +200,9 @@ pub struct Response {
     /// one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The answer to `nodes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<Vec<NodeReport>>,
 }
 
 impl Response {
@@ -155,6 +212,7 @@ impl Response {
             error: None,
             status: None,
             note: None,
+            nodes: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -163,6 +221,7 @@ impl Response {
             error: None,
             status: Some(s),
             note: None,
+            nodes: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -171,11 +230,21 @@ impl Response {
             error: Some(msg.into()),
             status: None,
             note: None,
+            nodes: None,
         }
     }
     pub fn noting(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
+    }
+    pub fn with_nodes(nodes: Vec<NodeReport>) -> Self {
+        Self {
+            ok: true,
+            error: None,
+            status: None,
+            note: None,
+            nodes: Some(nodes),
+        }
     }
 }
 
@@ -203,8 +272,34 @@ pub fn write_token() -> Result<String> {
             .open(&path)
             .with_context(|| format!("writing {}", path.display()))?;
         f.write_all(token.as_bytes())?;
+        share_with_control_group(&path, 0o640)?;
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Never over an existing file: a file a user made first would keep
+        // that user as its owner. Then its own rights, inherited from nowhere:
+        // SYSTEM and administrators everything, interactive users read.
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
+        let out = std::process::Command::new("icacls")
+            .arg(&path)
+            .args([
+                "/inheritance:r",
+                "/grant:r",
+                "*S-1-5-18:F",
+                "*S-1-5-32-544:F",
+                "*S-1-5-4:R",
+            ])
+            .output()
+            .context("running icacls on the control token")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "could not set the control token's rights: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
     }
@@ -256,21 +351,53 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+        // systemd makes /run/hidravpn 0750 root:root; a member of the group
+        // has to be able to enter it to reach the socket.
+        share_with_control_group(dir, 0o750)?;
     }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding the control socket {}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
+    share_with_control_group(path, 0o660)?;
     tracing::info!("control channel ready");
+    // So many at once and no more: a member of the group could otherwise
+    // open connections until the service ran out of memory.
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
+        let slot = slots.clone().acquire_owned().await?;
         let (stream, _) = listener.accept().await?;
+        // Who is asking: root may do everything; a member of the group may
+        // not hand the service an invite, and may not switch off what
+        // another account switched on.
+        let caller = stream.peer_cred().ok().map(|c| c.uid());
         let d = daemon.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, d).await {
+            let _slot = slot;
+            if let Err(e) = handle_conn(stream, d, caller).await {
                 tracing::debug!("control connection ended: {e}");
             }
         });
     }
+}
+
+/// Hands the socket or the token to the control group when this machine has
+/// one, so a member (the browser, running as the person) may open it. With no
+/// such group everything stays root-only, as before.
+#[cfg(unix)]
+fn share_with_control_group(path: &std::path::Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(gid) = paths::control_gid() {
+        std::os::unix::fs::chown(path, None, Some(gid)).with_context(|| {
+            format!(
+                "giving {} to the {} group",
+                path.display(),
+                paths::CONTROL_GROUP
+            )
+        })?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
 }
 
 /// Sends one request to a given Unix socket path (used by tests).
@@ -288,46 +415,229 @@ pub async fn call_unix_at(path: &std::path::Path, token: &str, cmd: Command) -> 
     round_trip(stream, line.as_bytes()).await
 }
 
+/// A fixed pool of pipe instances, all held by the service for as long as it
+/// runs, and the pipe made with that many as its limit. An instance is never
+/// closed: after one client it is disconnected and listens again. So nobody
+/// else can ever make an instance of `\\.\pipe\hidravpn` while the service
+/// is up — the squat a shared pipe invites, where another user's instance
+/// answers a client in the service's place, needs a free slot, and there is
+/// none. (While the service is down there is no pipe to squat for a client
+/// to find; the service's first instance then fails to start, loudly.)
 #[cfg(windows)]
 async fn serve_windows(daemon: Arc<Daemon>) -> Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(paths::CONTROL_PIPE)
-        .context("creating the control pipe")?;
+    let mut instances = Vec::with_capacity(PIPE_INSTANCES as usize);
+    for i in 0..PIPE_INSTANCES {
+        instances.push(pipe_acl::instance(i == 0).context("creating the control pipe")?);
+    }
     tracing::info!("control channel ready");
-    loop {
-        server.connect().await?;
-        let connected = server;
-        server = ServerOptions::new().create(paths::CONTROL_PIPE)?;
+    let mut tasks = tokio::task::JoinSet::new();
+    for mut server in instances {
         let d = daemon.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_conn(connected, d).await {
-                tracing::debug!("control connection ended: {e}");
+        tasks.spawn(async move {
+            loop {
+                if let Err(e) = server.connect().await {
+                    tracing::warn!("control pipe: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+                // Windows has no uid on a pipe; an elevated caller counts as
+                // root, and everyone else as one unnamed account.
+                let caller = if pipe_acl::client_is_elevated(&server) {
+                    Some(0)
+                } else {
+                    None
+                };
+                if let Err(e) = handle_conn(&mut server, d.clone(), caller).await {
+                    tracing::debug!("control connection ended: {e}");
+                }
+                let _ = server.disconnect();
             }
         });
     }
+    while let Some(r) = tasks.join_next().await {
+        if let Err(e) = r {
+            tracing::warn!("a control pipe task ended: {e}");
+        }
+    }
+    Ok(())
 }
 
-async fn handle_conn<S>(stream: S, daemon: Arc<Daemon>) -> Result<()>
+/// Who may open the control pipe. Its default descriptor lets a signed-in
+/// user read only, so a request from the browser (which runs as the person,
+/// not elevated) would be refused before the token was ever looked at. This
+/// one gives SYSTEM and administrators everything and any signed-in user
+/// read and write. The token is still what every request must carry.
+#[cfg(windows)]
+mod pipe_acl {
+    use anyhow::{anyhow, Result};
+    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+    // SYSTEM and administrators everything; interactive users (console and
+    // Remote Desktop) read and write. Not "authenticated users": that would
+    // include service accounts and network logons, which have no business
+    // here. A client's GENERIC_READ|GENERIC_WRITE maps to exactly what GRGW
+    // grants, so a plain user's open succeeds; nothing narrower would let it.
+    const SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
+
+    struct Descriptor(PSECURITY_DESCRIPTOR);
+
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            // SAFETY: the descriptor came from the converter below, which
+            // allocates it with LocalAlloc.
+            unsafe {
+                let _ = LocalFree(HLOCAL(self.0 .0));
+            }
+        }
+    }
+
+    /// Is the server at the other end of this client handle in session 0,
+    /// where services live? A pipe made by a signed-in user is not.
+    pub fn server_is_a_service(client: &tokio::net::windows::named_pipe::NamedPipeClient) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Pipes::GetNamedPipeServerSessionId;
+        let pipe = HANDLE(client.as_raw_handle() as *mut std::ffi::c_void);
+        let mut session = u32::MAX;
+        // SAFETY: a query on a handle this process owns, into a local.
+        unsafe { GetNamedPipeServerSessionId(pipe, &mut session).is_ok() && session == 0 }
+    }
+
+    /// Is the client at the other end of this instance an elevated process
+    /// (an administrator's prompt, or SYSTEM)? Anything that cannot be
+    /// established counts as not.
+    pub fn client_is_elevated(server: &NamedPipeServer) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+        use windows::Win32::System::Threading::{
+            OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let pipe = HANDLE(server.as_raw_handle() as *mut std::ffi::c_void);
+        let mut pid = 0u32;
+        // SAFETY: plain Win32 calls on handles this process owns; every
+        // out-pointer is to a local; handles opened here are closed here.
+        unsafe {
+            if GetNamedPipeClientProcessId(pipe, &mut pid).is_err() {
+                return false;
+            }
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return false;
+            };
+            let mut token = HANDLE::default();
+            let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token).is_ok();
+            let _ = CloseHandle(process);
+            if !opened {
+                return false;
+            }
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut len = 0u32;
+            let got = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut TOKEN_ELEVATION as *mut std::ffi::c_void),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut len,
+            )
+            .is_ok();
+            let _ = CloseHandle(token);
+            got && elevation.TokenIsElevated != 0
+        }
+    }
+
+    /// One pipe instance with that descriptor, and the pool's size as the
+    /// pipe's limit. The descriptor is copied into the pipe when it is made,
+    /// so it is freed as soon as this returns and nothing with a raw pointer
+    /// is ever held across an await.
+    pub fn instance(first: bool) -> Result<NamedPipeServer> {
+        let wide: Vec<u16> = SDDL.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut raw = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the
+        // call; `raw` is a valid out-pointer.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(wide.as_ptr()),
+                SDDL_REVISION_1,
+                &mut raw,
+                None,
+            )
+        }
+        .map_err(|e| anyhow!("building the control pipe's security descriptor: {e}"))?;
+        let descriptor = Descriptor(raw);
+        let mut attrs = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0 .0,
+            bInheritHandle: false.into(),
+        };
+        // SAFETY: `attrs` is a complete SECURITY_ATTRIBUTES that lives until
+        // the call returns, and the descriptor it points to lives longer.
+        let server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first)
+                .max_instances(super::PIPE_INSTANCES as usize)
+                .create_with_security_attributes_raw(
+                    super::paths::CONTROL_PIPE,
+                    &mut attrs as *mut SECURITY_ATTRIBUTES as *mut std::ffi::c_void,
+                )
+        }?;
+        Ok(server)
+    }
+}
+
+/// A request is one line: a command, or a node list of a few hundred nodes
+/// at most (a few hundred kilobytes). Past this it is not a client talking,
+/// and the line is cut, which makes it unreadable JSON and so a refused
+/// request.
+const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+/// A client that opens a connection says what it wants within this, and takes
+/// the answer within this; otherwise the connection is dropped, so a client
+/// that only opens connections holds nothing for long.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Connections served at once on the Unix socket.
+#[cfg(unix)]
+const MAX_CONNECTIONS: usize = 16;
+/// Pipe instances on Windows: the whole pipe, held by the service.
+#[cfg(windows)]
+const PIPE_INSTANCES: u32 = 8;
+
+async fn handle_conn<S>(stream: S, daemon: Arc<Daemon>, caller: Option<u32>) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (r, mut w) = tokio::io::split(stream);
-    let mut reader = BufReader::new(r);
+    let mut reader = BufReader::new(r.take(MAX_REQUEST_BYTES));
     let mut line = String::new();
-    if reader.read_line(&mut line).await? == 0 {
+    let n = tokio::time::timeout(REQUEST_TIMEOUT, reader.read_line(&mut line))
+        .await
+        .map_err(|_| anyhow!("no request within {REQUEST_TIMEOUT:?}"))??;
+    if n == 0 {
         return Ok(());
     }
-    let resp = match serde_json::from_str::<Request>(line.trim()) {
-        Ok(req) => daemon.handle(req).await,
-        Err(e) => Response::err(format!("bad request: {e}")),
+    let resp = if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST_BYTES {
+        Response::err("bad request: larger than anything the service accepts")
+    } else {
+        match serde_json::from_str::<Request>(line.trim()) {
+            Ok(req) => daemon.handle(req, caller).await,
+            Err(e) => Response::err(format!("bad request: {e}")),
+        }
     };
     let mut out = serde_json::to_string(&resp)?;
     out.push('\n');
-    w.write_all(out.as_bytes()).await?;
-    w.flush().await?;
+    tokio::time::timeout(REQUEST_TIMEOUT, async {
+        w.write_all(out.as_bytes()).await?;
+        w.flush().await
+    })
+    .await
+    .map_err(|_| anyhow!("the client did not take the answer within {REQUEST_TIMEOUT:?}"))??;
     Ok(())
 }
 
@@ -368,6 +678,14 @@ pub async fn call(cmd: Command) -> Result<Response> {
                 Err(e) => return Err(anyhow!("the HidraVPN service is not running ({e})")),
             }
         };
+        // Before the token goes anywhere: is the service at the other end?
+        // The service runs in session 0; a pipe instance made by a signed-in
+        // user sits in that user's session.
+        if !pipe_acl::server_is_a_service(&stream) {
+            return Err(anyhow!(
+                "something other than the HidraVPN service is answering on its pipe; refusing to talk to it"
+            ));
+        }
         round_trip(stream, line.as_bytes()).await
     }
     #[cfg(not(any(unix, windows)))]
@@ -403,10 +721,22 @@ mod tests {
     use crate::daemon::Daemon;
 
     async fn start(token: &str) -> std::path::PathBuf {
+        start_with_pocket(token, None).await
+    }
+
+    /// A daemon whose pocket is a given file, so `connect` and `nodes` can be
+    /// tried without touching /etc.
+    async fn start_with_pocket(
+        token: &str,
+        pocket: Option<std::path::PathBuf>,
+    ) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join(format!("ctl-{}.sock", rand_suffix()));
-        let d = Daemon::new(token.to_string());
+        let d = match pocket {
+            Some(p) => Daemon::with_pocket(token.to_string(), p),
+            None => Daemon::new(token.to_string()),
+        };
         let s = sock.clone();
         tokio::spawn(async move {
             let _ = serve_unix_at(&s, d).await;
@@ -474,6 +804,8 @@ mod tests {
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu: 1420,
             keepalive: 25,
+            operator: None,
+            role: None,
         }
     }
 
@@ -551,6 +883,7 @@ mod tests {
                 last_handshake_secs: Some(4),
                 connected: true,
             }],
+            same_operator: None,
         };
         let r = Response::with_status(s).noting("rotated");
         let line = serde_json::to_string(&r).unwrap();
@@ -601,6 +934,7 @@ mod tests {
                     connected: false,
                 },
             ],
+            same_operator: None,
         };
         let p = s.explanation().unwrap();
         assert!(p.contains("no node sees both"));
@@ -614,7 +948,11 @@ mod tests {
         let lines = s.hop_lines();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("entry entry (203.0.113.20:51820): last handshake 4s ago"));
-        assert!(lines[1].ends_with("last handshake none yet, no session"));
+        assert!(
+            lines[1].ends_with("last handshake none yet, no session"),
+            "{}",
+            lines[1]
+        );
     }
 
     #[test]
@@ -637,5 +975,358 @@ mod tests {
             }
             other => panic!("parsed as {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_connect_request_parses_with_its_defaults_and_nodes_has_no_fields() {
+        let req: Request =
+            serde_json::from_str(r#"{"token":"t","cmd":"connect","mode":"privado"}"#).unwrap();
+        match req.cmd {
+            Command::Connect {
+                mode,
+                allow_lan,
+                keep_ipv6,
+            } => {
+                assert_eq!(mode, "privado");
+                assert!(!allow_lan);
+                assert!(!keep_ipv6);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        let req: Request = serde_json::from_str(r#"{"token":"t","cmd":"nodes"}"#).unwrap();
+        assert!(matches!(req.cmd, Command::Nodes));
+        let line = serde_json::to_string(&Request {
+            token: "t".into(),
+            cmd: Command::Connect {
+                mode: "rapido".into(),
+                allow_lan: false,
+                keep_ipv6: true,
+            },
+        })
+        .unwrap();
+        assert!(line.contains(r#""cmd":"connect""#));
+        assert!(line.contains(r#""mode":"rapido""#));
+    }
+
+    fn write_pocket(dir: &std::path::Path, pocket: &hidravpn_core::Pocket) -> std::path::PathBuf {
+        let p = dir.join(format!("pocket-{}.json", rand_suffix()));
+        std::fs::write(&p, pocket.to_json()).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn nodes_lists_the_pocket_by_name_and_slot_and_never_a_key() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut pocket = hidravpn_core::Pocket::default();
+        pocket
+            .add(
+                hidravpn_core::Slot::Entry,
+                invite("entry-a", "203.0.113.20:51820"),
+            )
+            .unwrap();
+        pocket
+            .add(
+                hidravpn_core::Slot::Exit,
+                invite("exit-a", "203.0.113.10:51820"),
+            )
+            .unwrap();
+        let path = write_pocket(&dir, &pocket);
+        let sock = start_with_pocket("tok", Some(path)).await;
+        let resp = call_unix_at(&sock, "tok", Command::Nodes).await.unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        let nodes = resp.nodes.clone().expect("a node list");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(
+            (nodes[0].slot.as_str(), nodes[0].node_name.as_str()),
+            ("entry", "entry-a")
+        );
+        assert_eq!(
+            (nodes[1].slot.as_str(), nodes[1].node_name.as_str()),
+            ("exit", "exit-a")
+        );
+        let line = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !line.contains("public_key"),
+            "a key reached the wire: {line}"
+        );
+        assert!(!line.contains(&pocket.exits[0].node_public_key));
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_an_empty_pocket_and_an_unknown_mode_before_touching_anything() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A pocket file that does not exist is an empty pocket.
+        let missing = dir.join(format!("absent-{}.json", rand_suffix()));
+        let sock = start_with_pocket("tok", Some(missing)).await;
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::Connect {
+                mode: "rapido".into(),
+                allow_lan: false,
+                keep_ipv6: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref().unwrap().contains("no nodes"),
+            "{:?}",
+            resp.error
+        );
+        let status = call_unix_at(&sock, "tok", Command::Status).await.unwrap();
+        assert!(!status.status.unwrap().connected);
+
+        let mut pocket = hidravpn_core::Pocket::default();
+        pocket
+            .add(
+                hidravpn_core::Slot::Exit,
+                invite("exit-a", "203.0.113.10:51820"),
+            )
+            .unwrap();
+        let sock = start_with_pocket("tok", Some(write_pocket(&dir, &pocket))).await;
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::Connect {
+                mode: "turbo".into(),
+                allow_lan: false,
+                keep_ipv6: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        let e = resp.error.unwrap();
+        assert!(e.contains("rapido") && e.contains("privado"), "{e}");
+        // Privado needs an entry too; with only an exit it says which is missing.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::Connect {
+                mode: "privado".into(),
+                allow_lan: false,
+                keep_ipv6: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("no entry node"));
+    }
+
+    /// A signing key for this test only; the real one never comes near here.
+    fn test_signer() -> (ed25519_dalek::SigningKey, hidravpn_core::ReleaseKey) {
+        let mut seed = [0u8; 32];
+        getrandom::fill(&mut seed).unwrap();
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        use base64::Engine;
+        let pk = base64::engine::general_purpose::STANDARD.encode(sk.verifying_key().to_bytes());
+        (sk, hidravpn_core::ReleaseKey::from_base64(&pk).unwrap())
+    }
+
+    fn signed_list(sk: &ed25519_dalek::SigningKey) -> (String, String) {
+        use base64::Engine;
+        use ed25519_dalek::Signer;
+        let rec = |name: &str, ep: &str| hidravpn_core::NodeRecord {
+            node_name: name.into(),
+            node_public_key: hidravpn_core::ClientKey::generate()
+                .unwrap()
+                .public_base64(),
+            endpoint: ep.into(),
+            operator: Some("the maintainers".into()),
+            contact: None,
+            role: Some("both".into()),
+            admission: Some("manual".into()),
+            admission_port: None,
+        };
+        let dir = hidravpn_core::Directory {
+            version: 1,
+            generated: "2026-10-13T00:00:00Z".into(),
+            sequence: 1,
+            expires: None,
+            removed: vec![],
+            note: None,
+            nodes: vec![
+                rec("node-1", "203.0.113.20:51820"),
+                rec("node-2", "203.0.113.10:51820"),
+            ],
+        };
+        let json = dir.to_json();
+        let sig =
+            base64::engine::general_purpose::STANDARD.encode(sk.sign(json.as_bytes()).to_bytes());
+        (json, sig)
+    }
+
+    #[tokio::test]
+    async fn a_signed_node_list_fills_the_pocket_through_the_socket_and_a_changed_one_does_not() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket_path = dir.join(format!("import-{}.json", rand_suffix()));
+        let (sk, key) = test_signer();
+        let (json, sig) = signed_list(&sk);
+
+        let d = Daemon::with_pocket_and_key("tok".to_string(), pocket_path.clone(), Some(key));
+        let sock = dir.join(format!("ctl-{}.sock", rand_suffix()));
+        let s = sock.clone();
+        tokio::spawn(async move {
+            let _ = serve_unix_at(&s, d).await;
+        });
+        for _ in 0..50 {
+            if sock.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Changed after signing: refused, and no pocket file appears.
+        let tampered = json.replace("203.0.113.10", "198.51.100.7");
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::ImportNodes {
+                list: tampered,
+                signature: sig.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not accepted"));
+        assert!(!pocket_path.exists(), "a refused import wrote a pocket");
+
+        // As signed: the pocket is written, and the answer lists it without keys.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::ImportNodes {
+                list: json.clone(),
+                signature: sig.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(resp.note.as_deref(), Some("added 2 node(s)"));
+        let nodes = resp.nodes.unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|n| n.slot == "known" && !n.admitted));
+        assert_eq!(nodes[0].operator.as_deref(), Some("the maintainers"));
+        assert!(!serde_json::to_string(&nodes)
+            .unwrap()
+            .contains("public_key"));
+        let on_disk =
+            hidravpn_core::Pocket::from_json(&std::fs::read_to_string(&pocket_path).unwrap())
+                .unwrap();
+        assert_eq!(on_disk.known.len(), 2);
+        assert!(on_disk.is_empty(), "a list admits nobody");
+        // And so connecting still says what is missing, naming the known nodes.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::Connect {
+                mode: "rapido".into(),
+                allow_lan: false,
+                keep_ipv6: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref().unwrap().contains("knows 2 node(s)"),
+            "{:?}",
+            resp.error
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&pocket_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Once more: nothing added, nothing broken.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::ImportNodes {
+                list: json,
+                signature: sig,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.note.as_deref(), Some("added 0 node(s), skipped 2"));
+    }
+
+    #[tokio::test]
+    async fn an_import_signed_with_another_key_than_the_built_in_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (sk, _) = test_signer();
+        let (json, sig) = signed_list(&sk);
+        // The default daemon carries whatever this build embeds: the
+        // maintainers' list key, or nothing. Either way a list signed by this
+        // test's key goes nowhere, and the reason says which.
+        let sock = start_with_pocket(
+            "tok",
+            Some(dir.join(format!("nokey-{}.json", rand_suffix()))),
+        )
+        .await;
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::ImportNodes {
+                list: json,
+                signature: sig,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        if hidravpn_core::release::LIST_PUBLIC_KEY_B64.is_empty() {
+            assert!(err.contains("no list key"), "{err}");
+        } else {
+            assert!(err.contains("not accepted"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_far_larger_than_any_node_list_is_refused_not_buffered() {
+        let sock = start("tok").await;
+        // Five megabytes of a single line: cut at the cap, so unreadable JSON.
+        let huge = format!(
+            r#"{{"token":"tok","cmd":"import_nodes","signature":"x","list":"{}"}}"#,
+            "a".repeat(5 * 1024 * 1024)
+        );
+        let mut line = huge;
+        line.push('\n');
+        let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+        // The server stops reading at the cap and answers; the rest of the
+        // write may then fail with a closed pipe, which is the point: nothing
+        // past the cap is read. So the write runs on its own, errors ignored,
+        // while the answer is read.
+        let (r, mut w) = tokio::io::split(stream);
+        let bytes = line.into_bytes();
+        tokio::spawn(async move {
+            let _ = w.write_all(&bytes).await;
+        });
+        let mut reader = BufReader::new(r);
+        let mut answer = String::new();
+        reader.read_line(&mut answer).await.unwrap();
+        let resp: Response = serde_json::from_str(answer.trim()).unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("larger than anything"));
     }
 }

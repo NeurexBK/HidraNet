@@ -500,6 +500,8 @@ mod tests {
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu,
             keepalive: 25,
+            operator: None,
+            role: None,
         }
     }
 

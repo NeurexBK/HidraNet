@@ -1,8 +1,10 @@
-const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage } = require('electron');
+const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
+const { VpnManager } = require('./vpn-manager');
+const releaseVerify = require('./release-verify');
 const { VaultStore } = require('./vault');
 const { ProxyManager } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
@@ -30,6 +32,49 @@ function isTrustedRequest(req) {
   if (origin && !ALLOWED_ORIGINS.has(origin)) return false;
 
   return true;
+}
+
+// The VPN service on this machine, when there is one. Nothing is opened
+// until a page asks.
+const vpnManager = new VpnManager();
+// Where the maintainers publish the signed node list (nodes.json and
+// nodes.json.sig beside it). The browser only fetches the two files; the
+// service checks the signature against the list key built into it, so a
+// list from anywhere else is refused however it arrived.
+const VPN_LIST_URL = 'https://hidranet.org/vpn/nodes.json';
+const VPN_LIST_MAX_BYTES = 1024 * 1024;
+
+async function fetchText(url, maxBytes) {
+  const res = await net.fetch(url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const tooBig = new Error(`${url}: far larger than a node list`);
+  const declared = Number(res.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw tooBig;
+  // Read with the cap, so a server that lies about its length (or sends no
+  // length) cannot make this process buffer more than a node list.
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw tooBig; }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+// Our own pages only: the frame that asked has to be the tab's main frame and
+// one of the pages shipped under src/ui (or a hidra:// page). The preload
+// offers the VPN bridge only there; this is what refuses if anything else
+// ever asks, because connecting re-routes the whole machine.
+function isInternalSender(event) {
+  const frame = event && event.senderFrame;
+  if (!frame || !event.sender || frame !== event.sender.mainFrame) return false;
+  // Only a page shipped under src/ui; never a scheme (see tab-preload.js).
+  const url = frame.url || '';
+  return url.startsWith(UI_ROOT_URL);
 }
 
 function pingLocalPort(port, urlPath, timeoutMs) {
@@ -854,6 +899,81 @@ function setupIPC(tabs, proxy) {
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
     return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error };
+  });
+
+  // HidraVPN. The service picks the nodes and holds the tunnel; the browser
+  // only asks. Every handler checks who asked before it talks to the service.
+  const vpnOnlyOurs = (event) => {
+    if (!isInternalSender(event)) throw new Error('only HidraNet pages may drive the VPN');
+  };
+  ipcMain.handle('vpn:status', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.status();
+  });
+  ipcMain.handle('vpn:connect', (event, mode) => {
+    vpnOnlyOurs(event);
+    return vpnManager.connect(mode);
+  });
+  ipcMain.handle('vpn:disconnect', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.disconnect();
+  });
+  ipcMain.handle('vpn:new-identity', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.newIdentity();
+  });
+  ipcMain.handle('vpn:nodes', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.nodes();
+  });
+  // The person chooses the files; the page never names a path. The list and
+  // its .sig go to the service, which checks the signature before anything
+  // is read from the list.
+  ipcMain.handle('vpn:import-nodes', async (event) => {
+    vpnOnlyOurs(event);
+    const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+    const picked = await dialog.showOpenDialog(owner, {
+      title: 'Choose the signed node list (its .sig must be beside it)',
+      filters: [{ name: 'Node list', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths.length) return { ok: false, cancelled: true };
+    return vpnManager.importNodesFromFiles(picked.filePaths[0]);
+  });
+  // The maintainers' list, from where they publish it. The browser carries
+  // the bytes; the service decides, with the list key it embeds.
+  ipcMain.handle('vpn:fetch-list', async (event) => {
+    vpnOnlyOurs(event);
+    let list;
+    let signature;
+    try {
+      [list, signature] = await Promise.all([
+        fetchText(VPN_LIST_URL, VPN_LIST_MAX_BYTES),
+        fetchText(VPN_LIST_URL + '.sig', 4096),
+      ]);
+    } catch (e) {
+      return { ok: false, error: `could not fetch the node list from ${VPN_LIST_URL}: ${(e && e.message) || e}`, url: VPN_LIST_URL };
+    }
+    const r = await vpnManager.importNodesFromTexts(list, signature);
+    return { ...r, url: VPN_LIST_URL };
+  });
+  ipcMain.handle('vpn:join', (event, name) => {
+    vpnOnlyOurs(event);
+    return vpnManager.join(typeof name === 'string' ? name : '');
+  });
+  // Checks a downloaded release file against FILE.sig with the release key
+  // this build embeds. With no key embedded it says so and accepts nothing.
+  ipcMain.handle('vpn:verify-file', async (event) => {
+    vpnOnlyOurs(event);
+    const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+    const picked = await dialog.showOpenDialog(owner, {
+      title: 'Choose the downloaded file (its .sig must be beside it)',
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths.length) return { ok: false, cancelled: true };
+    const file = picked.filePaths[0];
+    const result = await releaseVerify.verifyFile(file);
+    return { ...result, file: path.basename(file) };
   });
 
   ipcMain.handle('prefs:get', () => ({ ...userPrefs }));

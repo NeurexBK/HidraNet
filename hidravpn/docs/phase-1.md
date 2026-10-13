@@ -58,8 +58,9 @@ uses the kernel's WireGuard when the kernel has it (Ubuntu does) and its own
 userspace implementation otherwise. DNS inside the tunnel is the node's tunnel
 address (`10.77.0.1`); it forwards over DNS-over-HTTPS to Quad9, then
 Cloudflare, by default (`--dns` changes that). Clients cannot reach each
-other through the node. Leases live in `/run/hidravpn` (RAM): a reboot
-forgets every client, and `admit` is run again.
+other through the node. Leases live in `/var/lib/hidravpn` and survive a
+reboot (they were in RAM until phase 4, when a rebooted node throwing every
+client out proved to be the wrong intent).
 
 The firewall needs UDP 51820 open inbound; nothing else.
 

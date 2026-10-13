@@ -919,6 +919,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "boringtun",
+ "ed25519-dalek",
  "getrandom 0.3.4",
  "hidravpn-tun",
  "hkdf",
@@ -960,6 +961,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
+ "ed25519-dalek",
  "getrandom 0.3.4",
  "hidravpn-core",
  "hidravpn-tun",
@@ -969,6 +971,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows 0.58.0",
 ]
 
 [[package]]
