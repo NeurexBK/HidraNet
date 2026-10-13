@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn one_hop_is_rapido_and_keeps_the_exit_mtu() {
         let spec = CircuitSpec {
-            exit: invite("exit", "95.216.142.72:51820", 1420),
+            exit: invite("exit", "203.0.113.10:51820", 1420),
             entry: None,
         };
         assert_eq!(spec.hops(), 1);
@@ -518,8 +518,8 @@ mod tests {
     #[test]
     fn two_hops_is_privado_and_the_inner_mtu_fits_inside_the_outer() {
         let spec = CircuitSpec {
-            exit: invite("exit", "95.216.142.72:51820", 1420),
-            entry: Some(invite("entry", "5.6.7.8:51820", 1420)),
+            exit: invite("exit", "203.0.113.10:51820", 1420),
+            entry: Some(invite("entry", "203.0.113.20:51820", 1420)),
         };
         assert_eq!(spec.hops(), 2);
         assert_eq!(spec.mode(), Mode::Privado);
@@ -530,20 +530,20 @@ mod tests {
     #[test]
     fn the_inner_mtu_is_the_smaller_of_the_two_and_never_below_1280() {
         let small_exit = CircuitSpec {
-            exit: invite("exit", "95.216.142.72:51820", 1300),
-            entry: Some(invite("entry", "5.6.7.8:51820", 1500)),
+            exit: invite("exit", "203.0.113.10:51820", 1300),
+            entry: Some(invite("entry", "203.0.113.20:51820", 1500)),
         };
         assert_eq!(small_exit.inner_mtu(), 1300);
         let small_entry = CircuitSpec {
-            exit: invite("exit", "95.216.142.72:51820", 1500),
-            entry: Some(invite("entry", "5.6.7.8:51820", 1280)),
+            exit: invite("exit", "203.0.113.10:51820", 1500),
+            entry: Some(invite("entry", "203.0.113.20:51820", 1280)),
         };
         assert_eq!(small_entry.inner_mtu(), 1280);
     }
 
     #[test]
     fn the_entry_and_the_exit_must_be_different_nodes() {
-        let exit = invite("exit", "95.216.142.72:51820", 1420);
+        let exit = invite("exit", "203.0.113.10:51820", 1420);
         let same_key = CircuitSpec {
             entry: Some(exit.clone()),
             exit: exit.clone(),
@@ -563,10 +563,10 @@ mod tests {
 
     #[test]
     fn a_bad_invite_on_either_hop_is_refused() {
-        let mut bad = invite("entry", "5.6.7.8:51820", 1420);
+        let mut bad = invite("entry", "203.0.113.20:51820", 1420);
         bad.node_public_key = "short".into();
         let spec = CircuitSpec {
-            exit: invite("exit", "95.216.142.72:51820", 1420),
+            exit: invite("exit", "203.0.113.10:51820", 1420),
             entry: Some(bad),
         };
         assert!(spec.validate().unwrap_err().to_string().contains("entry"));

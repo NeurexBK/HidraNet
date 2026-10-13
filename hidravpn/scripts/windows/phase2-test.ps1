@@ -24,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Server = '95.216.142.72',
+  [Parameter(Mandatory = $true)][string]$Server,
   [string]$SshUser = 'root',
   [string]$Name = $env:USERNAME,
   [string]$Dir = 'C:\HidraVPN',

@@ -118,7 +118,7 @@ mod tests {
         Invite {
             node_name: "test".into(),
             node_public_key: ClientKey::generate().unwrap().public_base64(),
-            endpoint: "95.216.142.72:51820".into(),
+            endpoint: "203.0.113.10:51820".into(),
             client_address: "10.77.0.2/16".into(),
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: default_allowed(),

@@ -159,7 +159,7 @@ mod tests {
     fn cfg(allow_lan: bool) -> KillConfig {
         KillConfig {
             interface: "hvpn0".into(),
-            node_endpoint: SocketAddr::from(([95, 216, 142, 72], 51820)),
+            node_endpoint: SocketAddr::from(([203, 0, 113, 10], 51820)),
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allow_lan,
             extra_interface: None,
@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn the_node_endpoint_is_the_only_off_tunnel_destination() {
         let r = ruleset(&cfg(false));
-        assert!(r.contains("ip daddr 95.216.142.72 udp dport 51820 accept"));
-        assert!(r.contains("ip saddr 95.216.142.72 udp sport 51820 accept"));
+        assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
+        assert!(r.contains("ip saddr 203.0.113.10 udp sport 51820 accept"));
         assert!(r.contains(r#"oifname "hvpn0" accept"#));
     }
 
@@ -209,7 +209,7 @@ mod tests {
         assert!(r.contains(r#"oifname "hvpn1" accept comment "inner tunnel""#));
         assert!(r.contains(r#"iifname "hvpn1" accept comment "inner tunnel""#));
         // The entry node stays the only off-tunnel destination.
-        assert!(r.contains("ip daddr 95.216.142.72 udp dport 51820 accept"));
+        assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
         assert_eq!(r.matches("udp dport 51820 accept").count(), 1);
     }
 }

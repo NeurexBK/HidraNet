@@ -46,7 +46,7 @@ sudo scripts/test-netns.sh                              # end-to-end on one mach
 On the server, as root:
 
 ```
-hidravpn-node init --endpoint 95.216.142.72:51820 --name helsinki-1
+hidravpn-node init --endpoint 203.0.113.10:51820 --name node-1
 hidravpn-node run                     # or install the systemd unit below
 hidravpn-node admit --name laptop --pubkey <the client's public key>   # prints the invite
 hidravpn-node status
@@ -93,7 +93,7 @@ may warn when the exe is first run.
 The whole Windows check runs from one script, in a PowerShell opened "as
 Administrator" on the client machine:
 
-    scripts/windows/phase1-test.ps1 [-Server NODE] [-Name NAME] [-Manual]
+    scripts/windows/phase1-test.ps1 -Server NODE [-Name NAME] [-Manual]
 
 It puts the exe in `C:\HidraVPN` (a downloaded copy, found by its SHA-256,
 or one built on the node by `scripts/build-windows-client.sh` over ssh and

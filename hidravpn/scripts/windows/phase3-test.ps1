@@ -20,7 +20,7 @@
 
   Run it in a PowerShell opened "as Administrator":
 
-      .\phase3-test.ps1 -Entry 1.2.3.4 -Exit 5.6.7.8 [-Exit2 9.10.11.12]
+      .\phase3-test.ps1 -Entry 203.0.113.20 -Exit 203.0.113.10 [-Exit2 203.0.113.11]
 
   What it does: gets each node's public key over ssh, derives this machine's
   key FOR THAT NODE (hidravpn pubkey --node ...) and has the node admit it;

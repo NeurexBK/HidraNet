@@ -203,7 +203,8 @@ mod tests {
     fn a_pocket_round_trips_and_an_empty_file_reads() {
         let mut p = Pocket::default();
         p.add(Slot::Entry, invite("e1", "1.1.1.1:51820")).unwrap();
-        p.add(Slot::Exit, invite("x1", "2.2.2.2:51820")).unwrap();
+        p.add(Slot::Exit, invite("x1", "198.51.100.2:51820"))
+            .unwrap();
         let again = Pocket::from_json(&p.to_json()).unwrap();
         assert_eq!(again.entries.len(), 1);
         assert_eq!(again.exits.len(), 1);
@@ -214,7 +215,7 @@ mod tests {
     #[test]
     fn names_are_unique_and_a_node_is_in_one_list_once() {
         let mut p = Pocket::default();
-        let x = invite("x1", "2.2.2.2:51820");
+        let x = invite("x1", "198.51.100.2:51820");
         p.add(Slot::Exit, x.clone()).unwrap();
         assert!(p.add(Slot::Exit, x.clone()).is_err(), "same name");
         let mut same_key = x.clone();
@@ -236,9 +237,9 @@ mod tests {
         let mut p = Pocket::default();
         assert!(p.pick_rapido().is_err());
         for (n, ep) in [
-            ("x1", "2.2.2.1:51820"),
-            ("x2", "2.2.2.2:51820"),
-            ("x3", "2.2.2.3:51820"),
+            ("x1", "198.51.100.1:51820"),
+            ("x2", "198.51.100.2:51820"),
+            ("x3", "198.51.100.3:51820"),
         ] {
             p.add(Slot::Exit, invite(n, ep)).unwrap();
         }
@@ -256,7 +257,8 @@ mod tests {
     #[test]
     fn privado_picks_two_different_nodes_and_every_pair_comes_up() {
         let mut p = Pocket::default();
-        p.add(Slot::Exit, invite("x1", "2.2.2.1:51820")).unwrap();
+        p.add(Slot::Exit, invite("x1", "198.51.100.1:51820"))
+            .unwrap();
         assert!(p
             .pick_privado()
             .unwrap_err()
@@ -264,7 +266,8 @@ mod tests {
             .contains("no entry"));
         p.add(Slot::Entry, invite("e1", "1.1.1.1:51820")).unwrap();
         p.add(Slot::Entry, invite("e2", "1.1.1.2:51820")).unwrap();
-        p.add(Slot::Exit, invite("x2", "2.2.2.2:51820")).unwrap();
+        p.add(Slot::Exit, invite("x2", "198.51.100.2:51820"))
+            .unwrap();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..200 {
             let pick = p.pick_privado().unwrap();
@@ -290,7 +293,8 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("same node"));
-        p.add(Slot::Exit, invite("x2", "2.2.2.2:51820")).unwrap();
+        p.add(Slot::Exit, invite("x2", "198.51.100.2:51820"))
+            .unwrap();
         for _ in 0..20 {
             assert_eq!(p.pick_privado().unwrap().exit.node_name, "x2");
         }

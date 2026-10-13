@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn a_phase_2_up_request_still_parses_with_no_via_and_no_alternates() {
-        let inv = invite("exit", "95.216.142.72:51820");
+        let inv = invite("exit", "203.0.113.10:51820");
         let old = format!(
             r#"{{"token":"t","cmd":"up","invite":{},"allow_lan":false}}"#,
             serde_json::to_string(&inv).unwrap()
@@ -501,12 +501,12 @@ mod tests {
         let req = Request {
             token: "t".into(),
             cmd: Command::Up {
-                invite: invite("exit", "95.216.142.72:51820"),
+                invite: invite("exit", "203.0.113.10:51820"),
                 allow_lan: false,
                 keep_ipv6: false,
-                via: Some(invite("entry", "5.6.7.8:51820")),
+                via: Some(invite("entry", "203.0.113.20:51820")),
                 alternates: vec![invite("exit2", "9.9.9.9:51820")],
-                alternate_entries: vec![invite("entry2", "5.6.7.9:51820")],
+                alternate_entries: vec![invite("entry2", "203.0.113.21:51820")],
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -536,7 +536,7 @@ mod tests {
         let s = StatusReport {
             connected: true,
             node_name: Some("exit".into()),
-            endpoint: Some("95.216.142.72:51820".into()),
+            endpoint: Some("203.0.113.10:51820".into()),
             last_handshake_secs: Some(3),
             tx_bytes: 1,
             rx_bytes: 2,
@@ -547,7 +547,7 @@ mod tests {
             hops_detail: vec![HopReport {
                 role: "entry".into(),
                 node_name: "entry".into(),
-                endpoint: "5.6.7.8:51820".into(),
+                endpoint: "203.0.113.20:51820".into(),
                 last_handshake_secs: Some(4),
                 connected: true,
             }],
@@ -577,7 +577,7 @@ mod tests {
         let mut s = StatusReport {
             connected: true,
             node_name: Some("exit".into()),
-            endpoint: Some("95.216.142.72:51820".into()),
+            endpoint: Some("203.0.113.10:51820".into()),
             last_handshake_secs: Some(3),
             tx_bytes: 0,
             rx_bytes: 0,
@@ -589,14 +589,14 @@ mod tests {
                 HopReport {
                     role: "entry".into(),
                     node_name: "entry".into(),
-                    endpoint: "5.6.7.8:51820".into(),
+                    endpoint: "203.0.113.20:51820".into(),
                     last_handshake_secs: Some(4),
                     connected: true,
                 },
                 HopReport {
                     role: "exit".into(),
                     node_name: "exit".into(),
-                    endpoint: "95.216.142.72:51820".into(),
+                    endpoint: "203.0.113.10:51820".into(),
                     last_handshake_secs: None,
                     connected: false,
                 },
@@ -613,17 +613,17 @@ mod tests {
         }
         let lines = s.hop_lines();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("entry entry (5.6.7.8:51820): last handshake 4s ago"));
+        assert!(lines[0].starts_with("entry entry (203.0.113.20:51820): last handshake 4s ago"));
         assert!(lines[1].ends_with("last handshake none yet, no session"));
     }
 
     #[test]
     fn a_phase_3_up_request_without_alternate_entries_still_parses() {
-        let inv = invite("exit", "95.216.142.72:51820");
+        let inv = invite("exit", "203.0.113.10:51820");
         let old = format!(
             r#"{{"token":"t","cmd":"up","invite":{},"via":{},"alternates":[]}}"#,
             serde_json::to_string(&inv).unwrap(),
-            serde_json::to_string(&invite("entry", "5.6.7.8:51820")).unwrap()
+            serde_json::to_string(&invite("entry", "203.0.113.20:51820")).unwrap()
         );
         let req: Request = serde_json::from_str(&old).unwrap();
         match req.cmd {

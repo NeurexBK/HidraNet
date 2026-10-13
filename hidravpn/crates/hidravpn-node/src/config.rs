@@ -146,7 +146,7 @@ mod tests {
     fn the_node_takes_the_first_address() {
         let cfg = NodeConfig::fresh(
             "n".into(),
-            "1.2.3.4:51820".parse().unwrap(),
+            "192.0.2.4:51820".parse().unwrap(),
             51820,
             "10.77.0.0/16",
             NodeConfig::default_dns(),
@@ -163,7 +163,7 @@ mod tests {
     fn a_host_address_is_not_a_network() {
         assert!(NodeConfig::fresh(
             "n".into(),
-            "1.2.3.4:1".parse().unwrap(),
+            "192.0.2.4:1".parse().unwrap(),
             1,
             "10.77.0.5/16",
             NodeConfig::default_dns(),
@@ -176,7 +176,7 @@ mod tests {
     fn settings_round_trip() {
         let cfg = NodeConfig::fresh(
             "n".into(),
-            "1.2.3.4:51820".parse().unwrap(),
+            "192.0.2.4:51820".parse().unwrap(),
             51820,
             "10.77.0.0/16",
             NodeConfig::default_dns(),
