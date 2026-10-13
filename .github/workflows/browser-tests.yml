@@ -1,0 +1,67 @@
+# The browser's tests, on every change to the browser or to what its tests
+# read: the English-only sweep (which also reads hidra-node and the landing
+# page), the storage and vault tests, the VPN control-channel module against a
+# stand-in service, the VPN page lint (which reads the service's ipc.rs), the
+# release-signature verifier, and the Electron-only tests under Xvfb — among
+# them the preload boundary, which proves a downloaded .html or a website gets
+# no bridge to Tor, the vault or the VPN.
+name: Browser tests
+
+on:
+  push:
+    paths:
+      - "hidra-browser/**"
+      - "hidra-node/src/**"
+      - "hidra-node/assets/**"
+      - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
+      - ".github/workflows/browser-tests.yml"
+  pull_request:
+    paths:
+      - "hidra-browser/**"
+      - "hidra-node/src/**"
+      - "hidra-node/assets/**"
+      - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
+      - ".github/workflows/browser-tests.yml"
+
+jobs:
+  browser:
+    name: node and Electron tests (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hidra-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hidra-browser/package-lock.json
+      - name: install
+        run: npm ci
+      - name: tests that need only node
+        run: |
+          set -e
+          for t in anonymity-claims app-storage display-url english-only mqtt-worker-csp vault vpn-manager vpn-page release-verify; do
+            echo "::group::$t"
+            node "test/$t.js"
+            echo "::endgroup::"
+          done
+      - name: what Electron needs on a bare runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libxss1 \
+            || true
+          sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2
+      - name: tests that need Electron
+        run: |
+          set -e
+          for t in mail-crypto preload-boundary review-directory vault-electron; do
+            echo "::group::$t"
+            xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
+            echo "::endgroup::"
+          done
