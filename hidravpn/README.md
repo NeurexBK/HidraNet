@@ -1,7 +1,10 @@
 # HidraVPN
 
-The decentralised VPN of the HidraNet network: nodes run by the community,
-no accounts, paid in $HNET, protecting the whole machine.
+The decentralised VPN of the HidraNet network: nodes run by different people,
+no accounts, protecting the whole machine. Who runs the first nodes, and what
+operators are promised, is written down in the
+[network bootstrap plan](../docs/business/16-network-bootstrap.md); nothing is
+promised there that does not exist yet.
 
 Developed in phases; each phase is a working, testable step. See
 `docs/phase-1.md` (the tunnel), `docs/phase-2.md` (the service and the kill
