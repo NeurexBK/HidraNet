@@ -41,6 +41,23 @@ pub enum DhtMessage {
 }
 
 impl DhtMessage {
+    /// The node that claims to have sent this, for the messages that carry
+    /// one (requests and Pong). Responses are matched by request id instead.
+    pub fn sender(&self) -> Option<&NodeInfo> {
+        match self {
+            Self::Ping { sender, .. }
+            | Self::Pong { sender, .. }
+            | Self::FindNode { sender, .. }
+            | Self::Store { sender, .. }
+            | Self::AnnounceRelay { sender, .. }
+            | Self::AnnounceService { sender, .. }
+            | Self::LookupService { sender, .. } => Some(sender),
+            Self::FindNodeResponse { .. }
+            | Self::StoreResponse { .. }
+            | Self::LookupServiceResponse { .. } => None,
+        }
+    }
+
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Ping { request_id, .. }
@@ -106,6 +123,26 @@ pub fn sign_and_serialize(
     Ok(packet)
 }
 
+/// Verifies the packet's signature AND binds the sender to the key that made
+/// it: a node ID is BLAKE3 of the signing key, so a message whose sender
+/// claims another ID, or another public key, than the one that signed it is
+/// refused. Without this, anyone could sign with their own key and claim any
+/// ID they liked. This is what the DHT calls on every packet.
+pub fn verify_and_bind(packet: &[u8]) -> Result<(DhtMessage, [u8; 32])> {
+    let (msg, pubkey) = verify_and_deserialize(packet)?;
+    if let Some(sender) = msg.sender() {
+        if sender.id != NodeId::from_public_key(&pubkey) || sender.public_key != pubkey {
+            return Err(HidraError::Protocol(
+                "DHT sender id does not match the signing key".into(),
+            ));
+        }
+    }
+    Ok((msg, pubkey))
+}
+
+/// Verifies the packet's signature only; `verify_and_bind` is what the DHT
+/// uses, because a valid signature alone does not tie the sender's claimed
+/// ID to the key.
 pub fn verify_and_deserialize(
     packet: &[u8],
 ) -> Result<(DhtMessage, [u8; 32])> {
@@ -186,6 +223,53 @@ mod tests {
 
         assert_eq!(decoded.request_id(), 42);
         assert_eq!(pubkey, signing_key.verifying_key().to_bytes());
+    }
+
+    #[test]
+    fn sender_id_must_match_the_signing_key() {
+        // Signed with key A, claiming the ID (and public key) of key B: a
+        // valid signature, and still refused.
+        let key_a = SigningKey::generate(&mut OsRng);
+        let key_b = SigningKey::generate(&mut OsRng);
+        let b_pub = key_b.verifying_key().to_bytes();
+        let claimed = NodeInfo {
+            id: NodeId::from_public_key(&b_pub),
+            dht_addr: "127.0.0.1:7000".parse().unwrap(),
+            relay_addr: None,
+            public_key: b_pub,
+        };
+        let msg = DhtMessage::Ping {
+            request_id: 7,
+            sender: claimed.clone(),
+        };
+        let packet = sign_and_serialize(&msg, &key_a).unwrap();
+        assert!(verify_and_deserialize(&packet).is_ok(), "the signature itself is fine");
+        let err = verify_and_bind(&packet).unwrap_err().to_string();
+        assert!(err.contains("does not match the signing key"), "{err}");
+
+        // The same ID claimed by its real holder passes.
+        let honest = sign_and_serialize(&msg, &key_b).unwrap();
+        assert!(verify_and_bind(&honest).is_ok());
+
+        // The right ID but another public key in the NodeInfo: refused too,
+        // or the routing table would remember a key nobody holds.
+        let mut mixed = claimed;
+        mixed.public_key = key_a.verifying_key().to_bytes();
+        let msg = DhtMessage::Ping {
+            request_id: 8,
+            sender: mixed,
+        };
+        let packet = sign_and_serialize(&msg, &key_b).unwrap();
+        assert!(verify_and_bind(&packet).is_err());
+
+        // A response carries no sender; it is matched by request id and the
+        // signature alone is checked.
+        let resp = DhtMessage::StoreResponse {
+            request_id: 9,
+            stored: true,
+        };
+        let packet = sign_and_serialize(&resp, &key_a).unwrap();
+        assert!(verify_and_bind(&packet).is_ok());
     }
 
     #[test]

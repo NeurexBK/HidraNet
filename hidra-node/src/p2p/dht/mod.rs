@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use crate::error::{HidraError, Result};
 use self::handler::{DhtHandler, ServiceStore};
 use self::kbuckets::{RoutingTable, K};
-use self::message::{sign_and_serialize, verify_and_deserialize, DhtMessage};
+use self::message::{sign_and_serialize, verify_and_bind, DhtMessage};
 use self::node::{NodeId, NodeInfo};
 
 const MAX_UDP_PACKET: usize = 65535;
@@ -418,7 +418,9 @@ async fn process_packet(
     signing_key: &SigningKey,
     socket: &UdpSocket,
 ) -> Result<()> {
-    let (msg, _pubkey) = verify_and_deserialize(data)?;
+    // The signature must be valid AND the sender's claimed ID must be the
+    // one its signing key derives: nobody squats an ID they do not hold.
+    let (msg, _pubkey) = verify_and_bind(data)?;
     if msg.is_response() {
         let request_id = msg.request_id();
         let mut pending_map = pending.lock().await;
