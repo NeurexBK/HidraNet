@@ -34,6 +34,10 @@ pub struct Pocket {
     /// cannot bring it back.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub list_sequence: u64,
+    /// The pass issuer the newest list named (phase 5): where passes for the
+    /// nodes that admit with one come from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_issuer: Option<crate::directory::PassIssuer>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -63,8 +67,10 @@ pub struct Pick {
 impl Pocket {
     pub fn from_json(s: &str) -> Result<Self> {
         let p: Pocket = serde_json::from_str(s).context("the pocket is not valid JSON")?;
+        // Shape only: an invite an older version accepted stays readable;
+        // building a circuit with it checks it in full.
         for inv in p.entries.iter().chain(p.exits.iter()) {
-            inv.validate()
+            inv.validate_shape()
                 .with_context(|| format!("the invite for {} in the pocket", inv.node_name))?;
         }
         Ok(p)
@@ -261,8 +267,34 @@ impl Pocket {
     pub fn joinable(&self) -> Vec<&NodeRecord> {
         self.known
             .iter()
-            .filter(|k| k.admission.as_deref() == Some("open"))
+            .filter(|k| k.is_open() || k.takes_passes())
             .collect()
+    }
+
+    /// Puts a fresh invite for a node in place of the one it replaces (same
+    /// key), in every list the old one was in, or in the slots its role
+    /// allows when it was not there: what redeeming the next pass for a node
+    /// does. The record goes from `known`, as with `add`.
+    pub fn replace(&mut self, invite: Invite) -> Result<()> {
+        invite.validate()?;
+        let key = invite.node_public_key.trim().to_string();
+        let mut placed = false;
+        for inv in self
+            .entries
+            .iter_mut()
+            .chain(self.exits.iter_mut())
+            .filter(|i| i.node_public_key.trim() == key)
+        {
+            *inv = invite.clone();
+            placed = true;
+        }
+        if !placed {
+            for slot in slots_for_role(invite.role.as_deref()) {
+                self.add(slot, invite.clone())?;
+            }
+        }
+        self.known.retain(|k| k.node_public_key.trim() != key);
+        Ok(())
     }
 
     /// Every node in the pocket with its slot, entries first.
@@ -403,6 +435,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
         }
     }
 
@@ -472,6 +505,25 @@ mod tests {
         assert_eq!(slots_for_role(Some("entry")), vec![Slot::Entry]);
         assert_eq!(slots_for_role(Some("Exit")), vec![Slot::Exit]);
         assert_eq!(slots_for_role(None), vec![Slot::Entry, Slot::Exit]);
+    }
+
+    #[test]
+    fn a_pocket_from_an_older_version_still_reads_and_its_odd_invite_is_refused_at_use() {
+        let mut p = Pocket::default();
+        p.add(Slot::Exit, invite("x1", "198.51.100.2:51820"))
+            .unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
+        // An invite written by hand, before the resolver had to be the node.
+        json["exits"][0]["dns"] = "1.1.1.1".into();
+        let again = Pocket::from_json(&json.to_string()).unwrap();
+        assert_eq!(again.exits.len(), 1, "the pocket still reads");
+        let e = crate::circuit::CircuitSpec {
+            exit: again.exits[0].clone(),
+            entry: None,
+        }
+        .validate()
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("DNS"), "{e:#}");
     }
 
     #[test]
@@ -573,5 +625,30 @@ mod tests {
         for _ in 0..20 {
             assert_eq!(p.pick_privado().unwrap().exit.node_name, "x2");
         }
+    }
+
+    #[test]
+    fn a_node_that_admits_openly_is_joinable_however_the_list_spells_it() {
+        let mut p = Pocket::default();
+        for (name, admission) in [
+            ("a", "open"),
+            ("b", "Open"),
+            ("c", " OPEN "),
+            ("d", "manual"),
+        ] {
+            p.learn(NodeRecord {
+                node_name: name.into(),
+                node_public_key: ClientKey::generate().unwrap().public_base64(),
+                endpoint: format!("203.0.113.{}:51820", 40 + p.known.len()),
+                operator: None,
+                contact: None,
+                role: None,
+                admission: Some(admission.into()),
+                admission_port: None,
+            })
+            .unwrap();
+        }
+        let names: Vec<&str> = p.joinable().iter().map(|r| r.node_name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
     }
 }

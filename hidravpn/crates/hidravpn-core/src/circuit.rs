@@ -531,6 +531,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
         }
     }
 

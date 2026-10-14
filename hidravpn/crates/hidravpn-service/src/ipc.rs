@@ -88,6 +88,21 @@ pub enum Command {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Ask the pass issuer the node list names for passes (phase 5), with
+    /// the account token this machine keeps: `count` (10 by default) for
+    /// each node that admits with a pass, or for the one named. The token
+    /// never crosses the control channel. The answer carries the pocket as
+    /// `nodes`, with each pass node's count, and what happened as `note`.
+    GetPasses {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
+    /// Keep the account token `get_passes` asks with, root only on disk. The
+    /// answer never repeats it.
+    /// (`pass_token`, not `token`: that name is the control token's.)
+    SetPassToken { pass_token: String },
 }
 
 /// One node of the pocket, as `nodes` reports it. No key leaves the service.
@@ -107,9 +122,13 @@ pub struct NodeReport {
     /// "entry", "exit" or "both", when the node said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// For a known node: "open" means `join` can admit this machine on it.
+    /// For a known node: "open" or "pass" means `join` can admit this
+    /// machine on it. "pass" for an admitted node joined with a pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission: Option<String>,
+    /// For a node that admits with a pass: how many the wallet holds for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passes: Option<usize>,
 }
 
 /// One hop of the circuit, as `status` reports it.
@@ -806,6 +825,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
         }
     }
 
@@ -1154,6 +1174,7 @@ mod tests {
                 rec("node-1", "203.0.113.20:51820"),
                 rec("node-2", "203.0.113.10:51820"),
             ],
+            pass_issuer: None,
         };
         let json = dir.to_json();
         let sig =
@@ -1300,6 +1321,63 @@ mod tests {
         } else {
             assert!(err.contains("not accepted"), "{err}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_pass_token_is_kept_root_only_and_never_repeated() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-tok-{}", rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket = dir.join("circuit.json");
+        let sock = start_with_pocket("tok", Some(pocket)).await;
+        let token = "Zm9vYmFyLXRva2VuLTEyMw";
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::SetPassToken {
+                pass_token: format!("  {token}\n"),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        assert!(!serde_json::to_string(&resp).unwrap().contains(token));
+        let kept = dir.join("pass.token");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::SetPassToken {
+                pass_token: "two words".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            token,
+            "a bad token changes nothing"
+        );
+        // With a token but no list naming an issuer, asking for passes says
+        // what is missing.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::GetPasses {
+                name: None,
+                count: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("names no pass issuer"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -78,7 +78,7 @@ const vpnAt = preload.indexOf('vpn: {');
 expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && vpnAt > internalStart && vpnAt < appsStart, `positions: internal ${internalStart}, vpn ${vpnAt}, apps ${appsStart}`);
 expect('the apps branch does not offer vpn', !preload.slice(appsStart).includes('vpn:'), 'vpn appears after the apps branch starts');
 const handlers = [...main.matchAll(/ipcMain\.handle\('vpn:([a-z-]+)', (?:async )?\((event[^)]*)\) => \{\s*vpnOnlyOurs\(event\);/g)].map((m) => m[1]).sort();
-expect('every vpn handler checks who asked before anything else', handlers.join() === ['connect', 'disconnect', 'fetch-list', 'import-nodes', 'join', 'new-identity', 'nodes', 'status', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('every vpn handler checks who asked before anything else', handlers.join() === ['connect', 'disconnect', 'fetch-list', 'get-passes', 'import-nodes', 'join', 'new-identity', 'nodes', 'set-pass-token', 'status', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
 const ungated = [...main.matchAll(/ipcMain\.handle\('vpn:[a-z-]+'/g)].length;
 expect('no vpn handler is without the check', ungated === handlers.length, `${ungated} handlers, ${handlers.length} gated`);
 expect('the check accepts only our own pages, by their path on disk', /function isInternalSender[\s\S]*?return url\.startsWith\(UI_ROOT_URL\);/.test(main), 'isInternalSender does not compare against UI_ROOT_URL alone');
@@ -87,10 +87,12 @@ expect('the check wants the main frame, not a frame inside a page', /frame !== e
 
 // ── The main process never hands the renderer a key ──────────────────────
 const manager = read(ROOT, 'src', 'main', 'vpn-manager.js');
-expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes', 'join'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: 'up'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
+expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes', 'join', 'get_passes', 'set_pass_token'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: 'up'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
 expect('the fetched list is sent to the service unverified by the browser, with its .sig, from one fixed address', /VPN_LIST_URL \+ '\.sig'/.test(main) && /const VPN_LIST_URL = 'https:\/\//.test(main) && /importNodesFromTexts\(list, signature\)/.test(main), 'the fetch handler does not pass the signature through, or the URL is not fixed');
 expect('the page says when one operator runs both hops', /One operator runs both hops/.test(page) && /same_operator === true/.test(page), 'no one-operator warning driven from status.same_operator');
 expect('the page offers to join open nodes and to fetch the list', /id="btn-join-all"/.test(page) && /id="btn-fetch"/.test(page) && /api\.join\(/.test(page) && /api\.fetchList\(\)/.test(page), 'buttons or calls missing');
+expect('the page asks for passes and hands the token to the service, emptying its field at once', /id="btn-passes"/.test(page) && /api\.getPasses\(/.test(page) && /api\.setPassToken\(token\)/.test(page) && /field\.value = '';[\s\S]{0,200}api\.setPassToken/.test(page) && /type="password"/.test(page), 'the passes card, its calls, or the emptied field are missing');
+expect('the token never comes back to the page: the module sends it and the service never echoes it', /cmd: 'set_pass_token', pass_token: t/.test(manager) && !/localStorage|sessionStorage/.test(page), 'the token is sent another way, or stored by the page');
 expect('the page never names a file path: the person chooses in a dialog', /dialog\.showOpenDialog/.test(main) && !/filePaths?\s*[:=]/.test(page), 'a path travels from the page');
 expect('the browser does not verify the list itself; the service that writes the pocket does', !/releaseVerify\.verify(File|Bytes)\([^)]*list/.test(main), 'the browser verifies the node list, which would let a convinced browser feed an unconvinced service');
 expect('the browser reads the token fresh on every request', /_readToken\(\)/.test(manager) && !/this\.token\s*=/.test(manager), 'the token is cached');

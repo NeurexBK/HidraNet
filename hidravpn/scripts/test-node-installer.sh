@@ -58,5 +58,7 @@ if command -v setpriv >/dev/null && [ "$(id -u)" = 0 ]; then
 fi
 bash "$S" --help 2>&1 | grep -q -- "--dry-run" && pass "--help prints the options" || fail "help"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:443 --name x 2>&1); echo "$OUT" | grep -q -- "--port 443 " && echo "$OUT" | grep -q "UDP 443 (the tunnel)" && pass "the port the node listens on is the port the firewall opens" || fail "port mismatch: $(echo "$OUT" | grep -E 'init --endpoint|UDP')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --pass-admission 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --pass-admission" && echo "$OUT" | grep -q "Admission: with a pass" && pass "--pass-admission initialises a node that admits with a pass, and says to add the issuer's key" || fail "pass admission: $(echo "$OUT" | grep -E 'init --endpoint|Admission')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --open-admission --pass-admission 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "choose one" && pass "open and pass admission together: refused" || fail "both admissions accepted"
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

@@ -95,8 +95,12 @@ mod node {
             contact: Option<String>,
             /// Admit any client that asks on the admission port, rate-limited
             /// and capped, instead of by hand.
-            #[arg(long)]
+            #[arg(long, conflicts_with = "pass_admission")]
             open_admission: bool,
+            /// Admit a client that redeems a pass signed by an issuer this
+            /// node trusts (`pass-key add`), instead of by hand.
+            #[arg(long)]
+            pass_admission: bool,
             /// TCP port of the admission service.
             #[arg(long, default_value_t = hidravpn_core::admission::DEFAULT_ADMISSION_PORT)]
             admission_port: u16,
@@ -135,6 +139,11 @@ mod node {
         },
         /// Peers, handshakes and bytes.
         Status,
+        /// The issuer keys whose passes this node takes (with --pass-admission).
+        PassKey {
+            #[command(subcommand)]
+            what: PassKeyCmd,
+        },
         /// Resolve a name through the DNS upstreams, to prove they work from here.
         DnsCheck {
             #[arg(default_value = "example.com")]
@@ -143,6 +152,17 @@ mod node {
             #[arg(long, num_args = 1..)]
             dns: Vec<String>,
         },
+    }
+
+    #[derive(Subcommand)]
+    enum PassKeyCmd {
+        /// Trust an issuer key: the record as the signed list carries it
+        /// (`hidravpn-issuer record` prints it), from a file or `-`.
+        Add { record: PathBuf },
+        /// The keys this node trusts.
+        List,
+        /// Stop trusting a key, by id.
+        Remove { id: String },
     }
 
     fn require_root() -> Result<()> {
@@ -178,6 +198,7 @@ mod node {
                 operator,
                 contact,
                 open_admission,
+                pass_admission,
                 admission_port,
                 max_clients,
                 idle_days,
@@ -193,7 +214,14 @@ mod node {
                 cfg.set_role(&role)?;
                 cfg.operator = operator.filter(|s| !s.trim().is_empty());
                 cfg.contact = contact.filter(|s| !s.trim().is_empty());
-                cfg.admission = if open_admission { "open" } else { "manual" }.into();
+                cfg.admission = if open_admission {
+                    "open"
+                } else if pass_admission {
+                    "pass"
+                } else {
+                    "manual"
+                }
+                .into();
                 cfg.admission_port = admission_port;
                 cfg.max_clients = max_clients;
                 cfg.idle_days = idle_days;
@@ -204,6 +232,67 @@ mod node {
                     "role {}; admission {}; admission port TCP {}",
                     cfg.role, cfg.admission, cfg.admission_port
                 );
+            }
+            Cmd::PassKey { what } => {
+                let mut cfg = NodeConfig::load(&cli.config)?;
+                match what {
+                    PassKeyCmd::Add { record } => {
+                        require_root()?;
+                        let text = if record.as_os_str() == "-" {
+                            let mut t = String::new();
+                            std::io::Read::read_to_string(&mut std::io::stdin(), &mut t)?;
+                            t
+                        } else {
+                            std::fs::read_to_string(&record)
+                                .with_context(|| format!("reading {}", record.display()))?
+                        };
+                        let mut rec: hidravpn_core::pass::PassKeyRecord =
+                            serde_json::from_str(&text).context("that is not a pass key record")?;
+                        rec.validate()?;
+                        // Stored as the passes name it, so every lookup matches.
+                        rec.id = rec.id.trim().to_ascii_lowercase();
+                        if cfg.pass_keys.iter().any(|k| k.id == rec.id) {
+                            println!("already trusted: {}", rec.id);
+                        } else {
+                            cfg.pass_keys.push(rec.clone());
+                            cfg.save_over(&cli.config)?;
+                            println!(
+                                "trusting passes under {} until {}; restart the node for it to take them",
+                                rec.id, rec.not_after
+                            );
+                        }
+                        if !cfg.admits_with_passes() {
+                            println!("note: this node's admission is \"{}\", not \"pass\"; set admission = \"pass\" in {} to take passes", cfg.admission, cli.config.display());
+                        }
+                    }
+                    PassKeyCmd::List => {
+                        let now = hidravpn_core::timefmt::now_unix();
+                        for k in &cfg.pass_keys {
+                            println!(
+                                "{}  until {}{}",
+                                k.id,
+                                k.not_after,
+                                if k.is_current(now) { "" } else { "  (expired)" }
+                            );
+                        }
+                        if cfg.pass_keys.is_empty() {
+                            println!("(no pass keys)");
+                        }
+                    }
+                    PassKeyCmd::Remove { id } => {
+                        require_root()?;
+                        let before = cfg.pass_keys.len();
+                        cfg.pass_keys
+                            .retain(|k| !k.id.eq_ignore_ascii_case(id.trim()));
+                        if cfg.pass_keys.len() == before {
+                            return Err(anyhow!("no pass key {id}"));
+                        }
+                        cfg.save_over(&cli.config)?;
+                        println!(
+                            "removed {id}; restart the node for it to stop taking those passes"
+                        );
+                    }
+                }
             }
             Cmd::Record => {
                 let cfg = NodeConfig::load(&cli.config)?;
@@ -308,6 +397,7 @@ mod node {
             keepalive: 25,
             operator: cfg.operator.clone(),
             role: Some(cfg.role.clone()),
+            pass: None,
         })
     }
 
@@ -318,7 +408,7 @@ mod node {
             None => crate::nat::default_interface()?,
         };
 
-        crate::nat::enable_forwarding()?;
+        let forwarding_was_on = crate::nat::enable_forwarding()?;
         let dev = crate::wg::bring_up(&cfg, &net).await?;
         info!(
             "tunnel interface {} up ({} WireGuard), listening on UDP {}",
@@ -361,9 +451,42 @@ mod node {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(u64::from(cfg.idle_days) * 86_400);
+        // Leases won with a pass lapse after `pass_idle_hours` without a
+        // handshake; HIDRAVPN_PASS_IDLE_SECS shortens that for tests.
+        let pass_idle_secs: u64 = if cfg.admits_with_passes() {
+            std::env::var("HIDRAVPN_PASS_IDLE_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(u64::from(cfg.pass_idle_hours) * 3_600)
+        } else {
+            0
+        };
+        // Only a node that takes passes needs the list; one that admits
+        // openly or by hand never reads it, so a damaged file cannot stop it.
+        // A pass node with a list it cannot read refuses to start: going on
+        // without it would let every pass already spent be spent again.
+        let mut spent = if cfg.admits_with_passes() {
+            crate::leases::SpentPasses::load().context(
+                "the list of spent passes cannot be read; refusing to take passes without it",
+            )?
+        } else {
+            crate::leases::SpentPasses::default()
+        };
+        if cfg.admits_with_passes() {
+            info!(
+                "admission with passes: {} issuer key(s) trusted, {} spent pass(es) remembered",
+                cfg.pass_keys.len(),
+                spent.len()
+            );
+        }
         // At most a quarter of an hour between checks, so a lease that never
         // came (leases::NEVER_CAME_SECS) is gone soon after it lapses.
-        let period = Duration::from_secs((idle_secs / 4).clamp(2, 900));
+        let shortest = match (idle_secs, pass_idle_secs) {
+            (0, p) => p,
+            (i, 0) => i,
+            (i, p) => i.min(p),
+        };
+        let period = Duration::from_secs((shortest / 4).clamp(2, 900));
         let mut reaper = tokio::time::interval(period);
         reaper.tick().await; // the first tick is immediate; skip it
 
@@ -381,12 +504,32 @@ mod node {
                     admission = tokio::spawn(std::future::pending());
                 },
                 Some(req) = admit_rx.recv() => {
-                    let answer = if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
+                    let answer = if req.pass.as_ref().is_some_and(|p| spent.contains(&p.tag)) {
+                        Err((409, "this pass was already spent here; use another".to_string()))
+                    } else if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
                         Err((503, "this node is full; try another".to_string()))
                     } else {
-                        match leases.admit_open(&req.name, &req.public_key, &net) {
+                        // A pass is written down as spent before its key is
+                        // admitted, so a crash in between cannot let it be
+                        // spent again.
+                        let spent_ok = match &req.pass {
+                            Some(p) => {
+                                spent.insert(p.tag.clone(), p.valid_until);
+                                spent.save()
+                            }
+                            None => Ok(()),
+                        };
+                        let admitted = match (&req.pass, spent_ok) {
+                            (_, Err(e)) => Err(anyhow!("could not write the pass down: {e:#}")),
+                            (Some(_), Ok(())) => leases.admit_pass(&req.name, &req.public_key, &net),
+                            (None, Ok(())) => leases.admit_open(&req.name, &req.public_key, &net),
+                        };
+                        match admitted {
                             Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip)) {
-                                Ok(()) => { info!("admitted a client through the admission service ({} leases)", leases.len()); invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}"))) }
+                                Ok(()) => {
+                                    info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, leases.len());
+                                    invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}")))
+                                }
                                 Err(e) => Err((500, format!("could not admit: {e:#}"))),
                             },
                             Err(e) => Err((400, e.to_string())),
@@ -395,13 +538,17 @@ mod node {
                     let _ = req.reply.send(answer);
                 }
                 _ = reaper.tick() => {
-                    if idle_secs > 0 {
+                    let pruned = spent.prune(hidravpn_core::timefmt::now_unix());
+                    if pruned > 0 {
+                        if let Err(e) = spent.save() { warn!("saving spent passes: {e}"); }
+                    }
+                    if idle_secs > 0 || pass_idle_secs > 0 {
                         match dev.peer_stats() {
                             Ok(stats) => {
                                 let ages = stats.iter().map(|(k, s)| (k.clone(), s.last_handshake)).collect();
                                 let now = crate::leases::now_unix();
                                 let touched = leases.note_handshakes(now, &ages);
-                                let gone = leases.expire_idle(now, idle_secs);
+                                let gone = leases.expire_idle_with_passes(now, idle_secs, pass_idle_secs);
                                 for l in &gone { let _ = dev.remove_peer(&l.public_key); }
                                 if touched || !gone.is_empty() {
                                     if let Err(e) = leases.save() { warn!("saving leases: {e}"); }
@@ -433,6 +580,9 @@ mod node {
         }
         if let Err(e) = crate::nat::remove() {
             warn!("removing NAT rules: {e}");
+        }
+        if let Err(e) = crate::nat::restore_forwarding(forwarding_was_on) {
+            warn!("restoring IPv4 forwarding: {e}");
         }
         dev.tear_down();
         Ok(())

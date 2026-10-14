@@ -50,6 +50,14 @@ pub struct NodeConfig {
     /// tried once. Manually admitted clients are never expired.
     #[serde(default = "default_idle_days")]
     pub idle_days: u32,
+    /// With `admission = "pass"`: the issuer keys whose passes this node
+    /// takes, copied from the signed list (`hidravpn-node pass-key add`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pass_keys: Vec<hidravpn_core::pass::PassKeyRecord>,
+    /// Hours without a handshake after which a lease won with a pass goes.
+    /// Short: every connection brings a pass of its own.
+    #[serde(default = "default_pass_idle_hours")]
+    pub pass_idle_hours: u32,
 }
 
 fn default_interface() -> String {
@@ -69,6 +77,9 @@ fn default_max_clients() -> u32 {
 }
 fn default_idle_days() -> u32 {
     30
+}
+fn default_pass_idle_hours() -> u32 {
+    6
 }
 
 /// The tunnel subnet, worked out once.
@@ -116,8 +127,20 @@ impl NodeConfig {
             admission_port: default_admission_port(),
             max_clients: default_max_clients(),
             idle_days: default_idle_days(),
+            pass_keys: Vec::new(),
+            pass_idle_hours: default_pass_idle_hours(),
         };
-        cfg.tunnel_network()?;
+        let net = cfg.tunnel_network()?;
+        // A client refuses an invite whose tunnel is not a private network
+        // (its resolver would be an address on the open internet), so a node
+        // is never made with one.
+        let o = net.network.octets();
+        if !(net.network.is_private() || (o[0] == 100 && (o[1] & 0xc0) == 64)) {
+            return Err(anyhow!(
+                "the tunnel subnet {} is not private: use one inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10",
+                net.cidr
+            ));
+        }
         for d in &cfg.dns {
             crate::dns::parse_upstream(d)?;
         }
@@ -159,6 +182,30 @@ impl NodeConfig {
         self.admission.trim().eq_ignore_ascii_case("open")
     }
 
+    /// Admits a client that redeems a pass under one of `pass_keys`.
+    pub fn admits_with_passes(&self) -> bool {
+        self.admission.trim().eq_ignore_ascii_case("pass")
+    }
+
+    /// Rewrites the settings in place (a new pass key, say), atomically and
+    /// readable by root only.
+    pub fn save_over(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp = path.with_extension("toml.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(toml::to_string_pretty(self)?.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    }
+
     pub fn set_role(&mut self, role: &str) -> Result<()> {
         let r = role.trim().to_ascii_lowercase();
         if !matches!(r.as_str(), "entry" | "exit" | "both") {
@@ -180,6 +227,8 @@ impl NodeConfig {
             admission: Some(
                 if self.admission_is_open() {
                     "open"
+                } else if self.admits_with_passes() {
+                    "pass"
                 } else {
                     "manual"
                 }
@@ -276,6 +325,21 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("IPv6") && e.contains("IPv4"), "{e}");
+    }
+
+    #[test]
+    fn a_tunnel_subnet_on_the_open_internet_is_refused() {
+        for cidr in ["198.18.0.0/15", "203.0.113.0/24"] {
+            assert!(NodeConfig::fresh(
+                "n".into(),
+                "192.0.2.4:51820".parse().unwrap(),
+                51820,
+                cidr,
+                NodeConfig::default_dns(),
+                None
+            )
+            .is_err());
+        }
     }
 
     #[test]

@@ -83,6 +83,31 @@ pub fn circuit_pocket() -> PathBuf {
     }
 }
 
+/// The passes this machine holds (phase 5): root only, beside the pocket.
+pub fn pass_wallet() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/etc/hidravpn/passes.json")
+    }
+    #[cfg(windows)]
+    {
+        program_data().join("passes.json")
+    }
+}
+
+/// The account token passes are asked for with, when this machine keeps
+/// one (`hidravpn passes token`): root only.
+pub fn pass_token() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/etc/hidravpn/pass.token")
+    }
+    #[cfg(windows)]
+    {
+        program_data().join("pass.token")
+    }
+}
+
 /// The client's private key, made once by `hidravpn keygen`.
 pub fn client_key() -> PathBuf {
     #[cfg(unix)]

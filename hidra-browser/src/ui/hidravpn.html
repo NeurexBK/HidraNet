@@ -125,9 +125,20 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       <button id="btn-join-all" disabled>Join every open node</button>
       <button id="btn-import" disabled>Import a signed list from a file</button>
     </div>
-    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly admits this machine when you join it, or when you press Connect with nothing joined yet; a node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
+    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly admits this machine when you join it, or when you press Connect with nothing joined yet; a node that admits with a pass takes one pass per connection, which <code>sudo hidravpn passes get</code> asks the list's issuer for, and the issuer never learns which node a pass is for; a node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
     </div>
     <div class="msg" id="nodes-msg"></div>
+  </div>
+  <div class="card" id="passes-card">
+    <h2>Passes</h2>
+    <p class="empty" style="margin-bottom:12px">A node that admits with a pass takes one per connection, and sees a new key every time. Passes come from the issuer the signed list names, against an account: the issuer counts them but never learns which node a pass is for, and a node never learns whose account it came from.</p>
+    <div class="actions">
+      <input id="pass-token" type="password" autocomplete="off" spellcheck="false" placeholder="Account token" aria-label="Account token" style="flex:1;min-width:180px;font-family:inherit;font-size:.9em;padding:10px 12px;border-radius:11px;border:1px solid var(--border2);background:var(--bg2);color:var(--txt)">
+      <button id="btn-token" disabled>Keep the token</button>
+      <button class="primary" id="btn-passes" disabled>Get 10 passes per node</button>
+    </div>
+    <div class="empty" style="margin-top:10px">The token is handed to the service on this machine, which keeps it where only an administrator can read it; this page does not keep it. Anyone with an account on this computer can spend the account's passes.</div>
+    <div class="msg" id="passes-msg"></div>
   </div>
 
   <div class="card">
@@ -169,6 +180,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   var busy = false;
   var lastState = null;
   var hasOpenKnown = false;
+  var hasPassNode = false;
 
   function fmtBytes(n) {
     n = Number(n) || 0;
@@ -261,12 +273,22 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     $('btn-import').disabled = busy || !reachable;
     $('btn-fetch').disabled = busy || !reachable;
     $('btn-join-all').disabled = busy || !reachable || !hasOpenKnown;
+    $('btn-token').disabled = busy || !reachable;
+    $('btn-passes').disabled = busy || !reachable || !hasPassNode;
     $('btn-connect').disabled = busy || !reachable;
     $('btn-connect').textContent = (r && r.connected) ? 'Reconnect' : 'Connect';
     $('btn-disconnect').disabled = busy || !reachable || !(r.connected || r.hops > 0 || r.killswitch);
     $('btn-identity').disabled = busy || !reachable || !r.connected;
   }
 
+  // Each connection through a node that admits with a pass spends one; the
+  // service shows the node a fresh key every time.
+  function passLine(count) {
+    var c = Number(count) || 0;
+    return c > 0
+      ? '; ' + c + (c === 1 ? ' pass left' : ' passes left') + ', one per connection'
+      : '; no pass left: sudo hidravpn passes get';
+  }
   function renderNodes(answer) {
     var box = $('nodes');
     box.textContent = '';
@@ -277,7 +299,9 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       return;
     }
     var list = answer.nodes || [];
-    hasOpenKnown = list.some(function (n) { return n.admitted === false && n.admission === 'open'; });
+    hasPassNode = list.some(function (n) { return n.admission === 'pass'; });
+    $('btn-passes').disabled = busy || !hasPassNode;
+    hasOpenKnown = list.some(function (n) { return n.admitted === false && (n.admission === 'open' || (n.admission === 'pass' && n.passes > 0)); });
     $('btn-join-all').disabled = busy || !hasOpenKnown;
     if (!list.length) {
       var em = document.createElement('div'); em.className = 'empty';
@@ -294,16 +318,20 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       if (known) {
         var why = document.createElement('div'); why.className = 'empty';
         var open = n.admission === 'open';
-        why.textContent = (open ? 'admits openly' : 'admits by hand') + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + (open ? '' : '; ask its operator, then add the invite');
+        var withPass = n.admission === 'pass';
+        var how = open ? 'admits openly' : withPass ? 'admits with a pass' : 'admits by hand';
+        var next = open ? '' : withPass ? passLine(n.passes) : '; ask its operator, then add the invite';
+        why.textContent = how + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + next;
         name.appendChild(why);
-      } else if (n.operator || n.role) {
+      } else if (n.operator || n.role || n.admission === 'pass') {
         var who = document.createElement('div'); who.className = 'empty';
-        who.textContent = (n.operator ? 'run by ' + n.operator : '') + (n.role ? (n.operator ? ', ' : '') + n.role : '');
+        who.textContent = (n.operator ? 'run by ' + n.operator : '') + (n.role ? (n.operator ? ', ' : '') + n.role : '') +
+          (n.admission === 'pass' ? passLine(n.passes) : '');
         name.appendChild(who);
       }
       var ep = document.createElement('span'); ep.className = 'ep'; ep.textContent = n.endpoint;
       el.appendChild(slot); el.appendChild(name); el.appendChild(ep);
-      if (known && n.admission === 'open') {
+      if (known && (n.admission === 'open' || (n.admission === 'pass' && n.passes > 0))) {
         var jb = document.createElement('button'); jb.textContent = 'Join'; jb.style.padding = '6px 10px'; jb.style.fontSize = '.8em';
         jb.addEventListener('click', function () { joinNodes(n.node_name); });
         el.appendChild(jb);
@@ -384,6 +412,39 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     await refresh();
   }
   $('btn-join-all').addEventListener('click', function () { joinNodes(''); });
+
+  $('btn-token').addEventListener('click', async function () {
+    if (!api || busy) return;
+    var field = $('pass-token');
+    var token = field.value;
+    // The field is emptied at once: the page holds the token no longer than
+    // it takes to hand it over.
+    field.value = '';
+    if (!token.trim()) { message('err', 'Paste the account token first.', 'passes-msg'); return; }
+    busy = true;
+    var r;
+    try { r = await api.setPassToken(token); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    token = '';
+    busy = false;
+    message(r && r.ok ? 'note' : 'err', (r && (r.ok ? r.note : r.error)) || 'Could not keep the token.', 'passes-msg');
+    await refresh();
+  });
+
+  $('btn-passes').addEventListener('click', async function () {
+    if (!api || busy) return;
+    busy = true;
+    message('note', 'Asking the issuer for passes.', 'passes-msg');
+    var r;
+    try { r = await api.getPasses(10); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      message('note', r.note || 'Passes received.', 'passes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) || 'Could not get passes.', 'passes-msg');
+    }
+    await refresh();
+  });
 
   $('btn-fetch').addEventListener('click', async function () {
     if (!api || busy) return;

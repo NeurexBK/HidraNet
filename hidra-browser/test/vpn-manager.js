@@ -102,6 +102,16 @@ function fakeService(behaviour) {
         ] };
         else answer = { ok: false, error: `no known node named "${req.name}" admits openly; \`nodes list\` says whom to ask` };
       }
+      else if (req.cmd === 'get_passes') {
+        if (!fs.existsSync(tokenPath + '.pass')) answer = { ok: false, error: 'no pass account token at /etc/hidravpn/pass.token' };
+        else answer = { ok: true, note: `${req.count} pass(es) for 1 node(s); the account has 7 left today`, nodes: [
+          { slot: 'exit', node_name: 'node-p', endpoint: '203.0.113.30:51820', admitted: true, admission: 'pass', passes: req.count },
+        ] };
+      }
+      else if (req.cmd === 'set_pass_token') {
+        fs.writeFileSync(tokenPath + '.pass', req.pass_token);
+        answer = { ok: true, note: 'the account token is kept on this machine, readable by root only' };
+      }
       else if (req.cmd === 'nodes') answer = { ok: true, nodes: [
         { slot: 'entry', node_name: 'entry-a', endpoint: '203.0.113.20:51820' },
         { slot: 'exit', node_name: 'exit-a', endpoint: '203.0.113.10:51820' },
@@ -236,6 +246,24 @@ function fakeService(behaviour) {
       r = await vpn.join('nowhere');
       assert.strictEqual(r.ok, false);
       assert.ok(/admits openly/.test(r.error), r.error);
+    });
+
+    await check('passes: the token goes to the service once, is never echoed, and passes are counted per node', async () => {
+      let r = await vpn.getPasses(5);
+      assert.strictEqual(r.ok, false);
+      assert.ok(/token/.test(r.error), r.error);
+      r = await vpn.setPassToken('two words');
+      assert.strictEqual(r.ok, false, 'a token with a space never reaches the service');
+      r = await vpn.setPassToken('  acct-token-123\n');
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'set_pass_token', pass_token: 'acct-token-123' });
+      assert.ok(!JSON.stringify(r).includes('acct-token-123'));
+      r = await vpn.getPasses(5);
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.strictEqual(r.nodes[0].passes, 5);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 5 });
+      await vpn.getPasses(1000, 'node-p');
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 10, name: 'node-p' });
     });
 
     await check('a list fetched as text goes to the service only with its signature', async () => {

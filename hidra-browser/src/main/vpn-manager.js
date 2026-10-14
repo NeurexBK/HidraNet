@@ -281,6 +281,23 @@ class VpnManager {
     return this._command(n ? { cmd: 'join', name: n } : { cmd: 'join' });
   }
 
+  // Passes (phase 5). The service asks the issuer the node list names, with
+  // the account token it keeps; `count` passes for each node that admits
+  // with one (10 when not given), or for the one named.
+  async getPasses(count, name) {
+    const n = Number.isInteger(count) && count > 0 && count <= 100 ? count : 10;
+    const node = typeof name === 'string' && name.trim() ? name.trim() : null;
+    return this._command(node ? { cmd: 'get_passes', count: n, name: node } : { cmd: 'get_passes', count: n });
+  }
+
+  // Hands the service the account token to keep (root-only on disk). The
+  // browser keeps no copy, and the service never sends it back.
+  async setPassToken(token) {
+    const t = typeof token === 'string' ? token.trim() : '';
+    if (!t || t.length > 512 || /\s/.test(t)) return { ok: false, error: 'that is not an account token (one word, no spaces)' };
+    return this._command({ cmd: 'set_pass_token', pass_token: t });
+  }
+
   async _command(cmd) {
     try {
       const answer = await this.request(cmd);

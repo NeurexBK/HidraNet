@@ -20,6 +20,10 @@ getrandom = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+blind-rsa-signatures = { workspace = true }
+hex = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

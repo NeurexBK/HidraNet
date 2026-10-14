@@ -95,7 +95,70 @@ pub async fn request_admission(
             refusal_text(&answer)
         ));
     }
-    let mut invite = Invite::from_json(&answer).context("the invite the node sent is not valid")?;
+    checked_invite(record, &answer)
+}
+
+/// A node looked at a pass and said no (spent, expired, not for it, not
+/// signed right): the pass is worth nothing there, unlike a pass that never
+/// reached the node, which is kept.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct PassRefused(pub String);
+
+/// Redeems a pass on the node the record names and returns the invite,
+/// checked the same way: the node's key and endpoint as the list has them.
+/// The invite remembers the pass's fresh key, which the tunnel then shows.
+pub async fn redeem_pass(record: &NodeRecord, pass: &crate::pass::Pass) -> Result<Invite> {
+    if pass.node_public_key.trim() != record.node_public_key.trim() {
+        return Err(anyhow!(
+            "that pass was made for another node than {}",
+            record.node_name
+        ));
+    }
+    let endpoint: SocketAddr = record
+        .endpoint
+        .parse()
+        .context("the node's endpoint is not ip:port")?;
+    let port = record.admission_port.unwrap_or(DEFAULT_ADMISSION_PORT);
+    let body = serde_json::to_string(&pass.redemption()?)?;
+    let (status, answer) = http_call(
+        SocketAddr::new(endpoint.ip(), port),
+        "POST",
+        "/redeem",
+        &body,
+    )
+    .await?;
+    if status != 200 {
+        let why = format!(
+            "{} did not take the pass ({status}): {}",
+            record.node_name,
+            refusal_text(&answer)
+        );
+        // 503 (full, stopping) and 5xx say nothing about the pass itself.
+        if status >= 500 {
+            return Err(anyhow!(why));
+        }
+        return Err(PassRefused(why).into());
+    }
+    // The node took the pass (200): whatever is wrong with its answer now,
+    // the pass is spent there and must not be kept for another try.
+    let mut invite = checked_invite(record, &answer).map_err(|e| PassRefused(format!("{e:#}")))?;
+    invite.pass = Some(crate::config::PassBinding {
+        client_secret: pass.client_secret.clone(),
+        admission_port: record.admission_port,
+        redeemed_at: crate::timefmt::now_unix().max(0) as u64,
+        used_at: 0,
+    });
+    Ok(invite)
+}
+
+/// An invite from a node, held against the record the signed list carried.
+fn checked_invite(record: &NodeRecord, answer: &str) -> Result<Invite> {
+    let endpoint: SocketAddr = record
+        .endpoint
+        .parse()
+        .context("the node's endpoint is not ip:port")?;
+    let mut invite = Invite::from_json(answer).context("the invite the node sent is not valid")?;
     if invite.node_public_key.trim() != record.node_public_key.trim() {
         return Err(anyhow!(
             "the invite names another key than the list does for {}: not the node the list named; refusing it",
@@ -110,9 +173,11 @@ pub async fn request_admission(
     }
     // What the pocket remembers about the node is what the signed list said,
     // not what the node claims for itself: its name, who runs it, its role.
+    // And a node never chooses the key this client shows it.
     invite.node_name = record.node_name.clone();
     invite.operator = record.operator.clone();
     invite.role = record.role.clone();
+    invite.pass = None;
     Ok(invite)
 }
 

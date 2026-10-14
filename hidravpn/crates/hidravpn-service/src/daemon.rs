@@ -26,8 +26,10 @@ use crate::ipc::{Command, HopReport, NodeReport, Request, Response, StatusReport
 use crate::paths;
 
 struct Active {
-    /// The account that switched the circuit on (a uid; None on Windows or
-    /// for root), so another account cannot switch it off.
+    /// The account that switched the circuit on (a uid, 0 for root or an
+    /// elevated prompt; None for a non-elevated caller on Windows, where all
+    /// of them are one), so another account cannot switch it off. A circuit
+    /// root switched on is root's: a member of the group cannot take it down.
     owner: Option<u32>,
     circuit: Circuit,
     /// The entry nodes, when there are two hops; `current_entry` is the one
@@ -165,17 +167,28 @@ impl Daemon {
                 }
             }
             Command::Join { name } => match self.join(name.as_deref()).await {
-                Ok((pocket, outcome)) => Response::with_nodes(node_reports(&pocket)).noting(outcome),
+                Ok((pocket, outcome)) => Response::with_nodes(self.reports(&pocket)).noting(outcome),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::GetPasses { name, count } => match self
+                .get_passes(name.as_deref(), count.unwrap_or(10) as usize)
+                .await
+            {
+                Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token) {
+                Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::Nodes => match load_pocket(&self.pocket_path) {
-                Ok(p) => Response::with_nodes(node_reports(&p)),
+                Ok(p) => Response::with_nodes(self.reports(&p)),
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::ImportNodes { list, signature } => {
                 match self.import_nodes(&list, &signature).await {
                     Ok((pocket, merge)) => {
-                        Response::with_nodes(node_reports(&pocket)).noting(merge.summary())
+                        Response::with_nodes(self.reports(&pocket)).noting(merge.summary())
                     }
                     Err(e) => Response::err(format!("{e:#}")),
                 }
@@ -277,6 +290,7 @@ impl Daemon {
                         "could not hold the kill switch across the change; staying on the current circuit",
                     ));
                 }
+                self.note_used(old.circuit.spec());
                 let _ = old.circuit.down_with(false).await;
                 true
             }
@@ -287,8 +301,9 @@ impl Daemon {
             Err(e) if held => return Err(e.context(HELD)),
             Err(e) => return Err(e),
         };
+        self.note_used(circuit.spec());
         *guard = Some(Active {
-            owner: caller.filter(|&u| u != 0),
+            owner: caller,
             circuit,
             entries,
             current_entry: 0,
@@ -298,6 +313,21 @@ impl Daemon {
         });
         tracing::info!("connected");
         Ok(())
+    }
+
+    /// Writes down, for the invites won with a pass that this circuit uses,
+    /// that they were used now: what tells later picks their lease stands.
+    fn note_used(&self, spec: &CircuitSpec) {
+        let keys: Vec<String> = std::iter::once(&spec.exit)
+            .chain(spec.entry.as_ref())
+            .filter(|i| i.pass.is_some())
+            .map(|i| i.node_public_key.clone())
+            .collect();
+        if !keys.is_empty() {
+            if let Err(e) = crate::passes::mark_used(&self.pocket_path, &keys) {
+                tracing::warn!("could not note a pass key's use: {e:#}");
+            }
+        }
     }
 
     /// Connects through nodes picked from the pocket: one exit for Rápido, an
@@ -319,7 +349,37 @@ impl Daemon {
             pocket = p;
             joined_note = Some(note);
         }
-        let plan = plan_connect(&pocket, mode)?;
+        // A node joined with a pass whose lease is likely gone, and for which
+        // the wallet holds no pass, is not picked while another will do.
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        let mut plan = plan_connect(&crate::passes::without_dead(&pocket, &wallet, mode), mode)?;
+        // Nodes joined with a pass are shown a fresh key every connection:
+        // the next pass is redeemed now, if the wallet has one — unless the
+        // join above just redeemed one, which is fresh already.
+        if joined_note.is_none()
+            && (plan.exit.pass.is_some() || plan.entry.as_ref().is_some_and(|e| e.pass.is_some()))
+        {
+            let in_use: Vec<String> = match self.state.lock().await.as_ref() {
+                Some(a) => {
+                    let spec = a.circuit.spec();
+                    std::iter::once(&spec.exit)
+                        .chain(spec.entry.as_ref())
+                        .map(|i| i.node_public_key.clone())
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            let notes = self
+                .refresh_passes(&mut plan.exit, plan.entry.as_mut(), &in_use)
+                .await;
+            if !notes.is_empty() {
+                let n = notes.join("; ");
+                joined_note = Some(match joined_note {
+                    Some(j) => format!("{j}; {n}"),
+                    None => n,
+                });
+            }
+        }
         self.up(
             plan.exit,
             plan.entry,
@@ -338,6 +398,7 @@ impl Daemon {
     /// stop the others. Returns the pocket and a line per node.
     async fn join(&self, name: Option<&str>) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let targets: Vec<hidravpn_core::NodeRecord> = pocket
             .joinable()
@@ -350,17 +411,33 @@ impl Daemon {
             .collect();
         if targets.is_empty() {
             return Err(anyhow!(match name {
-                Some(n) => format!("no known node named \"{n}\" admits openly; `nodes list` says whom to ask"),
-                None => "no known node admits openly; import a node list, or ask an operator for an invite".to_string(),
+                Some(n) => format!("no known node named \"{n}\" admits openly or with a pass; `nodes list` says whom to ask"),
+                None => "no known node admits openly or with a pass; import a node list, or ask an operator for an invite".to_string(),
             }));
         }
         let key = load_key()?;
+        let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
+        let wallet_before = wallet.passes.len();
         // The name a node files the lease under is a label for its operator,
         // not this machine's name: nothing identifying leaves here.
         let host = "client".to_string();
         let mut lines = Vec::new();
         let mut joined = 0;
         for rec in targets {
+            if rec.takes_passes() {
+                match crate::passes::redeem_into(&mut pocket, &mut wallet, &rec).await {
+                    Ok(_) => {
+                        joined += 1;
+                        lines.push(format!(
+                            "{}: admitted with a pass as {}",
+                            rec.node_name,
+                            rec.role.as_deref().unwrap_or("both")
+                        ));
+                    }
+                    Err(e) => lines.push(format!("{}: {e:#}", rec.node_name)),
+                }
+                continue;
+            }
             let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
             match hidravpn_core::admission::request_admission(&rec, &shown, &host).await {
                 Ok(invite) => {
@@ -383,9 +460,105 @@ impl Daemon {
         }
         if joined > 0 {
             save_pocket(&self.pocket_path, &pocket)?;
-            tracing::info!(joined, "joined node(s) through open admission");
+            tracing::info!(joined, "joined node(s) through open admission or a pass");
+        }
+        if wallet.passes.len() != wallet_before {
+            crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         }
         Ok((pocket, lines.join("; ")))
+    }
+
+    /// Redeems the next pass for these invites where they were won with one,
+    /// updating them, the pocket and the wallet. Never fails: a node that
+    /// cannot be given a fresh pass keeps its last key, and a note says why.
+    async fn refresh_passes(
+        &self,
+        exit: &mut Invite,
+        entry: Option<&mut Invite>,
+        in_use: &[String],
+    ) -> Vec<String> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = match crate::passes::lock_beside(&self.pocket_path) {
+            Ok(f) => f,
+            Err(e) => return vec![format!("passes not refreshed: {e:#}")],
+        };
+        let (mut pocket, mut wallet) = match (
+            load_pocket(&self.pocket_path),
+            crate::passes::load_wallet(&self.wallet_path()),
+        ) {
+            (Ok(p), Ok(w)) => (p, w),
+            (Err(e), _) | (_, Err(e)) => {
+                return vec![format!("passes not refreshed: {e:#}")];
+            }
+        };
+        let before = wallet.passes.len();
+        let mut notes = Vec::new();
+        // A node the running circuit goes through cannot be asked for a
+        // fresh admission while it does: the kill switch lets only the
+        // tunnel's packets reach it, and the node answers nothing from inside
+        // its tunnel. It keeps its key until the next connection from cold.
+        let mut invites: Vec<&mut Invite> = Vec::new();
+        for inv in std::iter::once(exit).chain(entry) {
+            if inv.pass.is_some()
+                && in_use
+                    .iter()
+                    .any(|k| k.trim() == inv.node_public_key.trim())
+            {
+                notes.push(format!(
+                    "{} is part of the circuit in use, so it keeps its key this time",
+                    inv.node_name
+                ));
+            } else {
+                invites.push(inv);
+            }
+        }
+        notes.extend(crate::passes::refresh(&mut pocket, &mut wallet, &mut invites).await);
+        if wallet.passes.len() != before {
+            if let Err(e) = save_pocket(&self.pocket_path, &pocket)
+                .and_then(|_| crate::passes::save_wallet(&self.wallet_path(), &wallet))
+            {
+                notes.push(format!("could not write the pocket or the wallet: {e:#}"));
+            }
+        }
+        notes
+    }
+
+    /// Keeps the account token passes are asked for with, root only. The
+    /// token is checked for shape and never repeated in an answer.
+    fn set_pass_token(&self, token: &str) -> Result<()> {
+        let t = crate::passes::parse_token(token)?;
+        write_private_atomic(&self.token_path(), t.as_bytes())?;
+        tracing::info!("pass account token replaced");
+        Ok(())
+    }
+
+    /// The pass wallet and the account token sit beside the pocket.
+    fn wallet_path(&self) -> PathBuf {
+        self.pocket_path.with_file_name("passes.json")
+    }
+
+    fn token_path(&self) -> PathBuf {
+        self.pocket_path.with_file_name("pass.token")
+    }
+
+    /// Asks the issuer for passes with the token this machine keeps, `count`
+    /// for each pass node or the one named. Only the account's quota is at
+    /// stake, and the token never leaves the service.
+    async fn get_passes(&self, name: Option<&str>, count: usize) -> Result<(Pocket, String)> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let pocket = load_pocket(&self.pocket_path)?;
+        let token = crate::passes::read_token(&self.token_path())?;
+        let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
+        let line = crate::passes::get_passes(&pocket, &mut wallet, &token, name, count).await?;
+        crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
+        tracing::info!("passes fetched from the issuer");
+        Ok((pocket, line))
+    }
+
+    fn reports(&self, pocket: &Pocket) -> Vec<NodeReport> {
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        node_reports_with_passes(pocket, &wallet)
     }
 
     /// Checks a signed node list against the embedded release key, and only
@@ -393,6 +566,7 @@ impl Daemon {
     /// pocket on disk is untouched by a list that is refused.
     async fn import_nodes(&self, list: &str, signature: &str) -> Result<(Pocket, Merge)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let merge = hidravpn_core::directory::import_signed(
             &mut pocket,
@@ -415,14 +589,106 @@ impl Daemon {
     /// more than one. Returns the note for the person: which nodes it got,
     /// or that there was no other to choose.
     async fn new_identity(&self) -> Result<String> {
+        // 1. Under the state lock, only to read: which exit and entry come
+        //    next. Among the others, the ones a circuit can be built with
+        //    (`passes::usable`) are preferred, so a rotation does not land on
+        //    a node whose pass lease is gone and for which no pass is left.
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        let t = hidravpn_core::timefmt::now_unix().max(0) as u64;
+        let (next, next_entry, mut next_exit, mut next_entry_inv, in_use, current, current_entry) = {
+            let guard = self.state.lock().await;
+            let a = guard
+                .as_ref()
+                .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
+            let ok_exit: Vec<bool> = a
+                .pool
+                .iter()
+                .map(|i| crate::passes::usable(i, &wallet, t))
+                .collect();
+            let ok_entry: Vec<bool> = a
+                .entries
+                .iter()
+                .map(|i| crate::passes::usable(i, &wallet, t))
+                .collect();
+            let next = pick_other(&ok_exit, a.current)?;
+            let next_entry = pick_other(&ok_entry, a.current_entry)?;
+            let spec = a.circuit.spec();
+            let in_use: Vec<String> = std::iter::once(&spec.exit)
+                .chain(spec.entry.as_ref())
+                .map(|i| i.node_public_key.clone())
+                .collect();
+            (
+                next,
+                next_entry,
+                a.pool[next].clone(),
+                a.entries.get(next_entry).cloned(),
+                in_use,
+                a.current,
+                a.current_entry,
+            )
+        };
+
+        // 2. Without the lock — so `down` and `status` are never kept
+        //    waiting on the network — a node joined with a pass gets the next
+        //    pass redeemed, while the old circuit still carries traffic (the
+        //    request goes through it, so the node sees the old exit, not this
+        //    machine), before the kill switch is held to the tunnels' own
+        //    packets.
+        // The circuit's copies of the invites go back to the connect; the
+        // pocket has them as they are now (when each key was last used, or a
+        // newer one redeemed by the command line), and that is what decides.
+        if let Ok(pocket) = load_pocket(&self.pocket_path) {
+            if let Some(i) = pocket
+                .exits
+                .iter()
+                .find(|i| i.node_public_key == next_exit.node_public_key)
+            {
+                next_exit = i.clone();
+            }
+            if let Some(e) = next_entry_inv.as_mut() {
+                if let Some(i) = pocket
+                    .entries
+                    .iter()
+                    .find(|i| i.node_public_key == e.node_public_key)
+                {
+                    *e = i.clone();
+                }
+            }
+        }
+        let mut pass_notes = Vec::new();
+        if next_exit.pass.is_some() || next_entry_inv.as_ref().is_some_and(|e| e.pass.is_some()) {
+            pass_notes = self
+                .refresh_passes(&mut next_exit, next_entry_inv.as_mut(), &in_use)
+                .await;
+        }
+
+        // 3. The lock again, and the circuit taken: it must be the one the
+        //    choice was made on.
         let mut guard = self.state.lock().await;
-        let active = guard
+        let mut active = guard
             .take()
-            .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
-        let next =
-            random::index_other_than(active.pool.len(), active.current)?.unwrap_or(active.current);
-        let next_entry = random::index_other_than(active.entries.len(), active.current_entry)?
-            .unwrap_or(active.current_entry);
+            .ok_or_else(|| anyhow!("disconnected meanwhile; nothing to rotate"))?;
+        let same = active.current == current
+            && active.current_entry == current_entry
+            && active
+                .pool
+                .get(next)
+                .is_some_and(|i| i.node_public_key == next_exit.node_public_key)
+            && match (&next_entry_inv, active.entries.get(next_entry)) {
+                (Some(a), Some(b)) => a.node_public_key == b.node_public_key,
+                (None, None) => true,
+                _ => false,
+            };
+        if !same {
+            *guard = Some(active);
+            return Err(anyhow!(
+                "the circuit changed while the new identity was prepared; ask again"
+            ));
+        }
+        active.pool[next] = next_exit;
+        if let (Some(e), Some(slot)) = (next_entry_inv, active.entries.get_mut(next_entry)) {
+            *slot = e;
+        }
 
         // The kill switch is held across the change: before the old circuit
         // comes down, the rules allow only the old and the new first hop, so
@@ -464,9 +730,11 @@ impl Daemon {
         // The old circuit goes down completely before the new one comes up:
         // the exit's session and its routes belong to the old identity. The
         // kill switch stays, as the hold.
+        self.note_used(circuit.spec());
         let _ = circuit.down_with(false).await;
         match connect(&pool[next], entries.get(next_entry), &opts, true).await {
             Ok(circuit) => {
+                self.note_used(circuit.spec());
                 let exit_note = if pool.len() == 1 {
                     "only one exit node is configured; reconnected to the same one, so the address the internet sees has not changed".to_string()
                 } else {
@@ -496,7 +764,12 @@ impl Daemon {
                     opts,
                 });
                 tracing::info!("new identity");
-                Ok(format!("{exit_note}{entry_note}"))
+                let passes_note = if pass_notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", pass_notes.join("; "))
+                };
+                Ok(format!("{exit_note}{entry_note}{passes_note}"))
             }
             Err(e) => {
                 // Nothing is up, and the hold still blocks the machine: say
@@ -525,6 +798,7 @@ impl Daemon {
         // first, then the tunnels, waiting for their tasks to let go of the
         // interfaces so the kernel interfaces are gone before we report
         // "disconnected".
+        self.note_used(active.circuit.spec());
         let r = active.circuit.down().await;
         tracing::info!("disconnected");
         r.map(|_| "disconnected")
@@ -594,6 +868,23 @@ impl Daemon {
     }
 }
 
+/// An index other than `current`, at random, among the ones marked `ok`
+/// when there are any, else among all the others; `current` itself when it
+/// is the only one (and 0 for an empty list, which has no entry to rotate).
+fn pick_other(ok: &[bool], current: usize) -> Result<usize> {
+    let others: Vec<usize> = (0..ok.len()).filter(|&i| i != current).collect();
+    if others.is_empty() {
+        return Ok(current);
+    }
+    let preferred: Vec<usize> = others.iter().copied().filter(|&i| ok[i]).collect();
+    let from = if preferred.is_empty() {
+        others
+    } else {
+        preferred
+    };
+    Ok(from[random::index(from.len())?])
+}
+
 /// What `connect` will build, decided before anything is touched.
 #[derive(Debug)]
 pub struct Plan {
@@ -651,10 +942,16 @@ pub fn load_pocket(path: &Path) -> Result<Pocket> {
 /// it, so a reader never sees a half-written pocket and a crash mid-write
 /// leaves the old one in place.
 pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
+    write_private_atomic(path, pocket.to_json().as_bytes())
+}
+
+/// Writes a file only root reads, atomically: beside the old one, then
+/// renamed over it, so a reader never sees half a file and a crash leaves
+/// the old one in place.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let bytes = pocket.to_json();
     let tmp = {
         let mut s = path.as_os_str().to_owned();
         s.push(".tmp");
@@ -672,7 +969,7 @@ pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
         let mut f = opts
             .open(&tmp)
             .with_context(|| format!("writing {}", tmp.display()))?;
-        f.write_all(bytes.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
     }
     #[cfg(unix)]
@@ -688,6 +985,15 @@ pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
 /// Slots, names and endpoints; never a key. Admitted nodes first, then the
 /// ones this machine only knows of.
 pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
+    node_reports_with_passes(pocket, &hidravpn_core::pass::Wallet::default())
+}
+
+/// `node_reports`, with how many passes the wallet holds for each node that
+/// admits with one. Counts only: never a pass, never a key.
+pub fn node_reports_with_passes(
+    pocket: &Pocket,
+    wallet: &hidravpn_core::pass::Wallet,
+) -> Vec<NodeReport> {
     pocket
         .iter()
         .map(|(slot, inv)| NodeReport {
@@ -697,16 +1003,25 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
             admitted: true,
             operator: inv.operator.clone(),
             role: inv.role.clone(),
-            admission: None,
+            admission: inv.pass.as_ref().map(|_| "pass".to_string()),
+            passes: inv
+                .pass
+                .as_ref()
+                .map(|_| wallet.count_for(&inv.node_public_key)),
         })
-        .chain(pocket.known.iter().map(|k| NodeReport {
-            slot: "known".to_string(),
-            node_name: k.node_name.clone(),
-            endpoint: k.endpoint.clone(),
-            admitted: false,
-            operator: k.operator.clone(),
-            role: k.role.clone(),
-            admission: k.admission.clone(),
+        .chain(pocket.known.iter().map(|k| {
+            NodeReport {
+                slot: "known".to_string(),
+                node_name: k.node_name.clone(),
+                endpoint: k.endpoint.clone(),
+                admitted: false,
+                operator: k.operator.clone(),
+                role: k.role.clone(),
+                admission: k.admission.clone(),
+                passes: k
+                    .takes_passes()
+                    .then(|| wallet.count_for(&k.node_public_key)),
+            }
         }))
         .collect()
 }
@@ -770,6 +1085,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
         }
     }
 
@@ -937,6 +1253,17 @@ mod tests {
             )
             .await;
         assert!(ok.ok, "a group member may still ping");
+    }
+
+    #[test]
+    fn a_rotation_prefers_the_nodes_a_circuit_can_be_built_with() {
+        for _ in 0..50 {
+            assert_eq!(pick_other(&[true, false, true], 0).unwrap(), 2);
+            let i = pick_other(&[false, false, false], 1).unwrap();
+            assert!(i == 0 || i == 2, "nothing usable: any other one");
+        }
+        assert_eq!(pick_other(&[true], 0).unwrap(), 0, "only one: itself");
+        assert_eq!(pick_other(&[], 0).unwrap(), 0);
     }
 
     #[test]

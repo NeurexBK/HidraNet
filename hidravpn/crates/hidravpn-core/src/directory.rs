@@ -137,9 +137,12 @@ impl NodeRecord {
             }
         }
         if let Some(a) = self.admission.as_deref() {
-            if !matches!(a.trim().to_ascii_lowercase().as_str(), "open" | "manual") {
+            if !matches!(
+                a.trim().to_ascii_lowercase().as_str(),
+                "open" | "manual" | "pass"
+            ) {
                 return Err(anyhow!(
-                    "the admission of {} must be open or manual",
+                    "the admission of {} must be open, manual or pass",
                     self.node_name
                 ));
             }
@@ -151,6 +154,14 @@ impl NodeRecord {
         self.admission
             .as_deref()
             .map(|a| a.trim().eq_ignore_ascii_case("open"))
+            == Some(true)
+    }
+
+    /// Whether the node admits a client that redeems a pass (phase 5).
+    pub fn takes_passes(&self) -> bool {
+        self.admission
+            .as_deref()
+            .map(|a| a.trim().eq_ignore_ascii_case("pass"))
             == Some(true)
     }
 }
@@ -178,6 +189,31 @@ pub struct Directory {
     pub note: Option<String>,
     #[serde(default)]
     pub nodes: Vec<NodeRecord>,
+    /// Who issues passes, for nodes that admit with one (phase 5): where to
+    /// ask, and the keys passes are signed under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_issuer: Option<PassIssuer>,
+}
+
+/// The pass issuer a list names.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PassIssuer {
+    /// `https://...` (plain HTTP only on a private network).
+    pub url: String,
+    pub keys: Vec<crate::pass::PassKeyRecord>,
+}
+
+impl PassIssuer {
+    pub fn validate(&self) -> Result<()> {
+        crate::http::Url::parse(&self.url).context("the pass issuer's address")?;
+        if self.keys.is_empty() {
+            return Err(anyhow!("the pass issuer names no key"));
+        }
+        for k in &self.keys {
+            k.validate()?;
+        }
+        Ok(())
+    }
 }
 
 /// What an import did: which nodes went in, and which were left out and why
@@ -244,6 +280,9 @@ impl Directory {
         for k in &d.removed {
             public_key_from_base64(k).context("a removed key in the list")?;
         }
+        if let Some(p) = &d.pass_issuer {
+            p.validate()?;
+        }
         Ok(d)
     }
 
@@ -286,6 +325,11 @@ impl Directory {
         }
         if self.sequence > pocket.list_sequence {
             pocket.list_sequence = self.sequence;
+        }
+        // The issuer comes with the newest list: a newer list without one
+        // takes it away, an older one cannot bring an old one back.
+        if newer || pocket.pass_issuer.is_none() {
+            pocket.pass_issuer = self.pass_issuer.clone();
         }
         m
     }
@@ -375,6 +419,7 @@ mod tests {
             keepalive: 25,
             operator: r.operator.clone(),
             role: r.role.clone(),
+            pass: None,
         }
     }
 
@@ -391,6 +436,7 @@ mod tests {
                 record("node-2", "203.0.113.11:51820"),
                 record("node-3", "203.0.113.20:51820"),
             ],
+            pass_issuer: None,
         }
     }
 

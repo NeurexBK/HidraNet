@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hidravpn_core::admission::{http_response, read_request, refusal, AdmissionRequest};
+use hidravpn_core::pass::Redemption;
 use hidravpn_core::Invite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
@@ -35,6 +36,9 @@ use crate::config::NodeConfig;
 pub struct Admit {
     pub public_key: String,
     pub name: String,
+    /// Set when the admission is a redeemed pass: what to write down as
+    /// spent, and until when. The main loop refuses a tag it already holds.
+    pub pass: Option<SpentPass>,
     /// The invite, or the HTTP status and reason for refusing.
     pub reply: oneshot::Sender<std::result::Result<Invite, (u16, String)>>,
 }
@@ -89,6 +93,12 @@ impl RateLimiter {
     }
 }
 
+/// A pass to write down as spent, once the main loop has checked it is not.
+pub struct SpentPass {
+    pub tag: String,
+    pub valid_until: i64,
+}
+
 /// A lease name the operator can read in `status`: the client's wish if it
 /// is one, else a number.
 pub fn lease_name(wanted: &str, counter: u64) -> String {
@@ -118,6 +128,8 @@ pub async fn serve(
         listen.port(),
         if cfg.admission_is_open() {
             "open: any client may ask"
+        } else if cfg.admits_with_passes() {
+            "with a pass: a client redeems one"
         } else {
             "by hand: describes the node only"
         }
@@ -174,6 +186,7 @@ async fn handle(
                 Err(e) => http_response(500, &refusal(format!("{e:#}"))),
             },
             ("POST", "/admit") => admit(&req.body, ip, &cfg, &tx, &limiter, &counter).await,
+            ("POST", "/redeem") => redeem(&req.body, &cfg, &tx, &counter).await,
             ("POST", _) | ("GET", _) => http_response(404, &refusal("no such path")),
             _ => http_response(405, &refusal("GET or POST")),
         },
@@ -192,6 +205,12 @@ async fn admit(
     limiter: &Mutex<RateLimiter>,
     counter: &std::sync::atomic::AtomicU64,
 ) -> Vec<u8> {
+    if cfg.admits_with_passes() {
+        return http_response(
+            403,
+            &refusal("this node admits with a pass: get passes from the issuer the node list names (`hidravpn passes get`)"),
+        );
+    }
     if !cfg.admission_is_open() {
         return http_response(
             403,
@@ -229,6 +248,66 @@ async fn admit(
         .send(Admit {
             public_key: req.public_key,
             name,
+            pass: None,
+            reply,
+        })
+        .await
+        .is_err()
+    {
+        return http_response(503, &refusal("the node is stopping"));
+    }
+    match tokio::time::timeout(Duration::from_secs(4), rx).await {
+        Ok(Ok(Ok(invite))) => http_response(200, &invite.to_json()),
+        Ok(Ok(Err((status, why)))) => http_response(status, &refusal(why)),
+        _ => http_response(503, &refusal("the node did not answer in time")),
+    }
+}
+
+/// `POST /redeem`: a pass, checked here (a current issuer key this node
+/// trusts, made for this node, a signature that holds) and then by the main
+/// loop (never spent here before). No rate limit by address: a valid pass
+/// was paid for with an account's quota, and an invalid one costs a
+/// signature check and nothing else.
+async fn redeem(
+    body: &[u8],
+    cfg: &NodeConfig,
+    tx: &mpsc::Sender<Admit>,
+    counter: &std::sync::atomic::AtomicU64,
+) -> Vec<u8> {
+    if !cfg.admits_with_passes() {
+        return http_response(403, &refusal("this node does not admit with passes"));
+    }
+    let r: Redemption = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(_) => return http_response(400, &refusal("the request is not a pass")),
+    };
+    let me = match cfg.public_key() {
+        Ok(k) => k,
+        Err(_) => return http_response(500, &refusal("this node cannot read its own key")),
+    };
+    let now = hidravpn_core::timefmt::now_unix();
+    if let Err(e) = r.verify(&cfg.pass_keys, &me, now) {
+        return http_response(403, &refusal(format!("the pass is refused: {e}")));
+    }
+    let valid_until = cfg
+        .pass_keys
+        .iter()
+        .find(|k| k.id.trim().eq_ignore_ascii_case(r.key_id.trim()))
+        .and_then(|k| hidravpn_core::timefmt::rfc3339_to_unix(&k.not_after).ok())
+        .unwrap_or(now);
+    let name = format!(
+        "pass-{}",
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let (reply, rx) = oneshot::channel();
+    if tx
+        .send(Admit {
+            public_key: r.client_public_key.clone(),
+            name,
+            pass: Some(SpentPass {
+                tag: r.spent_tag(),
+                valid_until,
+            }),
             reply,
         })
         .await

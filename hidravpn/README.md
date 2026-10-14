@@ -9,9 +9,11 @@ promised there that does not exist yet.
 
 Developed in phases; each phase is a working, testable step. See
 `docs/phase-1.md` (the tunnel), `docs/phase-2.md` (the service and the kill
-switch), `docs/phase-3.md` (two hops, two modes, a new identity) and
+switch), `docs/phase-3.md` (two hops, two modes, a new identity),
 `docs/phase-4.md` (the VPN in the browser, a signed node list, a node in one
-command) for what exists now and how to run it.
+command) and `docs/phase-5.md` (passes: accountable admission that no one can
+link to its use, a fresh key every connection) for what exists now and how
+to run it.
 
 Everything in this folder is new and separate from the HidraNet browser,
 mail, chat, forum and relay engine, which it does not change.
@@ -49,6 +51,12 @@ Only what the code proves, and the test scripts check:
   list nobody signed goes nowhere. A node that admits openly then admits
   this machine when it asks (the client asks by itself); one that admits by
   hand needs its operator, and the client says whom to ask.
+- **Admission nobody can link to its use.** A node can admit with a pass
+  instead: signed blind by an issuer that counts passes against an account,
+  so who may use the network is decided, while the issuer never learns which
+  node a pass is for and the node never learns whose it was. Every
+  connection redeems a new pass with a new key. The test redeems one pass
+  twice and sees it refused.
 - **Open code, reproducible builds.** Everything is in this folder, built and
   checked by CI from the committed source; Windows binaries come from that
   build and are signed before any release.

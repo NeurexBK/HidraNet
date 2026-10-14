@@ -4,9 +4,10 @@
 //! public half, embedded here and in the browser so that what verifies a file
 //! never comes from the same place as the file.
 //!
-//! Until the maintainers have generated the key, the constant is empty — and
-//! with no key, nothing verifies. A client that accepted unsigned node lists
-//! "for now" would be a client that accepts unsigned node lists.
+//! Both keys exist and their public halves are embedded below. A build whose
+//! constant is empty verifies nothing and refuses everything: a client that
+//! accepted unsigned node lists "for now" would be a client that accepts
+//! unsigned node lists.
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;

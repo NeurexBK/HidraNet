@@ -11,6 +11,7 @@ members = [
   "crates/hidravpn",
   "crates/hidravpn-service",
   "crates/hidravpn-sign",
+  "crates/hidravpn-issuer",
 ]
 
 [workspace.package]
@@ -41,6 +42,22 @@ hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows = "0.58"
+# RFC 9474 blind signatures for passes (phase 5). 0.18 is the release that
+# sits on the constant-time RSA (rsa 0.10, crypto-bigint): the issuer signs
+# messages its clients chose, which is exactly where the older rsa crate's
+# timing leak (RUSTSEC-2023-0071) would be exploitable.
+blind-rsa-signatures = "0.18"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1"
+
+# Prime generation for RSA keys is slow unoptimised; the tests make issuer
+# keys, so the big-number crates are built optimised even in debug builds.
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.dev.package.crypto-primes]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

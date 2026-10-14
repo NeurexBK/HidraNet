@@ -101,16 +101,32 @@ impl Leases {
     /// Admits a key through the admission service, or returns the lease it
     /// already has.
     pub fn admit_open(&mut self, name: &str, public_key: &str, net: &TunnelNet) -> Result<Lease> {
+        self.admit_as(name, public_key, net, "open")
+    }
+
+    /// Admits the fresh key a redeemed pass names. Such a lease lapses soon
+    /// after it is no longer used: the next connection brings its own pass.
+    pub fn admit_pass(&mut self, name: &str, public_key: &str, net: &TunnelNet) -> Result<Lease> {
+        self.admit_as(name, public_key, net, "pass")
+    }
+
+    fn admit_as(
+        &mut self,
+        name: &str,
+        public_key: &str,
+        net: &TunnelNet,
+        source: &str,
+    ) -> Result<Lease> {
         let had = self.find(public_key).is_some();
         let mut lease = self.admit(name, public_key, net)?;
         if !had {
-            lease.source = "open".into();
+            lease.source = source.into();
             if let Some(l) = self
                 .leases
                 .iter_mut()
                 .find(|l| l.public_key == lease.public_key)
             {
-                l.source = "open".into();
+                l.source = source.into();
             }
         }
         Ok(lease)
@@ -141,7 +157,26 @@ impl Leases {
     /// nothing from the client since it was admitted or since the last
     /// handshake written down (`note_handshakes` first). Manual leases never
     /// expire. Returns what was dropped.
+    #[cfg(test)]
     pub fn expire_idle(&mut self, now: u64, idle_secs: u64) -> Vec<Lease> {
+        self.expire_idle_with_passes(now, idle_secs, 0)
+    }
+
+    /// `expire_idle`, and leases won with a pass after `pass_idle_secs`
+    /// without a handshake (or `NEVER_CAME_SECS` when they never had one);
+    /// 0 keeps them.
+    pub fn expire_idle_with_passes(
+        &mut self,
+        now: u64,
+        idle_secs: u64,
+        pass_idle_secs: u64,
+    ) -> Vec<Lease> {
+        let mut gone = self.expire_source(now, pass_idle_secs, "pass");
+        gone.extend(self.expire_source(now, idle_secs, "open"));
+        gone
+    }
+
+    fn expire_source(&mut self, now: u64, idle_secs: u64, source: &str) -> Vec<Lease> {
         if idle_secs == 0 {
             return Vec::new();
         }
@@ -150,7 +185,7 @@ impl Leases {
         // that is shorter), so admissions cost tunnels, not HTTP requests.
         let never_came = idle_secs.min(NEVER_CAME_SECS);
         let (gone, kept): (Vec<Lease>, Vec<Lease>) = self.leases.drain(..).partition(|l| {
-            l.source == "open"
+            l.source == source
                 && (now.saturating_sub(l.admitted_at.max(l.last_seen)) >= idle_secs
                     || (l.last_seen == 0 && now.saturating_sub(l.admitted_at) >= never_came))
         });
@@ -205,6 +240,76 @@ impl Leases {
             }
         }
         Err(anyhow!("the tunnel subnet is full"))
+    }
+}
+
+/// The passes this node has taken, by tag (`Redemption::spent_tag`, a hash:
+/// no nonce in the clear), each with the end of its issuer key's validity,
+/// after which no node takes it anyway and the tag can go. Kept beside the
+/// leases, so a restart does not let a pass be spent twice.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SpentPasses {
+    #[serde(default)]
+    tags: std::collections::BTreeMap<String, i64>,
+}
+
+fn spent_path() -> PathBuf {
+    path().with_file_name("spent.json")
+}
+
+impl SpentPasses {
+    pub fn load() -> Result<Self> {
+        match std::fs::read(spent_path()) {
+            Ok(b) => Ok(serde_json::from_slice(&b).context("the spent-pass file is unreadable")?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Written beside, flushed to disk, renamed over, and the directory
+    /// flushed too: after a power cut the file is the old list or the new
+    /// one, never an empty one. Root only.
+    pub fn save(&self) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let p = spent_path();
+        let dir = p.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
+        let tmp = p.with_extension("json.tmp");
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(&serde_json::to_vec(self)?)?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &p)?;
+        if let Ok(d) = std::fs::File::open(&dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    }
+
+    pub fn contains(&self, tag: &str) -> bool {
+        self.tags.contains_key(tag)
+    }
+
+    pub fn insert(&mut self, tag: String, valid_until: i64) {
+        self.tags.insert(tag, valid_until);
+    }
+
+    /// Forgets the tags of passes no node would take any more.
+    pub fn prune(&mut self, now_unix: i64) -> usize {
+        let before = self.tags.len();
+        self.tags.retain(|_, until| *until >= now_unix);
+        before - self.tags.len()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tags.len()
     }
 }
 
@@ -338,6 +443,38 @@ mod tests {
         assert!(l.find(&by_hand).is_some());
         // Shorter idle windows keep working as before.
         assert!(l.expire_idle(t0, 60).is_empty());
+    }
+
+    #[test]
+    fn a_pass_lease_lapses_on_its_own_clock_and_a_spent_tag_is_kept_until_its_key_ends() {
+        let mut l = Leases::default();
+        let pass = Key::generate_private().get_public().to_base64();
+        let open = Key::generate_private().get_public().to_base64();
+        l.admit_pass("pass-1", &pass, &net()).unwrap();
+        l.admit_open("open-1", &open, &net()).unwrap();
+        assert_eq!(l.find(&pass).unwrap().source, "pass");
+        let t0 = now_unix();
+        let mut age = std::collections::HashMap::new();
+        age.insert(pass.clone(), Some(std::time::Duration::from_secs(1)));
+        age.insert(open.clone(), Some(std::time::Duration::from_secs(1)));
+        l.note_handshakes(t0, &age);
+        // An hour later: the pass lease (a 30-minute window) goes, the open
+        // one (a day) stays.
+        let gone = l.expire_idle_with_passes(t0 + 3600, 86_400, 1800);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].public_key, pass);
+        assert!(l.find(&open).is_some());
+        // 0 keeps pass leases.
+        l.admit_pass("pass-2", &pass, &net()).unwrap();
+        assert!(l.expire_idle_with_passes(t0 + 10 * 86_400, 0, 0).is_empty());
+
+        let mut s = SpentPasses::default();
+        s.insert("a".into(), 100);
+        s.insert("b".into(), 200);
+        assert!(s.contains("a"));
+        assert_eq!(s.prune(150), 1);
+        assert!(!s.contains("a") && s.contains("b"));
+        assert_eq!(s.len(), 1);
     }
 
     #[test]
