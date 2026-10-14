@@ -199,49 +199,73 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     parse_response(&raw)
 }
 
-fn parse_response(raw: &[u8]) -> Result<(u16, String)> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
+pub(crate) fn parse_response(raw: &[u8]) -> Result<(u16, String)> {
+    if raw.len() >= MAX_ANSWER {
+        return Err(anyhow!("the answer is larger than any this client reads"));
+    }
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| anyhow!("the answer has no headers"))?;
+    let head = String::from_utf8_lossy(&raw[..split]);
+    let body = &raw[split + 4..];
     let status: u16 = head
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| anyhow!("the answer has no status"))?;
-    let chunked = head.lines().skip(1).any(|l| {
-        l.split_once(':').is_some_and(|(k, v)| {
-            k.trim().eq_ignore_ascii_case("transfer-encoding")
-                && v.to_ascii_lowercase().contains("chunked")
+    let header = |name: &str| {
+        head.lines().skip(1).find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.trim().to_string())
         })
-    });
-    if chunked {
-        return Ok((status, dechunk(body)?));
-    }
-    Ok((status, body.to_string()))
+    };
+    let chunked =
+        header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+    let body = if chunked {
+        dechunk(body)?
+    } else if let Some(len) = header("content-length") {
+        // A connection that ended early must not pass for a short answer.
+        let len: usize = len
+            .parse()
+            .map_err(|_| anyhow!("the answer has a bad Content-Length"))?;
+        if body.len() < len {
+            return Err(anyhow!("the answer was cut short"));
+        }
+        body[..len].to_vec()
+    } else {
+        body.to_vec()
+    };
+    let body = String::from_utf8(body).map_err(|_| anyhow!("the answer is not text"))?;
+    Ok((status, body))
 }
 
 /// The body of a `Transfer-Encoding: chunked` answer, joined (what a TLS
-/// proxy in front of the issuer may send).
-fn dechunk(mut rest: &str) -> Result<String> {
-    let mut out = String::new();
+/// proxy in front of the issuer may send). Counted in bytes, as the sizes
+/// are.
+fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
     loop {
-        let (size_line, after) = rest
-            .split_once("\r\n")
+        let eol = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
             .ok_or_else(|| anyhow!("a chunked answer ends mid-chunk"))?;
+        let size_line = String::from_utf8_lossy(&rest[..eol]);
+        let after = &rest[eol + 2..];
         let size_hex = size_line.split(';').next().unwrap_or("").trim();
         let size = usize::from_str_radix(size_hex, 16)
             .map_err(|_| anyhow!("a chunked answer has a bad chunk size"))?;
         if size == 0 {
             return Ok(out);
         }
-        if after.len() < size + 2 || !after.is_char_boundary(size) {
+        if after.len() < size + 2 {
             return Err(anyhow!("a chunked answer ends mid-chunk"));
         }
-        out.push_str(&after[..size]);
+        out.extend_from_slice(&after[..size]);
         rest = after[size..]
-            .strip_prefix("\r\n")
+            .strip_prefix(b"\r\n")
             .ok_or_else(|| anyhow!("a chunk is not followed by its line end"))?;
     }
 }
@@ -289,7 +313,19 @@ mod tests {
         assert!(
             parse_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nab")
                 .is_err()
-        );
+        ); // Cut short against its Content-Length; exactly long, or longer.
+        assert!(parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{\"a\":").is_err());
+        let (_, b) =
+            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}xx").unwrap();
+        assert_eq!(b, "{\"a\":1}");
+        // Chunk sizes count bytes, even of text that is not ASCII.
+        let (_, b) = parse_response(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n\"é\"\r\n0\r\n\r\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(b, "\"é\"");
+        assert!(parse_response(&vec![b'a'; MAX_ANSWER]).is_err());
     }
 
     #[test]

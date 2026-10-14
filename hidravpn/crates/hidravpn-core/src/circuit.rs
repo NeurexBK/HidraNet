@@ -99,7 +99,9 @@ impl CircuitSpec {
     /// The MTU of the tunnel that carries the machine's traffic: the exit's
     /// own MTU for one hop; for two, also small enough that an inner packet
     /// plus the outer tunnel's overhead fits the entry's MTU. Never below the
-    /// 1280 that IPv6 requires.
+    /// 1280 that IPv6 requires: with an entry MTU under 1360 an inner packet
+    /// does not fit one outer packet, and the system splits it in two (slower,
+    /// still delivered) rather than lose IPv6 on the inner interface.
     pub fn inner_mtu(&self) -> u16 {
         let mut mtu = self.exit.mtu;
         if let Some(entry) = &self.entry {
@@ -313,6 +315,7 @@ impl Circuit {
         if let Ok(Some(old)) = netcfg::load_plan() {
             let _ = netcfg::revert(&old);
         }
+        netcfg::recover_dns();
 
         let outer_name = format!("{}0", opts.interface_base);
 

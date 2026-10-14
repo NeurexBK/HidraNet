@@ -130,6 +130,11 @@ fn main() -> Result<()> {
                 .try_into()
                 .map_err(|_| anyhow!("a public key is 32 bytes"))?;
             let vk = VerifyingKey::from_bytes(&pk).context("not a valid Ed25519 public key")?;
+            // Nothing checked is not "verified": a script testing the exit
+            // code must not take an empty list for a good one.
+            if files.is_empty() {
+                return Err(anyhow!("name the files to verify"));
+            }
             let mut bad = 0;
             for f in &files {
                 let bytes = std::fs::read(f).with_context(|| format!("reading {}", f.display()))?;

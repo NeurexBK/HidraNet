@@ -11,6 +11,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
 C="ip netns exec hv-client"

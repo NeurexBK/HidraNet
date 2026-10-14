@@ -1,4 +1,5 @@
-//! HidraVPN node. Phase 1: a single hop that any admitted client can reach.
+//! HidraVPN node: a WireGuard endpoint that admits clients by hand, openly
+//! or with a pass, and serves as an entry, an exit or both.
 //!
 //!   hidravpn-node init --endpoint IP:PORT --name NAME   write /etc/hidravpn/node.toml with a new key
 //!   hidravpn-node run                                   bring the tunnel up and serve until stopped
@@ -48,11 +49,7 @@ mod node {
     use crate::leases::Leases;
 
     #[derive(Parser)]
-    #[command(
-        name = "hidravpn-node",
-        version,
-        about = "HidraVPN node (phase 1: single hop)"
-    )]
+    #[command(name = "hidravpn-node", version, about = "HidraVPN node")]
     struct Cli {
         /// Settings file.
         #[arg(long, global = true, default_value = "/etc/hidravpn/node.toml")]
@@ -319,9 +316,12 @@ mod node {
             Cmd::Admit { name, pubkey } => {
                 require_root()?;
                 let cfg = NodeConfig::load(&cli.config)?;
-                let mut leases = Leases::load()?;
-                let lease = leases.admit(&name, &pubkey, &cfg.tunnel_network()?)?;
-                leases.save()?;
+                let net = cfg.tunnel_network()?;
+                let lease = Leases::update(|l| {
+                    let r = l.admit(&name, &pubkey, &net);
+                    let ok = r.is_ok();
+                    (r, ok)
+                })??;
                 // Into the running device too, if there is one.
                 match crate::wg::open_existing(&cfg.interface) {
                     Ok(dev) => dev.add_peer(&lease.public_key, lease.ip)?,
@@ -332,11 +332,12 @@ mod node {
             Cmd::Revoke { pubkey } => {
                 require_root()?;
                 let cfg = NodeConfig::load(&cli.config)?;
-                let mut leases = Leases::load()?;
-                if !leases.revoke(&pubkey) {
+                if !Leases::update(|l| {
+                    let gone = l.revoke(&pubkey);
+                    (gone, gone)
+                })? {
                     return Err(anyhow!("that key is not admitted"));
                 }
-                leases.save()?;
                 if let Ok(dev) = crate::wg::open_existing(&cfg.interface) {
                     dev.remove_peer(&pubkey)?;
                 }
@@ -433,7 +434,7 @@ mod node {
             cfg.role
         );
 
-        let mut leases = Leases::load()?;
+        let leases = Leases::load()?;
         let mut n = 0;
         for l in leases.iter() {
             dev.add_peer(&l.public_key, l.ip)?;
@@ -445,7 +446,8 @@ mod node {
         let mut dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
         info!("DNS forwarder on {dns_addr} → {}", cfg.dns.join(", "));
 
-        // The admission service: describes the node always, admits when open.
+        // The admission service: describes the node always, admits when
+        // open or for a pass.
         let (admit_tx, mut admit_rx) = tokio::sync::mpsc::channel::<crate::admission::Admit>(64);
         let shared = std::sync::Arc::new(cfg.clone());
         let admission_addr = SocketAddr::new(
@@ -514,42 +516,61 @@ mod node {
                     admission = tokio::spawn(std::future::pending());
                 },
                 Some(req) = admit_rx.recv() => {
+                    // The admission side stopped waiting (its client was
+                    // told the node did not answer in time, and keeps its
+                    // pass): admitting now would spend that pass for nothing.
+                    if req.reply.is_closed() {
+                        continue;
+                    }
                     let answer = if req.pass.as_ref().is_some_and(|p| spent.contains(&p.tag)) {
                         Err((409, "this pass was already spent here; use another".to_string()))
-                    } else if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
-                        Err((503, "this node is full; try another".to_string()))
                     } else {
-                        // A pass is written down as spent before its key is
-                        // admitted, so a crash in between cannot let it be
-                        // spent again.
-                        let spent_ok = match &req.pass {
-                            Some(p) => {
-                                spent.insert(p.tag.clone(), p.valid_until);
-                                spent.save()
+                        // The leases are read afresh, under their lock, so
+                        // an operator's `admit` or `revoke` is never undone.
+                        // A 5xx answer tells the client to keep its pass; it
+                        // is never given once the pass is spent and its key
+                        // could still be admitted.
+                        let admitted = Leases::update(|leases| {
+                            if leases.find(&req.public_key).is_none()
+                                && (leases.len() as u32 >= cfg.max_clients || !leases.has_room(&net))
+                            {
+                                return (Err((503, "this node is full; try another".to_string())), false);
                             }
-                            None => Ok(()),
-                        };
-                        let admitted = match (&req.pass, spent_ok) {
-                            (_, Err(e)) => Err(anyhow!("could not write the pass down: {e:#}")),
-                            (Some(_), Ok(())) => leases.admit_pass(&req.name, &req.public_key, &net),
-                            (None, Ok(())) => leases.admit_open(&req.name, &req.public_key, &net),
-                        };
+                            // Written down as spent before its key is
+                            // admitted, so a crash in between cannot let it
+                            // be spent again.
+                            if let Some(p) = &req.pass {
+                                if let Err(e) = spent.record(p.tag.clone(), p.valid_until) {
+                                    return (Err((503, format!("could not write the pass down: {e:#}"))), false);
+                                }
+                            }
+                            let r = if req.pass.is_some() {
+                                leases.admit_pass(&req.name, &req.public_key, &net)
+                            } else {
+                                leases.admit_open(&req.name, &req.public_key, &net)
+                            };
+                            match r {
+                                Ok(lease) => (Ok((lease, leases.len())), true),
+                                Err(e) => (Err((400, e.to_string())), false),
+                            }
+                        });
                         match admitted {
-                            Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip)) {
+                            Ok(Ok((lease, count))) => match dev.add_peer(&lease.public_key, lease.ip) {
                                 Ok(()) => {
-                                    info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, leases.len());
+                                    info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, count);
                                     invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}")))
                                 }
                                 Err(e) => Err((500, format!("could not admit: {e:#}"))),
                             },
-                            Err(e) => Err((400, e.to_string())),
+                            Ok(Err(refused)) => Err(refused),
+                            Err(e) => Err((503, format!("could not write the leases: {e:#}"))),
                         }
                     };
                     let _ = req.reply.send(answer);
                 }
                 _ = reaper.tick() => {
                     let pruned = spent.prune(hidravpn_core::timefmt::now_unix());
-                    if pruned > 0 {
+                    if pruned > 0 || spent.needs_compacting() {
                         if let Err(e) = spent.save() { warn!("saving spent passes: {e}"); }
                     }
                     if idle_secs > 0 || pass_idle_secs > 0 {
@@ -557,14 +578,19 @@ mod node {
                             Ok(stats) => {
                                 let ages = stats.iter().map(|(k, s)| (k.clone(), s.last_handshake)).collect();
                                 let now = crate::leases::now_unix();
-                                let touched = leases.note_handshakes(now, &ages);
-                                let gone = leases.expire_idle_with_passes(now, idle_secs, pass_idle_secs);
-                                for l in &gone { let _ = dev.remove_peer(&l.public_key); }
-                                if touched || !gone.is_empty() {
-                                    if let Err(e) = leases.save() { warn!("saving leases: {e}"); }
-                                }
-                                if !gone.is_empty() {
-                                    info!("{} idle openly-admitted client(s) expired ({} leases left)", gone.len(), leases.len());
+                                match Leases::update(|leases| {
+                                    let touched = leases.note_handshakes(now, &ages);
+                                    let gone = leases.expire_idle_with_passes(now, idle_secs, pass_idle_secs);
+                                    let save = touched || !gone.is_empty();
+                                    ((gone, leases.len()), save)
+                                }) {
+                                    Ok((gone, left)) => {
+                                        for l in &gone { let _ = dev.remove_peer(&l.public_key); }
+                                        if !gone.is_empty() {
+                                            info!("{} idle openly-admitted client(s) expired ({} leases left)", gone.len(), left);
+                                        }
+                                    }
+                                    Err(e) => warn!("saving leases: {e}"),
                                 }
                             }
                             Err(e) => warn!("reading peer stats for expiry: {e}"),
@@ -582,10 +608,11 @@ mod node {
                 .iter()
                 .map(|(k, s)| (k.clone(), s.last_handshake))
                 .collect();
-            if leases.note_handshakes(crate::leases::now_unix(), &ages) {
-                if let Err(e) = leases.save() {
-                    warn!("saving leases at shutdown: {e}");
-                }
+            if let Err(e) = Leases::update(|leases| {
+                let touched = leases.note_handshakes(crate::leases::now_unix(), &ages);
+                ((), touched)
+            }) {
+                warn!("saving leases at shutdown: {e}");
             }
         }
         if let Err(e) = crate::nat::remove() {

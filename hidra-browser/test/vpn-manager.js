@@ -424,6 +424,20 @@ function fakeService(behaviour) {
     await svc.close();
   });
 
+  await check('a command that waits on the network gets the long timeout, a status the short one', async () => {
+    const svc = await fakeService({ raw: (sock, line) => {
+      setTimeout(() => sock.end('{"ok":true}\n'), 1500);
+    } });
+    const vpn = new VpnManager({ endpoint: svc.sockPath, tokenPath: svc.tokenPath, timeoutMs: 1000, slowTimeoutMs: 4000 });
+    const r = await vpn.request({ cmd: 'connect', mode: 'rapido' });
+    assert.strictEqual(r.ok, true, 'a connect that takes longer than the short timeout is still waited for');
+    await assert.rejects(vpn.request({ cmd: 'status' }), (e) => e instanceof VpnUnavailable && e.code === 'timeout');
+    const d = new VpnManager({});
+    assert.strictEqual(d.timeoutMs, 8000);
+    assert.strictEqual(d.slowTimeoutMs, 120000);
+    await svc.close();
+  });
+
   await check('the default paths are the service\'s own, per platform', async () => {
     assert.deepStrictEqual(defaultPaths('linux'), { endpoint: '/run/hidravpn/control.sock', tokenPath: '/run/hidravpn/control.token' });
     const w = defaultPaths('win32', { ProgramData: 'D:\\PD' });

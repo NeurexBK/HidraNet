@@ -19,16 +19,18 @@ pass() { echo "ok    $1"; ok=$((ok + 1)); }
 fail() { echo "FAIL  $1"; bad=$((bad + 1)); }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 for b in hidravpn hidravpn-service; do [ -x "$BIN/$b" ] || { echo "build first: cargo build --release --manifest-path hidravpn/Cargo.toml -p hidravpn -p hidravpn-service"; exit 1; }; done
-if [ -e /usr/local/bin/hidravpn-service ] || [ -e /etc/hidravpn/client.key ] || [ -e /etc/systemd/system/hidravpn.service ]; then
-  echo "HidraVPN is installed on this machine; this test would replace it. Run it in a container."; exit 1
+if [ -e /usr/local/bin/hidravpn-service ] || [ -e /etc/hidravpn/client.key ] || [ -e /etc/systemd/system/hidravpn.service ] \
+   || [ -e /etc/hidravpn/node.toml ] || [ -e /etc/systemd/system/hidravpn-node.service ]; then
+  echo "HidraVPN (a client or a node) is installed on this machine; this test would replace it. Run it in a container."; exit 1
 fi
+MADE_GROUP=0; getent group hidravpn >/dev/null || MADE_GROUP=1
 
 W="$(mktemp -d /tmp/hv-inst.XXXXXX)"
 TESTUSER=hvinstalltest
 cleanup() {
   rm -f /usr/local/bin/hidravpn-service /usr/local/bin/hidravpn /etc/systemd/system/hidravpn.service
   rm -rf /etc/hidravpn
-  userdel "$TESTUSER" 2>/dev/null; groupdel hidravpn 2>/dev/null
+  userdel "$TESTUSER" 2>/dev/null; [ "$MADE_GROUP" = 1 ] && groupdel hidravpn 2>/dev/null
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -82,10 +84,13 @@ OUT=$(/usr/local/bin/hidravpn-service uninstall 2>&1); RC=$?
   && pass "without --purge the key, the nodes and the programs stay" || fail "plain uninstall removed too much"
 
 "$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" >/dev/null 2>&1
+# Passes, the account token and the lock: a purge takes them too.
+echo '{"passes":[]}' > /etc/hidravpn/passes.json; echo token > /etc/hidravpn/pass.token; : > /etc/hidravpn/hidravpn.lock
 OUT=$(/usr/local/bin/hidravpn-service uninstall --purge 2>&1); RC=$?
 [ $RC = 0 ] && pass "uninstall --purge succeeds ($(echo "$OUT" | tail -1))" || fail "purge: $OUT"
 [ ! -e $KEY ] && [ ! -e /etc/hidravpn/circuit.json ] && [ ! -e /usr/local/bin/hidravpn ] && [ ! -e /usr/local/bin/hidravpn-service ] && [ ! -e /etc/systemd/system/hidravpn.service ] \
   && pass "--purge removes the programs, the nodes and the key" || fail "left behind: $(ls /usr/local/bin/hidravpn* /etc/hidravpn 2>&1)"
+[ ! -e /etc/hidravpn ] && pass "--purge leaves no passes, no account token and no folder behind" || fail "left in /etc/hidravpn: $(ls -A /etc/hidravpn 2>&1)"
 
 # ── The whole chain the browser runs: a manifest made by the script, signed
 # by hidravpn-sign, read and checked by the browser's installer, which then

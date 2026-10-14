@@ -14,6 +14,8 @@
 # Needs: the release binaries built, python3, curl, nft, /dev/net/tun.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
+[ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 BIN="$HERE/../target/release"
 WORK="$(mktemp -d /tmp/hidravpn-test.XXXXXX)"
 PIDS=()
@@ -32,6 +34,9 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+# What an interrupted run may have left: its namespaces and its files.
+for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
+rm -rf /etc/netns/hv-client /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /run/hidravpn/netcfg.json /var/run/wireguard/hvpn0.sock
 
 for b in hidravpn hidravpn-node; do [ -x "$BIN/$b" ] || { echo "build first: cargo build --release"; exit 1; }; done
 
@@ -58,7 +63,7 @@ if $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1; then fail "the cl
 # ── Node ─────────────────────────────────────────────────────────────────────
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" init --endpoint 10.200.0.1:51820 --name test-node --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 pass "node settings written ($(grep -o 'node public key: .*' "$WORK/init.log" | cut -c1-40)...)"
-$N "$BIN/hidravpn-node" --config "$WORK/node.toml" run > "$WORK/node.log" 2>&1 & PIDS+=($!)
+$N "$BIN/hidravpn-node" --config "$WORK/node.toml" run > "$WORK/node.log" 2>&1 & NODE_PID=$!; PIDS+=($NODE_PID)
 for i in $(seq 1 50); do grep -q "DNS forwarder ready" "$WORK/node.log" && break; sleep 0.2; done
 grep -q "DNS forwarder ready" "$WORK/node.log" && pass "node up: $(grep -o 'tunnel interface.*' "$WORK/node.log" | head -1)" || { cat "$WORK/node.log"; fail "node did not come up"; exit 1; }
 $N nft list table inet hidravpn >/dev/null 2>&1 && pass "NAT table present in the node" || fail "no NAT table"
@@ -98,8 +103,19 @@ $I python3 -I -m http.server 8080 --directory "$WORK" > /dev/null 2>&1 & PIDS+=(
 SUM1=$(sha256sum "$WORK/blob" | cut -c1-64); SUM2=$($C curl -s --max-time 20 http://10.201.0.2:8080/blob | sha256sum | cut -c1-64)
 [ "$SUM1" = "$SUM2" ] && pass "2 MB transferred through the tunnel intact" || fail "transfer corrupted or failed"
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" status > "$WORK/status.log" 2>&1
-grep -q "laptop" "$WORK/status.log" && grep -qvE "never" "$WORK/status.log" && pass "node status shows the client with a handshake: $(grep laptop "$WORK/status.log" | tr -s ' ')" || { cat "$WORK/status.log"; fail "status"; }
+grep -q "laptop" "$WORK/status.log" && ! grep "laptop" "$WORK/status.log" | grep -q "never" && pass "node status shows the client with a handshake: $(grep laptop "$WORK/status.log" | tr -s ' ')" || { cat "$WORK/status.log"; fail "status"; }
 grep -qE "10\.200\.0\.2|10\.77\.0\.2" "$WORK/node.log" && fail "the node log contains a client address" || pass "the node log names no client address"
+
+echo "── the node restarts"
+# While it is away the client's datagrams draw ICMP "port unreachable", which
+# the socket reports on its next read; that must not end the tunnel.
+kill -INT $NODE_PID; for i in $(seq 1 25); do kill -0 $NODE_PID 2>/dev/null || break; sleep 0.2; done
+for i in 1 2 3; do $C curl -s --max-time 1 http://10.201.0.2/ >/dev/null 2>&1; done
+$N "$BIN/hidravpn-node" --config "$WORK/node.toml" run > "$WORK/node2.log" 2>&1 & NODE_PID=$!; PIDS+=($NODE_PID)
+for i in $(seq 1 50); do grep -q "DNS forwarder ready" "$WORK/node2.log" && break; sleep 0.2; done
+BACK=""
+for i in $(seq 1 20); do BACK=$($C curl -s --max-time 2 http://10.201.0.2/ 2>/dev/null); [ "$BACK" = "10.201.0.1" ] && break; sleep 0.5; done
+[ "$BACK" = "10.201.0.1" ] && kill -0 $UP 2>/dev/null && pass "after the node restarted the tunnel came back by itself" || { tail -3 "$WORK/client.log"; fail "the tunnel did not survive the node restarting"; }
 
 echo "── down"
 kill -INT $UP; for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done

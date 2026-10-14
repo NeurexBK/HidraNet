@@ -32,6 +32,20 @@ done
 [[ "$VERSION" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "--version X.Y.Z is required" >&2; exit 2; }
 [[ "$BASE" == https://* ]] || { echo "--base must be an https:// address" >&2; exit 2; }
 [ ${#PLATFORMS[@]} -gt 0 ] || { echo "give at least one --linux-x64 DIR or --win32-x64 DIR" >&2; exit 2; }
+# The address goes into the JSON as it is: nothing that would need escaping.
+case "$BASE" in *'"'*|*'\'*|*[[:space:]]*) echo "--base must not hold quotes, backslashes or spaces" >&2; exit 2 ;; esac
+
+files_of() { # platform -> the files it publishes
+  if [ "$1" = win32-x64 ]; then echo hidravpn-service.exe hidravpn.exe wintun.dll
+  else echo hidravpn-service hidravpn; fi
+}
+# Every file is there before anything is written: a missing one must not
+# leave half a manifest in the file the output goes to.
+for p in "${PLATFORMS[@]}"; do
+  for x in $(files_of "$p"); do
+    [ -f "${DIRS[$p]}/$x" ] || { echo "${DIRS[$p]}/$x is missing" >&2; exit 1; }
+  done
+done
 
 entry() { # platform dir name
   local f="$2/$3"

@@ -23,6 +23,7 @@
 # Run as root:  hidravpn/scripts/test-passes-netns.sh
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
 C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; Q="ip netns exec hv-q"
@@ -159,7 +160,8 @@ echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q "part of the circuit in u
 for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
 EXIT_IP=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.201.0.1" ] && pass "and the rotated circuit carries traffic" || fail "after new identity '$EXIT_IP'"
 R=$(svc '{"cmd":"nodes"}'); echo "$R" | grep -q '"passes":1' && pass "no pass was spent on it" || fail "count after new identity: $R"
-SPENT=$(python3 -I -c "import json; print(len(json.load(open('$WORK/run/spent.json'))['tags']))")
+# The node's spent list: a snapshot and a journal of the passes since.
+SPENT=$(python3 -I -c "import json, os; d='$WORK/run'; t=set(json.load(open(d+'/spent.json'))['tags']) if os.path.exists(d+'/spent.json') else set(); t|={l.split()[0] for l in open(d+'/spent.log') if len(l.split())==2} if os.path.exists(d+'/spent.log') else set(); print(len(t))")
 [ "$SPENT" = 2 ] && pass "the node wrote two passes down as spent" || fail "spent: $SPENT"
 svc '{"cmd":"down"}' >/dev/null
 

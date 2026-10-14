@@ -134,8 +134,8 @@ mod tests {
 
     #[test]
     fn an_embedded_key_is_either_absent_or_a_real_key() {
-        // Empty until the maintainers run scripts/embed-release-key.sh; a
-        // constant that is set must parse, or every verification would fail
+        // Set by scripts/embed-release-key.sh; a constant that is set must
+        // parse, or every verification would fail
         // for a reason nobody would spot.
         for (name, c, k) in [
             ("release", RELEASE_PUBLIC_KEY_B64, ReleaseKey::embedded()),

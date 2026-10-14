@@ -147,9 +147,25 @@ fn nft(input: &str) -> Result<()> {
 }
 
 pub fn apply(cfg: &KillConfig) -> Result<()> {
+    // The names go into the ruleset between quotes: only what an interface
+    // name can be, so none can close the quote and add a rule of its own.
+    for name in std::iter::once(&cfg.interface).chain(cfg.extra_interface.as_ref()) {
+        if !interface_name_ok(name) {
+            return Err(anyhow!(
+                "\"{name}\" is not an interface name (1-15 letters, digits, - or _)"
+            ));
+        }
+    }
     // Replace, never stack, and never with a moment in between: a table from
     // an earlier run, or the hold of a rotation, goes in the same transaction.
     nft(&replace_script(&ruleset(cfg)))
+}
+
+fn interface_name_ok(name: &str) -> bool {
+    (1..=15).contains(&name.len())
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
 pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
@@ -228,6 +244,14 @@ mod tests {
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
         assert!(r.contains("ip saddr 203.0.113.10 udp sport 51820 accept"));
         assert!(r.contains(r#"oifname "hvpn0" accept"#));
+    }
+
+    #[test]
+    fn only_interface_names_go_into_the_ruleset() {
+        assert!(interface_name_ok("hvpn0") && interface_name_ok("hv_x-1"));
+        for bad in ["", "a\" accept", "hv pn", "abcdefghijklmnop", "hv;0"] {
+            assert!(!interface_name_ok(bad), "{bad}");
+        }
     }
 
     #[test]

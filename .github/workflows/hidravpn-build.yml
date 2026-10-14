@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'hidravpn/**'
+      - '.github/workflows/hidravpn-build.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,6 +45,13 @@ jobs:
         run: cargo clippy --manifest-path hidravpn/Cargo.toml --workspace --all-targets -- -D warnings
       - name: tests
         run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
+      # The scripts parse, and the node installer's dry run says what it
+      # would do. The network suites (scripts/test-*-netns.sh) need root and
+      # network namespaces; run them on a throwaway machine or container.
+      - name: scripts parse
+        run: for f in hidravpn/scripts/*.sh hidravpn/scripts/test/*.sh; do bash -n "$f" || exit 1; done
+      - name: node installer (dry run)
+        run: bash hidravpn/scripts/test-node-installer.sh
 
   build-windows:
     name: build Windows executables

@@ -12,31 +12,29 @@ pub fn rfc3339_to_unix(s: &str) -> Result<i64> {
         .strip_suffix('Z')
         .or_else(|| rest.strip_suffix("+00:00"))
         .ok_or_else(bad)?;
-    let time = time.split('.').next().unwrap_or(time);
-    let mut d = date.split('-');
-    let (y, m, day) = (
-        d.next()
-            .and_then(|x| x.parse::<i64>().ok())
-            .ok_or_else(bad)?,
-        d.next()
-            .and_then(|x| x.parse::<u32>().ok())
-            .ok_or_else(bad)?,
-        d.next()
-            .and_then(|x| x.parse::<u32>().ok())
-            .ok_or_else(bad)?,
-    );
-    let mut t = time.split(':');
-    let (h, mi, sec) = (
-        t.next()
-            .and_then(|x| x.parse::<i64>().ok())
-            .ok_or_else(bad)?,
-        t.next()
-            .and_then(|x| x.parse::<i64>().ok())
-            .ok_or_else(bad)?,
-        t.next()
-            .and_then(|x| x.parse::<i64>().ok())
-            .ok_or_else(bad)?,
-    );
+    let (time, frac) = time.split_once('.').unwrap_or((time, "0"));
+    if frac.is_empty() || !frac.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(bad());
+    }
+    // Exactly the fields of the shape, each all digits of its width: no
+    // sign, no extra field ("T-1:00:00Z" and "2026-10-13-99" are not dates).
+    let fields = |text: &str, sep: char, widths: [usize; 3]| -> Option<[i64; 3]> {
+        let parts: Vec<&str> = text.split(sep).collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let mut out = [0i64; 3];
+        for (i, (p, w)) in parts.iter().zip(widths).enumerate() {
+            if p.len() != w || !p.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            out[i] = p.parse().ok()?;
+        }
+        Some(out)
+    };
+    let [y, m, day] = fields(date, '-', [4, 2, 2]).ok_or_else(bad)?;
+    let [h, mi, sec] = fields(time, ':', [2, 2, 2]).ok_or_else(bad)?;
+    let (m, day) = (m as u32, day as u32);
     if !(1..=12).contains(&m) || !(1..=31).contains(&day) || h > 23 || mi > 59 || sec > 60 {
         return Err(bad());
     }
@@ -95,6 +93,13 @@ mod tests {
             "2026-10-13 12:00:00",
             "2026-13-01T00:00:00Z",
             "yesterday",
+            "2026-10-13T-1:00:00Z",
+            "2026-10-13T12:-5:00Z",
+            "2026-10-13-99T00:00:00Z",
+            "2026-10-13T12:00:00:99Z",
+            "+2026-10-13T00:00:00Z",
+            "2026-10-13T12:00:00.Z",
+            "2026-10-13T12:00:00.5xZ",
         ] {
             assert!(rfc3339_to_unix(s).is_err(), "{s}");
         }

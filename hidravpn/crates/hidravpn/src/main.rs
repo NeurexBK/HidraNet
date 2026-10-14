@@ -20,8 +20,10 @@
 //!   hidravpn down                   disconnect, or restore the network after a crash
 //!
 //! Every node is shown a different key, derived from the one master key for
-//! that node; the master key's public half reaches no node. `up`, `down` and
-//! `nodes` need administrator rights. Nothing here records where the traffic
+//! that node; the master key's public half reaches no node. `up` with an
+//! invite, `down` without the service, `nodes` and `passes` need
+//! administrator rights; a member of the hidravpn group may `up --rapido` or
+//! `--privado` and `down` through the service. Nothing here records where the traffic
 //! went.
 
 use std::path::{Path, PathBuf};
@@ -31,11 +33,12 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
-use hidravpn_core::{
-    Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Pocket, ReleaseKey, Slot,
-};
+use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, ReleaseKey, Slot};
 use hidravpn_service::ipc::{self, Command, StatusReport};
 use hidravpn_service::paths;
+// The pocket is read and written as the service does: root only, and
+// atomically, so neither ever reads half a file the other wrote.
+use hidravpn_service::daemon::{load_pocket, save_pocket};
 
 #[derive(Parser)]
 #[command(
@@ -228,7 +231,7 @@ fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
                 std::fs::create_dir_all(dir)
                     .with_context(|| format!("creating {}", dir.display()))?;
             }
-            write_private(path, key.secret_base64().as_bytes())?;
+            hidravpn_service::daemon::write_private_atomic(path, key.secret_base64().as_bytes())?;
             Ok(key)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(anyhow!(
@@ -237,27 +240,6 @@ fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
         )),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
-}
-
-/// Readable by this account only.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("writing {}", path.display()))?;
-        std::io::Write::write_all(&mut f, bytes)?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
-    }
-    Ok(())
 }
 
 /// Asks admission from the known nodes that admit openly — one by name, or
@@ -324,6 +306,9 @@ async fn join_known(
         }
     }
     if wallet.passes.len() != wallet_before {
+        // The invites a pass won first: were the pocket lost after the
+        // wallet was written, the pass would be gone and its invite too.
+        save_pocket(pocket_path, pocket)?;
         hidravpn_service::passes::save_wallet(&wallet_path, &wallet)?;
     }
     Ok(joined)
@@ -336,21 +321,6 @@ fn wallet_beside(pocket_path: &Path) -> PathBuf {
 
 fn token_beside(pocket_path: &Path) -> PathBuf {
     pocket_path.with_file_name("pass.token")
-}
-
-fn load_pocket(path: &Path) -> Result<Pocket> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Pocket::from_json(&s).with_context(|| format!("reading {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Pocket::default()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
-fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    write_private(path, pocket.to_json().as_bytes())
 }
 
 fn require_admin() -> Result<()> {
@@ -683,6 +653,42 @@ async fn main() -> Result<()> {
             interface,
             no_kill_switch,
         } => {
+            // From the pocket the service reads, with no node named: the
+            // service picks, as it does for the browser — which also lets a
+            // member of the hidravpn group connect, and keeps a node the
+            // running circuit goes through from being asked for a pass from
+            // behind its kill switch.
+            if (privado || rapido) && node.is_none() && pocket_path == paths::circuit_pocket() {
+                let mode = if privado { "privado" } else { "rapido" };
+                if let Some(res) = service_call(
+                    cli.direct,
+                    Command::Connect {
+                        mode: mode.into(),
+                        allow_lan: false,
+                        keep_ipv6,
+                    },
+                )
+                .await
+                {
+                    let r = res?;
+                    if !r.ok {
+                        return Err(anyhow!(r
+                            .error
+                            .unwrap_or_else(|| "the service could not connect".into())));
+                    }
+                    if let Some(note) = &r.note {
+                        println!("{note}");
+                    }
+                    println!(
+                        "connected through the HidraVPN service: {}",
+                        r.status.as_ref().map(describe).unwrap_or_default()
+                    );
+                    if let Some(line) = r.status.as_ref().and_then(|s| s.explanation()) {
+                        println!("  {line}");
+                    }
+                    return Ok(());
+                }
+            }
             let (spec, alternates, alternate_entries) = if privado || rapido {
                 // Held while the pocket and the wallet are read and written
                 // here; let go before the circuit is built.
@@ -885,7 +891,10 @@ async fn main() -> Result<()> {
                 require_admin()?;
                 let _ = killswitch::remove();
                 match netcfg::load_plan()? {
-                    None => println!("nothing to undo"),
+                    None => {
+                        netcfg::recover_dns();
+                        println!("nothing to undo")
+                    }
                     Some(plan) => {
                         netcfg::revert(&plan)?;
                         println!("network restored");

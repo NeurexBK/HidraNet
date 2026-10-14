@@ -29,6 +29,9 @@ has "it opens the admission port too"   "UDP 51820 (the tunnel) and TCP 51821 (a
 has "it says how to get the node's record for the list" "hidravpn-node record >"
 has "it says how clients join an open node" "hidravpn nodes join --all"
 has "it installs the systemd unit"      "hidravpn-node.service"
+has "the unit runs the installed binary with the settings init wrote" "it runs /usr/local/bin/hidravpn-node --config /etc/hidravpn/node.toml run"
+OUT2=$(HIDRAVPN_PREFIX=/opt/hv/bin HIDRAVPN_ETC=/opt/hv/etc bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name node-1 --out-interface eth9 2>&1)
+echo "$OUT2" | grep -q "it runs /opt/hv/bin/hidravpn-node --config /opt/hv/etc/node.toml run" && pass "with HIDRAVPN_PREFIX and HIDRAVPN_ETC the unit runs that binary with those settings" || fail "custom paths: $(echo "$OUT2" | grep 'systemd unit')"
 has "it enables and starts the service" "would run: systemctl enable --now hidravpn-node"
 has "it says which ports must be open and nothing else" "must reach this node; SSH stays as it is"
 has "it prints how to admit a client"   "hidravpn-node admit --name <a-name>"

@@ -11,7 +11,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use hidravpn_core::killswitch;
@@ -54,10 +53,16 @@ pub struct Daemon {
     release_key: Option<ReleaseKey>,
     /// One import at a time: load, merge and write back are one step.
     pocket_lock: Mutex<()>,
+    /// Set by `shutdown`: a connect still waiting for the state lock then
+    /// gives up, instead of building a circuit nobody will take down.
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 /// What a person is told when a circuit could not be built while the kill
 /// switch was held across a change: the machine is blocked, not open.
+/// The answer to a request without the right control token.
+pub const UNAUTHORISED: &str = "unauthorised: wrong or missing control token";
+
 const HELD: &str = "the kill switch stays armed: nothing leaves this machine until `hidravpn down` or another connect";
 
 /// The same bytes, compared without a short cut: the comparison takes the
@@ -96,7 +101,14 @@ impl Daemon {
             pocket_path,
             release_key,
             pocket_lock: Mutex::new(()),
+            stopping: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Whether `token` is the control token, compared in full, in constant
+    /// time.
+    pub fn token_ok(&self, token: &str) -> bool {
+        same_token(token.as_bytes(), self.token.as_bytes())
     }
 
     /// `caller` is the account asking: `Some(0)` for root (an elevated
@@ -110,14 +122,14 @@ impl Daemon {
     pub async fn handle(&self, req: Request, caller: Option<u32>) -> Response {
         let privileged = caller == Some(0);
         // The token is compared in full, in constant time, before anything else.
-        if !same_token(req.token.as_bytes(), self.token.as_bytes()) {
-            return Response::err("unauthorised: wrong or missing control token");
+        if !self.token_ok(&req.token) {
+            return Response::err(UNAUTHORISED);
         }
         match req.cmd {
             Command::Ping => Response::ok(),
             Command::Status => self.status().await,
             Command::Up { .. } if !privileged => Response::err(
-                "`up` with an invite needs root (an administrator prompt on Windows): only root may hand the service a node to route the machine through. Members of the hidravpn group use `connect`, which picks from the pocket root filled.",
+                "`up` with an invite needs root (an administrator prompt on Windows): only root may hand the service a node to route the machine through. Members of the hidravpn group use `hidravpn up --rapido` or `--privado` (or the browser's VPN page), which pick from the pocket root filled.",
             ),
             Command::Up {
                 invite,
@@ -272,6 +284,21 @@ impl Daemon {
         .first_hop_endpoint()?;
 
         let mut guard = self.state.lock().await;
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow!("the service is stopping"));
+        }
+        // The owner is checked again under the lock: two accounts asking at
+        // once both passed `owned_by` on an empty state, and the second must
+        // not take down the circuit the first just built.
+        if caller != Some(0) {
+            if let Some(owner) = guard.as_ref().and_then(|a| a.owner) {
+                if Some(owner) != caller {
+                    return Err(anyhow!(
+                        "the VPN was switched on by another account on this computer; only that account or root may switch it off"
+                    ));
+                }
+            }
+        }
         // Replacing a running circuit: the kill switch is held across the
         // change — only the old and the new first hop may be reached — before
         // the old circuit comes down, and the new circuit's own rules replace
@@ -441,11 +468,8 @@ impl Daemon {
             let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
             match hidravpn_core::admission::request_admission(&rec, &shown, &host).await {
                 Ok(invite) => {
-                    let mut added = 0;
                     for slot in hidravpn_core::pocket::slots_for_role(rec.role.as_deref()) {
-                        if pocket.add(slot, invite.clone()).is_ok() {
-                            added += 1;
-                        }
+                        let _ = pocket.add(slot, invite.clone());
                     }
                     joined += 1;
                     lines.push(format!(
@@ -453,7 +477,6 @@ impl Daemon {
                         rec.node_name,
                         rec.role.as_deref().unwrap_or("both")
                     ));
-                    let _ = added;
                 }
                 Err(e) => lines.push(format!("{}: {e:#}", rec.node_name)),
             }
@@ -561,7 +584,7 @@ impl Daemon {
         node_reports_with_passes(pocket, &wallet)
     }
 
-    /// Checks a signed node list against the embedded release key, and only
+    /// Checks a signed node list against the embedded list key, and only
     /// then puts its nodes into the pocket and writes the pocket back. The
     /// pocket on disk is untouched by a list that is refused.
     async fn import_nodes(&self, list: &str, signature: &str) -> Result<(Pocket, Merge)> {
@@ -665,6 +688,9 @@ impl Daemon {
         // 3. The lock again, and the circuit taken: it must be the one the
         //    choice was made on.
         let mut guard = self.state.lock().await;
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow!("the service is stopping"));
+        }
         let mut active = guard
             .take()
             .ok_or_else(|| anyhow!("disconnected meanwhile; nothing to rotate"))?;
@@ -874,7 +900,12 @@ impl Daemon {
     }
 
     /// Called when the service is stopping: leave nothing behind.
+    /// Takes the circuit down for good: anything still waiting to connect
+    /// is refused, so the machine is not left routed (and its kill switch
+    /// armed) by a circuit built after the last `down`.
     pub async fn shutdown(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.down().await;
     }
 }
@@ -1073,12 +1104,6 @@ fn load_key() -> Result<ClientKey> {
         )
     })?;
     ClientKey::from_base64(&s)
-}
-
-/// A short wait helper the installer uses when stopping.
-#[allow(dead_code)]
-pub async fn settle() {
-    tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
 #[cfg(test)]

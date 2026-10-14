@@ -11,8 +11,10 @@
 //!
 //! Limits are deliberate: a few admissions per address per ten minutes and a
 //! modest number overall, a short timeout per connection and a cap on
-//! concurrent ones. A script with enough addresses can still fill a node in
-//! hours; what it cannot do is keep it full, because a lease that never
+//! concurrent ones, overall and per address. A script with enough addresses
+//! can still fill a node in hours, or hold its door shut while it keeps
+//! hundreds of connections open; what it cannot do is keep the node full, or
+//! touch the tunnel, because a lease that never
 //! completes a handshake lapses within a quarter of an hour (`leases.rs`),
 //! so filling a node costs real tunnels, not requests.
 //! Nothing here logs an address or a key: counts only.
@@ -47,7 +49,14 @@ const PER_IP: usize = 3;
 const PER_IP_WINDOW: Duration = Duration::from_secs(600);
 const GLOBAL: usize = 120;
 const GLOBAL_WINDOW: Duration = Duration::from_secs(600);
-const CONNECTIONS: usize = 32;
+/// Connections served at once. An idle one costs a task and a small
+/// buffer, so the cap is generous: what keeps one source from holding them
+/// all is the cap per address below, and the timeout.
+const CONNECTIONS: usize = 256;
+/// Connections one address may hold open at once; past it, a connection is
+/// closed at once. A few, for clients behind one address (a household, a
+/// carrier's NAT).
+const CONNECTIONS_PER_IP: usize = 8;
 const PER_CONNECTION: Duration = Duration::from_secs(5);
 
 /// A sliding-window count per source address and overall.
@@ -136,6 +145,7 @@ pub async fn serve(
     );
     let limiter = Arc::new(Mutex::new(RateLimiter::default()));
     let slots = Arc::new(Semaphore::new(CONNECTIONS));
+    let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
     let counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
     loop {
         let Ok(slot) = slots.clone().acquire_owned().await else {
@@ -154,10 +164,17 @@ pub async fn serve(
                 continue;
             }
         };
+        // Over its share, the connection is closed unread: it is not worth
+        // a slot, and an answer would be one more thing to wait on.
+        let Some(_held) = OpenPerIp::take(&open, peer.ip()) else {
+            drop(stream);
+            continue;
+        };
         let (cfg, tx, limiter, counter) =
             (cfg.clone(), tx.clone(), limiter.clone(), counter.clone());
         tokio::spawn(async move {
             let _slot = slot;
+            let _held = _held;
             let r = tokio::time::timeout(
                 PER_CONNECTION,
                 handle(stream, peer.ip(), cfg, tx, limiter, counter),
@@ -167,6 +184,44 @@ pub async fn serve(
                 warn!("admission connection: {e}");
             }
         });
+    }
+}
+
+/// How many connections each address holds open now.
+#[derive(Default)]
+struct OpenPerIp(HashMap<IpAddr, usize>);
+
+impl OpenPerIp {
+    /// One more connection for `ip`, or None when it holds its share. The
+    /// count goes down when the returned guard is dropped.
+    fn take(this: &Arc<std::sync::Mutex<Self>>, ip: IpAddr) -> Option<OpenGuard> {
+        let mut m = this.lock().unwrap_or_else(|e| e.into_inner());
+        let n = m.0.entry(ip).or_insert(0);
+        if *n >= CONNECTIONS_PER_IP {
+            return None;
+        }
+        *n += 1;
+        Some(OpenGuard {
+            map: this.clone(),
+            ip,
+        })
+    }
+}
+
+struct OpenGuard {
+    map: Arc<std::sync::Mutex<OpenPerIp>>,
+    ip: IpAddr,
+}
+
+impl Drop for OpenGuard {
+    fn drop(&mut self) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = m.0.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                m.0.remove(&self.ip);
+            }
+        }
     }
 }
 
@@ -325,6 +380,31 @@ async fn redeem(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_address_holds_a_few_connections_at_most_and_gets_them_back() {
+        let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
+        let ip: IpAddr = "203.0.113.5".parse().unwrap();
+        let held: Vec<_> = (0..CONNECTIONS_PER_IP)
+            .map(|_| OpenPerIp::take(&open, ip).expect("within its share"))
+            .collect();
+        assert!(OpenPerIp::take(&open, ip).is_none(), "one more is closed");
+        let other: IpAddr = "203.0.113.6".parse().unwrap();
+        assert!(
+            OpenPerIp::take(&open, other).is_some(),
+            "another address is not affected"
+        );
+        drop(held);
+        assert!(
+            OpenPerIp::take(&open, ip).is_some(),
+            "closed connections are given back"
+        );
+        assert_eq!(
+            open.lock().unwrap().0.len(),
+            0,
+            "nothing is kept for an address with none open"
+        );
+    }
 
     #[test]
     fn a_source_gets_a_few_tries_per_window_and_the_window_slides() {

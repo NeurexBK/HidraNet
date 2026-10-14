@@ -39,7 +39,8 @@ pub struct NodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
     /// "manual": the operator admits by hand. "open": any client that asks
-    /// on the admission port is admitted (rate-limited, capped).
+    /// on the admission port is admitted (rate-limited, capped). "pass": a
+    /// client that redeems a pass is. Anything else is taken as "manual".
     #[serde(default = "default_admission")]
     pub admission: String,
     /// TCP port of the admission service (it also describes the node).

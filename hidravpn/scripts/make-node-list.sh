@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
     --removed) REMOVED+=("${2:?}"); shift 2 ;;
     --issuer-url) ISSUER="${2:?}"; shift 2 ;;
     --pass-key) PASSKEYS+=("${2:?}"); shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) RECORDS+=("$1"); shift ;;
   esac

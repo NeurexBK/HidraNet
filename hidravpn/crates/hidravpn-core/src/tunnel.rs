@@ -100,17 +100,22 @@ impl Tunnel {
         }
     }
 
-    /// Asks the running tunnel to stop; `run` then returns.
+    /// Asks the running tunnel to stop; `run` then returns. Kept even when
+    /// `run` has not started listening yet (a `send` with nobody subscribed
+    /// would drop it): `run` checks it before it starts and while it runs.
     pub fn stop(&self) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
     }
 
     /// Runs until `stop` is called or the socket fails. Starts with a
     /// handshake so the session is up before the first packet needs it.
     pub async fn run(&self) -> Result<()> {
+        let mut stop_rx = self.stop.subscribe();
+        if *stop_rx.borrow() {
+            return Ok(());
+        }
         self.initiate_handshake().await?;
 
-        let mut stop_rx = self.stop.subscribe();
         let mut to_net = tokio::spawn(tun_to_network(
             self.tunn.clone(),
             self.sock.clone(),
@@ -129,7 +134,7 @@ impl Tunnel {
             r = &mut to_net => r.map_err(|e| anyhow!("TUN reader stopped: {e}"))?,
             r = &mut to_tun => r.map_err(|e| anyhow!("network reader stopped: {e}"))?,
             r = &mut timers => r.map_err(|e| anyhow!("timer stopped: {e}"))?,
-            _ = stop_rx.changed() => Ok(()),
+            _ = stop_rx.wait_for(|stop| *stop) => Ok(()),
         };
 
         // Stop the other two tasks and wait for them to let go. Each holds a
@@ -160,10 +165,14 @@ impl Tunnel {
             }
         };
         if let Some(p) = out {
-            self.sock
-                .send(&p)
-                .await
-                .context("could not send the handshake")?;
+            match self.sock.send(&p).await {
+                // The node answered an earlier datagram with an ICMP error
+                // (it was restarting); the timers send the next handshake.
+                Err(e) if passing(&e) => {}
+                r => {
+                    r.context("could not send the handshake")?;
+                }
+            }
         }
         Ok(())
     }
@@ -214,10 +223,15 @@ async fn network_to_tun(
     let mut out = vec![0u8; BUF];
     let peer_ip: Option<IpAddr> = sock.peer_addr().ok().map(|a| a.ip());
     loop {
-        let n = sock
-            .recv(&mut dgram)
-            .await
-            .context("reading the UDP socket")?;
+        let n = match sock.recv(&mut dgram).await {
+            Ok(n) => n,
+            // A connected socket reports the ICMP error a datagram of ours
+            // drew (the node restarting, a route flapping) on the next read.
+            // That is news about one datagram, not the end of the tunnel:
+            // WireGuard's timers keep trying, and the node comes back.
+            Err(e) if passing(&e) => continue,
+            Err(e) => return Err(anyhow::Error::new(e).context("reading the UDP socket")),
+        };
         // One datagram can produce a packet for the interface, a reply for the
         // network (handshake response, keepalive), and then queued packets
         // that were waiting for the session; drain them all.
@@ -249,6 +263,16 @@ async fn network_to_tun(
             }
         }
     }
+}
+
+/// An error a connected UDP socket hands back for an ICMP error about an
+/// earlier datagram: passing, not fatal.
+fn passing(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        e.kind(),
+        ConnectionRefused | HostUnreachable | NetworkUnreachable
+    )
 }
 
 /// WireGuard's timers: handshake retries, keepalives, rekeying and the

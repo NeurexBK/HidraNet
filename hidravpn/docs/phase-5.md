@@ -70,7 +70,10 @@ of; the nonce, so each pass is spent once.
   restarts the node). Such a node answers `/admit` with `403` and says to get
   a pass; `/redeem` checks the pass and admits. Spent passes live in
   `/var/lib/hidravpn/spent.json`, as hashes (no nonce in the clear), each
-  kept until its issuer key expires, then pruned. A lease won with a pass is
+  kept until its issuer key expires, then pruned. A pass taken is one line
+  appended to `spent.log` beside it and flushed, so taking a pass costs the
+  same with a hundred on record or a million; the list is folded back into
+  `spent.json` every few thousand passes and when old ones are pruned. A lease won with a pass is
   dropped after `pass_idle_hours` (6) without a handshake, or fifteen minutes
   if it never had one; `max_clients` still applies.
 - **The signed list names the issuer**: `pass_issuer` with its `url` and its
@@ -146,6 +149,9 @@ sudo hidravpn up --rapido            # joins with a pass the first time, a new p
 
 ```
 hidravpn/scripts/test-passes-netns.sh      # an issuer, two pass nodes, a client: 42 checks
+hidravpn/scripts/test-unit-sandbox-netns.sh  # the service in the unit's sandbox, NetworkManager's resolv.conf
+hidravpn/scripts/test-fuzz-netns.sh        # broken requests at /admit, /redeem, /issue
+hidravpn/scripts/test-load-netns.sh        # a crowd, a full node, many passes at once
 cargo test --manifest-path hidravpn/Cargo.toml --workspace
 ```
 
@@ -176,6 +182,97 @@ own clock.
 
 Every earlier suite still passes, twice in a row (see the report of this
 round).
+
+## Three harder tests, and what they found
+
+Run after the phase was built, each its own script:
+
+- **`test-unit-sandbox-netns.sh`** (33 checks): the service inside the
+  systemd unit's sandbox (everything read-only but `/etc`, `/proc/sys/net`
+  and the runtime directory), on a machine without systemd-resolved, with
+  `/etc/resolv.conf` as NetworkManager's link into `/run` and as a plain
+  file. *Found:* with the link, connecting failed (`writing
+  /etc/resolv.conf: Read-only file system`): the write followed the link into
+  `/run`, which the unit makes read-only. *Now* the link itself is replaced,
+  NetworkManager's file is never touched, and `down` puts the link back. Also
+  found: after a power cut while connected, the tunnel's `resolv.conf` stayed
+  behind for good (the plan that undoes it lives in `/run`, gone at boot).
+  *Now* a copy of the original is kept in `/etc/hidravpn/resolv.conf.saved`
+  for as long as a connection is up, and the next start of the service (or
+  `hidravpn down`, or the next connection) puts it back.
+- **`test-fuzz-netns.sh`** (12 checks, `scripts/test/fuzz-http.py`): tens of
+  thousands of broken and mutated requests at a node's `/admit` and
+  `/redeem` and the issuer's `/issue` — broken HTTP, broken JSON, oversized,
+  half-sent, a real pass rewritten (case, spaces, padding, a lax base64
+  letter). Every answer is a well-formed HTTP answer with an expected status;
+  nothing is signed or charged for a broken request; a pass written
+  differently is still one pass, taken once; nothing panicked or grew. It
+  found nothing to fix.
+- **`test-load-netns.sh`** (23 checks, `scripts/test/load-http.py`): 300
+  admissions at once from 150 addresses fill a node exactly to its limit,
+  each client with its own address, while a connected client's tunnel keeps
+  answering; 100 passes sent twice each at the same moment fill a pass node
+  exactly, none taken twice, and one refused for "full" is not spent.
+  *Found:* 150 idle connections held the admission door shut for 19.5 s
+  (there were 32 places, each kept for the 5-second timeout). *Now* there are
+  256, and one address holds 8 at most: 300 idle connections from one address,
+  or 149 from 149, leave the next request answered at once. A determined
+  attacker with hundreds of addresses can still hold the door for a while;
+  the tunnel is untouched either way. *Found:* the node rewrote its whole
+  spent list for every pass, close to a second each at a million passes, so
+  15 of 20 redemptions at once were answered "did not answer in time". *Now*
+  a pass is one appended line (see above): 20 at once, with a million on
+  record, all taken in 0.66 s.
+
+## A review of all the code, and what it fixed
+
+Each fix with a check that fails without it where one could be written.
+
+- **The service under systemd** needs `CAP_CHOWN` to hand the control socket
+  and token to the hidravpn group; without it the unit would not start
+  (`test-unit-sandbox-netns.sh` now runs the service with exactly the unit's
+  capabilities, read from the unit).
+- **A tunnel survives its node restarting**: the ICMP error a datagram draws
+  while the node is away no longer ends the tunnel (`test-netns.sh`); a stop
+  asked before the tunnel listens is no longer lost.
+- **A connection that fails partway is undone at once** (routes, plan),
+  not at the next connection (the read-only `/etc` case of the sandbox test).
+- **Leases are read and written under one lock**, by the node and by
+  `admit`/`revoke` alike: a client admitted by hand while the node runs keeps
+  its address, a revoked one stays revoked (`test-load-netns.sh`); the file is
+  flushed to disk and root only.
+- **Passes are not lost**: a full node or a disk error answers 503 (the
+  client keeps the pass), never 400; a redemption the admission side stopped
+  waiting for is not admitted; the issuer's charge and signing are not cut
+  by a connection's timeout; a token nobody issued makes the issuer write
+  nothing.
+- **The service**: a connect still waiting when it stops is refused, so
+  nothing stays routed; two accounts connecting at once cannot take each
+  other's circuit; an accept error no longer ends the control channel; the
+  token is checked before a command is read; the CLI writes the pocket
+  atomically, as the service does; a member of the hidravpn group connects
+  with `hidravpn up --rapido` / `--privado` through the service; `uninstall
+  --purge` takes the passes and the token too.
+- **The browser** waits up to two minutes for a command that goes to the
+  network (connect, join, passes), eight seconds for the rest.
+- **Windows**: the kill switch replaces its filters in one transaction, with
+  no moment without any (built, not run on Windows).
+- **Smaller**: answers cut short or not text are refused; dates are parsed
+  strictly; a node's own claim of its country is not kept; the token never
+  shows in a debug print; interface names are checked before they go into
+  the firewall rules; `hidravpn-sign verify` with no file fails.
+- **Scripts**: the network suites refuse to run on a machine with HidraVPN
+  installed (`scripts/test/guard.sh`); three checks that could pass on a
+  failure now cannot; the installer builds as the person who ran sudo, not
+  as root; the node's unit runs the binary and settings the installer used;
+  `--help` prints the whole text; the release manifest is never written half;
+  the prober does not take its own address for the node's; CI also checks
+  that every script parses and runs the node installer's dry run.
+
+Left as it is, on purpose: the inner MTU of two hops never goes below 1280
+(IPv6 needs it; with a small entry MTU a packet is split, not lost); a
+node-full answer still counts against an address's three tries (the limit
+protects a full node from being hammered).
 
 ## What is honest about this phase
 

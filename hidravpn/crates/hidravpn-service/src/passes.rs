@@ -19,6 +19,18 @@ use hidravpn_core::{Invite, NodeRecord, Pocket};
 /// holds it, so neither overwrites passes or invites the other just wrote.
 /// Released when the returned file is dropped.
 pub fn lock_beside(pocket_path: &Path) -> Result<std::fs::File> {
+    let f = open_lock(pocket_path)?;
+    f.lock().with_context(|| {
+        format!(
+            "locking {}",
+            pocket_path.with_file_name("hidravpn.lock").display()
+        )
+    })?;
+    Ok(f)
+}
+
+/// The lock file beside the pocket, root only, not yet locked.
+fn open_lock(pocket_path: &Path) -> Result<std::fs::File> {
     if let Some(d) = pocket_path.parent() {
         std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
     }
@@ -30,12 +42,8 @@ pub fn lock_beside(pocket_path: &Path) -> Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    let f = o
-        .open(&lock)
-        .with_context(|| format!("opening {}", lock.display()))?;
-    f.lock()
-        .with_context(|| format!("locking {}", lock.display()))?;
-    Ok(f)
+    o.open(&lock)
+        .with_context(|| format!("opening {}", lock.display()))
 }
 
 fn now() -> u64 {
@@ -78,13 +86,7 @@ pub fn without_dead(pocket: &Pocket, wallet: &Wallet, mode: &str) -> Pocket {
 /// over the network with it held) and otherwise leaves the times as they
 /// are: they only steer which node is picked, they never decide a spend.
 pub fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
-    let lock = pocket_path.with_file_name("hidravpn.lock");
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock)
-        .with_context(|| format!("opening {}", lock.display()))?;
+    let f = open_lock(pocket_path)?;
     let mut held = false;
     for _ in 0..20 {
         if f.try_lock().is_ok() {

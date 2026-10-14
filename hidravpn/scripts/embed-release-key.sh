@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
     --release) RELEASE="${2:?}"; shift 2 ;;
     --list) LIST="${2:?}"; shift 2 ;;
     --root) ROOT="${2:?}"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done

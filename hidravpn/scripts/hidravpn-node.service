@@ -1,9 +1,9 @@
 # HidraVPN node — systemd unit.
 #
-# The node keeps nothing but its own key (/etc/hidravpn) and the current
-# leases (/run/hidravpn, which is RAM). It runs as root because it creates a
-# network interface, sets routes and firewall rules; everything else is taken
-# away below.
+# The node keeps its own key (/etc/hidravpn) and the leases of the clients
+# it admitted (/var/lib/hidravpn, which survive a reboot). It runs as root
+# because it creates a network interface, sets routes and firewall rules;
+# everything else is taken away below.
 [Unit]
 Description=HidraVPN node
 After=network-online.target
@@ -15,7 +15,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hidravpn-node run
+ExecStart=/usr/local/bin/hidravpn-node --config /etc/hidravpn/node.toml run
 # Always: a node that stopped for any reason comes back; the burst limit
 # above still stops a crash loop. Enough descriptors that no client can run
 # the node out of them.

@@ -40,7 +40,7 @@ ETC="${HIDRAVPN_ETC:-/etc/hidravpn}"
 UNIT="${HIDRAVPN_UNIT:-/etc/systemd/system/hidravpn-node.service}"
 
 ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; OPEN=0; PASS=0; ADM_PORT=51821
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --endpoint|--name|--out-interface|--role|--operator|--contact|--admission-port|--max-clients|--idle-days)
@@ -146,8 +146,14 @@ else
   run "${INIT[@]}"
 fi
 
-step "the systemd unit at $UNIT"
-run install -m 0644 "$HERE/hidravpn-node.service" "$UNIT"
+step "the systemd unit at $UNIT (it runs $PREFIX/hidravpn-node --config $ETC/node.toml run)"
+# The unit starts the binary where it was installed, with the settings where
+# init wrote them (HIDRAVPN_PREFIX, HIDRAVPN_ETC), not the defaults alone.
+install_unit() {
+  sed -e "s|^ExecStart=.*|ExecStart=$PREFIX/hidravpn-node --config $ETC/node.toml run|" "$HERE/hidravpn-node.service" > "$UNIT.tmp" \
+    && chmod 0644 "$UNIT.tmp" && mv "$UNIT.tmp" "$UNIT"
+}
+run install_unit
 run systemctl daemon-reload
 run systemctl enable --now hidravpn-node
 

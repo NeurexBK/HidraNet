@@ -140,11 +140,7 @@ impl UserspaceDevice {
             tokio::spawn(timer_loop(inner.clone())),
             tokio::spawn(control_loop(inner.clone(), listener)),
         ];
-        info!(
-            "userspace WireGuard serving {} peers' control socket at {}",
-            0,
-            path.display()
-        );
+        info!("userspace WireGuard control socket at {}", path.display());
         Ok(Self { inner, tasks })
     }
 
@@ -158,11 +154,10 @@ impl UserspaceDevice {
 
 // ── Data plane ────────────────────────────────────────────────────────────
 
-fn find_peer(inner: &Inner, packet: &Packet, datagram: &[u8]) -> Option<Arc<Peer>> {
+fn find_peer(inner: &Inner, packet: &Packet) -> Option<Arc<Peer>> {
     let peers = inner.peers.read().ok()?;
     match packet {
         Packet::HandshakeInit(p) => {
-            let _ = datagram;
             let half = parse_handshake_anon(&inner.secret, &inner.public, p).ok()?;
             let idx = peers.by_key.get(&half.peer_static_public)?;
             peers.by_index.get(idx).cloned()
@@ -194,7 +189,7 @@ async fn udp_loop(inner: Arc<Inner>) {
             }
             Err(_) => continue,
         };
-        let Some(peer) = find_peer(&inner, &packet, datagram) else {
+        let Some(peer) = find_peer(&inner, &packet) else {
             continue;
         };
 

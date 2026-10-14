@@ -18,21 +18,24 @@ PREFIX=/usr/local/bin
 
 [ "$(id -u)" = 0 ] || { echo "run it with sudo: sudo bash $0" >&2; exit 1; }
 
-# cargo may live in a user's ~/.cargo when invoked under sudo.
-if [ -f "${SUDO_USER:+/home/$SUDO_USER/.cargo/env}" ]; then
-  # shellcheck disable=SC1090
-  . "/home/$SUDO_USER/.cargo/env"
-fi
-
 if [ ! -x "$BIN/hidravpn" ] || [ ! -x "$BIN/hidravpn-service" ]; then
-  if ! command -v cargo >/dev/null; then
-    echo "The binaries are not built and cargo is not installed." >&2
+  # Built as the person who ran sudo, with their own Rust, never as root:
+  # a build as root would leave target/ owned by root in their checkout,
+  # and run their ~/.cargo/env as root.
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    BUILD=(sudo -u "$SUDO_USER" -H bash -c 'cd "$1" && { [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"; true; } && command -v cargo >/dev/null && cargo build --release -p hidravpn -p hidravpn-service' _ "$ROOT")
+  elif command -v cargo >/dev/null; then
+    BUILD=(bash -c 'cd "$1" && cargo build --release -p hidravpn -p hidravpn-service' _ "$ROOT")
+  else
+    BUILD=()
+  fi
+  echo ">> building the client and the service (a few minutes)"
+  if [ ${#BUILD[@]} -eq 0 ] || ! "${BUILD[@]}"; then
+    echo "The binaries are not built and could not be built here (is Rust installed for ${SUDO_USER:-root}?)." >&2
     echo "Either install Rust (https://rustup.rs) or build elsewhere and copy" >&2
     echo "hidravpn and hidravpn-service into $BIN, then run this again." >&2
     exit 1
   fi
-  echo ">> building the client and the service (a few minutes)"
-  ( cd "$ROOT" && cargo build --release -p hidravpn -p hidravpn-service )
 fi
 
 echo ">> installing the binaries to $PREFIX"
@@ -58,7 +61,11 @@ install -d -m 0755 /etc/hidravpn
 if [ -f /etc/hidravpn/client.key ]; then
   echo ">> keeping the existing key at /etc/hidravpn/client.key"
 else
-  "$PREFIX/hidravpn" keygen >/dev/null 2>&1
+  if ! OUT=$("$PREFIX/hidravpn" keygen 2>&1); then
+    echo "making this machine's key failed: $OUT" >&2
+    echo "the service is installed; make the key with: sudo hidravpn keygen" >&2
+    exit 1
+  fi
   echo ">> new master key written to /etc/hidravpn/client.key (the secret stays there)"
 fi
 

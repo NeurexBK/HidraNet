@@ -3,9 +3,9 @@
 //! Kept in /var/lib/hidravpn, so a reboot keeps every client: a lease is a
 //! public key and a tunnel address, exactly what a WireGuard configuration
 //! holds, and a kernel update on a rented server must not throw everyone out.
-//! In phase 5 admission comes from a pass and a lease lives as long as the
-//! connection; this file is the phase-1 stand-in, written by an
-//! administrator's `admit`.
+//! Written by the operator's `admit` and `revoke` and by the running node
+//! (open admission, redeemed passes, idle expiry), always under one lock
+//! (`Leases::update`).
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -56,11 +56,27 @@ pub struct Leases {
 
 fn path() -> PathBuf {
     // HIDRAVPN_RUN_DIR lets two nodes share one machine (the multi-hop test
-    // runs an entry and an exit side by side); the default is /run, RAM.
+    // runs an entry and an exit side by side).
     let dir = std::env::var_os("HIDRAVPN_RUN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/hidravpn"));
     dir.join("peers.json")
+}
+
+/// The lock `Leases::update` holds, on a file beside the leases.
+fn lock() -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let p = path().with_file_name("peers.lock");
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&p)
+        .with_context(|| format!("opening {}", p.display()))?;
+    f.lock().context("locking the leases")?;
+    Ok(f)
 }
 
 impl Leases {
@@ -72,12 +88,47 @@ impl Leases {
         }
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Reads the leases, lets `f` change them, and writes them back when it
+    /// says so — all under a lock on the file system. The running node and
+    /// the operator's `admit` and `revoke` both change this file: without
+    /// the lock, and without reading it afresh each time, the node would
+    /// hand out an address `admit` had just given someone, or write a
+    /// revoked lease back. `f` returns its result and whether to save.
+    pub fn update<T>(f: impl FnOnce(&mut Self) -> (T, bool)) -> Result<T> {
+        let _lock = lock()?;
+        let mut leases = Self::load()?;
+        let (out, save) = f(&mut leases);
+        if save {
+            leases.save()?;
+        }
+        Ok(out)
+    }
+
+    /// Written beside, flushed, renamed over, the directory flushed: after a
+    /// power cut the file is the old one or the new one, never an empty one
+    /// that would keep the node from starting. Root only. Callers hold the
+    /// lock (`update`).
+    fn save(&self) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let p = path();
-        std::fs::create_dir_all(p.parent().unwrap())?;
+        let dir = p.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
         let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(&serde_json::to_vec_pretty(self)?)?;
+            f.sync_all()?;
+        }
         std::fs::rename(&tmp, &p)?;
+        if let Ok(d) = std::fs::File::open(&dir) {
+            let _ = d.sync_all();
+        }
         Ok(())
     }
 
@@ -229,6 +280,11 @@ impl Leases {
         self.leases.len() != before
     }
 
+    /// Whether a new client would get an address.
+    pub fn has_room(&self, net: &TunnelNet) -> bool {
+        self.next_free(net).is_ok()
+    }
+
     /// The lowest unused address after the node's own.
     fn next_free(&self, net: &TunnelNet) -> Result<Ipv4Addr> {
         let hosts = 1u32 << (32 - net.prefix);
@@ -247,33 +303,131 @@ impl Leases {
 /// no nonce in the clear), each with the end of its issuer key's validity,
 /// after which no node takes it anyway and the tag can go. Kept beside the
 /// leases, so a restart does not let a pass be spent twice.
+///
+/// On disk it is a snapshot (`spent.json`) and a journal beside it
+/// (`spent.log`, one `tag until` line per pass taken since the snapshot).
+/// Taking a pass appends one line and flushes it: the same small write
+/// whether the node remembers a hundred passes or a million, where
+/// rewriting the whole list each time took close to a second at a million.
+/// The snapshot is rewritten, and the journal emptied, when old tags are
+/// pruned or the journal has grown (`needs_compacting`).
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SpentPasses {
     #[serde(default)]
     tags: std::collections::BTreeMap<String, i64>,
+    /// Lines in the journal now.
+    #[serde(skip)]
+    journal: usize,
+    /// A write to the journal failed partway: the next pass rewrites the
+    /// snapshot instead of appending after a torn line.
+    #[serde(skip)]
+    journal_torn: bool,
+    /// Where both files live: beside the leases.
+    #[serde(skip)]
+    dir: PathBuf,
 }
 
-fn spent_path() -> PathBuf {
-    path().with_file_name("spent.json")
-}
+/// Journal lines after which the snapshot is rewritten.
+const COMPACT_AFTER: usize = 4096;
 
 impl SpentPasses {
     pub fn load() -> Result<Self> {
-        match std::fs::read(spent_path()) {
-            Ok(b) => Ok(serde_json::from_slice(&b).context("the spent-pass file is unreadable")?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
-        }
+        Self::load_from(path().parent().unwrap())
     }
 
-    /// Written beside, flushed to disk, renamed over, and the directory
-    /// flushed too: after a power cut the file is the old list or the new
-    /// one, never an empty one. Root only.
-    pub fn save(&self) -> Result<()> {
+    fn spent_path(&self) -> PathBuf {
+        self.dir.join("spent.json")
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.dir.join("spent.log")
+    }
+
+    fn load_from(dir: &std::path::Path) -> Result<Self> {
+        let mut s: Self = match std::fs::read(dir.join("spent.json")) {
+            Ok(b) => serde_json::from_slice(&b).context("the spent-pass file is unreadable")?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => return Err(e.into()),
+        };
+        s.dir = dir.to_path_buf();
+        match std::fs::read(s.journal_path()) {
+            Ok(b) => {
+                // A line cut short by a power cut is the one pass that was
+                // never admitted (its line is flushed before the admission);
+                // anything that does not read as a line is skipped.
+                for line in b.split(|c| *c == b'\n') {
+                    let line = String::from_utf8_lossy(line);
+                    let mut w = line.split_whitespace();
+                    if let (Some(tag), Some(until), None) = (w.next(), w.next(), w.next()) {
+                        if let Ok(until) = until.parse::<i64>() {
+                            if tag.len() == 64 && tag.bytes().all(|c| c.is_ascii_hexdigit()) {
+                                s.tags.insert(tag.to_string(), until);
+                                s.journal += 1;
+                            }
+                        }
+                    }
+                }
+                // The last line cut short: append nothing after it.
+                if !b.is_empty() && !b.ends_with(b"\n") {
+                    s.journal_torn = true;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(s)
+    }
+
+    /// Writes a pass down as spent, on disk before in memory: flushed
+    /// before the caller admits its key.
+    pub fn record(&mut self, tag: String, valid_until: i64) -> Result<()> {
+        if self.journal_torn {
+            self.tags.insert(tag, valid_until);
+            return self.save();
+        }
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let p = spent_path();
-        let dir = p.parent().unwrap().to_path_buf();
+        let p = self.journal_path();
+        let dir = self.dir.clone();
+        std::fs::create_dir_all(&dir)?;
+        let new = !p.exists();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(&p)?;
+        if let Err(e) = f
+            .write_all(format!("{tag} {valid_until}\n").as_bytes())
+            .and_then(|()| f.sync_data())
+        {
+            self.journal_torn = true;
+            return Err(e.into());
+        }
+        if new {
+            if let Ok(d) = std::fs::File::open(&dir) {
+                let _ = d.sync_all();
+            }
+        }
+        self.tags.insert(tag, valid_until);
+        self.journal += 1;
+        Ok(())
+    }
+
+    /// Whether the journal has grown enough to fold into the snapshot.
+    pub fn needs_compacting(&self) -> bool {
+        self.journal >= COMPACT_AFTER || self.journal_torn
+    }
+
+    /// The whole list as a new snapshot — written beside, flushed to disk,
+    /// renamed over, the directory flushed too, so after a power cut it is
+    /// the old one or the new one, never an empty one — and then the journal
+    /// emptied: a cut in between leaves tags in both, which is harmless.
+    /// Root only.
+    pub fn save(&mut self) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let p = self.spent_path();
+        let dir = self.dir.clone();
         std::fs::create_dir_all(&dir)?;
         let tmp = p.with_extension("json.tmp");
         {
@@ -290,6 +444,19 @@ impl SpentPasses {
         if let Ok(d) = std::fs::File::open(&dir) {
             let _ = d.sync_all();
         }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.journal_path())
+        {
+            Ok(j) => {
+                j.set_len(0)?;
+                j.sync_all()?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.journal = 0;
+        self.journal_torn = false;
         Ok(())
     }
 
@@ -297,6 +464,7 @@ impl SpentPasses {
         self.tags.contains_key(tag)
     }
 
+    #[cfg(test)]
     pub fn insert(&mut self, tag: String, valid_until: i64) {
         self.tags.insert(tag, valid_until);
     }
@@ -475,6 +643,49 @@ mod tests {
         assert_eq!(s.prune(150), 1);
         assert!(!s.contains("a") && s.contains("b"));
         assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn spent_passes_survive_a_restart_from_the_journal_and_a_torn_line_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("hv-spent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tag = |i: u8| format!("{:064x}", i);
+
+        let mut s = SpentPasses::load_from(&dir).unwrap();
+        s.record(tag(1), 100).unwrap();
+        s.record(tag(2), 200).unwrap();
+        assert!(
+            !dir.join("spent.json").exists(),
+            "a pass is a line, not a rewrite"
+        );
+        let s2 = SpentPasses::load_from(&dir).unwrap();
+        assert!(s2.contains(&tag(1)) && s2.contains(&tag(2)));
+
+        // A power cut halfway through a line: that line is skipped, the
+        // ones before it kept, and nothing is appended after it.
+        use std::io::Write;
+        let mut j = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("spent.log"))
+            .unwrap();
+        j.write_all(&tag(3).as_bytes()[..20]).unwrap();
+        let mut s3 = SpentPasses::load_from(&dir).unwrap();
+        assert_eq!(s3.len(), 2);
+        assert!(s3.needs_compacting());
+        s3.record(tag(4), 400).unwrap();
+        assert_eq!(std::fs::metadata(dir.join("spent.log")).unwrap().len(), 0);
+        let s4 = SpentPasses::load_from(&dir).unwrap();
+        assert!(s4.contains(&tag(1)) && s4.contains(&tag(4)) && !s4.contains(&tag(3)));
+
+        // Compacting folds the journal into the snapshot.
+        let mut s5 = SpentPasses::load_from(&dir).unwrap();
+        s5.record(tag(5), 500).unwrap();
+        assert_eq!(s5.prune(150), 1);
+        s5.save().unwrap();
+        let s6 = SpentPasses::load_from(&dir).unwrap();
+        assert_eq!(s6.len(), 3);
+        assert!(!s6.contains(&tag(1)) && s6.contains(&tag(5)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

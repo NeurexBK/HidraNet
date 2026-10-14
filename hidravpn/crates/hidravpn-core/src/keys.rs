@@ -13,8 +13,8 @@
 //!
 //! The derivation is deterministic, so there is nothing new to store, and
 //! two nodes get two unrelated keys: an entry and an exit that compared the
-//! keys they were shown would find nothing in common. Once passes exist
-//! (phase 5) the client will use a fresh key for every connection instead.
+//! keys they were shown would find nothing in common. A node joined with a
+//! pass is shown a fresh key every connection instead (`pass.rs`).
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;

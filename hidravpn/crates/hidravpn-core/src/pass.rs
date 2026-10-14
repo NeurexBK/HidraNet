@@ -420,11 +420,21 @@ impl Redemption {
 // ---- the issuer's wire -------------------------------------------------------
 
 /// What a client sends to the issuer's `POST /issue`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IssueRequest {
     pub token: String,
     pub key_id: String,
     pub blinded: Vec<String>,
+}
+
+impl std::fmt::Debug for IssueRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the account token.
+        f.debug_struct("IssueRequest")
+            .field("key_id", &self.key_id)
+            .field("blinded", &self.blinded.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the issuer answers: one blind signature per blinded message, in

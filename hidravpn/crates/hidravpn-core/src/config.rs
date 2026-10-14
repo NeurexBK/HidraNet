@@ -3,8 +3,8 @@
 //! An `Invite` is what the node hands out when it admits a client: the node's
 //! public key and endpoint, the address the client gets inside the tunnel, and
 //! the DNS server to use there. It carries no secret and nothing about the
-//! person, so it can travel over any channel. In phase 5 it will be issued in
-//! exchange for a pass instead of by an administrator.
+//! person, so it can travel over any channel. It comes from the node's
+//! administrator, from open admission, or in exchange for a pass.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

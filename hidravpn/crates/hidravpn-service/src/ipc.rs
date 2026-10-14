@@ -395,7 +395,16 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
         let slot = slots.clone().acquire_owned().await?;
-        let (stream, _) = listener.accept().await?;
+        // An accept error (out of descriptors) is waited out: ending here
+        // would leave the circuit up with nobody able to send `down`.
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                tracing::warn!("control channel: {e}; waiting");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         // Who is asking: root may do everything; a member of the group may
         // not hand the service an invite, and may not switch off what
         // another account switched on.
@@ -654,9 +663,21 @@ where
     let resp = if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST_BYTES {
         Response::err("bad request: larger than anything the service accepts")
     } else {
-        match serde_json::from_str::<Request>(line.trim()) {
-            Ok(req) => daemon.handle(req, caller).await,
-            Err(e) => Response::err(format!("bad request: {e}")),
+        // The token first: whoever does not hold it learns nothing of how
+        // the service reads a command, not even what is wrong with theirs.
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+        let token = value
+            .as_ref()
+            .and_then(|v| v.get("token"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if !daemon.token_ok(token) {
+            Response::err(crate::daemon::UNAUTHORISED)
+        } else {
+            match serde_json::from_value::<Request>(value.unwrap_or_default()) {
+                Ok(req) => daemon.handle(req, caller).await,
+                Err(e) => Response::err(format!("bad request: {e}")),
+            }
         }
     };
     let mut out = serde_json::to_string(&resp)?;
@@ -691,9 +712,9 @@ pub async fn call(cmd: Command) -> Result<Response> {
     {
         use std::time::Duration;
         use tokio::net::windows::named_pipe::ClientOptions;
-        // ERROR_PIPE_BUSY: every instance is serving another client for the
-        // moment. The server makes a new instance right after it accepts one,
-        // so the wait is tiny; retry briefly rather than report the service
+        // ERROR_PIPE_BUSY: every instance of the fixed pool is serving another
+        // client for the moment; each listens again once its client is done,
+        // so the wait is short; retry briefly rather than report the service
         // down. A missing pipe (service really not running) fails at once.
         const ERROR_PIPE_BUSY: i32 = 231;
         let mut tries = 0u32;

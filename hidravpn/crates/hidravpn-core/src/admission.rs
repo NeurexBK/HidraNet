@@ -172,14 +172,13 @@ fn checked_invite(record: &NodeRecord, answer: &str) -> Result<Invite> {
         ));
     }
     // What the pocket remembers about the node is what the signed list said,
-    // not what the node claims for itself: its name, who runs it, its role.
+    // not what the node claims for itself: its name, who runs it, its role,
+    // its country (none when the list names none).
     // And a node never chooses the key this client shows it.
     invite.node_name = record.node_name.clone();
     invite.operator = record.operator.clone();
     invite.role = record.role.clone();
-    if record.country.is_some() {
-        invite.country = record.country.clone();
-    }
+    invite.country = record.country.clone();
     invite.pass = None;
     Ok(invite)
 }
@@ -217,19 +216,9 @@ async fn http_call(
         .map_err(|_| anyhow!("the node did not answer within {TIMEOUT:?}"))?
 }
 
-fn parse_response(raw: &[u8]) -> Result<(u16, String)> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| anyhow!("the node's answer has no headers"))?;
-    let status_line = head.lines().next().unwrap_or_default();
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| anyhow!("the node's answer has no status: {status_line}"))?;
-    Ok((status, body.to_string()))
-}
+// The node's answer, read the way every answer this client gets is read:
+// cut short against its length, or not text, it is refused.
+use crate::http::parse_response;
 
 // ---- the server's half, shared so the node parses exactly what the client sends ----
 

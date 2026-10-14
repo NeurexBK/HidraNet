@@ -201,12 +201,17 @@ impl Accounts {
 
     /// Loads, changes and saves the file under a lock on the file system,
     /// so the running issuer and an `account` command never undo each
-    /// other's change. The lock is held only for the time of `f`.
+    /// other's change. The lock is held only for the time of `f`. Nothing is
+    /// written when `f` changed nothing: a request with a token nobody issued
+    /// costs a read, never a write to disk.
     fn update<T>(path: &Path, f: impl FnOnce(&mut Accounts) -> T) -> Result<T> {
         let _held = lock_file(path)?;
         let mut a = Accounts::load(path)?;
+        let before = serde_json::to_vec(&a)?;
         let out = f(&mut a);
-        a.save(path)?;
+        if serde_json::to_vec(&a)? != before {
+            a.save(path)?;
+        }
         Ok(out)
     }
 
@@ -497,7 +502,15 @@ async fn serve(issuer: Arc<Issuer>, listen: SocketAddr) -> Result<()> {
                 let (status, body) = match read_request(&mut stream).await {
                     Err(_) => (400, refusal("not a request this service reads")),
                     Ok(req) => match (req.method.as_str(), req.path.as_str()) {
-                        ("POST", "/issue") => issuer.issue(&req.body).await,
+                        // On a task of its own: the connection's timeout
+                        // must not cut it between charging the account and
+                        // signing, or giving the count back.
+                        ("POST", "/issue") => {
+                            let (issuer, body) = (issuer.clone(), req.body);
+                            tokio::spawn(async move { issuer.issue(&body).await })
+                                .await
+                                .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
+                        }
                         ("GET", "/") | ("GET", "/keys") => (200, issuer.records()),
                         ("GET", _) | ("POST", _) => (404, refusal("no such path")),
                         _ => (405, refusal("GET or POST")),
@@ -685,6 +698,40 @@ mod tests {
             Accounts::load(&path).unwrap().accounts.len(),
             8,
             "no change was lost"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_token_nobody_issued_never_makes_the_issuer_write() {
+        use std::os::unix::fs::MetadataExt;
+        let dir =
+            std::env::temp_dir().join(format!("hidravpn-issuer-nowrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("accounts.json");
+        let _ = std::fs::remove_file(&path);
+        let token = Accounts::update(&path, |a| a.add("someone", 3))
+            .unwrap()
+            .unwrap();
+        let day = today();
+        Accounts::update(&path, |a| a.charge(&token, 1, day))
+            .unwrap()
+            .unwrap();
+        let ino = std::fs::metadata(&path).unwrap().ino();
+        let r = Accounts::update(&path, |a| a.charge("not-a-token", 1, day)).unwrap();
+        assert_eq!(r, Err(Refused::UnknownToken));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            ino,
+            "the file was not rewritten"
+        );
+        Accounts::update(&path, |a| a.charge(&token, 1, day))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            std::fs::metadata(&path).unwrap().ino(),
+            ino,
+            "a real charge is written"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
