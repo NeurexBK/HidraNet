@@ -13,6 +13,7 @@ use crate::p2p::dht::kbuckets::{neighbourhood, Neighbourhood, RoutingTable, K};
 use crate::p2p::dht::message::DhtMessage;
 use crate::p2p::dht::node::{NodeId, NodeInfo};
 use crate::p2p::dht::store::{Origin, ServiceStore};
+use crate::safelog::sensitive;
 
 pub struct HandleResult {
     pub response: Option<DhtMessage>,
@@ -80,7 +81,7 @@ impl DhtHandler {
                 info!(
                     dht_message_type = "FIND_NODE",
                     node_id = %sender.id,
-                    target = %target,
+                    target = %sensitive(&target),
                     peer_count = table.total_nodes(),
                     "received FIND_NODE"
                 );

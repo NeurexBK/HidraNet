@@ -99,6 +99,78 @@ fn is_log_line(line: &str) -> bool {
         .any(|m| t.starts_with(m) || t.contains(&format!(" {m}")))
 }
 
+/// Every tracing macro call in a file, with the line it starts on, joined
+/// into one line. rustfmt breaks a call with several fields over several
+/// lines, and a check that looked only at the first one missed
+/// `relay = %relay.name` sitting on the line below `info!(`.
+fn log_calls(text: &str) -> Vec<(usize, String)> {
+    let mut calls = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut n = 0;
+    while n < lines.len() {
+        if !is_log_line(lines[n]) {
+            n += 1;
+            continue;
+        }
+        let start = n;
+        let mut joined = String::new();
+        let mut depth = 0i32;
+        let mut opened = false;
+        while n < lines.len() {
+            let line = lines[n].trim();
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(line);
+            for c in line.chars() {
+                match c {
+                    '(' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            n += 1;
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        calls.push((start, joined));
+    }
+    calls
+}
+
+/// The arguments of a macro call, split on the commas between them.
+fn arguments(call: &str) -> Vec<&str> {
+    let Some(open) = call.find('(') else {
+        return Vec::new();
+    };
+    let inner = &call[open + 1..];
+    let mut args = Vec::new();
+    let (mut depth, mut quoted, mut from) = (0i32, false, 0);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => {
+                if depth == 0 {
+                    args.push(inner[from..i].trim());
+                    return args;
+                }
+                depth -= 1;
+            }
+            ',' if !quoted && depth == 0 => {
+                args.push(inner[from..i].trim());
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args
+}
+
 #[test]
 fn no_log_line_carries_an_unscrubbed_address() {
     let mut files = Vec::new();
@@ -113,12 +185,19 @@ fn no_log_line_carries_an_unscrubbed_address() {
             continue;
         }
         let Ok(text) = fs::read_to_string(path) else { continue };
-        for (n, line) in text.lines().enumerate() {
-            if !is_log_line(line) {
-                continue;
-            }
+        for (n, line) in log_calls(&text) {
+            let line = line.as_str();
             if OWN_CONFIGURATION.iter().any(|ok| line.contains(ok)) {
                 continue;
+            }
+            let mut offend = || offences.push(format!("{}:{}  {}", path.display(), n + 1, line));
+            // `info!(circuit_id, payload, …)` records a variable under its
+            // own name, with no `=` for the check below to find.
+            for arg in arguments(line) {
+                let bare = arg.trim_start_matches(['%', '?']);
+                if SENSITIVE_FIELDS.contains(&bare) {
+                    offend();
+                }
             }
             for field in SENSITIVE_FIELDS {
                 // `field = %value` or `field = ?value`, not already wrapped.
@@ -138,12 +217,7 @@ fn no_log_line_carries_an_unscrubbed_address() {
                         }
                         let value = &line[at + needle.len()..];
                         if !value.starts_with("sensitive(") {
-                            offences.push(format!(
-                                "{}:{}  {}",
-                                path.display(),
-                                n + 1,
-                                line.trim()
-                            ));
+                            offend();
                         }
                     }
                 }
