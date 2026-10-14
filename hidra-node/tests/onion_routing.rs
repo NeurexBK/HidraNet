@@ -80,10 +80,13 @@ async fn start_three_relays() -> (SocketAddr, SocketAddr, SocketAddr) {
 /// path would fail rather than quietly pass.
 async fn idle_dht() -> std::sync::Arc<hidra_node::p2p::dht::DhtNode> {
     let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
-    let node = hidra_node::p2p::dht::DhtNode::new(
+    // A low ID difficulty: this node never meets another, and the public
+    // network's 24 bits would cost seconds in a debug build for nothing.
+    let node = hidra_node::p2p::dht::DhtNode::with_id_bits(
         "127.0.0.1:0".parse().unwrap(),
         signing_key,
         None,
+        8,
     )
     .await
     .unwrap();

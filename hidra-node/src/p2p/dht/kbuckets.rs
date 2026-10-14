@@ -1,7 +1,61 @@
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 use crate::p2p::dht::node::{NodeId, NodeInfo, ID_BITS};
 
 pub const K: usize = 20;
+
+/// How many nodes of one network neighbourhood (an IPv4 /24, an IPv6 /48) a
+/// bucket keeps, and the whole table. Addresses are the one thing a Sybil
+/// operator cannot mint by the thousand: a puzzle costs CPU, but a hundred
+/// identities on one rented server still share its /24, so they get two
+/// seats in a bucket and ten in the table, not the table.
+pub const MAX_PER_PREFIX_IN_BUCKET: usize = 2;
+pub const MAX_PER_PREFIX_IN_TABLE: usize = 10;
+
+/// Which network an address is in, for anything that should count one
+/// operator's addresses once: an IPv4 /24 or IPv6 /48 on the public internet,
+/// the host itself for addresses that are not (each LAN host counts alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Neighbourhood {
+    Prefix([u8; 7]),
+    Host(IpAddr),
+}
+
+pub fn neighbourhood(addr: &SocketAddr) -> Neighbourhood {
+    match diversity_prefix(addr) {
+        Some(p) => Neighbourhood::Prefix(p),
+        None => Neighbourhood::Host(addr.ip()),
+    }
+}
+
+/// The neighbourhood an address belongs to, for the limits above; None for
+/// addresses that are not on the public internet (loopback, private, link
+/// local, unique local, unspecified), which no outside operator can fill a
+/// table with and which a LAN or a test legitimately shares.
+pub fn diversity_prefix(addr: &SocketAddr) -> Option<[u8; 7]> {
+    match addr.ip() {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() {
+                return None;
+            }
+            let o = v4.octets();
+            Some([4, o[0], o[1], o[2], 0, 0, 0])
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return diversity_prefix(&SocketAddr::new(IpAddr::V4(v4), addr.port()));
+            }
+            let seg = v6.segments();
+            let unique_local = (seg[0] & 0xfe00) == 0xfc00;
+            let link_local = (seg[0] & 0xffc0) == 0xfe80;
+            if v6.is_loopback() || v6.is_unspecified() || unique_local || link_local {
+                return None;
+            }
+            let o = v6.octets();
+            Some([6, o[0], o[1], o[2], o[3], o[4], o[5]])
+        }
+    }
+}
 
 #[derive(Debug)]
 struct BucketEntry {
@@ -27,14 +81,27 @@ impl KBucket {
         self.entries.len() >= K
     }
 
+    #[allow(dead_code)]
     fn contains(&self, id: &NodeId) -> bool {
         self.entries.iter().any(|e| e.info.id == *id)
+    }
+
+    fn count_prefix(&self, prefix: &[u8; 7], except: &NodeId) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.info.id != *except && diversity_prefix(&e.info.dht_addr).as_ref() == Some(prefix))
+            .count()
     }
 
     fn update_or_insert(&mut self, info: NodeInfo) -> UpdateResult {
         if let Some(pos) =
             self.entries.iter().position(|e| e.info.id == info.id)
         {
+            // The address a node was verified at stays until the node stops
+            // answering there; another claim does not move it.
+            if self.entries[pos].info.dht_addr != info.dht_addr {
+                return UpdateResult::AddressKept;
+            }
             self.entries[pos].info = info;
             self.entries[pos].last_seen = Instant::now();
             let entry = self.entries.remove(pos);
@@ -85,7 +152,14 @@ impl KBucket {
 pub enum UpdateResult {
     Inserted,
     Updated,
-    BucketFull { least_recent_id: NodeId },
+    BucketFull {
+        #[allow(dead_code)] // for a future eviction ping, as Kademlia describes
+        least_recent_id: NodeId,
+    },
+    /// Its network neighbourhood already has its share of the table.
+    TooManyFromPrefix,
+    /// The node is seated at another address, which stays.
+    AddressKept,
 }
 
 pub struct RoutingTable {
@@ -102,6 +176,7 @@ impl RoutingTable {
         Self { our_id, buckets }
     }
 
+    #[allow(dead_code)]
     pub fn our_id(&self) -> &NodeId {
         &self.our_id
     }
@@ -114,6 +189,17 @@ impl RoutingTable {
             Some(idx) => idx,
             None => return UpdateResult::Updated,
         };
+        if let Some(prefix) = diversity_prefix(&info.dht_addr) {
+            let in_bucket = self.buckets[bucket_idx].count_prefix(&prefix, &info.id);
+            let in_table: usize = self
+                .buckets
+                .iter()
+                .map(|b| b.count_prefix(&prefix, &info.id))
+                .sum();
+            if in_bucket >= MAX_PER_PREFIX_IN_BUCKET || in_table >= MAX_PER_PREFIX_IN_TABLE {
+                return UpdateResult::TooManyFromPrefix;
+            }
+        }
         self.buckets[bucket_idx].update_or_insert(info)
     }
 
@@ -169,6 +255,17 @@ impl RoutingTable {
         self.buckets.iter().map(|b| b.len()).sum()
     }
 
+    /// The address this node is seated at, if it is seated.
+    pub fn address_of(&self, id: &NodeId) -> Option<SocketAddr> {
+        let idx = self.our_id.bucket_index(id)?;
+        self.buckets[idx]
+            .entries
+            .iter()
+            .find(|e| e.info.id == *id)
+            .map(|e| e.info.dht_addr)
+    }
+
+    #[allow(dead_code)] // the integration tests read the table through the library
     pub fn contains(&self, id: &NodeId) -> bool {
         if let Some(idx) = self.our_id.bucket_index(id) {
             self.buckets[idx].contains(id)
@@ -189,6 +286,7 @@ mod tests {
             dht_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             relay_addr: None,
             public_key: [0u8; 32],
+            id_nonce: 0,
         }
     }
 
@@ -198,7 +296,96 @@ mod tests {
             dht_addr: format!("127.0.0.1:{dht_port}").parse().unwrap(),
             relay_addr: Some(format!("127.0.0.1:{relay_port}").parse().unwrap()),
             public_key: [0u8; 32],
+            id_nonce: 0,
         }
+    }
+
+    fn public_node(first: u8, second: u8, net: [u8; 3], host: u8) -> NodeInfo {
+        let mut id = [0u8; ID_LEN];
+        id[0] = first;
+        id[1] = second;
+        NodeInfo {
+            id: NodeId(id),
+            dht_addr: format!("{}.{}.{}.{host}:7000", net[0], net[1], net[2]).parse().unwrap(),
+            relay_addr: None,
+            public_key: [0u8; 32],
+            id_nonce: 0,
+        }
+    }
+
+    #[test]
+    fn one_neighbourhood_gets_two_seats_in_a_bucket_and_ten_in_the_table() {
+        let our_id = NodeId([0x00; ID_LEN]);
+        let mut table = RoutingTable::new(our_id);
+        // Twenty identities from one /24, all for the same bucket.
+        let mut inserted = 0;
+        for i in 0..20u8 {
+            if matches!(table.update(public_node(0x80, i, [198, 51, 100], i + 1)), UpdateResult::Inserted) {
+                inserted += 1;
+            }
+        }
+        assert_eq!(inserted, MAX_PER_PREFIX_IN_BUCKET);
+        // Another /24 still gets in.
+        assert!(matches!(table.update(public_node(0x80, 99, [203, 0, 113], 1)), UpdateResult::Inserted));
+
+        // Spread over many buckets, one /24 stops at the table-wide cap.
+        let mut table = RoutingTable::new(our_id);
+        let mut total = 0;
+        for bucket in 0..40u8 {
+            let first = 0x80u8 >> (bucket % 8);
+            for j in 0..2u8 {
+                if matches!(
+                    table.update(public_node(first, bucket * 2 + j, [192, 0, 2], bucket * 2 + j + 1)),
+                    UpdateResult::Inserted
+                ) {
+                    total += 1;
+                }
+            }
+        }
+        assert_eq!(total, MAX_PER_PREFIX_IN_TABLE);
+
+        // An existing entry may refresh itself at its cap.
+        let mut table = RoutingTable::new(our_id);
+        let a = public_node(0x80, 1, [198, 51, 100], 1);
+        let b = public_node(0x80, 2, [198, 51, 100], 2);
+        assert!(matches!(table.update(a.clone()), UpdateResult::Inserted));
+        assert!(matches!(table.update(b), UpdateResult::Inserted));
+        assert!(matches!(table.update(a), UpdateResult::Updated));
+    }
+
+    #[test]
+    fn a_seated_node_keeps_its_address() {
+        let our_id = NodeId([0x00; ID_LEN]);
+        let mut table = RoutingTable::new(our_id);
+        let real = public_node(0x80, 1, [198, 51, 100], 1);
+        assert!(matches!(table.update(real.clone()), UpdateResult::Inserted));
+        let mut moved = real.clone();
+        moved.dht_addr = "203.0.113.66:7000".parse().unwrap();
+        moved.relay_addr = Some("203.0.113.66:9001".parse().unwrap());
+        assert!(matches!(table.update(moved), UpdateResult::AddressKept));
+        assert_eq!(table.address_of(&real.id), Some(real.dht_addr));
+        let seated = table.find_closest(&real.id, 1);
+        assert_eq!(seated[0].relay_addr, None, "nor does its relay address change");
+        // Once it is gone (it stopped answering), another address may be seated.
+        table.remove(&real.id);
+        let mut moved = real.clone();
+        moved.dht_addr = "203.0.113.66:7000".parse().unwrap();
+        assert!(matches!(table.update(moved), UpdateResult::Inserted));
+    }
+
+    #[test]
+    fn loopback_private_and_local_addresses_are_not_limited() {
+        for a in ["127.0.0.1:1", "10.1.2.3:1", "192.168.1.1:1", "172.16.0.1:1", "169.254.1.1:1", "[::1]:1", "[fd00::1]:1", "[fe80::1]:1", "[::ffff:10.0.0.1]:1"] {
+            assert!(diversity_prefix(&a.parse().unwrap()).is_none(), "{a}");
+        }
+        for a in ["198.51.100.7:1", "[2001:db8::1]:1", "[::ffff:198.51.100.7]:1"] {
+            assert!(diversity_prefix(&a.parse().unwrap()).is_some(), "{a}");
+        }
+        assert_eq!(
+            diversity_prefix(&"198.51.100.7:1".parse().unwrap()),
+            diversity_prefix(&"[::ffff:198.51.100.200]:9".parse().unwrap()),
+            "an IPv4-mapped address is its IPv4 /24"
+        );
     }
 
     #[test]
@@ -229,6 +416,7 @@ mod tests {
                 dht_addr: format!("127.0.0.1:{}", 7000 + i).parse().unwrap(),
                 relay_addr: None,
                 public_key: [0u8; 32],
+            id_nonce: 0,
             };
             table.update(node);
         }
@@ -303,6 +491,7 @@ mod tests {
             dht_addr: "127.0.0.1:7002".parse().unwrap(),
             relay_addr: None,
             public_key: [0u8; 32],
+            id_nonce: 0,
         };
 
         table.update(node1.clone());

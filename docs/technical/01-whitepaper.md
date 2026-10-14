@@ -80,7 +80,72 @@ confidentiality that lasts.
 ### Pillar 3 — Kademlia DHT
 
 Peer discovery and service resolution with no central server. Implemented in
-`p2p/dht/` — k-buckets, iterative routing, bootstrap.
+`p2p/dht/` — k-buckets, iterative routing, bootstrap — with the S/Kademlia
+defences against Sybil and eclipse attacks:
+
+- **IDs cost work and are bound to a key.** A node ID is the first 20 bytes of
+  `BLAKE3("hidra/node-id/v1" ‖ public key ‖ nonce)`, and the nonce is only
+  valid if the last 12 bytes of that same hash start with 24 zero bits. The ID
+  is unknown until the work is done, so an operator cannot test closeness to a
+  target for free and pay only for the IDs it keeps: landing one identity
+  among the K = 20 closest to a key in a network of N nodes costs about
+  (N / 20) × 2²⁴ hashes, and the whole closest set twenty times that. Every
+  DHT message is signed, and its sender's key must be the signing key and its
+  ID the one that key and nonce derive. Every node named in an answer is
+  checked the same way before it is even asked.
+- **A node is what it says about itself, where it was heard.** An answer
+  counts only if it comes from the address that was asked, is signed by the
+  node that was asked, and carries that node's own description; that
+  description, at that address, is what gets seated, never a third party's
+  copy. A node that writes first is seated only after it answers a fresh PING
+  from the address it wrote from, so a signed packet replayed from elsewhere
+  seats nothing; those checks are budgeted (64 at a time, four per network)
+  and an address that fails one waits before it is checked again. Once
+  seated, a node's address does not move until it stops answering there, and
+  only answers to this node's own requests refresh it.
+- **Lookups take three disjoint paths, and service lookups walk wide.** The
+  closest known nodes, one network at a time, are dealt to three paths that
+  never query the same node, and each path keeps its own closest responders.
+  A service is announced to, and asked from, every path's closest set and the
+  60 closest of all responders, and each path walks, within a fifteen-second
+  budget, until every one of the 60 closest nodes it has seen has answered
+  one of the paths or failed to. A cluster closer to a service than every
+  honest node therefore has to outnumber that, on every path, before a
+  lookup stops reaching honest storers.
+- **One network, a few seats.** A bucket holds at most two nodes from one
+  IPv4 /24 (or IPv6 /48) and the whole table at most ten. Because a node is
+  seated only at an address it answered from, the limit counts addresses the
+  nodes were reached at, not addresses they claim.
+- **Service records are signed by the service, and expire.** A descriptor
+  carries the service's own signature over its address, key, revision and
+  introduction points; storing nodes and lookups refuse any other, and a
+  lookup keeps the highest revision it can verify. A descriptor expires an
+  hour after it was signed (a running service re-signs and republishes every
+  fifteen minutes; a deleted site stops, so its record is gone an hour after
+  it was last signed), one dated more than ten minutes ahead is refused, and
+  a node keeps a pushed descriptor unless 60 networks
+  it knows are closer to the service, counted one per /24, so a cluster from
+  a few networks cannot make honest storers believe they are far and let the
+  record expire. Any one node may introduce at most 32 new services an hour
+  to another, and a full store evicts the entries of whoever pushed the most
+  first and never its own. A node in the path can withhold a record or
+  replay an older one; it cannot swap the introduction points, and filling a
+  store takes many earned identities pushing every hour.
+- **Relay announcements are not passed on.** A relay announces itself to its
+  own neighbourhood, found by a lookup; each node it tells seats it after a
+  PING, like any contact.
+
+What this does not do: proof of work raises the price of an eclipse with the
+size of the network and the difficulty, and an attacker with hardware and
+addresses in many networks can still pay it. More than sixty ground
+identities closer to a service than every honest node, from many networks
+and seated in honest tables, can still keep lookups from reaching an honest
+storer; so can a client whose every path starts at attacker nodes because it
+knows nothing else. Enough networks can also keep a node's contact checks
+busy, so that it seats no newcomer for a while. A node that relays an honest
+node's signed answers from its own address can sit between a client and that
+node if it is the first address the client meets the node at; it can delay
+or drop what it relays, not change it. §5.2 says so.
 
 ### Pillar 4 — Hidden services (`.hidra`)
 
@@ -269,6 +334,7 @@ Stated explicitly:
 | User operational error | Signing into a personal account undoes the anonymity |
 | Volume and timing metadata analysis | Partially mitigated (fixed-size cells); not eliminated |
 | Content the user publishes themselves | The network cannot de-anonymise what the person reveals |
+| A well-funded Sybil operator in the DHT | IDs cost proof of work, nodes are seated only where they answer, lookups take disjoint paths and walk wide, and service records are signed by the service and expire (Pillar 3); such an operator can withhold a record, not forge one, and with enough hardware and addresses in many networks it can still hide a service, from some clients or from all |
 
 ### 5.3 Disclosure of known limitations
 
