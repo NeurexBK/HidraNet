@@ -41,6 +41,13 @@
       ]
     }
   ],
+  "redirects": [
+    { "source": "/whitepaper", "destination": "/whitepaper/", "permanent": true },
+    { "source": "/token", "destination": "/token/", "permanent": true },
+    { "source": "/guide", "destination": "/guide/", "permanent": true },
+    { "source": "/privacy", "destination": "/privacy/", "permanent": true },
+    { "source": "/terms", "destination": "/terms/", "permanent": true }
+  ],
   "rewrites": [
     {
       "source": "/r/(.*)",

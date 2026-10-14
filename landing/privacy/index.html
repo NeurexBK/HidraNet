@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HidraNet Privacy Policy</title>
+<meta name="description" content="HidraNet privacy policy: what the browser, the apps and this website process, who sees it, and your rights under the GDPR and the LGPD.">
+<meta name="theme-color" content="#070809">
+<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="../guide/">User guide</a>
+      <a href="../privacy/" class="on">Privacy</a>
+      <a href="../terms/">Terms</a>
+      <a href="../whitepaper/">Whitepaper</a>
+      <a href="../">Home</a>
+    </nav>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>Privacy policy &middot; version 1.0 &middot; October 2026</span>
+  <h1>What HidraNet <span class="hl">knows about you</span></h1>
+  <p class="lede">As little as possible, by design. This policy says exactly what reaches anyone, who they are, and what you can do about it. It covers the GDPR and Brazil's LGPD.</p>
+  <div class="meta"><span><b>Version</b> 1.0</span><span><b>In force from</b> October 2026</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#who">1. Who we are</a>
+    <a href="#principle">2. The principle</a>
+    <a href="#local">3. Where your data lives</a>
+    <a href="#processing">4. Data processed, context by context</a>
+    <a href="#sell">5. We do not sell data</a>
+    <a href="#third">6. Processors and third parties</a>
+    <a href="#transfers">7. Transfers outside the European Economic Area</a>
+    <a href="#rights">8. Your rights</a>
+    <a href="#authorities">9. Supervisory authorities</a>
+    <a href="#age">10. Minimum age</a>
+    <a href="#security">11. Security</a>
+    <a href="#changes">12. Changes</a>
+    <a href="#contact">13. Contact</a>
+  </nav>
+
+  <article>
+
+    <section id="who">
+      <h2>1. Who we are</h2>
+      <p>The controller is HidraNet, Lda, Lisbon, Portugal, registered at <span class="pill confirm">address to be added</span>, company number <span class="pill confirm">company number to be added</span>. Privacy contact: <a href="mailto:privacy@hidranet.org">privacy@hidranet.org</a>.</p>
+      <p>For the purposes of Brazil's General Data Protection Law (LGPD), HidraNet, Lda is the controller, and its data protection contact is the address above.</p>
+    </section>
+
+    <section id="principle">
+      <h2>2. The principle</h2>
+      <p>HidraNet is designed to know as little as possible about the people who use it. There are no mandatory accounts, addresses are generated on your computer, and chat and mail content is encrypted before it leaves your device.</p>
+      <p>What HidraNet never collects:</p>
+      <ul>
+        <li>your browsing or search history;</li>
+        <li>the content of your HidraChat conversations or HidraMail messages;</li>
+        <li>your private keys;</li>
+        <li>your IP address linked to your browsing activity;</li>
+        <li>browser telemetry or usage reports.</li>
+      </ul>
+      <p>Since we do not store this data, we cannot hand it to anyone, nor lose it in a breach.</p>
+    </section>
+
+    <section id="local">
+      <h2>3. Where your data lives</h2>
+      <p>Most of the data the software uses stays only on your computer: preferences, your address keys, received mail, sites you created and Tor state. Keys are sealed with your operating system's keychain where one is available. HidraNet has no access to any of it. You can delete it at any time by deleting the browser's data folder.</p>
+    </section>
+
+    <section id="processing">
+      <h2>4. Data processed, context by context</h2>
+      <h3>4.1 Using the browser</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>What</th><th>Who sees it</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Your browsing traffic</td><td>Tor network relays and the sites you visit, which see the Tor exit address, not yours</td><td>Anonymous routing</td></tr>
+          <tr><td>One request to check.torproject.org after connecting</td><td>The Tor Project, which sees the Tor exit address</td><td>Confirming that the connection is protected</td></tr>
+          </tbody>
+      </table></div>
+      <p>HidraNet receives none of this data.</p>
+      <h3>4.2 Messaging applications</h3>
+      <p>In this version, HidraChat, HidraMail, the Forum and SevenNine exchange messages through public MQTT brokers run by third parties (EMQ Technologies at broker.emqx.io and HiveMQ at broker.hivemq.com). With Tor connected, these brokers see the Tor exit address, not yours.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Application</th><th>What reaches the brokers</th><th>Content readable by third parties?</th></tr></thead>
+        <tbody>
+          <tr><td>HidraChat</td><td>Encrypted messages, a room identifier, nickname and time</td><td>No: content is encrypted on your computer</td></tr>
+          <tr><td>HidraMail</td><td>Messages encrypted to the recipient's key, destination address</td><td>No</td></tr>
+          <tr><td>Forum</td><td>Posts, nickname, category and time</td><td>Yes: the forum is public</td></tr>
+          <tr><td>SevenNine</td><td>Published site content, encrypted</td><td>No, except by those who have the site address</td></tr>
+          </tbody>
+      </table></div>
+      <p>Messages awaiting delivery and forum posts are retained on those brokers. HidraNet does not control the operators' retention policies. Replacing the public brokers with HidraNet's own network is planned.</p>
+      <h3>4.3 Search</h3>
+      <p>HidraSearch sends queries through Tor to third-party search engines (DuckDuckGo, SearXNG, Brave Search). The engine sees the search text and the Tor exit address. The browser keeps no search history.</p>
+      <h3>4.4 Network count (optional, off by default)</h3>
+      <p>If you turn on "Count me on the network" in the browser's Anonymity Settings, the browser sends a presence signal every 30 seconds, made of a random code that changes each session, the software version and the time. It carries no location, no room, no name and no address. The signal goes to a public channel and is used only to count how many browsers are running.</p>
+      <p>Legal basis: your consent (GDPR art. 6(1)(a); LGPD art. 7, I). The option is off by default, and turning it off stops the signal immediately.</p>
+      <h3>4.5 This website</h3>
+      <p>When you visit this website, the hosting provider (Vercel Inc.) logs technical request data, including the IP address, to serve the pages and protect them against abuse. Legal basis: legitimate interest in keeping the site available and secure (GDPR art. 6(1)(f)).</p>
+      <p>The website uses no analytics, no advertising, no cookies and no third-party scripts, and its fonts are served from our own server.</p>
+      <h3>4.6 Paid services</h3>
+      <p>When paid plans or business services are offered, we will process the data needed for the contract and invoicing: name or company name, tax number, billing address, email and payment history. Card data will be handled by the payment provider and never reach HidraNet. Legal basis: performance of the contract and tax obligations (GDPR art. 6(1)(b) and (c)). Retention: ten years for invoicing records, as Portuguese tax law requires; other data up to two years after the contract ends.</p>
+      <h3>4.7 HNET and the support wallet</h3>
+      <p>Support sent in HNET goes to a public Solana wallet. Solana is a public ledger: the sending wallet, the amount and the time are visible to anyone, permanently, and HidraNet cannot change or delete them. We do not ask who is behind a wallet and do not try to find out.</p>
+      <h3>4.8 Contact and support requests</h3>
+      <p>If you write to us, we process your address and the message to reply. Legal basis: legitimate interest in answering people who contact us. Retention: two years after the last exchange.</p>
+      <h3>4.9 Security reports</h3>
+      <p>Vulnerabilities may be reported anonymously. If you identify yourself, we keep your name to credit you, and only with your permission.</p>
+    </section>
+
+    <section id="sell">
+      <h2>5. We do not sell data</h2>
+      <p>HidraNet does not sell, rent or share personal data for advertising, and does not use tracking advertising.</p>
+    </section>
+
+    <section id="third">
+      <h2>6. Processors and third parties</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Entity</th><th>Role</th><th>Data</th></tr></thead>
+        <tbody>
+          <tr><td>Vercel Inc.</td><td>Website hosting</td><td>Technical request logs</td></tr>
+          <tr><td>EMQ Technologies, HiveMQ</td><td>Message brokers used by the applications</td><td>See section 4.2</td></tr>
+          <tr><td>Tor Project</td><td>Exit address check</td><td>The Tor exit address</td></tr>
+          <tr><td>Our email provider</td><td>Company email</td><td>Messages exchanged with us</td></tr>
+          </tbody>
+      </table></div>
+      <p>The public message brokers are not HidraNet processors: the applications connect to them directly from your computer. They are listed so you know where information goes. When paid services launch, the payment provider will be added here.</p>
+    </section>
+
+    <section id="transfers">
+      <h2>7. Transfers outside the European Economic Area</h2>
+      <p>Some of the third parties above may process data outside the EEA or Brazil, including in the United States. When HidraNet engages a processor in that situation, it relies on a European Commission adequacy decision or standard contractual clauses (GDPR art. 46; LGPD art. 33).</p>
+    </section>
+
+    <section id="rights">
+      <h2>8. Your rights</h2>
+      <p>Under the GDPR (arts. 15 to 22) and the LGPD (art. 18), you have the right to:</p>
+      <ul>
+        <li>know whether we process your data and obtain a copy;</li>
+        <li>correct inaccurate data;</li>
+        <li>request erasure;</li>
+        <li>restrict or object to processing;</li>
+        <li>receive your data in a portable format;</li>
+        <li>withdraw consent, without affecting earlier processing;</li>
+        <li>not be subject to solely automated decisions. HidraNet makes none.</li>
+      </ul>
+      <p>Since most data lives only on your computer, many of these rights are exercised directly: delete the data folder. For data we do process (sections 4.5 to 4.9), write to <a href="mailto:privacy@hidranet.org">privacy@hidranet.org</a>. We reply within one month, extendable under GDPR art. 12, or within fifteen days for data subjects covered by the LGPD.</p>
+      <p>One limit follows from the design: we cannot identify or delete messages retained on third-party brokers, forum posts or encrypted content, because we do not know whom they belong to. Forum posts can be hidden by moderation.</p>
+    </section>
+
+    <section id="authorities">
+      <h2>9. Supervisory authorities</h2>
+      <p>You may complain to the Portuguese data protection authority (CNPD, www.cnpd.pt), to the data protection authority of your EU country or, in Brazil, to the National Data Protection Authority (ANPD, www.gov.br/anpd).</p>
+    </section>
+
+    <section id="age">
+      <h2>10. Minimum age</h2>
+      <p>HidraNet is intended for people aged 16 or over. We do not knowingly process data of younger people.</p>
+    </section>
+
+    <section id="security">
+      <h2>11. Security</h2>
+      <p>We apply client-side encryption, session isolation, data minimisation and an incident response process, with notification to the authority within 72 hours where the law requires it.</p>
+    </section>
+
+    <section id="changes">
+      <h2>12. Changes</h2>
+      <p>Each version of this policy is published with a date. If a change reduces your rights or widens processing, we announce it beforehand on this website and in the browser release notes.</p>
+    </section>
+
+    <section id="contact">
+      <h2>13. Contact</h2>
+      <p><a href="mailto:privacy@hidranet.org">privacy@hidranet.org</a> &middot; HidraNet, Lda &middot; <span class="pill confirm">address to be added</span> &middot; Lisbon, Portugal</p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HidraNet Privacy Policy &middot; HidraNet &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>
