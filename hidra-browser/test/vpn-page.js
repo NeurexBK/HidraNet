@@ -78,7 +78,7 @@ const vpnAt = preload.indexOf('vpn: {');
 expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && vpnAt > internalStart && vpnAt < appsStart, `positions: internal ${internalStart}, vpn ${vpnAt}, apps ${appsStart}`);
 expect('the apps branch does not offer vpn', !preload.slice(appsStart).includes('vpn:'), 'vpn appears after the apps branch starts');
 const handlers = [...main.matchAll(/ipcMain\.handle\('vpn:([a-z-]+)', (?:async )?\((event[^)]*)\) => \{\s*vpnOnlyOurs\(event\);/g)].map((m) => m[1]).sort();
-expect('every vpn handler checks who asked before anything else', handlers.join() === ['connect', 'disconnect', 'fetch-list', 'import-nodes', 'join', 'new-identity', 'nodes', 'status', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('every vpn handler checks who asked before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'import-nodes', 'install', 'join', 'leak-test', 'new-identity', 'nodes', 'status', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
 const ungated = [...main.matchAll(/ipcMain\.handle\('vpn:[a-z-]+'/g)].length;
 expect('no vpn handler is without the check', ungated === handlers.length, `${ungated} handlers, ${handlers.length} gated`);
 expect('the check accepts only our own pages, by their path on disk', /function isInternalSender[\s\S]*?return url\.startsWith\(UI_ROOT_URL\);/.test(main), 'isInternalSender does not compare against UI_ROOT_URL alone');
@@ -94,6 +94,20 @@ expect('the page offers to join open nodes and to fetch the list', /id="btn-join
 expect('the page never names a file path: the person chooses in a dialog', /dialog\.showOpenDialog/.test(main) && !/filePaths?\s*[:=]/.test(page), 'a path travels from the page');
 expect('the browser does not verify the list itself; the service that writes the pocket does', !/releaseVerify\.verify(File|Bytes)\([^)]*list/.test(main), 'the browser verifies the node list, which would let a convinced browser feed an unconvinced service');
 expect('the browser reads the token fresh on every request', /_readToken\(\)/.test(manager) && !/this\.token\s*=/.test(manager), 'the token is cached');
+
+// ── Phase 4 completion: install, leak test, local network, route ──────────
+expect('the install card is hidden until the service says it is not installed', /id="install-card" style="display:none"/.test(page) && /notInstalled \? '' : 'none'/.test(page), 'the install card is not tied to the not-installed state');
+expect('installing goes through the bridge, never a link the page follows', /api\.install\(\)/.test(page) && !/href=["'][^"']*\.(exe|zip|msi)/.test(page), 'no api.install(), or a download link in the page');
+expect('the bridge offers install, uninstall, leak test and release check', ['leakTest:', 'checkRelease:', 'install:', 'uninstall:'].every((k) => preload.includes(k)), 'tab-preload.js lacks one of them');
+for (const ch of ["'vpn:leak-test'", "'vpn:install'", "'vpn:uninstall'", "'vpn:check-release'"]) {
+  const block = main.slice(main.indexOf(ch), main.indexOf(ch) + 400);
+  expect(`${ch} checks who asked`, block.includes('vpnOnlyOurs(event)'), 'the handler does not call vpnOnlyOurs');
+}
+expect('the local network is off unless the person ticks it', /<input type="checkbox" id="allow-lan">/.test(page), 'allow-lan is missing or pre-checked');
+expect('only a strict true reaches the service as allow_lan', /options\.allowLan === true/.test(main), 'main.js does not insist on a boolean');
+expect('the leak test asks without the Tor proxy, from its own session', /setProxy\(\{ mode: 'direct' \}\)/.test(main), 'no direct session for the leak test');
+expect('a country reaches the page as text, never as markup', !/innerHTML/.test(page), 'the page uses innerHTML');
+expect('uninstalling asks first', /window\.confirm\(question\)/.test(page), 'no confirmation before removing');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

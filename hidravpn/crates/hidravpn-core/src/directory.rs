@@ -72,6 +72,25 @@ pub struct NodeRecord {
     /// The TCP port of its admission service, when not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_port: Option<u16>,
+    /// Where the node is, as two letters (ISO 3166-1 alpha-2, "FI", "DE"):
+    /// what a person reads to see the route, and what a client could use to
+    /// put two hops in two countries. Said by whoever signs the list, not
+    /// measured: a list is only as right as its signer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+}
+
+/// A country as two ASCII letters, upper case; anything else is refused, so
+/// what reaches a page is always two letters and never markup or a sentence.
+pub fn normalise_country(c: &str) -> Result<String> {
+    let c = c.trim();
+    if c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        Ok(c.to_ascii_uppercase())
+    } else {
+        Err(anyhow!(
+            "a country is two letters (ISO 3166-1 alpha-2, such as FI or DE), not {c:?}"
+        ))
+    }
 }
 
 impl NodeRecord {
@@ -124,6 +143,9 @@ impl NodeRecord {
                 "the endpoint of {} is an IPv6 address; a node is reached over IPv4 in this phase",
                 self.node_name
             ));
+        }
+        if let Some(c) = self.country.as_deref() {
+            normalise_country(c).with_context(|| format!("the country of {}", self.node_name))?;
         }
         if let Some(r) = self.role.as_deref() {
             if !matches!(
@@ -360,6 +382,7 @@ mod tests {
             role: Some("both".into()),
             admission: Some("open".into()),
             admission_port: None,
+            country: None,
         }
     }
 
@@ -375,6 +398,7 @@ mod tests {
             keepalive: 25,
             operator: r.operator.clone(),
             role: r.role.clone(),
+            country: None,
         }
     }
 
@@ -392,6 +416,30 @@ mod tests {
                 record("node-3", "203.0.113.20:51820"),
             ],
         }
+    }
+
+    #[test]
+    fn a_country_is_two_letters_and_reaches_an_admitted_node_from_a_newer_list() {
+        assert_eq!(normalise_country(" fi ").unwrap(), "FI");
+        for bad in ["", "F", "FIN", "F1", "<b>", "🇫🇮"] {
+            assert!(normalise_country(bad).is_err(), "{bad:?} must be refused");
+        }
+        let mut r = record("node-1", "203.0.113.10:51820");
+        r.country = Some("Finland".into());
+        assert!(r.validate().is_err(), "a country in words is refused");
+        r.country = Some("fi".into());
+        r.validate().unwrap();
+
+        // Admitted without a country; a newer list says where the node is.
+        let mut pocket = Pocket::default();
+        let plain = record("node-1", "203.0.113.10:51820");
+        pocket.add(Slot::Exit, invite_for(&plain)).unwrap();
+        let mut placed = plain.clone();
+        placed.country = Some("FI".into());
+        let changed = pocket.refresh(&placed);
+        assert!(changed.contains(&"country".to_string()), "{changed:?}");
+        let (_, inv) = pocket.iter().next().unwrap();
+        assert_eq!(inv.country.as_deref(), Some("FI"));
     }
 
     #[test]

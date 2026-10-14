@@ -110,6 +110,9 @@ pub struct NodeReport {
     /// For a known node: "open" means `join` can admit this machine on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission: Option<String>,
+    /// Where the node is, two letters, when the list or the node said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 /// One hop of the circuit, as `status` reports it.
@@ -123,6 +126,9 @@ pub struct HopReport {
     pub last_handshake_secs: Option<u64>,
     /// This hop has a live session.
     pub connected: bool,
+    /// Where the node is, two letters, when the list or the node said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +156,10 @@ pub struct StatusReport {
     /// Absent for one hop or when either node did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub same_operator: Option<bool>,
+    /// The version of the service answering, so a page can tell whether a
+    /// newer signed release exists. Empty from a service older than this.
+    #[serde(default)]
+    pub version: String,
 }
 
 impl StatusReport {
@@ -503,7 +513,7 @@ mod pipe_acl {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::Pipes::GetNamedPipeServerSessionId;
-        let pipe = HANDLE(client.as_raw_handle() as *mut std::ffi::c_void);
+        let pipe = HANDLE(client.as_raw_handle());
         let mut session = u32::MAX;
         // SAFETY: a query on a handle this process owns, into a local.
         unsafe { GetNamedPipeServerSessionId(pipe, &mut session).is_ok() && session == 0 }
@@ -522,7 +532,7 @@ mod pipe_acl {
         use windows::Win32::System::Threading::{
             OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
         };
-        let pipe = HANDLE(server.as_raw_handle() as *mut std::ffi::c_void);
+        let pipe = HANDLE(server.as_raw_handle());
         let mut pid = 0u32;
         // SAFETY: plain Win32 calls on handles this process owns; every
         // out-pointer is to a local; handles opened here are closed here.
@@ -806,6 +816,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            country: None,
         }
     }
 
@@ -882,8 +893,10 @@ mod tests {
                 endpoint: "203.0.113.20:51820".into(),
                 last_handshake_secs: Some(4),
                 connected: true,
+                country: None,
             }],
             same_operator: None,
+            version: String::new(),
         };
         let r = Response::with_status(s).noting("rotated");
         let line = serde_json::to_string(&r).unwrap();
@@ -925,6 +938,7 @@ mod tests {
                     endpoint: "203.0.113.20:51820".into(),
                     last_handshake_secs: Some(4),
                     connected: true,
+                    country: None,
                 },
                 HopReport {
                     role: "exit".into(),
@@ -932,9 +946,11 @@ mod tests {
                     endpoint: "203.0.113.10:51820".into(),
                     last_handshake_secs: None,
                     connected: false,
+                    country: None,
                 },
             ],
             same_operator: None,
+            version: String::new(),
         };
         let p = s.explanation().unwrap();
         assert!(p.contains("no node sees both"));
@@ -1142,6 +1158,7 @@ mod tests {
             role: Some("both".into()),
             admission: Some("manual".into()),
             admission_port: None,
+            country: None,
         };
         let dir = hidravpn_core::Directory {
             version: 1,

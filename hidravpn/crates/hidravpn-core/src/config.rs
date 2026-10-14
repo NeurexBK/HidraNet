@@ -40,6 +40,9 @@ pub struct Invite {
     /// "entry", "exit" or "both": what the node's own firewall lets it be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Where the node is, two letters, as the signed list says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 fn default_allowed() -> Vec<String> {
@@ -77,6 +80,9 @@ impl Invite {
             ));
         }
         self.client_ip()?;
+        if let Some(c) = self.country.as_deref() {
+            crate::directory::normalise_country(c)?;
+        }
         if self.mtu < 1280 || self.mtu > 1500 {
             return Err(anyhow!("the MTU must be between 1280 and 1500"));
         }
@@ -143,6 +149,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            country: None,
         }
     }
 

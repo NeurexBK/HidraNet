@@ -146,6 +146,7 @@ impl Pocket {
                 ("role", k.role != record.role),
                 ("admission", k.admission != record.admission),
                 ("admission port", k.admission_port != record.admission_port),
+                ("country", k.country != record.country),
             ];
             changed.extend(
                 fields
@@ -183,6 +184,10 @@ impl Pocket {
             if inv.role != record.role {
                 inv.role = record.role.clone();
                 changed.push("role".into());
+            }
+            if inv.country != record.country {
+                inv.country = record.country.clone();
+                changed.push("country".into());
             }
             if !name_taken && inv.node_name.trim() != record.node_name.trim() {
                 inv.node_name = record.node_name.clone();
@@ -403,6 +408,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            country: None,
         }
     }
 

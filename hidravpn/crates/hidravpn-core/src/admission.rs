@@ -297,6 +297,7 @@ mod tests {
             role: None,
             admission: Some("open".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await
@@ -330,6 +331,7 @@ mod tests {
             role: None,
             admission: Some("open".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await
@@ -358,6 +360,7 @@ mod tests {
             role: None,
             admission: Some("manual".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await

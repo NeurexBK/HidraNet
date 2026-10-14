@@ -86,6 +86,30 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+/// Removes the installed programs and the data folder (the pocket and the
+/// machine's key). The running executable cannot delete itself on Windows,
+/// so the folder is removed a few seconds after this process exits, by a
+/// command started detached for that alone.
+pub fn purge() -> Result<()> {
+    let data = crate::paths::control_token()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\ProgramData\\HidraVPN"));
+    let _ = std::fs::remove_dir_all(&data);
+    if let Some(dir) = super::installed_binary().parent() {
+        let dir = dir.to_string_lossy().into_owned();
+        // Only ever the folder the installer made, never a path from outside.
+        if dir.to_ascii_lowercase().ends_with("\\hidravpn") {
+            let cmd = format!("ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{dir}\"");
+            std::process::Command::new("cmd")
+                .args(["/C", &cmd])
+                .spawn()
+                .context("scheduling the removal of the program folder")?;
+        }
+    }
+    Ok(())
+}
+
 pub fn start() -> Result<()> {
     run("schtasks", &["/Run", "/TN", TASK]).map(|_| ())
 }

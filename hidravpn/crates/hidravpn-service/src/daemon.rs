@@ -547,6 +547,7 @@ impl Daemon {
                 entry_name: None,
                 hops_detail: Vec::new(),
                 same_operator: None,
+                version: env!("CARGO_PKG_VERSION").to_string(),
             }),
             Some(a) => {
                 let s = a.circuit.status();
@@ -554,6 +555,11 @@ impl Daemon {
                 let same_operator = a.entries.get(a.current_entry).and_then(|entry| {
                     hidravpn_core::pocket::same_operator(entry, &a.pool[a.current])
                 });
+                let entry_country = a
+                    .entries
+                    .get(a.current_entry)
+                    .and_then(|i| i.country.clone());
+                let exit_country = a.pool.get(a.current).and_then(|i| i.country.clone());
                 Response::with_status(StatusReport {
                     connected: s.connected,
                     node_name: Some(exit.node_name.clone()),
@@ -580,9 +586,14 @@ impl Daemon {
                             endpoint: h.endpoint.clone(),
                             last_handshake_secs: h.tunnel.last_handshake.map(|d| d.as_secs()),
                             connected: h.tunnel.connected,
+                            country: match h.role {
+                                Role::Entry => entry_country.clone(),
+                                Role::Exit => exit_country.clone(),
+                            },
                         })
                         .collect(),
                     same_operator,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                 })
             }
         }
@@ -698,6 +709,7 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
             operator: inv.operator.clone(),
             role: inv.role.clone(),
             admission: None,
+            country: inv.country.clone(),
         })
         .chain(pocket.known.iter().map(|k| NodeReport {
             slot: "known".to_string(),
@@ -707,6 +719,7 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
             operator: k.operator.clone(),
             role: k.role.clone(),
             admission: k.admission.clone(),
+            country: k.country.clone(),
         }))
         .collect()
 }
@@ -770,6 +783,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            country: None,
         }
     }
 
@@ -850,6 +864,7 @@ mod tests {
             role: None,
             admission: None,
             admission_port: None,
+            country: None,
         })
         .unwrap();
         let e = plan_connect(&p, "rapido").unwrap_err().to_string();

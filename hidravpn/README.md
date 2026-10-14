@@ -10,7 +10,8 @@ promised there that does not exist yet.
 Developed in phases; each phase is a working, testable step. See
 `docs/phase-1.md` (the tunnel), `docs/phase-2.md` (the service and the kill
 switch), `docs/phase-3.md` (two hops, two modes, a new identity) and
-`docs/phase-4.md` (the VPN in the browser, a signed node list, a node in one
+`docs/phase-4.md` (the VPN in the browser — installed, updated and removed
+from it, a leak test, the route by country — a signed node list, a node in one
 command) for what exists now and how to run it.
 
 Everything in this folder is new and separate from the HidraNet browser,

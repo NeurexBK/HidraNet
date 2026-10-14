@@ -73,6 +73,18 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
 .nodes .n:first-child{border-top:0}
 .nodes .ep{color:var(--txt3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em}
 .empty{color:var(--txt3);font-size:.88em;line-height:1.55}
+.route{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:4px 0 10px;font-size:.95em}
+.route .stop{display:inline-flex;align-items:center;gap:6px;background:var(--bg2);border:1px solid var(--border2);border-radius:999px;padding:4px 10px;font-weight:600}
+.route .arrow{color:var(--txt3)}
+.check{display:flex;align-items:flex-start;gap:10px;margin:2px 0 14px;font-size:.88em;color:var(--txt2);line-height:1.5;cursor:pointer}
+.check input{margin-top:3px;accent-color:var(--brand)}
+.leaks .l{display:grid;grid-template-columns:62px 1fr;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:.88em;align-items:start}
+.leaks .l:first-child{border-top:0}
+.leaks .l .what{font-weight:600}
+.leaks .l .why{color:var(--txt2);margin-top:2px;line-height:1.5}
+.badge.bad{color:#ffb3bb;border-color:rgba(255,92,108,.4);background:rgba(255,92,108,.08)}
+.install{border-color:rgba(0,212,170,.35)}
+.install ol{color:var(--txt2);font-size:.88em;line-height:1.6;margin:0 0 14px 18px}
 .foot{color:var(--txt3);font-size:.8em;line-height:1.6;text-align:center;padding:6px 10px 0}
 .foot code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 </style>
@@ -85,6 +97,20 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     <p class="lead">The whole machine through the network, not just this browser. One hop or two through nodes this machine has been admitted to; a kill switch that holds when the tunnel drops. Everything below is read from the service on this machine, not assumed.</p>
   </div>
 
+  <div class="card install" id="install-card" style="display:none">
+    <h2>Install HidraVPN</h2>
+    <p class="explain" id="install-why" style="margin-bottom:12px">HidraVPN is a separate program that protects the whole machine. The browser can install it for you:</p>
+    <ol>
+      <li>it downloads the release the HidraNet maintainers signed, and checks that signature against the key built into this browser before anything else;</li>
+      <li>it checks every downloaded file against the signed list of files;</li>
+      <li>it asks your system for administrator rights, once, because only the system may change how the whole machine reaches the network.</li>
+    </ol>
+    <div class="actions">
+      <button class="primary" id="btn-install">Activate HidraVPN</button>
+    </div>
+    <div class="msg" id="install-msg"></div>
+  </div>
+
   <div class="card">
     <h2>Status</h2>
     <div class="state"><span class="dot" id="dot"></span><span class="label" id="state-label">Checking</span></div>
@@ -93,6 +119,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     <div class="row"><span class="k">Mode</span><span id="mode-now">-</span></div>
     <div class="row"><span class="k">Traffic</span><span id="bytes">-</span></div>
     <div class="row" id="operator-row" style="display:none"><span class="k">Operators</span><span class="badge warn" id="operator-badge"></span></div>
+    <div class="route" id="route" style="display:none"></div>
     <div class="hops" id="hops"></div>
     <div class="empty" id="legend" style="margin-top:8px;display:none">entry: sees your address, not where you go. exit: sees where you go, not your address.</div>
     <div class="msg" id="msg"></div>
@@ -110,11 +137,22 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
         <span class="what">No node sees both who you are and where you go. The entry sees your address, the exit sees your traffic. Needs an entry and an exit this machine is admitted to. Two hops run by one operator are one operator's view.</span>
       </label>
     </div>
+    <label class="check"><input type="checkbox" id="allow-lan"><span>Allow the local network (printers, a Chromecast, a network drive). Devices on your own network can then be reached directly, outside the tunnel; everything else still goes through it.</span></label>
     <div class="actions">
       <button class="primary" id="btn-connect" disabled>Connect</button>
       <button id="btn-identity" disabled>New identity</button>
       <button class="danger" id="btn-disconnect" disabled>Disconnect</button>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Leak test</h2>
+    <p class="empty" style="margin-bottom:12px">Checks what the rest of this machine shows the internet while HidraVPN is connected: the address websites see, whether anything leaves over IPv6, whether a DNS query could leave outside the tunnel, and the kill switch. The address check asks api.ipify.org, directly, as any program on this machine would.</p>
+    <div class="actions">
+      <button id="btn-leaks" disabled>Run the leak test</button>
+    </div>
+    <div class="leaks" id="leaks" style="margin-top:12px"></div>
+    <div class="msg" id="leaks-msg"></div>
   </div>
 
   <div class="card">
@@ -137,6 +175,18 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       <button id="btn-verify">Verify a downloaded file</button>
     </div>
     <div class="msg" id="verify-msg"></div>
+  </div>
+
+  <div class="card" id="manage-card">
+    <h2>Updates and removal</h2>
+    <p class="empty" style="margin-bottom:12px" id="version-line">Installed version: unknown.</p>
+    <div class="actions">
+      <button id="btn-check-update" disabled>Check for an update</button>
+      <button id="btn-update" style="display:none" class="primary">Install the update</button>
+      <button class="danger" id="btn-uninstall" disabled>Uninstall HidraVPN</button>
+    </div>
+    <label class="check" style="margin-top:12px"><input type="checkbox" id="purge"><span>Also remove this machine's key and its nodes. Nodes know this machine by that key: after this, it is a new machine to every node, and an open node has to admit it again.</span></label>
+    <div class="msg" id="manage-msg"></div>
   </div>
 
   <p class="foot">This page does not contain the VPN. It drives the HidraVPN service installed on this machine; with no service, nothing here can connect. Anyone with an account on this computer, and any program they run, can switch HidraVPN on or off for the whole machine. Strong privacy, not anonymity: the service says what each node sees, and so does this page.</p>
@@ -185,6 +235,35 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     m.textContent = text;
   }
 
+  // Two letters, as the service passes them, shown as a flag and the letters
+  // themselves: a system without flag glyphs still shows the letters.
+  function flag(cc) {
+    if (!/^[A-Z]{2}$/.test(cc || '')) return '';
+    return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+  }
+
+  function renderRoute(r) {
+    var box = $('route');
+    box.textContent = '';
+    var hops = (r && r.connected && r.hops_detail) ? r.hops_detail : [];
+    if (!hops.length) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    var stop = function (text) {
+      var el = document.createElement('span'); el.className = 'stop'; el.textContent = text; box.appendChild(el);
+    };
+    var arrow = function () {
+      var el = document.createElement('span'); el.className = 'arrow'; el.textContent = '\u2192'; box.appendChild(el);
+    };
+    stop('This machine');
+    hops.forEach(function (h) {
+      arrow();
+      var cc = h.country || '';
+      stop((cc ? flag(cc) + ' ' + cc + ' \u00b7 ' : '') + h.node_name);
+    });
+    arrow();
+    stop('Internet');
+  }
+
   function selectedMode() {
     var r = document.querySelector('input[name="mode"]:checked');
     return r ? r.value : 'rapido';
@@ -228,6 +307,16 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       $('explain').textContent = r ? 'Not routed through HidraVPN. This machine is on its own network.' : '';
     }
     $('bytes').textContent = r && r.connected ? ('up ' + fmtBytes(r.tx_bytes) + ', down ' + fmtBytes(r.rx_bytes)) : '-';
+
+    renderRoute(r);
+    var notInstalled = s.state === 'not-installed';
+    $('install-card').style.display = notInstalled ? '' : 'none';
+    $('version-line').textContent = r && r.version
+      ? 'Installed version: ' + r.version + '.'
+      : (notInstalled ? 'HidraVPN is not installed.' : 'Installed version: unknown (an older service, or the service is not answering).');
+    $('btn-uninstall').disabled = busy || notInstalled;
+    $('btn-check-update').disabled = busy;
+    $('btn-leaks').disabled = busy || !(r && r.connected);
 
     var hops = $('hops');
     hops.textContent = '';
@@ -290,7 +379,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       var el = document.createElement('div'); el.className = 'n';
       var slot = document.createElement('span'); slot.className = 'role badge ' + (known ? 'warn' : n.slot === 'exit' ? 'on' : ''); slot.textContent = known ? 'known' : n.slot;
       var name = document.createElement('span');
-      var nm = document.createElement('div'); nm.textContent = n.node_name; name.appendChild(nm);
+      var nm = document.createElement('div'); nm.textContent = (n.country ? flag(n.country) + ' ' + n.country + ' \u00b7 ' : '') + n.node_name; name.appendChild(nm);
       if (known) {
         var why = document.createElement('div'); why.className = 'empty';
         var open = n.admission === 'open';
@@ -359,7 +448,105 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
 
   $('btn-connect').addEventListener('click', function () {
     var mode = selectedMode();
-    act(function () { return api.connect(mode); }, 'Connecting (' + mode + '). The kill switch arms as the last step; until this page shows it Armed, nothing is protected.');
+    var allowLan = $('allow-lan').checked;
+    act(function () { return api.connect(mode, { allowLan: allowLan }); }, 'Connecting (' + mode + (allowLan ? ', local network allowed' : '') + '). The kill switch arms as the last step; until this page shows it Armed, nothing is protected.');
+  });
+
+  $('btn-leaks').addEventListener('click', async function () {
+    if (!api || busy) return;
+    var box = $('leaks');
+    box.textContent = '';
+    message('note', 'Testing. This takes a few seconds.', 'leaks-msg');
+    $('btn-leaks').disabled = true;
+    var r;
+    try { r = await api.leakTest(); } catch (e) { r = { ran: false, error: String(e && e.message || e) }; }
+    $('btn-leaks').disabled = false;
+    if (!r || !r.ran) { message('err', (r && r.error) || 'The test did not run.', 'leaks-msg'); return; }
+    var words = { pass: 'Pass', warn: 'Check', fail: 'Leak' };
+    var cls = { pass: 'on', warn: 'warn', fail: 'bad' };
+    r.checks.forEach(function (c) {
+      var el = document.createElement('div'); el.className = 'l';
+      var b = document.createElement('span'); b.className = 'badge ' + (cls[c.verdict] || ''); b.textContent = words[c.verdict] || c.verdict;
+      var t = document.createElement('div');
+      var w = document.createElement('div'); w.className = 'what'; w.textContent = c.label;
+      var y = document.createElement('div'); y.className = 'why'; y.textContent = c.detail;
+      t.appendChild(w); t.appendChild(y);
+      el.appendChild(b); el.appendChild(t);
+      box.appendChild(el);
+    });
+    if (r.verdict === 'pass') message('note', 'No leak found.', 'leaks-msg');
+    else if (r.verdict === 'warn') message('note', 'Nothing leaked that the test could see, but one check needs a look.', 'leaks-msg');
+    else message('err', 'Something leaked. Do not rely on this connection until it is fixed.', 'leaks-msg');
+  });
+
+  async function installOrUpdate(msgId, pending) {
+    if (!api || busy) return;
+    busy = true;
+    message('note', pending, msgId);
+    var r;
+    try { r = await api.install(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      message('note', r.note || 'Installed.', msgId);
+      $('btn-update').style.display = 'none';
+    } else if (r && r.cancelled) {
+      message('err', r.error, msgId);
+    } else {
+      message('err', (r && r.error) || 'Nothing was installed.', msgId);
+    }
+    await refresh();
+    await refreshNodes();
+  }
+
+  $('btn-install').addEventListener('click', function () {
+    installOrUpdate('install-msg', 'Fetching the signed release and checking it. Your system will then ask for administrator rights, once.');
+  });
+  $('btn-update').addEventListener('click', function () {
+    installOrUpdate('manage-msg', 'Fetching the signed release and checking it. The VPN disconnects for a moment while the service is replaced; your system will ask for administrator rights.');
+  });
+
+  $('btn-check-update').addEventListener('click', async function () {
+    if (!api || busy) return;
+    message('note', 'Checking the signed release.', 'manage-msg');
+    var r;
+    try { r = await api.checkRelease(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    if (!r || !r.ok) { message('err', (r && r.error) || 'Could not check.', 'manage-msg'); return; }
+    var st = await api.status().catch(function () { return null; });
+    var have = st && st.report && st.report.version;
+    if (!r.supported) { message('note', 'Release ' + r.version + ' is signed, but has no build for this system.', 'manage-msg'); return; }
+    if (have && compare(have, r.version) >= 0) {
+      message('note', 'Up to date: ' + have + ' is the newest signed release.', 'manage-msg');
+      $('btn-update').style.display = 'none';
+    } else {
+      message('note', 'Signed release ' + r.version + ' is available' + (have ? ' (installed: ' + have + ')' : '') + '.', 'manage-msg');
+      $('btn-update').style.display = '';
+    }
+  });
+
+  function compare(a, b) {
+    var pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+    for (var i = 0; i < 3; i++) {
+      var x = isFinite(pa[i]) ? pa[i] : -1, y = isFinite(pb[i]) ? pb[i] : -1;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
+
+  $('btn-uninstall').addEventListener('click', async function () {
+    if (!api || busy) return;
+    var purge = $('purge').checked;
+    var question = purge
+      ? 'Remove HidraVPN, its programs, its nodes and this machine\'s key? Every node will then see this as a new machine.'
+      : 'Remove HidraVPN? The network goes back to normal; the key and nodes are kept for a later install.';
+    if (!window.confirm(question)) return;
+    busy = true;
+    message('note', 'Disconnecting and removing. Your system will ask for administrator rights.', 'manage-msg');
+    var r;
+    try { r = await api.uninstall(purge); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    message(r && r.ok ? 'note' : 'err', (r && (r.note || r.error)) || 'Nothing was removed.', 'manage-msg');
+    await refresh();
+    await refreshNodes();
   });
   $('btn-disconnect').addEventListener('click', function () {
     act(function () { return api.disconnect(); }, 'Disconnecting and putting the network back.');

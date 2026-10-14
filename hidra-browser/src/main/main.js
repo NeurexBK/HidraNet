@@ -4,6 +4,8 @@ const http = require('http');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
 const { VpnManager } = require('./vpn-manager');
+const { VpnInstaller } = require('./vpn-installer');
+const { runLeakTest } = require('./vpn-leaktest');
 const releaseVerify = require('./release-verify');
 const { VaultStore } = require('./vault');
 const { ProxyManager } = require('./proxy-manager');
@@ -42,6 +44,9 @@ const vpnManager = new VpnManager();
 // service checks the signature against the list key built into it, so a
 // list from anywhere else is refused however it arrived.
 const VPN_LIST_URL = 'https://hidranet.org/vpn/nodes.json';
+// The signed release manifest the VPN page installs and updates from
+// (vpn-installer.js); its .sig sits beside it.
+const VPN_RELEASE_URL = 'https://hidranet.org/vpn/release/manifest.json';
 const VPN_LIST_MAX_BYTES = 1024 * 1024;
 
 async function fetchText(url, maxBytes) {
@@ -63,6 +68,46 @@ async function fetchText(url, maxBytes) {
     chunks.push(Buffer.from(value));
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+// The same, for a release file: bytes, capped at what the signed manifest
+// says the file weighs, so a server cannot make this process buffer more.
+async function fetchBuffer(url, maxBytes) {
+  const res = await net.fetch(url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(10 * 60 * 1000) });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw new Error(`${url}: larger than the signed manifest says`); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+
+// The leak test has to see what every other program on this machine sees,
+// not what the browser's own Tor route sees, so it asks from a session with
+// no proxy at all. Used only when the person presses the button.
+function directProbe(url) {
+  return new Promise((resolve, reject) => {
+    const probe = session.fromPartition('hidravpn-leak-test');
+    probe.setProxy({ mode: 'direct' }).then(() => {
+      const request = net.request({ url, session: probe, useSessionCookies: false });
+      let body = '';
+      const timer = setTimeout(() => { try { request.abort(); } catch (e) {} reject(new Error('timeout')); }, 10000);
+      request.on('response', (res) => {
+        res.on('data', (c) => { if (body.length < 4096) body += c; });
+        res.on('end', () => { clearTimeout(timer); resolve(body); });
+      });
+      request.on('error', (e) => { clearTimeout(timer); reject(e); });
+      request.end();
+    }).catch(reject);
+  });
 }
 
 // Our own pages only: the frame that asked has to be the tab's main frame and
@@ -910,9 +955,38 @@ function setupIPC(tabs, proxy) {
     vpnOnlyOurs(event);
     return vpnManager.status();
   });
-  ipcMain.handle('vpn:connect', (event, mode) => {
+  ipcMain.handle('vpn:connect', (event, mode, options) => {
     vpnOnlyOurs(event);
-    return vpnManager.connect(mode);
+    const allowLan = Boolean(options && typeof options === 'object' && options.allowLan === true);
+    return vpnManager.connect(mode, { allowLan });
+  });
+  ipcMain.handle('vpn:leak-test', async (event) => {
+    vpnOnlyOurs(event);
+    return runLeakTest(await vpnManager.status(), directProbe);
+  });
+  // Install, update and remove. Each asks the person for administrator
+  // rights through the system's own prompt; nothing runs that the release
+  // key did not sign.
+  ipcMain.handle('vpn:check-release', (event) => {
+    vpnOnlyOurs(event);
+    return vpnInstaller.checkRelease();
+  });
+  ipcMain.handle('vpn:install', async (event) => {
+    vpnOnlyOurs(event);
+    // Downloads go under the browser's own data folder, not /tmp: /tmp is
+    // mounted noexec on many Linux systems, and the checked service has to
+    // run from where it was checked.
+    const root = path.join(app.getPath('userData'), 'vpn-install');
+    await fs.promises.mkdir(root, { recursive: true, mode: 0o700 });
+    vpnInstaller.tmpRoot = root;
+    return vpnInstaller.install();
+  });
+  ipcMain.handle('vpn:uninstall', async (event, purge) => {
+    vpnOnlyOurs(event);
+    // A clean disconnect first, so the network comes back before the
+    // service that holds it goes away.
+    await vpnManager.disconnect().catch(() => {});
+    return vpnInstaller.uninstall(purge === true);
   });
   ipcMain.handle('vpn:disconnect', (event) => {
     vpnOnlyOurs(event);
