@@ -10,7 +10,8 @@ promised there that does not exist yet.
 Developed in phases; each phase is a working, testable step. See
 `docs/phase-1.md` (the tunnel), `docs/phase-2.md` (the service and the kill
 switch), `docs/phase-3.md` (two hops, two modes, a new identity),
-`docs/phase-4.md` (the VPN in the browser, a signed node list, a node in one
+`docs/phase-4.md` (the VPN in the browser — installed, updated and removed
+from it, a leak test, the route by country — a signed node list, a node in one
 command) and `docs/phase-5.md` (passes: accountable admission that no one can
 link to its use, a fresh key every connection) for what exists now and how
 to run it.

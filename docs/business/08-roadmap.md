@@ -83,7 +83,7 @@ it.
 | Idea | Why not |
 |---|---|
 | A Firefox fork instead of Electron | Technically correct, costs 12 months. Re-evaluate in year 2 with a funded team. |
-| Token / crypto | See [04 §3](04-business-model.md) — MiCA, banking, credibility |
+| Paying node operators, or any token role beyond paying for services | See [04 §3](04-business-model.md) — MiCA, banking, credibility. HNET pays for HidraVPN and other HidraNet services, nothing more |
 | Our own exit network operated by the company | See [10 §1](10-legal-and-regulatory-risk.md) — structural risk |
 | International expansion (non-Portuguese-speaking) | Before repeating the channel in one city, it is dispersion |
 | HidraNet Pro in Q1 | With no user base, it converts ~0 |

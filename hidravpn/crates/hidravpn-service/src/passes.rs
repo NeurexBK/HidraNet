@@ -278,6 +278,7 @@ pub fn record_of(invite: &Invite) -> Option<NodeRecord> {
         role: invite.role.clone(),
         admission: Some("pass".into()),
         admission_port: p.admission_port,
+        country: invite.country.clone(),
     })
 }
 
@@ -330,6 +331,7 @@ mod tests {
             role: Some("exit".into()),
             admission: Some(admission.into()),
             admission_port: Some(51999),
+            country: None,
         }
     }
 

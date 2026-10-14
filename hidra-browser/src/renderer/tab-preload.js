@@ -62,7 +62,11 @@ if (isInternalPage) {
     // caller again before it does anything.
     vpn: {
       status: () => ipcRenderer.invoke('vpn:status'),
-      connect: (mode) => ipcRenderer.invoke('vpn:connect', mode),
+      connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
+      leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
+      checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
+      install: () => ipcRenderer.invoke('vpn:install'),
+      uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
       disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
       newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),
       nodes: () => ipcRenderer.invoke('vpn:nodes'),

@@ -177,6 +177,9 @@ fn checked_invite(record: &NodeRecord, answer: &str) -> Result<Invite> {
     invite.node_name = record.node_name.clone();
     invite.operator = record.operator.clone();
     invite.role = record.role.clone();
+    if record.country.is_some() {
+        invite.country = record.country.clone();
+    }
     invite.pass = None;
     Ok(invite)
 }
@@ -362,6 +365,7 @@ mod tests {
             role: None,
             admission: Some("open".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await
@@ -395,6 +399,7 @@ mod tests {
             role: None,
             admission: Some("open".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await
@@ -423,6 +428,7 @@ mod tests {
             role: None,
             admission: Some("manual".into()),
             admission_port: Some(port),
+            country: None,
         };
         let e = request_admission(&record, "k", "laptop")
             .await

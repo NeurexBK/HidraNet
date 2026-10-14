@@ -73,8 +73,29 @@ fn ensure_control_group() {
     }
 }
 
-pub fn install(bin: &Path) -> Result<()> {
+/// A login name as useradd accepts it, so nothing else reaches usermod.
+pub(super) fn valid_user(u: &str) -> bool {
+    !u.is_empty()
+        && u.len() <= 32
+        && !u.starts_with('-')
+        && u.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+pub fn install(bin: &Path, user: Option<&str>) -> Result<()> {
     ensure_control_group();
+    if let Some(u) = user {
+        if !valid_user(u) {
+            anyhow::bail!("{u:?} is not a login name");
+        }
+        if u != "root" && crate::paths::control_gid().is_some() {
+            run("usermod", &["-aG", crate::paths::CONTROL_GROUP, u])?;
+            println!(
+                "added {u} to the {} group (it takes effect at the next login)",
+                crate::paths::CONTROL_GROUP
+            );
+        }
+    }
     std::fs::write(UNIT_PATH, unit(bin))?;
     run("systemctl", &["daemon-reload"])?;
     run("systemctl", &["enable", "--now", "hidravpn"])?;
@@ -98,4 +119,17 @@ pub fn stop() -> Result<()> {
     // A clean disconnect before the process goes away.
     let _ = crate::cli_down_blocking();
     run("systemctl", &["stop", "hidravpn"]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_a_login_name_reaches_usermod() {
+        for ok in ["joao", "leo_m", "a.b-c", "user1"] {
+            assert!(super::valid_user(ok), "{ok}");
+        }
+        for bad in ["", "-G", "a b", "x;rm", "$(id)", "a/b", &"a".repeat(33)] {
+            assert!(!super::valid_user(bad), "{bad}");
+        }
+    }
 }

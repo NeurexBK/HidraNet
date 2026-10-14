@@ -39,10 +39,26 @@ struct Cli {
 enum Cmd {
     /// Run the daemon in the foreground (the OS service runs this).
     Run,
-    /// Install and start the OS service.
-    Install,
+    /// Install and start the OS service (also an update: a running service
+    /// is stopped, replaced and started again). Makes this machine's key if
+    /// it has none.
+    Install {
+        /// The command-line client to install beside the service.
+        #[arg(long)]
+        client: Option<PathBuf>,
+        /// Linux: the account to add to the hidravpn group, so the browser
+        /// it runs can drive the service.
+        #[arg(long)]
+        user: Option<String>,
+    },
     /// Stop and remove the OS service.
-    Uninstall,
+    Uninstall {
+        /// Also remove the installed programs, the pocket of nodes and this
+        /// machine's key. Nodes know this machine by that key: after a purge
+        /// it is a new machine to every node.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Start the OS service.
     Start,
     /// Stop the OS service.
@@ -109,16 +125,23 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Run => run_daemon(),
-        Cmd::Install => {
+        Cmd::Install { client, user } => {
             require_admin()?;
-            install::install()?;
+            install::install(&install::InstallOptions { client, user })?;
             println!("HidraVPN service installed and started");
             Ok(())
         }
-        Cmd::Uninstall => {
+        Cmd::Uninstall { purge } => {
             require_admin()?;
-            install::uninstall()?;
-            println!("HidraVPN service stopped and removed");
+            install::uninstall(purge)?;
+            println!(
+                "{}",
+                if purge {
+                    "HidraVPN removed: the service, the programs, the nodes and this machine's key"
+                } else {
+                    "HidraVPN service stopped and removed (the key and the nodes are kept)"
+                }
+            );
             Ok(())
         }
         Cmd::Start => {

@@ -13,7 +13,7 @@ difference, written down so anyone can hold us to it.
 
 | Fact | Where | Consequence |
 |---|---|---|
-| **No reward exists for running a node.** | [04 §3](04-business-model.md) rejects a token under MiCA; [18 §3.1](../corporate/18-governance.md) lists node operators as volunteers | Nobody is paid, and we must not say otherwise anywhere |
+| **No reward exists for running a node.** | [04 §3](04-business-model.md) limits HNET to paying for services, not rewarding operators; [18 §3.1](../corporate/18-governance.md) lists node operators as volunteers | Nobody is paid, and we must not say otherwise anywhere |
 | **A fresh relay finds nobody.** | `hidra-node/config.toml`: `bootstrap_nodes = []` | Without a seed list shipped with the software there is no network |
 | **Every node needs a port reachable from the internet.** | `hidra-node` listens on TCP 9150; `hidravpn-node` on UDP 51820 | A node behind a home router needs port forwarding; behind carrier-grade NAT it is impossible |
 | **No NAT traversal exists.** | No STUN, hole punching, UPnP or WebRTC anywhere in the tree | "Portless" volunteering is a roadmap item, not a feature |
@@ -155,8 +155,8 @@ that stayed up. We prepare for them now and promise them only what exists:
 - **A written exit code of conduct**, and no exit offered to anyone who has
   not read it.
 
-**On paying operators.** [04](04-business-model.md) records why a token is
-not the plan under MiCA. That decision stands and is revisited only when all
+**On paying operators.** [04](04-business-model.md) records why HNET pays
+for services and does not reward operators under MiCA. That decision stands and is revisited only when all
 three hold: the company is incorporated and advised on MiCA; the network has
 at least fifty nodes without payment; a payment model exists that does not
 require the company to custody anything. Until then, no page, README or post

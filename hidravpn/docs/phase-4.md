@@ -187,6 +187,80 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   the client's side: a connection to port 25 times out instead of being
   refused.
 
+## Completing the phase: install from the browser, the leak test, the route
+
+The first round of this phase left a person to install the service by hand.
+The second closes that, and the three things the original plan asked of the
+page that were still missing.
+
+- **Activate HidraVPN, from the page.** When the service is not installed the
+  page shows one card and one button. The browser fetches the release
+  manifest from `https://hidranet.org/vpn/release/manifest.json` with its
+  `.sig`, checks the signature against the release key it carries **before
+  parsing a byte of it**, downloads this platform's files into a fresh folder
+  only this account can read, checks every file's size and SHA-256 against the
+  manifest, and only then asks the system for administrator rights — UAC on
+  Windows, `pkexec` on Linux — to run `hidravpn-service install --client
+  hidravpn [--user <this account>]` from that folder (`src/main/vpn-installer.js`).
+  The paths travel to the elevated process as data, never inside a command
+  string. A refused prompt is reported as cancelled; nothing is half-installed.
+- **Update and remove, from the same page.** "Check for an update" reads the
+  signed manifest and compares its version with the one the service now
+  reports in `status` (`version`); "Install the update" runs the same path, and
+  the installer stops the running service before replacing it (a running
+  binary cannot be overwritten), keeps the machine's key, and starts it again.
+  "Uninstall HidraVPN" disconnects, then runs the installed service's own
+  `uninstall`; with the box ticked, `uninstall --purge`, which also removes the
+  programs, the pocket and the machine's key (on Windows the program folder
+  goes a few seconds after the process exits, since a running executable
+  cannot delete itself).
+- **The service installs completely on its own.** `install` now validates
+  everything first (a `--user` that is not a login name is refused before the
+  service is touched), copies the client beside the service with `--client`,
+  puts the account in the `hidravpn` group with `--user`, and makes this
+  machine's key if there is none. An existing key is never replaced: every
+  node this machine was admitted on knows it by that key.
+- **The release manifest.** `scripts/make-release-manifest.sh` writes it from
+  the release folders; the maintainers sign it offline with `hidravpn-sign
+  sign` and publish both. Nothing is served there yet: until it is, the button
+  says it could not fetch the release, exactly like the node list.
+- **A one-click leak test** (`src/main/vpn-leaktest.js`). While connected, it
+  asks api.ipify.org and api6.ipify.org which address they see — from a
+  session with no proxy, as any other program on the machine would, because
+  the browser's own tabs go through Tor whatever the VPN does — and reads the
+  kill switch from the service. IPv4: pass when the exit node's address is
+  seen, a warning naming both addresses when another is, never a pass when
+  the check did not answer. IPv6: a leak if anything answers. DNS: no query
+  can leave outside the tunnel while the kill switch is armed. It runs only
+  when the button is pressed.
+- **Allow the local network**, a box under Connect, off unless ticked; the
+  main process passes `allow_lan` to the service only for a strict `true`.
+- **The route, with countries.** A signed list may now say where each node is
+  (`"country": "FI"`, two letters, ISO 3166-1 alpha-2, validated as such;
+  `hidravpn-node init --country FI` puts it in the node's own description). It
+  travels into the invite and the pocket — a newer list updates it like the
+  operator or the endpoint — and `status` reports it per hop. The page shows
+  *This machine → FI · hel-1 → DE · fra-2 → Internet*, as a flag where the
+  system draws flags and as the two letters always. The country is what the
+  list's signer says, not something measured.
+
+Checked by: `scripts/test-client-installer.sh` (17 checks, run for real as
+root with systemd stood in for: install, update, refusal, uninstall, purge,
+and the whole chain — a manifest made by the script, signed by
+`hidravpn-sign`, accepted by the browser's installer, which installs the
+download), `hidra-browser/test/vpn-installer.js` (16),
+`hidra-browser/test/vpn-leaktest.js` (8), `hidra-browser/test/vpn-page.js`
+(50) and a unit test for the country. On Windows, `scripts/windows/phase4-test.ps1`
+is the checklist for the real PC: install and update over the pipe the
+browser uses, the data folder's rights, connect with and without the local
+network, the leak checks, uninstall and purge. **It has not run on hardware
+yet.**
+
+Not done here, on purpose: the `HIDRAVPN_ENABLED` switch the original plan
+asked for, which would hide the page by default. The page has been visible
+since the first round and installs nothing on its own, so hiding it now would
+only remove the way to install; whether to hide it is the maintainers' call.
+
 ## What the browser never sees
 
 The browser's module sends six commands — `status`, `connect`, `down`,

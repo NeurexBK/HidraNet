@@ -532,6 +532,7 @@ mod tests {
             operator: None,
             role: None,
             pass: None,
+            country: None,
         }
     }
 

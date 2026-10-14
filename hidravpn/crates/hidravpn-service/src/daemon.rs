@@ -821,6 +821,7 @@ impl Daemon {
                 entry_name: None,
                 hops_detail: Vec::new(),
                 same_operator: None,
+                version: env!("CARGO_PKG_VERSION").to_string(),
             }),
             Some(a) => {
                 let s = a.circuit.status();
@@ -828,6 +829,11 @@ impl Daemon {
                 let same_operator = a.entries.get(a.current_entry).and_then(|entry| {
                     hidravpn_core::pocket::same_operator(entry, &a.pool[a.current])
                 });
+                let entry_country = a
+                    .entries
+                    .get(a.current_entry)
+                    .and_then(|i| i.country.clone());
+                let exit_country = a.pool.get(a.current).and_then(|i| i.country.clone());
                 Response::with_status(StatusReport {
                     connected: s.connected,
                     node_name: Some(exit.node_name.clone()),
@@ -854,9 +860,14 @@ impl Daemon {
                             endpoint: h.endpoint.clone(),
                             last_handshake_secs: h.tunnel.last_handshake.map(|d| d.as_secs()),
                             connected: h.tunnel.connected,
+                            country: match h.role {
+                                Role::Entry => entry_country.clone(),
+                                Role::Exit => exit_country.clone(),
+                            },
                         })
                         .collect(),
                     same_operator,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                 })
             }
         }
@@ -1008,6 +1019,7 @@ pub fn node_reports_with_passes(
                 .pass
                 .as_ref()
                 .map(|_| wallet.count_for(&inv.node_public_key)),
+            country: inv.country.clone(),
         })
         .chain(pocket.known.iter().map(|k| {
             NodeReport {
@@ -1021,6 +1033,7 @@ pub fn node_reports_with_passes(
                 passes: k
                     .takes_passes()
                     .then(|| wallet.count_for(&k.node_public_key)),
+                country: k.country.clone(),
             }
         }))
         .collect()
@@ -1086,6 +1099,7 @@ mod tests {
             operator: None,
             role: None,
             pass: None,
+            country: None,
         }
     }
 
@@ -1166,6 +1180,7 @@ mod tests {
             role: None,
             admission: None,
             admission_port: None,
+            country: None,
         })
         .unwrap();
         let e = plan_connect(&p, "rapido").unwrap_err().to_string();

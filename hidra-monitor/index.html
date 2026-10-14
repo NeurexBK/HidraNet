@@ -75,13 +75,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 var $=function(id){return document.getElementById(id)};
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var PRESENCE_TOPIC='hidra/presence/v1';
+// The new tab page's opt-in signal. Chat rooms no longer publish to the old
+// topic, but older browsers still do, so both are read.
+var NODE_TOPIC='hidra/node/v1';
 var TTL=70000;
 var presence={};   // cid -> {last}
 var peak=0, mqttClient=null;
 
 function connect(){
   mqttClient=mqtt.connect(MQTT_BROKERS[0],{clientId:'hidracount_'+Math.floor(Math.random()*1e9),clean:true,connectTimeout:9000,reconnectPeriod:4000,keepalive:30});
-  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Connected (HidraNet)'; mqttClient.subscribe(PRESENCE_TOPIC,{qos:0}); });
+  mqttClient.on('connect',function(){ $('cdot').className='dot on'; $('ctxt').textContent='Connected (HidraNet)'; mqttClient.subscribe(PRESENCE_TOPIC,{qos:0}); mqttClient.subscribe(NODE_TOPIC,{qos:0}); });
   mqttClient.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='Reconnecting…'; });
   mqttClient.on('error',function(){ $('cdot').className='dot err'; });
   mqttClient.on('message',function(t,payload){

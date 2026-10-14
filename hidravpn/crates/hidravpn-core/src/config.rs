@@ -40,6 +40,9 @@ pub struct Invite {
     /// "entry", "exit" or "both": what the node's own firewall lets it be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Where the node is, two letters, as the signed list says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
     /// Set by this client, never by a node, for an invite it won by
     /// redeeming a pass: the fresh key that pass admitted, which the tunnel
     /// shows instead of the key derived from the master key. Kept in the
@@ -144,6 +147,9 @@ impl Invite {
             ));
         }
         self.client_ip()?;
+        if let Some(c) = self.country.as_deref() {
+            crate::directory::normalise_country(c)?;
+        }
         if self.mtu < 1280 || self.mtu > 1500 {
             return Err(anyhow!("the MTU must be between 1280 and 1500"));
         }
@@ -252,6 +258,7 @@ mod tests {
             operator: None,
             role: None,
             pass: None,
+            country: None,
         }
     }
 

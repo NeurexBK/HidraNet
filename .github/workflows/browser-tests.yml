@@ -46,7 +46,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage display-url english-only mqtt-worker-csp vault vpn-manager vpn-page release-verify; do
+          for t in anonymity-claims app-storage display-url english-only mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"

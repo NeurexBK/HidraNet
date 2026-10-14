@@ -36,8 +36,8 @@ pub async fn run_client_session(
     for (i, relay) in relays.iter().take(3).enumerate() {
         info!(
             hop = i,
-            relay = %relay.name,
-            addr = %relay.addr,
+            relay = %sensitive(&relay.name),
+            addr = %sensitive(&relay.addr),
             "establishing Noise XX handshake with relay"
         );
 
@@ -56,14 +56,14 @@ pub async fn run_client_session(
 
         info!(
             hop = i,
-            relay = %relay.name,
+            relay = %sensitive(&relay.name),
             "handshake completed, circuit extended"
         );
     }
 
     let circuit = Circuit::new(circuit_id, hops);
 
-    info!(circuit_id, payload, "building onion packet");
+    info!(circuit_id, bytes = payload.len(), "building onion packet");
     let onion_data = build_onion(&circuit, payload.as_bytes())?;
     debug!(circuit_id, onion_size = onion_data.len(), "onion built");
 

@@ -35,6 +35,9 @@ pub struct NodeConfig {
     /// How to reach that person: an address, a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<String>,
+    /// Where the node is, two letters (ISO 3166-1 alpha-2), as lists show it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
     /// "manual": the operator admits by hand. "open": any client that asks
     /// on the admission port is admitted (rate-limited, capped).
     #[serde(default = "default_admission")]
@@ -123,6 +126,7 @@ impl NodeConfig {
             role: default_role(),
             operator: None,
             contact: None,
+            country: None,
             admission: default_admission(),
             admission_port: default_admission_port(),
             max_clients: default_max_clients(),
@@ -239,6 +243,7 @@ impl NodeConfig {
             } else {
                 Some(self.admission_port)
             },
+            country: self.country.clone(),
         })
     }
 

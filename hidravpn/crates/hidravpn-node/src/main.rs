@@ -93,6 +93,10 @@ mod node {
             /// How to reach the operator: an address or a page.
             #[arg(long)]
             contact: Option<String>,
+            /// Where this node is, two letters (ISO 3166-1 alpha-2, e.g. FI),
+            /// as lists and clients will show it.
+            #[arg(long)]
+            country: Option<String>,
             /// Admit any client that asks on the admission port, rate-limited
             /// and capped, instead of by hand.
             #[arg(long, conflicts_with = "pass_admission")]
@@ -197,6 +201,7 @@ mod node {
                 role,
                 operator,
                 contact,
+                country,
                 open_admission,
                 pass_admission,
                 admission_port,
@@ -214,6 +219,10 @@ mod node {
                 cfg.set_role(&role)?;
                 cfg.operator = operator.filter(|s| !s.trim().is_empty());
                 cfg.contact = contact.filter(|s| !s.trim().is_empty());
+                cfg.country = match country.filter(|s| !s.trim().is_empty()) {
+                    Some(c) => Some(hidravpn_core::directory::normalise_country(&c)?),
+                    None => None,
+                };
                 cfg.admission = if open_admission {
                     "open"
                 } else if pass_admission {
@@ -398,6 +407,7 @@ mod node {
             operator: cfg.operator.clone(),
             role: Some(cfg.role.clone()),
             pass: None,
+            country: cfg.country.clone(),
         })
     }
 
