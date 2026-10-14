@@ -272,7 +272,11 @@ var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884
 // whom, without breaking any encryption. The content was encrypted; the
 // metadata was in the open.
 var PRESENCE_TOPIC='hidra/presence/v1';
-function gpub(obj){ if(mqttClient){ try{ mqttClient.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }catch(e){} } }
+// Off: the network count is opt-in, and the choice lives on the new tab page
+// ("Count me on the network"), which sends its own signal. A chat room is not
+// where anyone agreed to be counted, so the room no longer publishes here.
+// The members of a room still see each other through the room's own channel.
+function gpub(obj){ /* intentionally nothing; see above */ }
 var PALETTE=['#00d4aa','#ff6b6b','#4ecdc4','#45b7d1','#f9ca24','#fd79a8','#6c5ce7','#e17055','#0984e3','#00b894','#e84393','#00cec9','#fdcb6e','#a29bfe','#74b9ff'];
 function colorFor(s){var h=0;s=s||'';for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return PALETTE[h%PALETTE.length];}
 function genCid(){var a=crypto.getRandomValues(new Uint8Array(8)),s='';for(var i=0;i<8;i++)s+=a[i].toString(16).padStart(2,'0');return s;}
