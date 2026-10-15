@@ -573,12 +573,63 @@ impl Circuit {
     }
 }
 
-/// What `prepare` made ready: the circuit, the invites it won with a pass
-/// (for the pocket to keep), and notes for the person.
+/// What `prepare` made ready: the circuit, and notes for the person.
 pub struct Prepared {
     pub spec: CircuitSpec,
-    pub redeemed: Vec<Invite>,
     pub notes: Vec<String>,
+}
+
+/// Stops a circuit being prepared, from elsewhere: `down` while a
+/// connection still waits on a node. Only the waiting is cut short; what was
+/// set up is taken down as on any failure, and a pass that may not have
+/// reached its node goes back into the wallet, as after a timeout.
+#[derive(Clone)]
+pub struct Cancel {
+    rx: tokio::sync::watch::Receiver<bool>,
+    _never: Option<Arc<tokio::sync::watch::Sender<bool>>>,
+}
+
+/// What a connection stopped by `Cancel` says.
+pub const CANCELLED: &str = "stopped: the VPN was switched off while the connection was being made";
+
+impl Cancel {
+    /// A cancel and the switch that sets it.
+    pub fn new() -> (tokio::sync::watch::Sender<bool>, Self) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        (tx, Self { rx, _never: None })
+    }
+
+    /// One nothing sets.
+    pub fn never() -> Self {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        Self {
+            rx,
+            _never: Some(Arc::new(tx)),
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// `f`, unless the cancel is set first (or already is).
+    pub async fn or<T>(&self, f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        if self.is_set() {
+            return Err(anyhow!(CANCELLED));
+        }
+        let mut rx = self.rx.clone();
+        // Done only once the cancel is set: with the switch gone, nothing
+        // can set it any more, and `f` alone decides.
+        let set = async move {
+            if rx.wait_for(|c| *c).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            r = f => r,
+            () = set => Err(anyhow!(CANCELLED)),
+        }
+    }
 }
 
 /// Gets everything a circuit through `exit` (and `entry`) needs before it
@@ -604,6 +655,11 @@ pub struct Prepared {
 /// hold stays in place when this returns, successfully or not: the circuit
 /// that follows replaces it, or the caller lifts it. A pass that never
 /// reached its node goes back into `wallet`; one a node refused is spent.
+/// An invite a pass won goes into `won` as soon as it is won, for the
+/// pocket to keep even when a later step fails: its lease stands, and the
+/// next connection uses it instead of spending another pass. `cancel` cuts
+/// the waiting on a node short.
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare(
     exit: &Invite,
     entry: Option<&Invite>,
@@ -611,13 +667,30 @@ pub async fn prepare(
     opts: &CircuitOptions,
     held: &[SocketAddr],
     wallet: &mut crate::pass::Wallet,
+    won: &mut Vec<Invite>,
+    cancel: &Cancel,
 ) -> Result<Prepared> {
     let mut spec = CircuitSpec::new(exit.clone(), entry.cloned());
-    let mut redeemed = Vec::new();
     let mut notes = Vec::new();
     let first = entry.unwrap_or(exit);
     if first.admits_openly() && !first.admits_sessions() {
         return Err(not_updated(first));
+    }
+    // What the exit of two hops needs is checked before anything is asked of
+    // the entry: a pass spent on the entry of a circuit that cannot be built
+    // would be a pass wasted.
+    if let Some(entry) = entry {
+        if exit.admits_openly() && !exit.admits_sessions() {
+            return Err(not_updated(exit));
+        }
+        if exit.takes_passes() && wallet.count_for(&exit.node_public_key) == 0 {
+            return Err(no_pass_behind(exit));
+        }
+        if (exit.admits_openly() || exit.takes_passes())
+            && !crate::pocket::entry_can_reach(entry, exit)
+        {
+            return Err(anyhow!("{}", crate::pocket::relay_refusal(entry, exit)));
+        }
     }
     if (first.admits_sessions() || first.takes_passes()) && !held.is_empty() {
         let mut nodes = held.to_vec();
@@ -625,25 +698,26 @@ pub async fn prepare(
         killswitch::hold_admitting(&nodes, &[first.admission_addr()?], None)
             .context("could not hold the kill switch to ask the first node for admission")?;
     }
-    let mut won = None;
+    let mut admitted = None;
     if first.admits_sessions() {
         let fresh = ClientKey::generate()?;
-        let invite = crate::admission::request_admission(
-            &first.record(),
-            &fresh.public_base64(),
-            "client",
-            true,
-        )
-        .await
-        .with_context(|| format!("asking {} for admission", first.node_name))?;
-        won = Some((invite, Some(fresh)));
+        let invite = cancel
+            .or(crate::admission::request_admission(
+                &first.record(),
+                &fresh.public_base64(),
+                "client",
+                true,
+            ))
+            .await
+            .with_context(|| format!("asking {} for admission", first.node_name))?;
+        admitted = Some((invite, Some(fresh)));
     } else if first.takes_passes() {
-        if let Some(invite) = first_hop_pass(first, wallet, &mut notes).await? {
-            redeemed.push(invite.clone());
-            won = Some((invite, None));
+        if let Some(invite) = first_hop_pass(first, wallet, &mut notes, cancel).await? {
+            won.push(invite.clone());
+            admitted = Some((invite, None));
         }
     }
-    if let Some((invite, fresh)) = won {
+    if let Some((invite, fresh)) = admitted {
         match entry {
             Some(_) => {
                 spec.entry = Some(invite);
@@ -656,33 +730,19 @@ pub async fn prepare(
         }
     }
     if let Some(entry) = spec.entry.clone() {
+        // Checked above: an exit that admits openly takes sessions, one that
+        // takes passes has one left, and the entry can ask it.
         let ask = if exit.admits_openly() {
-            if !exit.admits_sessions() {
-                return Err(not_updated(exit));
-            }
             Some(Ask::Session)
         } else if exit.takes_passes() {
-            let pass = wallet.take_for(&exit.node_public_key).ok_or_else(|| {
-                anyhow!(
-                    "no pass left for {}: as the exit of two hops it is only ever shown a key admitted through the entry, never one it saw before; `hidravpn passes get` asks the issuer for more",
-                    exit.node_name
-                )
-            })?;
+            let pass = wallet
+                .take_for(&exit.node_public_key)
+                .ok_or_else(|| no_pass_behind(exit))?;
             Some(Ask::Pass(pass))
         } else {
             None
         };
         if let Some(ask) = ask {
-            if !crate::pocket::entry_can_reach(&entry, exit) {
-                if let Ask::Pass(p) = ask {
-                    wallet.passes.push(p);
-                }
-                return Err(anyhow!(
-                    "{} cannot ask {} for admission on this machine's behalf: its software is older than that (no `admission-relay` in the node list)",
-                    entry.node_name,
-                    exit.node_name
-                ));
-            }
             let (invite, fresh) = admit_behind(
                 &entry,
                 spec.entry_shown(),
@@ -692,20 +752,17 @@ pub async fn prepare(
                 held,
                 ask,
                 wallet,
+                cancel,
             )
             .await?;
             if invite.pass.is_some() {
-                redeemed.push(invite.clone());
+                won.push(invite.clone());
             }
             spec.exit = invite;
             spec.exit_key = fresh;
         }
     }
-    Ok(Prepared {
-        spec,
-        redeemed,
-        notes,
-    })
+    Ok(Prepared { spec, notes })
 }
 
 /// A first hop that admits with a pass: the next pass, redeemed directly.
@@ -716,6 +773,7 @@ async fn first_hop_pass(
     node: &Invite,
     wallet: &mut crate::pass::Wallet,
     notes: &mut Vec<String>,
+    cancel: &Cancel,
 ) -> Result<Option<Invite>> {
     let now = crate::timefmt::now_unix().max(0) as u64;
     if node.pass.as_ref().is_some_and(|p| p.fresh(now)) {
@@ -734,13 +792,16 @@ async fn first_hop_pass(
             node.node_name
         ));
     };
-    match crate::admission::redeem_pass(&node.record(), &pass).await {
+    match cancel
+        .or(crate::admission::redeem_pass(&node.record(), &pass))
+        .await
+    {
         Ok(invite) => Ok(Some(invite)),
         Err(e) => {
             if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
                 wallet.passes.push(pass);
             }
-            if node.pass.is_some() {
+            if node.pass.is_some() && !cancel.is_set() {
                 notes.push(format!("{e:#}; connecting with the last pass's key"));
                 Ok(None)
             } else {
@@ -756,6 +817,13 @@ enum Ask {
     Session,
     /// The key this pass names.
     Pass(crate::pass::Pass),
+}
+
+fn no_pass_behind(exit: &Invite) -> anyhow::Error {
+    anyhow!(
+        "no pass left for {}: as the exit of two hops it is only ever shown a key admitted through the entry, never one it saw before; `hidravpn passes get` asks the issuer for more",
+        exit.node_name
+    )
 }
 
 fn not_updated(node: &Invite) -> anyhow::Error {
@@ -786,7 +854,68 @@ async fn admit_behind(
     held: &[SocketAddr],
     ask: Ask,
     wallet: &mut crate::pass::Wallet,
+    cancel: &Cancel,
 ) -> Result<(Invite, Option<ClientKey>)> {
+    let (hop, admission) = match bridge_to(entry, entry_shown, exit, key, opts, held).await {
+        Ok(b) => b,
+        Err(e) => {
+            // Nothing was sent: the pass is still good.
+            if let Ask::Pass(pass) = ask {
+                wallet.passes.push(pass);
+            }
+            return Err(e);
+        }
+    };
+    let asked: Result<(Invite, Option<ClientKey>)> = cancel
+        .or(async {
+            netcfg::route_host_via(admission.ip(), &hop.interface)?;
+            let how = format!(
+                "asking {} for admission through {}",
+                exit.node_name, entry.node_name
+            );
+            match &ask {
+                Ask::Session => {
+                    let fresh = ClientKey::generate()?;
+                    let invite = crate::admission::request_admission(
+                        &exit.record(),
+                        &fresh.public_base64(),
+                        "client",
+                        true,
+                    )
+                    .await
+                    .context(how)?;
+                    Ok((invite, Some(fresh)))
+                }
+                Ask::Pass(pass) => {
+                    let invite = crate::admission::redeem_pass(&exit.record(), pass)
+                        .await
+                        .context(how)?;
+                    Ok((invite, None))
+                }
+            }
+        })
+        .await;
+    // The interface goes, and its route with it, whatever the answer.
+    hop.stop().await;
+    if let (Err(e), Ask::Pass(pass)) = (&asked, ask) {
+        // A pass that never reached the node is kept; one it refused is spent.
+        if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
+            wallet.passes.push(pass);
+        }
+    }
+    asked
+}
+
+/// The hold and the outer tunnel `admit_behind` asks through: the entry's
+/// hop, up, and the exit's admission address.
+async fn bridge_to(
+    entry: &Invite,
+    entry_shown: ShownKey,
+    exit: &Invite,
+    key: &ClientKey,
+    opts: &CircuitOptions,
+    held: &[SocketAddr],
+) -> Result<(Hop, SocketAddr)> {
     entry.validate().context("the entry invite")?;
     let entry_ep = entry.endpoint_addr()?;
     let admission = exit.admission_addr()?;
@@ -826,47 +955,11 @@ async fn admit_behind(
     let hop = Hop {
         role: Role::Entry,
         invite: entry.clone(),
-        interface: ifname.clone(),
+        interface: ifname,
         tunnel,
         runner,
     };
-    let asked: Result<(Invite, Option<ClientKey>)> = async {
-        netcfg::route_host_via(admission.ip(), &ifname)?;
-        let how = format!(
-            "asking {} for admission through {}",
-            exit.node_name, entry.node_name
-        );
-        match &ask {
-            Ask::Session => {
-                let fresh = ClientKey::generate()?;
-                let invite = crate::admission::request_admission(
-                    &exit.record(),
-                    &fresh.public_base64(),
-                    "client",
-                    true,
-                )
-                .await
-                .context(how)?;
-                Ok((invite, Some(fresh)))
-            }
-            Ask::Pass(pass) => {
-                let invite = crate::admission::redeem_pass(&exit.record(), pass)
-                    .await
-                    .context(how)?;
-                Ok((invite, None))
-            }
-        }
-    }
-    .await;
-    // The interface goes, and its route with it, whatever the answer.
-    hop.stop().await;
-    if let (Err(e), Ask::Pass(pass)) = (&asked, ask) {
-        // A pass that never reached the node is kept; one it refused is spent.
-        if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
-            wallet.passes.push(pass);
-        }
-    }
-    asked
+    Ok((hop, admission))
 }
 
 fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {
@@ -880,6 +973,44 @@ fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    async fn slow() -> Result<u8> {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok(7)
+    }
+
+    #[tokio::test]
+    async fn a_cancel_cuts_the_waiting_short_and_only_when_set() {
+        assert_eq!(Cancel::never().or(slow()).await.unwrap(), 7);
+
+        let (stop, cancel) = Cancel::new();
+        let started = std::time::Instant::now();
+        let waiting = tokio::spawn({
+            let cancel = cancel.clone();
+            async move {
+                cancel
+                    .or(async {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        Ok(())
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stop.send(true).unwrap();
+        let e = waiting.await.unwrap().unwrap_err();
+        assert_eq!(e.to_string(), CANCELLED);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(cancel.is_set());
+        // Already set: nothing more is waited on.
+        assert!(cancel.or(slow()).await.is_err());
+
+        // A switch that goes away unset leaves the work to finish.
+        let (stop, cancel) = Cancel::new();
+        drop(stop);
+        assert_eq!(cancel.or(slow()).await.unwrap(), 7);
+    }
 
     fn invite(name: &str, endpoint: &str, mtu: u16) -> Invite {
         Invite {

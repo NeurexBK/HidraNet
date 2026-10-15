@@ -1049,6 +1049,7 @@ async fn up(
         let wallet_path = wallet_beside(pocket_path);
         let mut wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
         let before = wallet.to_json();
+        let mut won = Vec::new();
         let prepared = hidravpn_core::circuit::prepare(
             &spec.exit,
             spec.entry.as_ref(),
@@ -1056,19 +1057,23 @@ async fn up(
             &opts,
             &[],
             &mut wallet,
+            &mut won,
+            &hidravpn_core::circuit::Cancel::never(),
         )
         .await;
         if wallet.to_json() != before {
             hidravpn_service::passes::save_wallet(&wallet_path, &wallet)?;
         }
-        let prepared = prepared?;
-        if !prepared.redeemed.is_empty() {
+        // Kept whatever happened next: a lease a pass won stands, and the
+        // next connection uses it instead of another pass.
+        if !won.is_empty() {
             let mut pocket = load_pocket(pocket_path)?;
-            for inv in &prepared.redeemed {
-                let _ = pocket.replace(inv.clone());
+            for inv in won {
+                let _ = pocket.replace(inv);
             }
             save_pocket(pocket_path, &pocket)?;
         }
+        let prepared = prepared?;
         for note in &prepared.notes {
             eprintln!("note: {note}");
         }

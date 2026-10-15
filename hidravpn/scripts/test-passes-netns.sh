@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
-C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; Q="ip netns exec hv-q"; E="ip netns exec hv-e"
+C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; Q="ip netns exec hv-q"; E="ip netns exec hv-e"; F="ip netns exec hv-f"
 PIDS=()
 export RUST_BACKTRACE=0
 # The issuer speaks plain HTTP on this private test network; a client sends
@@ -43,10 +43,11 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   sleep 0.5
-  for ns in hv-client hv-node hv-inet hv-q hv-e; do ip netns del "$ns" 2>/dev/null; done
+  [ -n "${NODE_Q:-}" ] && kill -CONT "$NODE_Q" 2>/dev/null
+  for ns in hv-client hv-node hv-inet hv-q hv-e hv-f; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /var/run/wireguard/hvp0.sock /var/run/wireguard/hvq0.sock /var/run/wireguard/hve0.sock
+         /var/run/wireguard/hvp0.sock /var/run/wireguard/hvq0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvf0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -189,7 +190,7 @@ $Q "$BIN/hidravpn-node" --config "$WORK/q.toml" init --endpoint 10.205.0.2:51820
 sed -i 's/^interface = "hvpn0"/interface = "hvq0"/' "$WORK/q.toml"
 $Q "$BIN/hidravpn-node" --config "$WORK/q.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-q"
-$Q env HIDRAVPN_RUN_DIR="$WORK/run-q" "$BIN/hidravpn-node" --config "$WORK/q.toml" run > "$WORK/node-q.log" 2>&1 & PIDS+=($!)
+$Q env HIDRAVPN_RUN_DIR="$WORK/run-q" "$BIN/hidravpn-node" --config "$WORK/q.toml" run > "$WORK/node-q.log" 2>&1 & NODE_Q=$!; PIDS+=($NODE_Q)
 for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node-q.log" && grep -q "admission service on" "$WORK/node-q.log" && break; sleep 0.2; done
 $Q "$BIN/hidravpn-node" --config "$WORK/q.toml" record > "$WORK/rec-q.json" 2>/dev/null
 HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes2.json" --sequence 2 \
@@ -281,6 +282,50 @@ sleep 1; kill -INT $TCPD 2>/dev/null; wait $TCPD 2>/dev/null
 ST=$(svc '{"cmd":"status"}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "no pass left for node-" && echo "$R" | grep -q "only ever shown a key admitted through the entry" && echo "$ST" | grep -q '"connected":false' && echo "$ST" | grep -q '"killswitch":false' && pass "with no pass left for the exit of two hops, connect is refused and says why; it never falls back to a key the exit saw" || fail "no pass for the exit: $R $ST"
 [ "$(tcpdump -n -r "$WORK/q2.pcap" "src host 10.200.0.2 or dst host 10.200.0.2" 2>/dev/null | wc -l)" = 0 ] && pass "and node-q heard nothing from the client" || fail "node-q heard from the client on a refused connect"
+
+# ── Two hops through an entry that takes passes: none wasted on failures ───
+# node-f, an entry that admits with a pass. When the exit cannot be used,
+# nothing is spent on node-f; when the exit fails after node-f admitted this
+# machine, node-f's lease is kept and the next try uses it instead of
+# another pass, and the exit's pass, which never reached it, stays.
+ip netns add hv-f
+ip link add f-i type veth peer name i-f; ip link set f-i netns hv-f; ip link set i-f netns hv-inet
+$F ip addr add 10.207.0.2/24 dev f-i; $F ip link set f-i up; $F ip link set lo up; $F ip route add default via 10.207.0.1
+$I ip addr add 10.207.0.1/24 dev i-f; $I ip link set i-f up
+$F "$BIN/hidravpn-node" --config "$WORK/f.toml" init --endpoint 10.207.0.2:51820 --tunnel 10.80.0.0/16 --name node-f --role entry --operator fourth --pass-admission --dns udp://10.201.0.2 --out-interface f-i > "$WORK/init-f.log" 2>&1 || { cat "$WORK/init-f.log"; fail "node-f init"; }
+sed -i 's/^interface = "hvpn0"/interface = "hvf0"/' "$WORK/f.toml"
+$F "$BIN/hidravpn-node" --config "$WORK/f.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
+mkdir -p "$WORK/run-f" "$WORK/f"
+$F env HIDRAVPN_RUN_DIR="$WORK/run-f" "$BIN/hidravpn-node" --config "$WORK/f.toml" run > "$WORK/node-f.log" 2>&1 & PIDS+=($!)
+for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node-f.log" && grep -q "admission service on" "$WORK/node-f.log" && break; sleep 0.2; done
+$F "$BIN/hidravpn-node" --config "$WORK/f.toml" record > "$WORK/rec-f.json" 2>/dev/null
+HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes4.json" --sequence 4 \
+  --issuer-url http://10.200.0.1:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec-f.json" "$WORK/rec-q.json" > /dev/null 2>&1
+FP="$WORK/f/circuit.json"
+OUT=$("$BIN/hidravpn" --pocket "$FP" nodes import "$WORK/nodes4.json" --pubkey "$LISTPUB" 2>&1); echo "$OUT" | grep -q "added 2 node(s)" || fail "import v4: $OUT"
+TOKEN4=$($ISS account add --name dave --quota 10 2>/dev/null)
+OUT=$($C "$BIN/hidravpn" --pocket "$FP" passes get --node node-f --count 2 --token-file <(echo "$TOKEN4") 2>&1); echo "$OUT" | grep -q "2 pass(es) for 1 node(s)" || fail "passes for node-f: $OUT"
+left() { python3 -I - "$1" "$WORK/f/passes.json" <<'PY'
+import json, sys
+key = json.load(open(sys.argv[1]))['node_public_key'].strip()
+print(sum(1 for p in json.load(open(sys.argv[2])).get('passes', []) if p['node_public_key'].strip() == key))
+PY
+}
+f_lease() { python3 -I -c "import json,sys; e=[x for x in json.load(open(sys.argv[1]))['entries'] if x['node_name']=='node-f']; print(e[0]['pass']['client_secret'] if e and e[0].get('pass') else '-')" "$FP"; }
+up2() { $C "$BIN/hidravpn" --direct --key /etc/hidravpn/client.key --pocket "$FP" up --privado 2>&1; }
+OUT=$(up2)
+echo "$OUT" | grep -q "no pass left for node-q" && [ "$(left "$WORK/rec-f.json")" = 2 ] && [ "$(f_lease)" = - ] && pass "no pass left for the exit: refused before anything is asked of the entry, whose 2 passes stay" || fail "no exit pass: $(echo "$OUT" | tail -1); node-f passes $(left "$WORK/rec-f.json"), lease $(f_lease)"
+OUT=$($C "$BIN/hidravpn" --pocket "$FP" passes get --node node-q --count 2 --token-file <(echo "$TOKEN4") 2>&1); echo "$OUT" | grep -q "2 pass(es) for 1 node(s)" || fail "passes for node-q: $OUT"
+# node-q stops answering: its kernel still takes the connection, and the
+# redemption through node-f waits for a reply that never comes.
+kill -STOP "$NODE_Q"
+OUT=$(up2)
+L1=$(f_lease)
+[ "$(left "$WORK/rec-f.json")" = 1 ] && [ "$L1" != - ] && [ "$(left "$WORK/rec-q.json")" = 2 ] && pass "the exit did not answer: one of node-f's passes was spent and its lease kept; node-q's pass, never redeemed, is back in the wallet" || fail "exit hung: $(echo "$OUT" | tail -1); node-f $(left "$WORK/rec-f.json") lease $L1, node-q $(left "$WORK/rec-q.json")"
+OUT=$(up2)
+[ "$(left "$WORK/rec-f.json")" = 1 ] && [ "$(f_lease)" = "$L1" ] && [ "$(left "$WORK/rec-q.json")" = 2 ] && pass "the next try uses node-f's kept lease: no pass spent on either node" || fail "second try: $(echo "$OUT" | tail -1); node-f $(left "$WORK/rec-f.json") lease $(f_lease), node-q $(left "$WORK/rec-q.json")"
+kill -CONT "$NODE_Q"
+{ $C ip link show hvpn0 || $C nft list table inet hidravpn_ks; } >/dev/null 2>&1 && fail "a failed two-hop try left a tunnel or the kill switch behind" || pass "the failed tries left nothing behind"
 
 # ── A pass spent once is refused the second time ────────────────────────────
 OUT=$($C "$BIN/hidravpn" --pocket "$WORK/again/circuit.json" nodes join --all 2>&1)

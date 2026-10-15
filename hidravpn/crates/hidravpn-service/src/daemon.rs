@@ -62,16 +62,38 @@ pub struct Daemon {
     /// issuer that counted passes the service then could not keep, or one
     /// that is down, is not asked every ten minutes.
     refill_pause: std::sync::Mutex<Option<std::time::Instant>>,
+    /// The circuit being built, while one is: the state lock is held for
+    /// all of it, so `down` stops it through this instead of waiting on the
+    /// nodes, and `status` answers from it.
+    connecting: std::sync::Mutex<Option<Connecting>>,
+}
+
+/// A circuit being built: whose it is, what it will be, and the switch that
+/// stops it.
+struct Connecting {
+    owner: Option<u32>,
+    hops: u8,
+    mode: &'static str,
+    stop: tokio::sync::watch::Sender<bool>,
+}
+
+/// Clears `Daemon::connecting` when the build it stands for ends, however.
+struct Built<'a>(&'a std::sync::Mutex<Option<Connecting>>);
+
+impl Drop for Built<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 /// How long automatic passes rest after a top-up that failed.
 const REFILL_PAUSE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// What a person is told when a circuit could not be built while the kill
-/// switch was held across a change: the machine is blocked, not open.
 /// The answer to a request without the right control token.
 pub const UNAUTHORISED: &str = "unauthorised: wrong or missing control token";
 
+/// What a person is told when a circuit could not be built while the kill
+/// switch was held across a change: the machine is blocked, not open.
 const HELD: &str = "the kill switch stays armed: nothing leaves this machine until `hidravpn down` or another connect";
 
 /// The same bytes, compared without a short cut: the comparison takes the
@@ -112,6 +134,7 @@ impl Daemon {
             pocket_lock: Mutex::new(()),
             stopping: std::sync::atomic::AtomicBool::new(false),
             refill_pause: std::sync::Mutex::new(None),
+            connecting: std::sync::Mutex::new(None),
         })
     }
 
@@ -236,6 +259,9 @@ impl Daemon {
                 }
             }
             Command::Down => {
+                // A circuit still being built is stopped first: otherwise
+                // `down` would wait for every node it is waiting on.
+                self.stop_connecting(caller);
                 if let Err(e) = self.owned_by(caller).await {
                     return Response::err(format!("{e:#}"));
                 }
@@ -252,6 +278,30 @@ impl Daemon {
                     Ok(note) => self.status().await.noting(note),
                     Err(e) => Response::err(format!("{e:#}")),
                 }
+            }
+        }
+    }
+
+    /// Marks a circuit as being built, for `owner`, until the guard goes;
+    /// returns what stops it.
+    fn begin_connecting(&self, owner: Option<u32>, hops: u8) -> (circuit::Cancel, Built<'_>) {
+        let (stop, cancel) = circuit::Cancel::new();
+        *self.connecting.lock().unwrap_or_else(|e| e.into_inner()) = Some(Connecting {
+            owner,
+            hops,
+            mode: if hops == 2 { "privado" } else { "rapido" },
+            stop,
+        });
+        (cancel, Built(&self.connecting))
+    }
+
+    /// Stops the circuit being built, if there is one and `caller` may: root,
+    /// or the account it is being built for.
+    fn stop_connecting(&self, caller: Option<u32>) {
+        let c = self.connecting.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = c.as_ref() {
+            if caller == Some(0) || c.owner == caller {
+                let _ = c.stop.send(true);
             }
         }
     }
@@ -334,12 +384,19 @@ impl Daemon {
         }
         let old = guard.take();
         let had_old = old.is_some();
-        let (circuit, notes) = match self.build(old, &pool[0], entries.first(), &opts).await {
+        let hops = if entries.is_empty() { 1 } else { 2 };
+        let (cancel, _building) = self.begin_connecting(caller, hops);
+        let built = self
+            .build(old, &pool[0], entries.first(), &opts, &cancel)
+            .await;
+        let (circuit, notes) = match built {
             Ok(c) => c,
             Err(Failed::Untouched(e, old)) => {
                 *guard = old.map(|b| *b);
                 return Err(e);
             }
+            // Stopped by `down`, which takes it from here.
+            Err(Failed::Held(_)) if cancel.is_set() => return Err(anyhow!(circuit::CANCELLED)),
             Err(Failed::Held(e)) if had_old => return Err(e.context(HELD)),
             Err(Failed::Held(e)) => return Err(e),
         };
@@ -485,8 +542,10 @@ impl Daemon {
     /// account that may drive the service may switch it: as with
     /// `get_passes`, only the account's quota is at stake. In the same
     /// order as every other change beside the pocket: the service's own
-    /// lock, then the file lock (which a top-up may hold across a fetch;
-    /// this waits for it without blocking a thread).
+    /// lock, then the file lock. Inside the service the file lock is only
+    /// taken under its own lock, so waiting for it here (a blocking wait)
+    /// is only ever waiting for the command line, which may hold it across
+    /// a fetch.
     async fn set_refill(
         &self,
         enabled: Option<bool>,
@@ -607,12 +666,12 @@ impl Daemon {
         }
     }
 
+    /// Whether a circuit is up now. One being built, or being changed, is
+    /// not: the answer does not wait for it.
     async fn circuit_up(&self) -> bool {
         self.state
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|a| a.circuit.status().connected)
+            .try_lock()
+            .is_ok_and(|g| g.as_ref().is_some_and(|a| a.circuit.status().connected))
     }
 
     /// Says why a top-up failed, without an address or a name, and rests
@@ -697,7 +756,12 @@ impl Daemon {
             active.opts.clone(),
             active.allow_same_operator,
         );
-        match self.build(Some(active), &exit, entry.as_ref(), &opts).await {
+        let hops = if entry.is_some() { 2 } else { 1 };
+        let (cancel, _building) = self.begin_connecting(owner, hops);
+        let built = self
+            .build(Some(active), &exit, entry.as_ref(), &opts, &cancel)
+            .await;
+        match built {
             Ok((circuit, pass_notes)) => {
                 let fresh = (exit.admits_openly() || exit.takes_passes()) && entry.is_some();
                 let exit_note = if next == current {
@@ -705,7 +769,7 @@ impl Daemon {
                         "only one exit node is configured".to_string()
                     } else {
                         format!(
-                            "no other exit is run by a different operator than the entry ({} not used)",
+                            "no other exit can go with the entry ({} not used)",
                             skipped.join(", ")
                         )
                     };
@@ -719,10 +783,7 @@ impl Daemon {
                         pool[next].node_name, pool[current].node_name
                     );
                     if !skipped.is_empty() {
-                        n.push_str(&format!(
-                            "; not {}: run by the entry's operator",
-                            skipped.join(", ")
-                        ));
+                        n.push_str(&format!("; not {}", skipped.join(", ")));
                     }
                     n
                 };
@@ -762,6 +823,7 @@ impl Daemon {
                 *guard = old.map(|b| *b);
                 Err(e)
             }
+            Err(Failed::Held(_)) if cancel.is_set() => Err(anyhow!(circuit::CANCELLED)),
             // Nothing is up, and the hold still blocks the machine: say so
             // rather than pretend a circuit is up, or that it is open.
             Err(Failed::Held(e)) => Err(e.context(format!(
@@ -786,6 +848,7 @@ impl Daemon {
         exit: &Invite,
         entry: Option<&Invite>,
         opts: &CircuitOptions,
+        cancel: &circuit::Cancel,
     ) -> std::result::Result<(Circuit, Vec<String>), Failed> {
         let ready = (|| -> Result<_> {
             let key = load_key()?;
@@ -827,8 +890,23 @@ impl Daemon {
             let _ = killswitch::remove();
         }
         let wallet_before = wallet.to_json();
-        let prepared =
-            circuit::prepare(&exit, entry.as_ref(), &key, opts, &held, &mut wallet).await;
+        let mut won = Vec::new();
+        let prepared = circuit::prepare(
+            &exit,
+            entry.as_ref(),
+            &key,
+            opts,
+            &held,
+            &mut wallet,
+            &mut won,
+            cancel,
+        )
+        .await;
+        // Kept whatever happened next: a lease a pass won stands, and the
+        // next connection uses it instead of another pass.
+        for inv in won {
+            let _ = pocket.replace(inv);
+        }
         let mut notes = Vec::new();
         // Written whatever happened: a pass taken was spent, or went back.
         if wallet.to_json() != wallet_before {
@@ -837,10 +915,8 @@ impl Daemon {
             }
         }
         let built = match prepared {
+            Ok(_) if cancel.is_set() => Err(anyhow!(circuit::CANCELLED)),
             Ok(p) => {
-                for inv in p.redeemed {
-                    let _ = pocket.replace(inv);
-                }
                 notes.extend(p.notes);
                 Circuit::up(p.spec, key.clone(), opts.clone()).await
             }
@@ -885,26 +961,49 @@ impl Daemon {
         r.map(|_| "disconnected")
     }
 
+    /// The status with no circuit up: `hops` and `mode` say what is being
+    /// built, if anything (0 and "" when nothing is).
+    fn not_connected(hops: u8, mode: &str) -> Response {
+        Response::with_status(StatusReport {
+            connected: false,
+            node_name: None,
+            endpoint: None,
+            last_handshake_secs: None,
+            tx_bytes: 0,
+            rx_bytes: 0,
+            killswitch: killswitch::is_active(),
+            hops,
+            mode: mode.to_string(),
+            entry_name: None,
+            hops_detail: Vec::new(),
+            same_operator: None,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        })
+    }
+
     async fn status(&self) -> Response {
-        let guard = self.state.lock().await;
-        let killswitch = killswitch::is_active();
+        // While a circuit is being built the state lock is held for all of
+        // it: the answer is that it is being built (the hops it will have,
+        // not connected), at once, rather than after the nodes answer.
+        let guard = match self.state.try_lock() {
+            Ok(g) => g,
+            Err(_) => {
+                let building = self
+                    .connecting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|c| (c.hops, c.mode));
+                match building {
+                    Some((hops, mode)) => return Self::not_connected(hops, mode),
+                    None => self.state.lock().await,
+                }
+            }
+        };
         match guard.as_ref() {
-            None => Response::with_status(StatusReport {
-                connected: false,
-                node_name: None,
-                endpoint: None,
-                last_handshake_secs: None,
-                tx_bytes: 0,
-                rx_bytes: 0,
-                killswitch,
-                hops: 0,
-                mode: String::new(),
-                entry_name: None,
-                hops_detail: Vec::new(),
-                same_operator: None,
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            }),
+            None => Self::not_connected(0, ""),
             Some(a) => {
+                let killswitch = killswitch::is_active();
                 let s = a.circuit.status();
                 let exit = s.exit();
                 let same_operator = a.entries.get(a.current_entry).and_then(|entry| {
@@ -961,6 +1060,7 @@ impl Daemon {
     pub async fn shutdown(&self) {
         self.stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop_connecting(Some(0));
         let _ = self.down().await;
     }
 }
@@ -1152,7 +1252,8 @@ enum Failed {
 /// The next pair for a new identity: another exit when one may be paired
 /// with an entry (two operators, or the person's yes), else the same exit;
 /// another entry when there is one that may go with that exit. Also the
-/// names of exits passed over because one operator runs them and the entry.
+/// exits passed over, each with why: one operator runs it and the entry, or
+/// no entry can ask it for admission.
 /// Among them, the nodes `usable` says a circuit can be built with now
 /// (the flag: as the exit of two hops) are preferred.
 fn choose_rotation(
@@ -1181,7 +1282,18 @@ fn choose_rotation(
         } else if (0..a.entries.len())
             .any(|e| !hidravpn_core::pocket::same_node(&a.entries[e], &a.pool[x]))
         {
-            skipped.push(a.pool[x].node_name.clone());
+            // Said with the reason: no entry it could be paired with can
+            // ask it for admission, or one operator runs it and the entry.
+            let relayable = (0..a.entries.len()).any(|e| {
+                !hidravpn_core::pocket::same_node(&a.entries[e], &a.pool[x])
+                    && hidravpn_core::pocket::entry_can_reach(&a.entries[e], &a.pool[x])
+            });
+            let why = if relayable {
+                "run by the entry's operator"
+            } else {
+                "the entry cannot ask it for admission"
+            };
+            skipped.push(format!("{} ({why})", a.pool[x].node_name));
         }
     }
     let other_exits = preferring(other_exits, |x| usable(&a.pool[x], true));

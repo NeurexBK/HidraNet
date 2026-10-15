@@ -19,7 +19,7 @@
 //! so filling a node costs real tunnels, not requests.
 //! Nothing here logs an address or a key: counts only.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,7 +75,11 @@ const PER_CONNECTION: Duration = Duration::from_secs(5);
 pub struct RateLimiter {
     per_ip: HashMap<IpAddr, VecDeque<Instant>>,
     global: VecDeque<Instant>,
-    sessions: VecDeque<Instant>,
+    /// Session admissions in the window, oldest first, by key: a key is
+    /// counted once, so replaying its request (the proof holds for a few
+    /// minutes) takes no further room.
+    sessions: VecDeque<(Instant, [u8; 32])>,
+    session_keys: HashSet<[u8; 32]>,
 }
 
 /// Drops what has slid out of the window; true if there is room for one more.
@@ -109,13 +113,52 @@ impl RateLimiter {
         true
     }
 
-    /// Whether one more session admission is allowed now, whoever asks;
-    /// records it if so. The proof of work is checked before this.
-    pub fn allow_session(&mut self, now: Instant) -> bool {
-        if !room(&mut self.sessions, now, GLOBAL_WINDOW, SESSION_GLOBAL) {
+    /// Forgets the session admissions that have slid out of the window.
+    fn slide_sessions(&mut self, now: Instant) {
+        while let Some((t, _)) = self.sessions.front() {
+            if now.duration_since(*t) <= GLOBAL_WINDOW {
+                break;
+            }
+            if let Some((_, key)) = self.sessions.pop_front() {
+                self.session_keys.remove(&key);
+            }
+        }
+    }
+
+    /// The work a session admission costs now: `base` while the window is
+    /// at most half full, then two bits more (four times the work) for each
+    /// step closer to the ceiling, up to what a client agrees to do. A
+    /// person connecting pays about a second; whoever tries to fill the
+    /// window pays the most for the last places.
+    pub fn session_bits(&mut self, base: u8, now: Instant) -> u8 {
+        self.slide_sessions(now);
+        let used = self.sessions.len();
+        let extra = if used < SESSION_GLOBAL / 2 {
+            0
+        } else if used < SESSION_GLOBAL * 3 / 4 {
+            2
+        } else if used < SESSION_GLOBAL * 7 / 8 {
+            4
+        } else {
+            6
+        };
+        base.saturating_add(extra).min(work::MAX_BITS.max(base))
+    }
+
+    /// Whether a session admission for `key` is allowed now, whoever asks;
+    /// records it if so. The proof of work is checked before this. A key
+    /// already admitted in the window is allowed again without taking more
+    /// room: the node answers with the lease it already holds.
+    pub fn allow_session(&mut self, key: [u8; 32], now: Instant) -> bool {
+        self.slide_sessions(now);
+        if self.session_keys.contains(&key) {
+            return true;
+        }
+        if self.sessions.len() >= SESSION_GLOBAL {
             return false;
         }
-        self.sessions.push_back(now);
+        self.sessions.push_back((now, key));
+        self.session_keys.insert(key);
         true
     }
 }
@@ -161,6 +204,15 @@ pub async fn serve(
             "by hand: describes the node only"
         }
     );
+    if listen.port() != hidravpn_core::admission::DEFAULT_ADMISSION_PORT
+        && !cfg.role.eq_ignore_ascii_case("entry")
+        && (cfg.admission_is_open() || cfg.admits_with_passes())
+    {
+        warn!(
+            "entries relay admission requests only to TCP {}: on another port this node is used as the only hop, never as the exit of two hops",
+            hidravpn_core::admission::DEFAULT_ADMISSION_PORT
+        );
+    }
     let limiter = Arc::new(Mutex::new(RateLimiter::default()));
     let slots = Arc::new(Semaphore::new(CONNECTIONS));
     let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
@@ -300,34 +352,35 @@ async fn admit(
         }
     };
     // A key that is not a key is refused before it counts against anyone.
-    if hidravpn_core::keys::public_key_from_base64(&req.public_key).is_err() {
-        return http_response(
-            400,
-            &refusal("public_key is not a WireGuard public key (32 bytes, base64)"),
-        );
-    }
+    let client = match hidravpn_core::keys::public_key_from_base64(&req.public_key) {
+        Ok(k) => *k.as_bytes(),
+        Err(_) => {
+            return http_response(
+                400,
+                &refusal("public_key is not a WireGuard public key (32 bytes, base64)"),
+            );
+        }
+    };
     if req.session {
         // A session key is paid for with work, bound to this node and this
         // key, not counted against an address.
-        let bits = cfg.admission_work_bits;
+        let bits = limiter
+            .lock()
+            .await
+            .session_bits(cfg.admission_work_bits, Instant::now());
         let paid = match (
             req.work,
             hidravpn_core::keys::public_key_from_base64(&cfg.public_key().unwrap_or_default()),
-            hidravpn_core::keys::public_key_from_base64(&req.public_key),
         ) {
-            (Some(w), Ok(node), Ok(client)) => work::verify(
-                node.as_bytes(),
-                client.as_bytes(),
-                w,
-                bits,
-                work::now_minute(),
-            ),
+            (Some(w), Ok(node)) => {
+                work::verify(node.as_bytes(), &client, w, bits, work::now_minute())
+            }
             _ => false,
         };
         if !paid {
             return http_response(428, &refusal_wanting_work(bits));
         }
-        if !limiter.lock().await.allow_session(Instant::now()) {
+        if !limiter.lock().await.allow_session(client, Instant::now()) {
             return http_response(
                 429,
                 &refusal("this node is admitting too many sessions right now; try another"),
@@ -480,14 +533,78 @@ mod tests {
         }
         assert!(!l.allow(entry, t0), "lasting leases: a few per address");
         let mut sessions = 0;
-        while l.allow_session(t0) {
+        while l.allow_session(key(sessions), t0) {
             sessions += 1;
         }
         assert_eq!(
-            sessions, SESSION_GLOBAL,
+            sessions, SESSION_GLOBAL as u32,
             "sessions: the node-wide ceiling only"
         );
-        assert!(l.allow_session(t0 + GLOBAL_WINDOW + Duration::from_secs(1)));
+        assert!(l.allow_session(key(sessions), t0 + GLOBAL_WINDOW + Duration::from_secs(1)));
+    }
+
+    fn key(n: u32) -> [u8; 32] {
+        let mut k = [7u8; 32];
+        k[..4].copy_from_slice(&n.to_be_bytes());
+        k
+    }
+
+    #[test]
+    fn a_replayed_session_request_takes_no_more_room() {
+        let mut l = RateLimiter::default();
+        let t0 = Instant::now();
+        for _ in 0..(SESSION_GLOBAL * 2) {
+            assert!(l.allow_session(key(1), t0), "the same key, again and again");
+        }
+        assert_eq!(l.sessions.len(), 1, "counted once");
+        for n in 2..=SESSION_GLOBAL as u32 {
+            assert!(l.allow_session(key(n), t0));
+        }
+        assert!(
+            !l.allow_session(key(0), t0),
+            "the window is full of different keys"
+        );
+        assert!(
+            l.allow_session(key(1), t0),
+            "a key already in it still has its lease"
+        );
+        // Once it slides out, the key is forgotten with it.
+        let later = t0 + GLOBAL_WINDOW + Duration::from_secs(1);
+        assert!(l.allow_session(key(0), later));
+        assert!(!l.session_keys.contains(&key(1)));
+        assert_eq!(l.sessions.len(), 1);
+    }
+
+    #[test]
+    fn the_work_asked_rises_as_the_session_window_fills() {
+        let mut l = RateLimiter::default();
+        let t0 = Instant::now();
+        let mut seen = Vec::new();
+        for n in 0..SESSION_GLOBAL as u32 {
+            let b = l.session_bits(20, t0);
+            if seen.last() != Some(&b) {
+                seen.push(b);
+            }
+            assert!(l.allow_session(key(n), t0));
+        }
+        assert_eq!(
+            seen,
+            vec![20, 22, 24, 26],
+            "two bits a step, from half full"
+        );
+        assert_eq!(l.session_bits(20, t0), 26, "never past what a client does");
+        assert_eq!(l.session_bits(25, t0), 26);
+        assert_eq!(
+            l.session_bits(28, t0),
+            28,
+            "an operator's own choice stands"
+        );
+        let later = t0 + GLOBAL_WINDOW + Duration::from_secs(1);
+        assert_eq!(
+            l.session_bits(20, later),
+            20,
+            "back down once the window empties"
+        );
     }
 
     #[test]

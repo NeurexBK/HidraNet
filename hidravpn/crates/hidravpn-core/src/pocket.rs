@@ -447,7 +447,8 @@ impl Pocket {
             .collect();
         if relayed.is_empty() {
             return Err(anyhow!(
-                "no entry can ask an exit for admission on this machine's behalf: their software is older than that (no `admission-relay` in the node list); the entries' operators need to update them"
+                "no entry can ask an exit for admission on this machine's behalf: the entries' software is older than that (no `admission-relay` in the node list), or the exits take admission requests on a port other than {}, the one an entry relays; their operators need to update them",
+                crate::admission::DEFAULT_ADMISSION_PORT
             ));
         }
         let allowed: Vec<(usize, usize)> = relayed
@@ -491,10 +492,39 @@ pub fn pair_allowed(entry: &Invite, exit: &Invite, allow_same_operator: bool) ->
 
 /// Whether `entry` can carry the admission request `exit` needs: an exit
 /// admitted by hand needs none; one asked for a key per connection, openly
-/// or with a pass, needs an entry whose software relays the request.
+/// or with a pass, needs an entry whose software relays the request, and
+/// takes it on the standard admission port, the one port an entry relays
+/// (an entry that forwarded any port would carry anything, not only
+/// WireGuard and this request). An exit on another port is still used as
+/// the only hop.
 pub fn entry_can_reach(entry: &Invite, exit: &Invite) -> bool {
     !(exit.admits_openly() || exit.takes_passes())
-        || entry.has(crate::directory::features::ADMISSION_RELAY)
+        || (entry.has(crate::directory::features::ADMISSION_RELAY) && on_relayed_port(exit))
+}
+
+fn on_relayed_port(exit: &Invite) -> bool {
+    exit.admission_port
+        .unwrap_or(crate::admission::DEFAULT_ADMISSION_PORT)
+        == crate::admission::DEFAULT_ADMISSION_PORT
+}
+
+/// Why `entry` cannot carry the admission request `exit` needs, when
+/// `entry_can_reach` says so.
+pub fn relay_refusal(entry: &Invite, exit: &Invite) -> String {
+    if on_relayed_port(exit) {
+        format!(
+            "{} cannot ask {} for admission on this machine's behalf: its software is older than that (no `admission-relay` in the node list)",
+            entry.node_name, exit.node_name
+        )
+    } else {
+        format!(
+            "{} takes admission requests on TCP {}, and an entry relays them only to {}: it is used as the only hop, not as the exit of two hops",
+            exit.node_name,
+            exit.admission_port
+                .unwrap_or(crate::admission::DEFAULT_ADMISSION_PORT),
+            crate::admission::DEFAULT_ADMISSION_PORT
+        )
+    }
 }
 
 /// Why no node fills a slot, and what to do.
@@ -604,6 +634,37 @@ mod tests {
             ];
             self
         }
+    }
+
+    #[test]
+    fn an_exit_on_another_admission_port_is_never_the_exit_of_two_hops() {
+        let entry = run_by(invite("e", "203.0.113.20:51820"), "a");
+        let mut odd = run_by(invite("x-odd", "203.0.113.10:51820"), "b");
+        odd.admission_port = Some(51900);
+        assert!(!entry_can_reach(&entry, &odd));
+        let why = relay_refusal(&entry, &odd);
+        assert!(
+            why.contains("TCP 51900") && why.contains("only hop"),
+            "{why}"
+        );
+        let mut std_port = run_by(invite("x-std", "203.0.113.11:51820"), "b");
+        std_port.admission_port = Some(crate::admission::DEFAULT_ADMISSION_PORT);
+        assert!(entry_can_reach(&entry, &std_port));
+        assert!(relay_refusal(&entry, &std_port).contains("admission-relay"));
+
+        let mut p = Pocket::default();
+        p.add(Slot::Entry, entry.clone()).unwrap();
+        p.add(Slot::Exit, odd.clone()).unwrap();
+        let e = p.pick_privado(false).unwrap_err().to_string();
+        assert!(e.contains("a port other than 51821"), "{e}");
+        p.add(Slot::Exit, std_port).unwrap();
+        for _ in 0..20 {
+            assert_eq!(p.pick_privado(false).unwrap().exit.node_name, "x-std");
+        }
+        // As the only hop it is asked directly, on its own port: still used.
+        let mut q = Pocket::default();
+        q.add(Slot::Exit, odd).unwrap();
+        assert_eq!(q.pick_rapido().unwrap().exit.node_name, "x-odd");
     }
 
     #[test]

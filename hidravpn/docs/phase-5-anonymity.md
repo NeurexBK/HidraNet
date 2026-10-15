@@ -92,6 +92,22 @@ admissions *and* the entry's traffic can still try to match volumes over
 weeks. The passes remove the per-connection link; they do not remove the
 residue of watching every side at once.
 
+## What the code does today
+
+The mitigations above are plans; this is what runs now:
+
+- **The issuer learns the account, how many passes, and when.** Each pass
+  names its node, but only inside the blinded message it signs
+  (`hidravpn-core/src/pass.rs`, `fetch_one`): the issuer does not see which
+  nodes, and cannot tie a pass it signed to the redemption that spends it.
+- **Automatic passes go only through the tunnel.** A top-up runs only while
+  a circuit is up, so the issuer sees the exit's address
+  (`daemon.rs`, `refill_once`).
+- **Passes asked for by hand go from wherever the machine is.** `hidravpn
+  passes get` and the browser's button do not wait for a circuit: while the
+  VPN is off, the issuer sees the machine's own address.
+- **No delay before first use, and no Tor for issuance yet.**
+
 ## Questions for the maintainers
 
 1. Token kinds and sizes: the anonymity-set floor (requirement 1).

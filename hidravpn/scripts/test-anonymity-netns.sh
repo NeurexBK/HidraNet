@@ -394,12 +394,29 @@ post() { $C curl -s -o "$WORK/post.out" -w '%{http_code}' --max-time 5 -X POST -
 K=$("$BIN/hidravpn-sign" keygen --out "$WORK/kh" 2>/dev/null)
 [ "$(post "{\"public_key\":\"$K\",\"session\":true}")" = 428 ] && grep -q '"work_bits":20' "$WORK/post.out" && pass "a session admission with no proof of work is refused (428) with the work the node wants" || fail "no work: $(cat "$WORK/post.out")"
 [ "$(post "{\"public_key\":\"$K\",\"session\":true,\"work\":{\"minute\":1,\"nonce\":1}}")" = 428 ] && pass "a proof that is not one is refused (428)" || fail "bad work: $(cat "$WORK/post.out")"
+# One honest proof, sent again and again: the node answers with the lease it
+# already gave that key, and the replays take no room from anyone else.
+WORKED=$(python3 -I -c '
+import base64, hashlib, json, sys, time
+node = base64.b64decode(json.load(open(sys.argv[1]))["node_public_key"])
+client = base64.b64decode(sys.argv[2])
+minute = int(time.time()) // 60
+nonce = 0
+while True:
+    d = hashlib.sha256(b"HidraVPN admission work v1" + node + client + minute.to_bytes(8, "big") + nonce.to_bytes(8, "big")).digest()
+    if int.from_bytes(d[:4], "big") >> 12 == 0:
+        break
+    nonce += 1
+print(json.dumps({"public_key": sys.argv[2], "session": True, "work": {"minute": minute, "nonce": nonce}}))
+' "$WORK/rec-e.json" "$K")
+CODES=$(for i in $(seq 1 650); do post "$WORKED"; echo; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+[ "$CODES" = " 650 200;" ] && pass "one proof of work sent 650 times (more than the node-wide ceiling of 600): every replay gets the same lease" || fail "replays answered: $CODES $(cat "$WORK/post.out")"
 OKS=0
 for i in 1 2 3 4 5 6; do
   R=$(svc '{"cmd":"connect","mode":"privado"}'); echo "$R" | grep -q '"ok":true' && OKS=$((OKS+1))
   svc '{"cmd":"down"}' > /dev/null
 done
-[ "$OKS" = 6 ] && pass "six two-hop connections in a row from one address: none throttled (the old limit was three per ten minutes)" || fail "only $OKS of 6 connections went through: $(echo "$R" | cut -c1-200)"
+[ "$OKS" = 6 ] && pass "six two-hop connections in a row from one address after the replays: none throttled (the old limit was three per ten minutes)" || fail "only $OKS of 6 connections went through: $(echo "$R" | cut -c1-200)"
 # A list in which the entry's record does not say `sessions`: as published
 # for a node not yet updated.
 python3 -I -c "import json; r=json.load(open('$WORK/rec-e.json')); r.pop('features', None); json.dump(r, open('$WORK/rec-e-old.json','w'))"
@@ -411,6 +428,38 @@ sleep 1; kill "${CAPS[-1]}" 2>/dev/null; sleep 0.5
 echo "$OUT" | grep -q "older than per-connection keys" && pass "an entry whose software is older than per-connection keys is not used, and the person is told why" || fail "old entry: $(echo "$OUT" | tail -2)"
 N=$(count "$WORK/isp-h.pcap" "ip and src host $CLIENT and tcp")
 [ "$N" = 0 ] && pass "nothing was asked of it: 0 TCP packets left the client" || fail "$N TCP packet(s) left the client for an old node"
+# An exit that takes admission requests on another port than the one entries
+# relay: never tried behind an entry, and nothing is spent on the entry first.
+python3 -I -c "import json; r=json.load(open('$WORK/rec-x2.json')); r['admission_port']=51900; json.dump(r, open('$WORK/rec-x2-port.json','w'))"
+HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes-port.json" --sequence 3 "$WORK/rec-e.json" "$WORK/rec-x2-port.json" > /dev/null 2>&1
+"$BIN/hidravpn" nodes import --pocket "$WORK/port-pocket.json" "$WORK/nodes-port.json" --pubkey "$LISTPUB" > /dev/null 2>&1
+cap "$P" i-c "$WORK/isp-port.pcap"; sleep 1
+OUT=$($C "$BIN/hidravpn" --direct --key /etc/hidravpn/client.key up --privado --allow-same-operator --pocket "$WORK/port-pocket.json" 2>&1)
+sleep 1; kill "${CAPS[-1]}" 2>/dev/null; sleep 0.5
+echo "$OUT" | grep -q "a port other than 51821" && pass "an exit on another admission port is not used behind an entry, and the person is told why" || fail "exit on port 51900: $(echo "$OUT" | tail -2)"
+N=$(count "$WORK/isp-port.pcap" "ip and src host $CLIENT and tcp")
+[ "$N" = 0 ] && pass "nothing was asked of the entry for it: 0 TCP packets left the client" || fail "$N TCP packet(s) left the client for an exit no entry relays to"
+
+# ── I. switching off a connection still being made ─────────────────────────
+echo "── I. switching off a connection still being made"
+svc '{"cmd":"down"}' > /dev/null
+ms() { echo $(( ($(date +%s%N) - $1) / 1000000 )); }
+# The exit stops answering: its kernel still takes the connection, and the
+# admission request through the entry waits for a reply that never comes.
+kill -STOP "$NODE_X"
+svc '{"cmd":"connect","mode":"privado"}' > "$WORK/hung.out" 2>&1 & HUNG=$!
+sleep 2.5
+T=$(date +%s%N); ST=$(svc '{"cmd":"status"}'); TS=$(ms "$T")
+[ "$TS" -lt 1000 ] && echo "$ST" | grep -q '"connected":false' && echo "$ST" | grep -q '"hops":2' && pass "while the exit does not answer, status answers at once: two hops being built, not connected (${TS} ms)" || fail "status while connecting took ${TS} ms: $(echo "$ST" | cut -c1-200)"
+T=$(date +%s%N); D=$(svc '{"cmd":"down"}'); TD=$(ms "$T")
+[ "$TD" -lt 3000 ] && echo "$D" | grep -q '"ok":true' && pass "Disconnect stops it without waiting on the exit (${TD} ms)" || fail "down while connecting took ${TD} ms: $(echo "$D" | cut -c1-200)"
+wait "$HUNG"
+grep -q "switched off while the connection was being made" "$WORK/hung.out" && pass "the connection that was stopped says so" || fail "the stopped connect answered: $(cut -c1-200 "$WORK/hung.out")"
+kill -CONT "$NODE_X"
+{ $C ip link show hvpn0 || $C ip link show hvpn1 || $C nft list table inet hidravpn_ks; } >/dev/null 2>&1 && fail "a tunnel or the kill switch was left behind" || pass "nothing left behind: no tunnel, no kill switch"
+[ "$($C curl -s --max-time 3 http://$ISP:8081/ 2>/dev/null)" = leak ] && pass "the machine's own network is back" || fail "the network was not put back"
+svc '{"cmd":"connect","mode":"privado"}' > /dev/null; wait_connected && pass "with the exit answering again, the next connect works" || fail "no connection after the exit came back"
+svc '{"cmd":"down"}' > /dev/null
 
 # ── F. the logs, at DEBUG, failures included ────────────────────────────────
 echo "── F. the logs"

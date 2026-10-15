@@ -68,8 +68,10 @@ pub struct Work {
 /// it asks for and the current minute: about a second of one core for a
 /// person connecting, and the same second again for every lease a script
 /// would take. It is not proof against someone with many machines; passes
-/// (phase 5) are. A key's lease is only granted once, so replaying a proof
-/// buys nothing, and the minute stops proofs being stockpiled.
+/// (phase 5) are. A key's lease is only granted once and counted against
+/// the node's ceiling once, so replaying a proof buys nothing, and the
+/// minute stops proofs being stockpiled. A node asks for more work as its
+/// window fills, so filling it costs the most for the last places.
 pub mod work {
     use sha2::{Digest, Sha256};
 
@@ -198,7 +200,8 @@ pub async fn request_admission(
             &body,
         )
         .await?;
-        // A node that wants more work says how much, once; within reason.
+        // A node that wants more work says how much (more as it gets busy):
+        // the proof is worked out again, each time for more, within reason.
         match serde_json::from_str::<Refusal>(&answer)
             .ok()
             .and_then(|r| r.work_bits)

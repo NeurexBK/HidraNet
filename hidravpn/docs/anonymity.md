@@ -61,13 +61,13 @@ The other gaps are closed too:
 | Party | Learns | Does not learn |
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (blocked). |
-| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:570`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:107-123`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:607`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
+| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:663`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:848`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). |
-| **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:376`, `daemon.rs:782`, test C). |
+| **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
 | **A site you visit** | The exit's address. | Your address, unless you tell it (cookies, logins: that is the browser's job, and the browser's own tabs go through Tor regardless). |
-| **hidranet.org (list and release server)** | That a Tor exit fetched the node list or a release file, when you press the button. The request carries no cookies and a generic user agent, and is refused while Tor is not ready (`main.js:52-92`). | Your address (Tor). Not verified at run time: whether Electron's `net.fetch` honours the overridden user agent (a lint test checks the code, not the wire). |
+| **hidranet.org (list and release server)** | That a Tor exit fetched the node list or a release file, when you press the button. The request carries no cookies and a generic user agent, and is refused while Tor is not ready (`main.js:51-105`). | Your address (Tor). Not verified at run time: whether Electron's `net.fetch` honours the overridden user agent (a lint test checks the code, not the wire). |
 | **api.ipify.org (the leak test)** | The exit's address, and that someone asked at that moment, when you press the button. | Your address: the test refuses to run unless the kill switch is armed and the exit shook hands in the last three minutes (`vpn-leaktest.js`). The browser's name and version are not sent either. |
 | **Websites, inside the browser** | Nothing about the VPN: no header, global or bridge reaches a website (`test/preload-boundary.js`). | — |
 
@@ -85,13 +85,13 @@ address next to your traffic. The admission test did exactly this
 (`test-admission-netns.sh`: node-a, the exit, was joined from the client).
 
 **Fixed.** An exit of two hops is asked for admission through the entry,
-with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:550`).
+with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:848`).
 While it runs, the kill switch allows only the encrypted packets to the entry
 and, inside the outer tunnel, one TCP connection to the exit's admission port
 (`killswitch/linux.rs`, `bridge_ruleset`). It sends no DNS and adds no
 default route into the entry. An entry forwards TCP 51821 for this, and still
-nothing else (`hidravpn-node/src/nat.rs:42`). For two hops the client asks
-only entries from its own address (`daemon.rs:307`, `hidravpn/src/main.rs`).
+nothing else (`hidravpn-node/src/nat.rs:60`). For two hops the client asks
+only entries from its own address (`circuit.rs:663`, `prepare`, used by the service and `hidravpn/src/main.rs`).
 
 **Test:** `test-anonymity-netns.sh` A: 0 packets from the client to any exit,
 0 packets at the exit from the client's address, and the exit's own peer
@@ -124,10 +124,10 @@ for 30 idle days.
 **Fixed, for exits that admit openly** (all listed nodes do):
 
 - A fresh key on every connection and every new identity, even to the same
-  exit (`circuit.rs:570`).
+  exit (`circuit.rs:663`).
 - The exit keeps such a "session" lease only until ten minutes after the
-  last packet it received under that key (`hidravpn-node/src/leases.rs:54`,
-  `:166`).
+  last packet it received under that key (`hidravpn-node/src/leases.rs:61`,
+  `:241`).
 
 **Not fixed for exits admitted by hand:** they see one stable key behind
 the entry. The operator who admitted it knows who asked for it. Use such
@@ -165,10 +165,10 @@ The kill switch allowed everything on the outer interface. A program that
 bound to it (deliberately or by accident) sent its packets to the entry. The
 entry could read their destinations, and its resolver would answer names.
 
-**Fixed (Linux).** With two hops the outer interface carries only UDP to the
-exit's endpoint (`killswitch/linux.rs:107-123`). **Not on Windows yet:** the
-Windows rules still allow the whole outer interface
-(`killswitch/windows.rs`, `apply`).
+**Fixed.** With two hops the outer interface carries only UDP to the
+exit's endpoint: on Linux in `killswitch/linux.rs:103-118`, on Windows with
+a WFP filter for that one peer (`killswitch/windows.rs:401`, finding 15).
+The Windows rules have not run with two hops yet (see Open, 4).
 
 **Test:** A: a socket bound to the outer interface reaches neither the
 entry's resolver nor, through it, the internet; the entry's counters stay 0.
@@ -188,7 +188,7 @@ the person says yes:
 - a box on the VPN page, off by default.
 
 A new identity never moves to such a pair. It says which exits it passed
-over and why (`daemon.rs:829`). `status` still reports `same_operator`.
+over and why (`daemon.rs:1259`). `status` still reports `same_operator`.
 
 **Test:** C.
 
@@ -196,10 +196,10 @@ over and why (`daemon.rs:829`). `status` still reports `same_operator`.
 
 When the exit stopped, its ICMP error made the client's tunnel task end. The
 service then panicked ("JoinHandle polled after completion",
-`tunnel.rs:130`), and the tunnel never recovered. The kill switch held, so
+`tunnel.rs:136`), and the tunnel never recovered. The kill switch held, so
 nothing leaked, but the person stayed offline until they reconnected.
 
-**Fixed.** Transient socket errors are waited out (`tunnel.rs:219`), and a
+**Fixed.** Transient socket errors are waited out (`tunnel.rs:279`), and a
 finished task is not awaited twice.
 
 **Test:** D: the exit is killed for six seconds; the kill switch stays armed;
@@ -219,7 +219,7 @@ system.
 **Fixed.** The test runs only with the kill switch armed and an exit
 handshake in the last three minutes. With the kill switch off it asks no
 website anything and says why. The probe sends a generic user agent and no
-cookies (`vpn-leaktest.js`, `main.js:109-135`).
+cookies (`vpn-leaktest.js`, `main.js:109-132`).
 
 **Tests:** `hidra-browser/test/vpn-leaktest.js` (9), `test/vpn-page.js` (54).
 
@@ -230,7 +230,7 @@ code itself says that whether it honours the Tor lock depends on the Electron
 version.
 
 **Fixed:** a generic user agent, `credentials: 'omit'`, and an explicit
-refusal while the Tor lock is engaged (`main.js:52-92`).
+refusal while the Tor lock is engaged (`main.js:51-105`).
 
 **Not verified on the wire:** a lint test checks the code; no test captures
 the request.
@@ -252,7 +252,9 @@ the request.
 - **Node probing order** is uniform at random from the operating system
   (`random.rs`). The node list is fetched only when the person presses the
   button, never on a timer.
-- **The browser** sends the service six commands, never joins a node, and
+- **The browser** sends the service nine commands (status, connect, down,
+  new identity, the node list, importing it, passes, the pass token and
+  automatic passes), never joins a node, and
   holds no key or invite. The VPN bridge exists only on our own pages (`preload-boundary`
   test). No VPN state reaches a website.
 
@@ -265,7 +267,7 @@ morning, a café at noon, the same key both times. Their leases also kept
 every key's activity on disk for 30 days.
 
 **Fixed.** Every node that admits openly is asked for a key for each
-connection, the first hop directly (`circuit::prepare`, `circuit.rs:570`).
+connection, the first hop directly (`circuit::prepare`, `circuit.rs:663`).
 Connecting no longer "joins" anything: the browser has no Join button and no
 `join` bridge any more. Rápido and the prober take open nodes from the list
 as they are. A node admitted by hand keeps its lease: its operator knows who
@@ -281,7 +283,7 @@ would stop anyone reconnecting a fourth time. For an exit, every client of an
 entry shares the entry's address, so they would all be stopped together.
 
 **Fixed.** A session admission carries a proof of work instead
-(`hidravpn-core/src/admission.rs:73`). It is a SHA-256 search bound to:
+(`hidravpn-core/src/admission.rs:75`). It is a SHA-256 search bound to:
 
 - the node's key;
 - the key asked for;
@@ -290,13 +292,16 @@ entry shares the entry's address, so they would all be stopped together.
 It costs about a second of one core at the default of 20 bits (a node's
 `admission_work_bits`). Session admissions are not counted per address. They
 have a node-wide ceiling of 600 per ten minutes
-(`hidravpn-node/src/admission.rs:55`). A key whose session never shakes hands is forgotten after
-two minutes (`leases.rs:58`). A node that wants more work answers 428 with
-how much, and the client does it once, up to 26 bits. Lasting leases (Join
+(`hidravpn-node/src/admission.rs:61`), and each key counts once against it
+(finding 17). A key whose session never shakes hands is forgotten after two
+minutes (`leases.rs:65`). A node that wants more work answers 428 with how
+much, and the client works the proof out again for that, up to 26 bits; a
+node asks for more as its ceiling fills (finding 17). Lasting leases (Join
 on the command line, for root's `up` with an invite) keep the old count.
 
-This makes filling a node cost computing for every lease. It does not stop
-someone with many machines; the passes of phase 5 do.
+This makes filling a node cost computing for every lease, and the most for
+the last places. It does not stop someone with many machines; the passes of
+phase 5 do.
 
 **Tests:**
 
@@ -312,10 +317,10 @@ before it ignores `session`.
 
 **Fixed.** A node's record lists what its software can do (`features`:
 `sessions`, and for entries `admission-relay`; `directory.rs:90`,
-`hidravpn-node/src/config.rs:214`). The client uses an open node only if its
+`hidravpn-node/src/config.rs:264`). The client uses an open node only if its
 record lists `sessions`. It asks an exit through an entry only if the entry
 lists `admission-relay`. Otherwise it passes the node over and says which
-and why (`pocket.rs:302`, `:461`). The maintainers publish the list again
+and why (`pocket.rs:334`, `:500`). The maintainers publish the list again
 from the updated nodes' `hidravpn-node record`.
 
 **Test:** H: a list whose entry record lacks `sessions` makes the client
@@ -327,7 +332,7 @@ The node counted a lease as alive only from its last WireGuard handshake,
 which happens every two minutes. With a short window, an active session was
 forgotten while in use.
 
-**Fixed:** any packet received under the key counts (`leases.rs:166`).
+**Fixed:** any packet received under the key counts (`leases.rs:241`).
 
 **Test:** D, where the entry and exit keep the session across a dead exit,
 with windows shorter than the rekey interval. Unit test
@@ -340,8 +345,8 @@ exit, and the route to the exit's admission port through the entry are now
 written for Windows too:
 
 - WFP filters for one destination through one interface, and for an
-  admission port off-tunnel (`killswitch/windows.rs:399`, `:422`);
-- `route_host_via` (`netcfg/windows.rs:79`).
+  admission port off-tunnel (`killswitch/windows.rs:401`, `:424`);
+- `route_host_via` (`netcfg/windows.rs:78`).
 
 They compile, and `clippy -D warnings` passes for the Windows target.
 
@@ -384,22 +389,22 @@ use.
 Fixed in the merge:
 
 - Passes are spent in one place, `circuit::prepare`
-  (`circuit.rs:607`), the same one that asks open nodes for a session key.
+  (`circuit.rs:663`), the same one that asks open nodes for a session key.
   The first hop redeems its pass directly: it sees the address anyway
-  (`circuit.rs:715`). The exit of two hops redeems its pass *through the
-  entry* (`admit_behind`, `circuit.rs:780`), so its redemption and its
+  (`circuit.rs:772`). The exit of two hops redeems its pass *through the
+  entry* (`admit_behind`, `circuit.rs:848`), so its redemption and its
   tunnel come from the entry's address.
 - The exit of two hops never falls back to a key it saw before: with no pass
-  left for it, the connection is refused and says so (`circuit.rs:667`). A
+  left for it, the connection is refused and says so (`circuit.rs:822`). A
   first hop with no pass left may reuse its last key, with a note, since it
   sees the address anyway.
 - A pick or a rotation prefers nodes it can build with: no pass exit without
-  a pass (`passes.rs:69`, `daemon.rs:1158`).
+  a pass (`passes.rs:69`, `daemon.rs:1259`).
 - A new identity redeems the next pass even for the node it leaves and
   comes back to: the kill switch holds the machine to that node's own ports
-  while it asks (`daemon.rs:783`).
+  while it asks (`daemon.rs:845`).
 - The service takes the pocket, the wallet and the circuit in one order
-  everywhere (`daemon.rs:318`), so a top-up and a connection never wait on
+  everywhere (`daemon.rs:363`), so a top-up and a connection never wait on
   each other in a circle or spend one pass twice.
 - Phase 6's stricter invite check (the resolver inside the tunnel) is kept;
   a node not yet admitted is checked for shape only until `prepare` has won
@@ -415,6 +420,60 @@ with an open entry and a pass exit:
 - a new identity through the same pass node shows it a fresh key.
 
 The same checks fail on the code of phase 6 alone (see the report).
+
+### 17. High — four faults a review of findings 11 to 16 found (third round)
+
+A review of this branch, line by line, found four faults. Each is fixed and
+has a test that fails on the code before the fix.
+
+1. **One proof of work could shut a node to new sessions.** The node
+   checked the proof, then counted the request against its ceiling of 600,
+   without asking whether that key had been counted already. A proof holds
+   for a few minutes, so one proof sent 600 times filled the window, and
+   every person then got 429 for ten minutes. Now a key counts once: a
+   repeat gets the lease it already has and takes no room
+   (`hidravpn-node/src/admission.rs`, `allow_session`). And filling the
+   window with new keys costs more as it fills: two more bits of work (four
+   times the work) at half full, at three quarters and at seven eighths, up
+   to the 26 bits a client agrees to (`session_bits`). Filling the last
+   eighth then costs about a minute of one core per place.
+   Test H sends one proof 650 times: every answer is the same lease, and six
+   connections in a row still go through. Unit tests count the window.
+2. **Disconnect waited for a connection being made.** Asking a node for
+   admission (the proof of work, the request, the request through the
+   entry) ran under the service's state lock, so `status`, `down` and the
+   browser's polling waited for it, up to the HTTP timeouts, and a person
+   could not stop a connection to a node that did not answer. Now a
+   connection being built can be stopped: `down` sets a switch the waiting
+   watches (`circuit::Cancel`), what was set up is taken down as on any
+   failure, and the machine is open again. `status` answers at once while a
+   circuit is built: the hops it will have, not connected
+   (`daemon.rs`, `status`). Only the account building it, or root, can stop
+   it. Test I stops an exit's process mid-admission: `status` answers in
+   milliseconds, `down` in well under a second, nothing is left behind, and
+   the next connection works.
+3. **Passes were lost when a two-hop circuit failed.** With an entry that
+   takes passes, the entry's pass was redeemed first; if the exit then
+   failed, the invite the pass won was dropped, so every retry spent another
+   pass. And a failure while opening the tunnel to the entry dropped the
+   exit's pass. Now what the exit needs (a pass left for it, software that
+   takes sessions, an entry that can ask it) is checked before anything is
+   asked of the entry; an invite a pass won is kept in the pocket as soon as
+   it is won, whatever happens next, and the next try uses it; and the
+   exit's pass goes back into the wallet on any failure before it was sent
+   (`circuit.rs`, `prepare`, `admit_behind`). `test-passes-netns.sh` adds an
+   entry that takes passes: with no pass for the exit, nothing is spent;
+   with the exit not answering, one entry pass is spent once, retries spend
+   none, and the exit's pass stays.
+4. **An exit on another admission port could not be reached behind an
+   entry.** An entry relays admission requests only to TCP 51821 (relaying
+   any port would make it carry anything, not only WireGuard and this
+   request), but a client would still pick an exit whose operator chose
+   another port, do the proof of work, and time out. Now a client never
+   picks such an exit behind an entry and says why; it is still used as the
+   only hop (`pocket::entry_can_reach`), and its node warns its operator at
+   start. Test H: such an exit is refused for two hops with the reason, and
+   no packet leaves the client.
 
 ## Open
 
@@ -486,9 +545,13 @@ IPv6 unless `HIDRAVPN_REQUIRE_IPV6=1` makes them required):
   exit through the entry, the exit sees a new key from the entry, it sends 0
   packets to an exit, and SIGTERM restores everything.
 - **H.** A session admission without a proof of work, or with a false one,
-  is refused with the work wanted. Six connections in a row from one
+  is refused with the work wanted. One proof sent 650 times gets the same
+  lease every time and takes no room. Six connections in a row from one
   address all go through. An entry whose record predates per-connection keys
-  is not used, the person is told why, and nothing is sent to it.
+  is not used, the person is told why, and nothing is sent to it; nor is an
+  exit on an admission port entries do not relay.
+- **I.** While an exit does not answer, `status` answers at once and `down`
+  stops the connection being made; nothing is left behind.
 - **F.** At DEBUG, failures included, no log names the client's address, its
   tunnel addresses, a key it presented or the canary.
 
