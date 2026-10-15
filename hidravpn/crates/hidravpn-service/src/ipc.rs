@@ -96,6 +96,32 @@ pub enum Command {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Ask the pass issuer the node list names for passes (phase 5), with
+    /// the account token this machine keeps: `count` (10 by default) for
+    /// each node that admits with a pass, or for the one named. The token
+    /// never crosses the control channel. The answer carries the pocket as
+    /// `nodes`, with each pass node's count, and what happened as `note`.
+    GetPasses {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
+    /// Keep the account token `get_passes` asks with, root only on disk. The
+    /// answer never repeats it.
+    /// (`pass_token`, not `token`: that name is the control token's.)
+    SetPassToken { pass_token: String },
+    /// Automatic passes (phase 6): what is given is changed, the rest kept;
+    /// with nothing given, only read. The answer carries the setting as
+    /// `refill` and says it as `note`.
+    Refill {
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(default)]
+        low: Option<u32>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
 }
 
 /// One node of the pocket, as `nodes` reports it. No key leaves the service.
@@ -115,9 +141,13 @@ pub struct NodeReport {
     /// "entry", "exit" or "both", when the node said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// For a known node: "open" means `join` can admit this machine on it.
+    /// For a known node: "open" or "pass" means `join` can admit this
+    /// machine on it. "pass" for an admitted node joined with a pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission: Option<String>,
+    /// For a node that admits with a pass: how many the wallet holds for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passes: Option<usize>,
     /// Where the node is, two letters, when the list or the node said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
@@ -221,6 +251,9 @@ pub struct Response {
     /// The answer to `nodes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodes: Option<Vec<NodeReport>>,
+    /// The answer to `refill`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refill: Option<crate::passes::Refill>,
 }
 
 impl Response {
@@ -231,6 +264,7 @@ impl Response {
             status: None,
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -240,6 +274,7 @@ impl Response {
             status: Some(s),
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -249,6 +284,7 @@ impl Response {
             status: None,
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn noting(mut self, note: impl Into<String>) -> Self {
@@ -262,6 +298,7 @@ impl Response {
             status: None,
             note: None,
             nodes: Some(nodes),
+            refill: None,
         }
     }
 }
@@ -299,23 +336,7 @@ pub fn write_token() -> Result<String> {
         // SYSTEM and administrators everything, interactive users read.
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
-        let out = std::process::Command::new("icacls")
-            .arg(&path)
-            .args([
-                "/inheritance:r",
-                "/grant:r",
-                "*S-1-5-18:F",
-                "*S-1-5-32-544:F",
-                "*S-1-5-4:R",
-            ])
-            .output()
-            .context("running icacls on the control token")?;
-        if !out.status.success() {
-            anyhow::bail!(
-                "could not set the control token's rights: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
+        protect_token(&path)?;
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -384,7 +405,16 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
         let slot = slots.clone().acquire_owned().await?;
-        let (stream, _) = listener.accept().await?;
+        // An accept error (out of descriptors) is waited out: ending here
+        // would leave the circuit up with nobody able to send `down`.
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                tracing::warn!("control channel: {e}; waiting");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         // Who is asking: root may do everything; a member of the group may
         // not hand the service an invite, and may not switch off what
         // another account switched on.
@@ -397,6 +427,30 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
             }
         });
     }
+}
+
+/// The control token's own rights on Windows, inherited from nowhere:
+/// SYSTEM and administrators everything, interactive users read.
+#[cfg(windows)]
+pub fn protect_token(path: &std::path::Path) -> Result<()> {
+    let out = std::process::Command::new("icacls")
+        .arg(path)
+        .args([
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:F",
+            "*S-1-5-32-544:F",
+            "*S-1-5-4:R",
+        ])
+        .output()
+        .context("running icacls on the control token")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "could not set the control token's rights: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// Hands the socket or the token to the control group when this machine has
@@ -643,9 +697,21 @@ where
     let resp = if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST_BYTES {
         Response::err("bad request: larger than anything the service accepts")
     } else {
-        match serde_json::from_str::<Request>(line.trim()) {
-            Ok(req) => daemon.handle(req, caller).await,
-            Err(e) => Response::err(format!("bad request: {e}")),
+        // The token first: whoever does not hold it learns nothing of how
+        // the service reads a command, not even what is wrong with theirs.
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
+        let token = value
+            .as_ref()
+            .and_then(|v| v.get("token"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        if !daemon.token_ok(token) {
+            Response::err(crate::daemon::UNAUTHORISED)
+        } else {
+            match serde_json::from_value::<Request>(value.unwrap_or_default()) {
+                Ok(req) => daemon.handle(req, caller).await,
+                Err(e) => Response::err(format!("bad request: {e}")),
+            }
         }
     };
     let mut out = serde_json::to_string(&resp)?;
@@ -680,9 +746,9 @@ pub async fn call(cmd: Command) -> Result<Response> {
     {
         use std::time::Duration;
         use tokio::net::windows::named_pipe::ClientOptions;
-        // ERROR_PIPE_BUSY: every instance is serving another client for the
-        // moment. The server makes a new instance right after it accepts one,
-        // so the wait is tiny; retry briefly rather than report the service
+        // ERROR_PIPE_BUSY: every instance of the fixed pool is serving another
+        // client for the moment; each listens again once its client is done,
+        // so the wait is short; retry briefly rather than report the service
         // down. A missing pipe (service really not running) fails at once.
         const ERROR_PIPE_BUSY: i32 = 231;
         let mut tries = 0u32;
@@ -824,6 +890,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
             country: None,
             admission: None,
             admission_port: None,
@@ -1194,6 +1261,7 @@ mod tests {
                 rec("node-1", "203.0.113.20:51820"),
                 rec("node-2", "203.0.113.10:51820"),
             ],
+            pass_issuer: None,
         };
         let json = dir.to_json();
         let sig =
@@ -1341,6 +1409,109 @@ mod tests {
         } else {
             assert!(err.contains("not accepted"), "{err}");
         }
+    }
+
+    #[tokio::test]
+    async fn automatic_passes_are_read_and_set_over_the_channel() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-refill-{}", rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket = dir.join("circuit.json");
+        let sock = start_with_pocket("ref", Some(pocket)).await;
+        let read = || Command::Refill {
+            enabled: None,
+            low: None,
+            count: None,
+        };
+        let resp = call_unix_at(&sock, "ref", read()).await.unwrap();
+        assert!(resp.ok && resp.refill == Some(crate::passes::Refill::default()));
+        assert!(!dir.join("refill.json").exists(), "reading writes nothing");
+        let resp = call_unix_at(
+            &sock,
+            "ref",
+            Command::Refill {
+                enabled: Some(false),
+                low: None,
+                count: Some(20),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        let r = resp.refill.unwrap();
+        assert!(!r.enabled && r.low == 3 && r.count == 20);
+        assert!(resp.note.unwrap().contains("off"));
+        let resp = call_unix_at(
+            &sock,
+            "ref",
+            Command::Refill {
+                enabled: None,
+                low: Some(30),
+                count: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok, "a low not below the count is refused");
+        let resp = call_unix_at(&sock, "ref", read()).await.unwrap();
+        assert_eq!(resp.refill.unwrap().count, 20, "and changed nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_pass_token_is_kept_root_only_and_never_repeated() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-tok-{}", rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket = dir.join("circuit.json");
+        let sock = start_with_pocket("tok", Some(pocket)).await;
+        let token = "Zm9vYmFyLXRva2VuLTEyMw";
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::SetPassToken {
+                pass_token: format!("  {token}\n"),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        assert!(!serde_json::to_string(&resp).unwrap().contains(token));
+        let kept = dir.join("pass.token");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::SetPassToken {
+                pass_token: "two words".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            token,
+            "a bad token changes nothing"
+        );
+        // With a token but no list naming an issuer, asking for passes says
+        // what is missing.
+        let resp = call_unix_at(
+            &sock,
+            "tok",
+            Command::GetPasses {
+                name: None,
+                count: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("names no pass issuer"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

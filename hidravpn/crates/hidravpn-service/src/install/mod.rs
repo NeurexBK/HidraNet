@@ -160,16 +160,27 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
 }
 
 /// Removes the service. With `purge`, also the installed programs and the
-/// data: the pocket of nodes and the machine's key, which nodes know this
-/// machine by. Without it, a later install finds both where they were.
+/// data: the pocket of nodes, the machine's key, which nodes know this
+/// machine by, the passes and the account token. Without it, a later install finds both where they were.
 pub fn uninstall(purge: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         linux::uninstall()?;
         if purge {
+            // DNS a connection cut short left behind is put back before the
+            // copy that says how goes.
+            hidravpn_core::netcfg::recover_dns();
             let _ = std::fs::remove_file(installed_client());
+            // The client's files one by one, never the whole folder: a node
+            // on the same machine keeps its own settings there.
             let _ = std::fs::remove_file(crate::paths::circuit_pocket());
             let _ = std::fs::remove_file(crate::paths::client_key());
+            let _ = std::fs::remove_file(crate::paths::pass_wallet());
+            let _ = std::fs::remove_file(crate::paths::pass_token());
+            let pocket = crate::paths::circuit_pocket();
+            for name in ["hidravpn.lock", "resolv.conf.saved"] {
+                let _ = std::fs::remove_file(pocket.with_file_name(name));
+            }
             if let Some(dir) = crate::paths::client_key().parent() {
                 let _ = std::fs::remove_dir(dir);
             }

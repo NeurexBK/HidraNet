@@ -20,8 +20,10 @@
 //!   hidravpn down                   disconnect, or restore the network after a crash
 //!
 //! Every node is shown a different key, derived from the one master key for
-//! that node; the master key's public half reaches no node. `up`, `down` and
-//! `nodes` need administrator rights. Nothing here records where the traffic
+//! that node; the master key's public half reaches no node. `up` with an
+//! invite, `down` without the service, `nodes` and `passes` need
+//! administrator rights; a member of the hidravpn group may `up --rapido` or
+//! `--privado` and `down` through the service. Nothing here records where the traffic
 //! went.
 
 use std::path::{Path, PathBuf};
@@ -31,11 +33,12 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
-use hidravpn_core::{
-    Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Pocket, ReleaseKey, Slot,
-};
+use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, ReleaseKey, Slot};
 use hidravpn_service::ipc::{self, Command, StatusReport};
 use hidravpn_service::paths;
+// The pocket is read and written as the service does: root only, and
+// atomically, so neither ever reads half a file the other wrote.
+use hidravpn_service::daemon::{load_pocket, save_pocket};
 
 #[derive(Parser)]
 #[command(
@@ -86,6 +89,12 @@ enum Cmd {
     Nodes {
         #[command(subcommand)]
         what: Nodes,
+    },
+    /// Passes (phase 5): one connection's worth of admission on a node
+    /// that admits with one, signed blind by the issuer the node list names.
+    Passes {
+        #[command(subcommand)]
+        what: Passes,
     },
     /// Connect and route the whole machine through the circuit.
     Up {
@@ -204,6 +213,39 @@ enum Nodes {
     },
 }
 
+#[derive(Subcommand)]
+enum Passes {
+    /// Keep the account token passes are asked for with, root only. From a
+    /// file, or `-` for standard input.
+    Token { file: PathBuf },
+    /// Ask the issuer for passes: COUNT for each node that admits with a
+    /// pass, or for the one named. The issuer never learns which node a pass
+    /// is for.
+    Get {
+        #[arg(long, default_value_t = 10)]
+        count: usize,
+        #[arg(long)]
+        node: Option<String>,
+        /// The token, from this file instead of the one kept.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
+    /// How many passes the wallet holds, per node.
+    List,
+    /// Let the service top the wallet up by itself, only while connected
+    /// (through the tunnel): `on`, `off`, or nothing to see how it is set.
+    Auto {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+        /// Top up a node with fewer passes than this (default 3).
+        #[arg(long)]
+        low: Option<usize>,
+        /// ...back to this many (default 10, at most 100).
+        #[arg(long)]
+        count: Option<usize>,
+    },
+}
+
 fn default_key_path() -> PathBuf {
     paths::client_key()
 }
@@ -217,7 +259,7 @@ fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
                 std::fs::create_dir_all(dir)
                     .with_context(|| format!("creating {}", dir.display()))?;
             }
-            write_private(path, key.secret_base64().as_bytes())?;
+            hidravpn_service::daemon::write_private_atomic(path, key.secret_base64().as_bytes())?;
             Ok(key)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(anyhow!(
@@ -228,33 +270,13 @@ fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
     }
 }
 
-/// Readable by this account only.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("writing {}", path.display()))?;
-        std::io::Write::write_all(&mut f, bytes)?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
-    }
-    Ok(())
-}
-
 /// Asks admission from the known nodes that admit openly — one by name, or
 /// every one with `all` — and puts each invite into the pocket under the
 /// slots its role allows. Prints a line per node; returns how many admitted.
 /// The lease name sent is "client": nothing identifying leaves this machine.
 async fn join_known(
     pocket: &mut hidravpn_core::Pocket,
+    pocket_path: &Path,
     key_path: &Path,
     name: Option<&str>,
     all: bool,
@@ -271,13 +293,30 @@ async fn join_known(
         .collect();
     if targets.is_empty() {
         return Err(anyhow!(
-            "no known node {} admits openly; `hidravpn nodes list` says whom to ask",
+            "no known node {} admits openly or with a pass; `hidravpn nodes list` says whom to ask",
             name.map(|n| format!("named \"{n}\"")).unwrap_or_default()
         ));
     }
     let key = load_or_create_key(key_path, false)?;
     let mut joined = 0;
+    let wallet_path = wallet_beside(pocket_path);
+    let mut wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
+    let wallet_before = wallet.passes.len();
     for rec in targets {
+        if rec.takes_passes() {
+            match hidravpn_service::passes::redeem_into(pocket, &mut wallet, &rec).await {
+                Ok(_) => {
+                    joined += 1;
+                    println!(
+                        "  + {}: admitted with a pass ({})",
+                        rec.node_name,
+                        rec.role.as_deref().unwrap_or("both")
+                    );
+                }
+                Err(e) => println!("  - {}: {e:#}", rec.node_name),
+            }
+            continue;
+        }
         let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
         match hidravpn_core::admission::request_admission(&rec, &shown, "client", false).await {
             Ok(invite) => {
@@ -294,22 +333,22 @@ async fn join_known(
             Err(e) => println!("  - {}: {e:#}", rec.node_name),
         }
     }
+    if wallet.passes.len() != wallet_before {
+        // The invites a pass won first: were the pocket lost after the
+        // wallet was written, the pass would be gone and its invite too.
+        save_pocket(pocket_path, pocket)?;
+        hidravpn_service::passes::save_wallet(&wallet_path, &wallet)?;
+    }
     Ok(joined)
 }
 
-fn load_pocket(path: &Path) -> Result<Pocket> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Pocket::from_json(&s).with_context(|| format!("reading {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Pocket::default()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+/// The wallet and the token sit beside the pocket.
+fn wallet_beside(pocket_path: &Path) -> PathBuf {
+    pocket_path.with_file_name("passes.json")
 }
 
-fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    write_private(path, pocket.to_json().as_bytes())
+fn token_beside(pocket_path: &Path) -> PathBuf {
+    pocket_path.with_file_name("pass.token")
 }
 
 fn require_admin() -> Result<()> {
@@ -401,8 +440,78 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::Passes { what } => {
+            require_admin()?;
+            // The service keeps passes in the same wallet: one writer at a time.
+            let _file = hidravpn_service::passes::lock_beside(&pocket_path)?;
+            let wallet_path = wallet_beside(&pocket_path);
+            match what {
+                Passes::Token { file } => {
+                    let text = if file.as_os_str() == "-" {
+                        let mut t = String::new();
+                        std::io::Read::read_to_string(&mut std::io::stdin(), &mut t)?;
+                        t
+                    } else {
+                        std::fs::read_to_string(&file)
+                            .with_context(|| format!("reading {}", file.display()))?
+                    };
+                    let token = hidravpn_service::passes::parse_token(&text)?;
+                    let dest = token_beside(&pocket_path);
+                    hidravpn_service::daemon::write_private_atomic(&dest, token.as_bytes())?;
+                    println!("account token kept at {} (root only)", dest.display());
+                }
+                Passes::Get {
+                    count,
+                    node,
+                    token_file,
+                } => {
+                    let pocket = load_pocket(&pocket_path)?;
+                    let token = hidravpn_service::passes::read_token(
+                        &token_file.unwrap_or_else(|| token_beside(&pocket_path)),
+                    )?;
+                    let mut wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
+                    let line = hidravpn_service::passes::get_passes(
+                        &pocket,
+                        &mut wallet,
+                        &token,
+                        node.as_deref(),
+                        count,
+                    )
+                    .await?;
+                    hidravpn_service::passes::save_wallet(&wallet_path, &wallet)?;
+                    println!("{line}");
+                }
+                Passes::List => {
+                    let pocket = load_pocket(&pocket_path)?;
+                    let wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
+                    let nodes = hidravpn_service::passes::pass_nodes(&pocket);
+                    for (name, key) in &nodes {
+                        println!("{:<24} {} pass(es)", name, wallet.count_for(key));
+                    }
+                    if nodes.is_empty() {
+                        println!("no node in the pocket admits with a pass");
+                    }
+                    match &pocket.pass_issuer {
+                        Some(i) => println!("issuer: {} ({} key(s))", i.url, i.keys.len()),
+                        None => println!("the node list names no pass issuer"),
+                    }
+                    println!(
+                        "{}",
+                        hidravpn_service::passes::load_refill(&pocket_path).describe()
+                    );
+                }
+                Passes::Auto { state, low, count } => {
+                    let mut r = hidravpn_service::passes::load_refill(&pocket_path);
+                    if r.apply(state.as_deref().map(|s| s == "on"), low, count)? {
+                        hidravpn_service::passes::save_refill(&pocket_path, &r)?;
+                    }
+                    println!("{}", r.describe());
+                }
+            }
+        }
         Cmd::Nodes { what } => {
             require_admin()?;
+            let _file = hidravpn_service::passes::lock_beside(&pocket_path)?;
             let mut pocket = load_pocket(&pocket_path)?;
             match what {
                 Nodes::Add {
@@ -456,6 +565,8 @@ async fn main() -> Result<()> {
                             k.role.as_deref().unwrap_or("both"),
                             if k.is_open() {
                                 "  admits openly"
+                            } else if k.takes_passes() {
+                                "  admits with a pass"
                             } else {
                                 "  admits by hand"
                             },
@@ -472,7 +583,14 @@ async fn main() -> Result<()> {
                     if pocket.known.iter().any(|k| k.is_open()) {
                         println!("known nodes that admit openly need no joining: each is asked for a key of its own on every connection.");
                     }
-                    if pocket.known.iter().any(|k| !k.is_open()) {
+                    if pocket.known.iter().any(|k| k.takes_passes()) {
+                        println!("known nodes that admit with a pass: `sudo hidravpn passes get` asks the list's issuer for passes, then `sudo hidravpn nodes join --all`.");
+                    }
+                    if pocket
+                        .known
+                        .iter()
+                        .any(|k| !k.is_open() && !k.takes_passes())
+                    {
                         println!("known nodes that admit by hand: run `hidravpn pubkey --node <its key>` (the key is in the list) and send the result to the operator; add the invite they return with `hidravpn nodes add --exit` (or --entry).");
                     }
                 }
@@ -489,7 +607,9 @@ async fn main() -> Result<()> {
                     );
                 }
                 Nodes::Join { name, all } => {
-                    let joined = join_known(&mut pocket, &key_path, name.as_deref(), all).await?;
+                    let joined =
+                        join_known(&mut pocket, &pocket_path, &key_path, name.as_deref(), all)
+                            .await?;
                     if joined > 0 {
                         save_pocket(&pocket_path, &pocket)?;
                     }
@@ -589,10 +709,46 @@ async fn main() -> Result<()> {
             no_kill_switch,
             allow_same_operator,
         } => {
+            // From the pocket the service reads, with no node named: the
+            // service picks, as it does for the browser — which also lets a
+            // member of the hidravpn group connect, and keeps the passes it
+            // spends and the invites they win in the service's own hands.
+            if (privado || rapido) && node.is_none() && pocket_path == paths::circuit_pocket() {
+                let mode = if privado { "privado" } else { "rapido" };
+                if let Some(res) = service_call(
+                    cli.direct,
+                    Command::Connect {
+                        mode: mode.into(),
+                        allow_lan: false,
+                        keep_ipv6,
+                        allow_same_operator,
+                    },
+                )
+                .await
+                {
+                    let r = res?;
+                    if !r.ok {
+                        return Err(anyhow!(r
+                            .error
+                            .unwrap_or_else(|| "the service could not connect".into())));
+                    }
+                    if let Some(note) = &r.note {
+                        println!("{note}");
+                    }
+                    println!(
+                        "connected through the HidraVPN service: {}",
+                        r.status.as_ref().map(describe).unwrap_or_default()
+                    );
+                    if let Some(line) = r.status.as_ref().and_then(|s| s.explanation()) {
+                        println!("  {line}");
+                    }
+                    return Ok(());
+                }
+            }
             let (spec, alternates, alternate_entries) = if privado || rapido {
-                // A node that admits openly needs no joining first: it is
-                // asked for a key for this connection as the circuit is
-                // built, as the service does.
+                // A node that admits openly or with a pass needs no joining
+                // first: it is asked for a key for this connection as the
+                // circuit is built, as the service does.
                 let pocket = load_pocket(&pocket_path)?;
                 if pocket.is_empty() && pocket.joinable().is_empty() {
                     return Err(anyhow!(if pocket.known.is_empty() {
@@ -602,13 +758,23 @@ async fn main() -> Result<()> {
                         )
                     } else {
                         format!(
-                            "this machine knows {} node(s) from the node list but none admits openly and none has admitted it by hand: `hidravpn nodes list` says whom to ask and how; add the invite they return with `hidravpn nodes add`",
+                            "this machine knows {} node(s) from the node list but none admits openly or with a pass, and none has admitted it by hand: `hidravpn nodes list` says whom to ask and how; add the invite they return with `hidravpn nodes add`",
                             pocket.known.len()
                         )
                     }));
                 }
+                // A node that takes passes, with none left for it, is not
+                // picked while another will do.
+                let wallet_now =
+                    hidravpn_service::passes::load_wallet(&wallet_beside(&pocket_path))?;
+                let live = hidravpn_service::passes::without_dead(
+                    &pocket,
+                    &wallet_now,
+                    if privado { "privado" } else { "rapido" },
+                    allow_same_operator,
+                );
                 let pick = if privado {
-                    pocket.pick_privado(allow_same_operator)?
+                    live.pick_privado(allow_same_operator)?
                 } else if let Some(wanted) = node.as_deref() {
                     let (mut exits, _) = pocket.rapido_exits();
                     let i = exits
@@ -624,7 +790,7 @@ async fn main() -> Result<()> {
                         same_operator: None,
                     }
                 } else {
-                    pocket.pick_rapido()?
+                    live.pick_rapido()?
                 };
                 (
                     CircuitSpec::new(pick.exit, pick.entry),
@@ -644,7 +810,7 @@ async fn main() -> Result<()> {
                     .collect::<Result<Vec<_>>>()?;
                 (CircuitSpec::new(exit, entry), alternates, alternate_entries)
             };
-            spec.validate()?;
+            spec.validate_plan()?;
             if let Some(entry) = &spec.entry {
                 if !hidravpn_core::pocket::pair_allowed(entry, &spec.exit, allow_same_operator) {
                     return Err(anyhow!("{}", hidravpn_core::pocket::SAME_OPERATOR_REFUSAL));
@@ -700,6 +866,7 @@ async fn main() -> Result<()> {
                                 .unwrap_or(&interface)
                                 .to_string(),
                         },
+                        &pocket_path,
                     )
                     .await?;
                 }
@@ -740,7 +907,10 @@ async fn main() -> Result<()> {
                 require_admin()?;
                 let _ = killswitch::remove();
                 match netcfg::load_plan()? {
-                    None => println!("nothing to undo"),
+                    None => {
+                        netcfg::recover_dns();
+                        println!("nothing to undo")
+                    }
                     Some(plan) => {
                         netcfg::revert(&plan)?;
                         println!("network restored");
@@ -840,7 +1010,12 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
 }
 
 /// Holds the circuit in this process until Ctrl+C, then puts the network back.
-async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<()> {
+async fn up(
+    spec: CircuitSpec,
+    key: ClientKey,
+    opts: CircuitOptions,
+    pocket_path: &Path,
+) -> Result<()> {
     if netcfg::load_plan()?.is_some() {
         eprintln!("undoing the network changes of a previous connection first");
     }
@@ -850,17 +1025,14 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
     if !opts.kill_switch {
         eprintln!("kill switch OFF (--no-kill-switch): traffic can leak if the tunnel drops");
     }
-    // Every node that admits openly is asked for a key for this connection:
-    // the first hop directly, the exit of two hops through the entry.
-    if let Some(first) = spec
-        .entry
-        .as_ref()
-        .or(Some(&spec.exit))
-        .filter(|n| n.admits_openly())
-    {
+    // Every node that admits openly or with a pass is asked for a key for
+    // this connection: the first hop directly, the exit of two hops through
+    // the entry.
+    let asks = |n: &Invite| n.admits_openly() || n.takes_passes();
+    if let Some(first) = spec.entry.as_ref().or(Some(&spec.exit)).filter(|n| asks(n)) {
         eprintln!("asking {} for a key for this connection", first.node_name);
     }
-    if let (Some(entry), true) = (&spec.entry, spec.exit.admits_openly()) {
+    if let (Some(entry), true) = (&spec.entry, asks(&spec.exit)) {
         eprintln!(
             "asking {} for a key for this connection, through {}",
             spec.exit.node_name, entry.node_name
@@ -868,10 +1040,37 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
     }
     let _ = killswitch::remove();
     let built = async {
-        let spec =
-            hidravpn_core::circuit::prepare(&spec.exit, spec.entry.as_ref(), &key, &opts, &[])
-                .await?;
-        Circuit::up(spec, key, opts).await
+        // The pocket and the wallet are held while passes are taken from
+        // the one and the invites they win go into the other.
+        let _file = hidravpn_service::passes::lock_beside(pocket_path)?;
+        let wallet_path = wallet_beside(pocket_path);
+        let mut wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
+        let before = wallet.to_json();
+        let prepared = hidravpn_core::circuit::prepare(
+            &spec.exit,
+            spec.entry.as_ref(),
+            &key,
+            &opts,
+            &[],
+            &mut wallet,
+        )
+        .await;
+        if wallet.to_json() != before {
+            hidravpn_service::passes::save_wallet(&wallet_path, &wallet)?;
+        }
+        let prepared = prepared?;
+        if !prepared.redeemed.is_empty() {
+            let mut pocket = load_pocket(pocket_path)?;
+            for inv in &prepared.redeemed {
+                let _ = pocket.replace(inv.clone());
+            }
+            save_pocket(pocket_path, &pocket)?;
+        }
+        for note in &prepared.notes {
+            eprintln!("note: {note}");
+        }
+        drop(_file);
+        Circuit::up(prepared.spec, key, opts).await
     }
     .await;
     let circuit = match built {
@@ -881,6 +1080,20 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
             return Err(e);
         }
     };
+    // Invites won with a pass that this circuit uses: their use is written
+    // down when it goes up and when it comes down, which is what tells later
+    // picks the node still holds the lease.
+    let pass_keys: Vec<String> = {
+        let spec = circuit.spec();
+        std::iter::once(&spec.exit)
+            .chain(spec.entry.as_ref())
+            .filter(|i| i.pass.is_some())
+            .map(|i| i.node_public_key.clone())
+            .collect()
+    };
+    if !pass_keys.is_empty() {
+        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys);
+    }
     let st = circuit.status();
     for h in &st.hops {
         eprintln!(
@@ -953,6 +1166,9 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
     };
 
     eprintln!("\ndisconnecting");
+    if !pass_keys.is_empty() {
+        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys);
+    }
     circuit.down().await.context("restoring the network")?;
     eprintln!("network restored");
     outcome

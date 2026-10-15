@@ -22,6 +22,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 BROWSER="$HERE/../../hidra-browser"
 DRIVER="$BROWSER/test/vpn-live.js"
@@ -41,7 +42,7 @@ cleanup() {
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/circuit.json
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/refill.json /etc/hidravpn/circuit.json
   [ "$MADE_GROUP" = 1 ] && groupdel hidravpn 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
@@ -139,6 +140,13 @@ $C curl -s --max-time 3 http://10.201.0.2:25/ >/dev/null 2>&1; RC=$?
 
 OUT=$(drive identity); echo "$OUT" | grep -q '"ok":true' && pass "new identity with one exit says the address did not change ($OUT)" || fail "identity: $OUT"
 OUT=$(drive down); echo "$OUT" | grep -q '"ok":true' && pass "disconnect: disconnected, kill switch off" || fail "down: $OUT"
+OUT=$(drive refill-off); echo "$OUT" | grep -q '"ok":true' && [ "$(stat -c %a /etc/hidravpn/refill.json 2>/dev/null)" = 600 ] && pass "the page's box reads automatic passes (on) and switches them off and on; the service keeps the setting root-only ($OUT)" || fail "refill from the page: $OUT"
+# The command line, run by the same member of the group: `up --rapido` asks
+# the service to pick, as the page does, and `down` takes it down.
+if [ -n "$AS_USER" ]; then
+  OUT=$($C $AS_USER "$BIN/hidravpn" up --rapido 2>&1); echo "$OUT" | grep -q "connected through the HidraVPN service" && pass "a member of the group connects from the command line too (up --rapido: $(echo "$OUT" | tail -1 | cut -c1-70))" || fail "member up --rapido: $OUT"
+  OUT=$($C $AS_USER "$BIN/hidravpn" down 2>&1); [ $? -eq 0 ] && ! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && pass "and down from the command line takes it down" || fail "member down: $OUT"
+fi
 $C nft list table inet hidravpn_ks >/dev/null 2>&1 && fail "the kill switch is still armed after down" || pass "the kill switch was lifted"
 $C ip -4 route | grep -q "hvpn0" && fail "routes to hvpn0 remain" || pass "tunnel routes removed"
 [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] && pass "resolv.conf restored" || fail "resolv.conf not restored"

@@ -60,12 +60,19 @@ const GROUP_HINT =
   'On Linux the browser must run as a member of the hidravpn group: the installer adds ' +
   'the user who ran it; log out and in once, or run `sudo usermod -aG hidravpn $USER`.';
 
+const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes']);
+
 class VpnManager {
   constructor(options = {}) {
     const defaults = defaultPaths();
     this.endpoint = options.endpoint || defaults.endpoint;
     this.tokenPath = options.tokenPath || defaults.tokenPath;
     this.timeoutMs = options.timeoutMs || 8000;
+    // Commands that wait on the network (an admission, a pass redeemed, the
+    // issuer, a circuit built): eight seconds would give up while the
+    // service is still working, and the page would say it did not answer
+    // while the machine was being routed.
+    this.slowTimeoutMs = options.slowTimeoutMs || options.timeoutMs || 120000;
     // Injected by tests to stand in for the file system and the socket.
     this._fs = options.fs || fs;
     this._net = options.net || net;
@@ -115,7 +122,7 @@ class VpnManager {
   async request(cmd) {
     const token = await this._readToken();
     const line = JSON.stringify({ token, ...cmd }) + '\n';
-    const answer = await this._roundTrip(line);
+    const answer = await this._roundTrip(line, SLOW_COMMANDS.has(cmd.cmd) ? this.slowTimeoutMs : this.timeoutMs);
     let parsed;
     try {
       parsed = JSON.parse(answer);
@@ -139,7 +146,7 @@ class VpnManager {
     return parsed;
   }
 
-  _roundTrip(line) {
+  _roundTrip(line, timeoutMs) {
     return new Promise((resolve, reject) => {
       const socket = this._net.createConnection(this.endpoint);
       const chunks = [];
@@ -154,7 +161,7 @@ class VpnManager {
       };
       const timer = setTimeout(
         () => finish(reject, new VpnUnavailable('timeout', 'the service did not answer in time')),
-        this.timeoutMs
+        timeoutMs || this.timeoutMs
       );
       socket.on('connect', () => socket.write(line));
       socket.on('data', (chunk) => {
@@ -243,7 +250,7 @@ class VpnManager {
   }
 
   // Hands a published node list and its signature to the service, which
-  // checks the signature against the release key it carries and, only then,
+  // checks the signature against the list key it carries and, only then,
   // puts the nodes into the pocket. The browser does not verify here: the
   // service writes the pocket, so the service is what must be convinced, and
   // the bytes are passed exactly as they are on disk, because that is what
@@ -275,6 +282,29 @@ class VpnManager {
     if (Buffer.byteLength(list) > MAX_LIST_BYTES) return { ok: false, error: `the list is far larger than a node list (${MAX_LIST_BYTES} bytes at most)` };
     if (typeof signature !== 'string' || !signature.trim()) return { ok: false, error: 'the list came without its signature, so it cannot be checked and is not imported' };
     return this._command({ cmd: 'import_nodes', list, signature: signature.trim() });
+  }
+
+  // Passes (phase 5). The service asks the issuer the node list names, with
+  // the account token it keeps; `count` passes for each node that admits
+  // with one (10 when not given), or for the one named.
+  async getPasses(count, name) {
+    const n = Number.isInteger(count) && count > 0 && count <= 100 ? count : 10;
+    const node = typeof name === 'string' && name.trim() ? name.trim() : null;
+    return this._command(node ? { cmd: 'get_passes', count: n, name: node } : { cmd: 'get_passes', count: n });
+  }
+
+  // Hands the service the account token to keep (root-only on disk). The
+  // browser keeps no copy, and the service never sends it back.
+  async setPassToken(token) {
+    const t = typeof token === 'string' ? token.trim() : '';
+    if (!t || t.length > 512 || /\s/.test(t)) return { ok: false, error: 'that is not an account token (one word, no spaces)' };
+    return this._command({ cmd: 'set_pass_token', pass_token: t });
+  }
+
+  // Automatic passes (phase 6): with a boolean, switched on or off; with
+  // nothing, only read. The answer carries the setting as `refill`.
+  async refill(enabled) {
+    return this._command(typeof enabled === 'boolean' ? { cmd: 'refill', enabled } : { cmd: 'refill' });
   }
 
   async _command(cmd) {

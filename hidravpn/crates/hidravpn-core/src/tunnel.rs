@@ -100,17 +100,22 @@ impl Tunnel {
         }
     }
 
-    /// Asks the running tunnel to stop; `run` then returns.
+    /// Asks the running tunnel to stop; `run` then returns. Kept even when
+    /// `run` has not started listening yet (a `send` with nobody subscribed
+    /// would drop it): `run` checks it before it starts and while it runs.
     pub fn stop(&self) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
     }
 
     /// Runs until `stop` is called or the socket fails. Starts with a
     /// handshake so the session is up before the first packet needs it.
     pub async fn run(&self) -> Result<()> {
+        let mut stop_rx = self.stop.subscribe();
+        if *stop_rx.borrow() {
+            return Ok(());
+        }
         self.initiate_handshake().await?;
 
-        let mut stop_rx = self.stop.subscribe();
         let mut to_net = tokio::spawn(tun_to_network(
             self.tunn.clone(),
             self.sock.clone(),
@@ -126,12 +131,13 @@ impl Tunnel {
         let mut timers = tokio::spawn(drive_timers(self.tunn.clone(), self.sock.clone()));
 
         // Which task ended, so it is not awaited a second time (a finished
-        // JoinHandle polled again panics).
+        // JoinHandle polled again panics). A stop asked before this point
+        // is seen too (`wait_for` looks at the current value first).
         let (outcome, done) = tokio::select! {
             r = &mut to_net => (r.map_err(|e| anyhow!("TUN reader stopped: {e}")).and_then(|r| r), 0),
             r = &mut to_tun => (r.map_err(|e| anyhow!("network reader stopped: {e}")).and_then(|r| r), 1),
             r = &mut timers => (r.map_err(|e| anyhow!("timer stopped: {e}")).and_then(|r| r), 2),
-            _ = stop_rx.changed() => (Ok(()), 3),
+            _ = stop_rx.wait_for(|stop| *stop) => (Ok(()), 3),
         };
 
         // Stop the other tasks and wait for them to let go. Each holds a
@@ -169,10 +175,12 @@ impl Tunnel {
         };
         if let Some(p) = out {
             match self.sock.send(&p).await {
-                Ok(_) => {}
-                // The node is away for now; the timers try again.
-                Err(e) if transient(&e) => {}
-                Err(e) => return Err(anyhow::Error::new(e).context("could not send the handshake")),
+                // The node answered an earlier datagram with an ICMP error
+                // (it was restarting); the timers send the next handshake.
+                Err(e) if passing(&e) => {}
+                r => {
+                    r.context("could not send the handshake")?;
+                }
             }
         }
         Ok(())
@@ -214,16 +222,6 @@ async fn tun_to_network(
     }
 }
 
-/// Errors a connected UDP socket reports when the peer or the path is away
-/// for a while; none of them means the socket itself is broken.
-fn transient(e: &std::io::Error) -> bool {
-    use std::io::ErrorKind::*;
-    matches!(
-        e.kind(),
-        ConnectionRefused | ConnectionReset | HostUnreachable | NetworkUnreachable | NetworkDown
-    )
-}
-
 async fn network_to_tun(
     tunn: Arc<Mutex<Tunn>>,
     sock: Arc<UdpSocket>,
@@ -236,14 +234,11 @@ async fn network_to_tun(
     loop {
         let n = match sock.recv(&mut dgram).await {
             Ok(n) => n,
-            // A node that is down answers with an ICMP error, which a
-            // connected UDP socket reports on the next read. That is the node
-            // being away, not the tunnel being broken: keep listening, and
-            // the timers keep shaking hands until it is back.
-            Err(e) if transient(&e) => {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                continue;
-            }
+            // A connected socket reports the ICMP error a datagram of ours
+            // drew (the node restarting, a route flapping) on the next read.
+            // That is news about one datagram, not the end of the tunnel:
+            // WireGuard's timers keep trying, and the node comes back.
+            Err(e) if passing(&e) => continue,
             Err(e) => return Err(anyhow::Error::new(e).context("reading the UDP socket")),
         };
         // One datagram can produce a packet for the interface, a reply for the
@@ -277,6 +272,16 @@ async fn network_to_tun(
             }
         }
     }
+}
+
+/// An error a connected UDP socket hands back for an ICMP error about an
+/// earlier datagram: passing, not fatal.
+fn passing(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        e.kind(),
+        ConnectionRefused | HostUnreachable | NetworkUnreachable
+    )
 }
 
 /// WireGuard's timers: handshake retries, keepalives, rekeying and the

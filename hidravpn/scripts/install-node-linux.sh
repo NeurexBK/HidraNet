@@ -12,6 +12,8 @@
 #   --operator WHO        who runs it, as clients and lists show it
 #   --contact HOW         how to reach the operator (an address, a page)
 #   --open-admission      admit any client that asks (rate-limited, capped), not by hand
+#   --pass-admission      admit a client that redeems a pass (phase 5); then add the
+#                         issuer's key with: hidravpn-node pass-key add <record.json>
 #   --admission-port P    TCP port of the admission service (default 51821)
 #   --max-clients N       how many clients may hold a lease at once (default 4000)
 #   --idle-days N         days without a handshake after which an openly admitted client is forgotten (default 30; 0 never)
@@ -37,8 +39,8 @@ PREFIX="${HIDRAVPN_PREFIX:-/usr/local/bin}"
 ETC="${HIDRAVPN_ETC:-/etc/hidravpn}"
 UNIT="${HIDRAVPN_UNIT:-/etc/systemd/system/hidravpn-node.service}"
 
-ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; OPEN=0; ADM_PORT=51821
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; OPEN=0; PASS=0; ADM_PORT=51821
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --endpoint|--name|--out-interface|--role|--operator|--contact|--admission-port|--max-clients|--idle-days)
@@ -56,6 +58,7 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     --open-admission) OPEN=1; shift ;;
+    --pass-admission) PASS=1; shift ;;
     --dns) shift; while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do DNS+=("$1"); shift; done ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -71,6 +74,7 @@ esac
 PORT="${ENDPOINT##*:}"
 case "$PORT" in ''|*[!0-9]*) echo "--endpoint has no port" >&2; exit 2 ;; esac
 case "$ROLE" in entry|exit|both) ;; *) echo "--role must be entry, exit or both" >&2; exit 2 ;; esac
+[ "$OPEN" = 1 ] && [ "$PASS" = 1 ] && { echo "--open-admission and --pass-admission are two ways to admit; choose one" >&2; exit 2; }
 case "$ADM_PORT" in ''|*[!0-9]*) echo "--admission-port must be a number" >&2; exit 2 ;; esac
 case "${MAX_CLIENTS:-}" in *[!0-9]*) echo "--max-clients must be a number" >&2; exit 2 ;; esac
 case "${IDLE_DAYS:-}" in *[!0-9]*) echo "--idle-days must be a number" >&2; exit 2 ;; esac
@@ -135,14 +139,21 @@ else
   [ -n "$OPERATOR" ] && INIT+=(--operator "$OPERATOR")
   [ -n "$CONTACT" ] && INIT+=(--contact "$CONTACT")
   [ "$OPEN" = 1 ] && INIT+=(--open-admission)
+  [ "$PASS" = 1 ] && INIT+=(--pass-admission)
   [ -n "${MAX_CLIENTS:-}" ] && INIT+=(--max-clients "$MAX_CLIENTS")
   [ -n "${IDLE_DAYS:-}" ] && INIT+=(--idle-days "$IDLE_DAYS")
   [ ${#DNS[@]} -gt 0 ] && INIT+=(--dns "${DNS[@]}")
   run "${INIT[@]}"
 fi
 
-step "the systemd unit at $UNIT"
-run install -m 0644 "$HERE/hidravpn-node.service" "$UNIT"
+step "the systemd unit at $UNIT (it runs $PREFIX/hidravpn-node --config $ETC/node.toml run)"
+# The unit starts the binary where it was installed, with the settings where
+# init wrote them (HIDRAVPN_PREFIX, HIDRAVPN_ETC), not the defaults alone.
+install_unit() {
+  sed -e "s|^ExecStart=.*|ExecStart=$PREFIX/hidravpn-node --config $ETC/node.toml run|" "$HERE/hidravpn-node.service" > "$UNIT.tmp" \
+    && chmod 0644 "$UNIT.tmp" && mv "$UNIT.tmp" "$UNIT"
+}
+run install_unit
 run systemctl daemon-reload
 run systemctl enable --now hidravpn-node
 
@@ -187,7 +198,7 @@ cat <<EOT
 
 ────────────────────────────────────────────────────────────────────────
 HidraVPN node "$NAME" at $ENDPOINT (traffic leaves by $OUT_IF).
-Role: $ROLE.  Admission: $([ "$OPEN" = 1 ] && echo "open (any client that asks is admitted, rate-limited)" || echo "by hand").
+Role: $ROLE.  Admission: $([ "$OPEN" = 1 ] && echo "open (any client that asks is admitted, rate-limited)" || { [ "$PASS" = 1 ] && echo "with a pass (add the issuer's key: hidravpn-node pass-key add <record.json>, then restart)"; } || echo "by hand").
 
 Node public key:  $NODE_PUB
 

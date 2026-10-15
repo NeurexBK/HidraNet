@@ -11,8 +11,10 @@
 //!
 //! Limits are deliberate: a few admissions per address per ten minutes and a
 //! modest number overall, a short timeout per connection and a cap on
-//! concurrent ones. A script with enough addresses can still fill a node in
-//! hours; what it cannot do is keep it full, because a lease that never
+//! concurrent ones, overall and per address. A script with enough addresses
+//! can still fill a node in hours, or hold its door shut while it keeps
+//! hundreds of connections open; what it cannot do is keep the node full, or
+//! touch the tunnel, because a lease that never
 //! completes a handshake lapses within a quarter of an hour (`leases.rs`),
 //! so filling a node costs real tunnels, not requests.
 //! Nothing here logs an address or a key: counts only.
@@ -26,6 +28,7 @@ use anyhow::{Context, Result};
 use hidravpn_core::admission::{
     http_response, read_request, refusal, refusal_wanting_work, work, AdmissionRequest,
 };
+use hidravpn_core::pass::Redemption;
 use hidravpn_core::Invite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
@@ -39,6 +42,9 @@ pub struct Admit {
     pub name: String,
     /// A key made for one connection: its lease lapses with the connection.
     pub session: bool,
+    /// Set when the admission is a redeemed pass: what to write down as
+    /// spent, and until when. The main loop refuses a tag it already holds.
+    pub pass: Option<SpentPass>,
     /// The invite, or the HTTP status and reason for refusing.
     pub reply: oneshot::Sender<std::result::Result<Invite, (u16, String)>>,
 }
@@ -53,7 +59,14 @@ const GLOBAL_WINDOW: Duration = Duration::from_secs(600);
 /// and counting the entry's address would throttle all its clients
 /// together. They have a node-wide ceiling of their own.
 const SESSION_GLOBAL: usize = 600;
-const CONNECTIONS: usize = 32;
+/// Connections served at once. An idle one costs a task and a small
+/// buffer, so the cap is generous: what keeps one source from holding them
+/// all is the cap per address below, and the timeout.
+const CONNECTIONS: usize = 256;
+/// Connections one address may hold open at once; past it, a connection is
+/// closed at once. A few, for clients behind one address (a household, a
+/// carrier's NAT).
+const CONNECTIONS_PER_IP: usize = 8;
 const PER_CONNECTION: Duration = Duration::from_secs(5);
 
 /// Sliding windows: per source address and overall for lasting leases,
@@ -107,6 +120,12 @@ impl RateLimiter {
     }
 }
 
+/// A pass to write down as spent, once the main loop has checked it is not.
+pub struct SpentPass {
+    pub tag: String,
+    pub valid_until: i64,
+}
+
 /// A lease name the operator can read in `status`: the client's wish if it
 /// is one, else a number.
 pub fn lease_name(wanted: &str, counter: u64) -> String {
@@ -136,12 +155,15 @@ pub async fn serve(
         listen.port(),
         if cfg.admission_is_open() {
             "open: any client may ask"
+        } else if cfg.admits_with_passes() {
+            "with a pass: a client redeems one"
         } else {
             "by hand: describes the node only"
         }
     );
     let limiter = Arc::new(Mutex::new(RateLimiter::default()));
     let slots = Arc::new(Semaphore::new(CONNECTIONS));
+    let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
     let counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
     loop {
         let Ok(slot) = slots.clone().acquire_owned().await else {
@@ -160,10 +182,17 @@ pub async fn serve(
                 continue;
             }
         };
+        // Over its share, the connection is closed unread: it is not worth
+        // a slot, and an answer would be one more thing to wait on.
+        let Some(_held) = OpenPerIp::take(&open, peer.ip()) else {
+            drop(stream);
+            continue;
+        };
         let (cfg, tx, limiter, counter) =
             (cfg.clone(), tx.clone(), limiter.clone(), counter.clone());
         tokio::spawn(async move {
             let _slot = slot;
+            let _held = _held;
             let r = tokio::time::timeout(
                 PER_CONNECTION,
                 handle(stream, peer.ip(), cfg, tx, limiter, counter),
@@ -173,6 +202,44 @@ pub async fn serve(
                 warn!("admission connection: {e}");
             }
         });
+    }
+}
+
+/// How many connections each address holds open now.
+#[derive(Default)]
+struct OpenPerIp(HashMap<IpAddr, usize>);
+
+impl OpenPerIp {
+    /// One more connection for `ip`, or None when it holds its share. The
+    /// count goes down when the returned guard is dropped.
+    fn take(this: &Arc<std::sync::Mutex<Self>>, ip: IpAddr) -> Option<OpenGuard> {
+        let mut m = this.lock().unwrap_or_else(|e| e.into_inner());
+        let n = m.0.entry(ip).or_insert(0);
+        if *n >= CONNECTIONS_PER_IP {
+            return None;
+        }
+        *n += 1;
+        Some(OpenGuard {
+            map: this.clone(),
+            ip,
+        })
+    }
+}
+
+struct OpenGuard {
+    map: Arc<std::sync::Mutex<OpenPerIp>>,
+    ip: IpAddr,
+}
+
+impl Drop for OpenGuard {
+    fn drop(&mut self) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = m.0.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                m.0.remove(&self.ip);
+            }
+        }
     }
 }
 
@@ -192,6 +259,7 @@ async fn handle(
                 Err(e) => http_response(500, &refusal(format!("{e:#}"))),
             },
             ("POST", "/admit") => admit(&req.body, ip, &cfg, &tx, &limiter, &counter).await,
+            ("POST", "/redeem") => redeem(&req.body, &cfg, &tx, &counter).await,
             ("POST", _) | ("GET", _) => http_response(404, &refusal("no such path")),
             _ => http_response(405, &refusal("GET or POST")),
         },
@@ -210,6 +278,12 @@ async fn admit(
     limiter: &Mutex<RateLimiter>,
     counter: &std::sync::atomic::AtomicU64,
 ) -> Vec<u8> {
+    if cfg.admits_with_passes() {
+        return http_response(
+            403,
+            &refusal("this node admits with a pass: get passes from the issuer the node list names (`hidravpn passes get`)"),
+        );
+    }
     if !cfg.admission_is_open() {
         return http_response(
             403,
@@ -275,6 +349,67 @@ async fn admit(
             public_key: req.public_key,
             session: req.session,
             name,
+            pass: None,
+            reply,
+        })
+        .await
+        .is_err()
+    {
+        return http_response(503, &refusal("the node is stopping"));
+    }
+    match tokio::time::timeout(Duration::from_secs(4), rx).await {
+        Ok(Ok(Ok(invite))) => http_response(200, &invite.to_json()),
+        Ok(Ok(Err((status, why)))) => http_response(status, &refusal(why)),
+        _ => http_response(503, &refusal("the node did not answer in time")),
+    }
+}
+
+/// `POST /redeem`: a pass, checked here (a current issuer key this node
+/// trusts, made for this node, a signature that holds) and then by the main
+/// loop (never spent here before). No rate limit by address: a valid pass
+/// was paid for with an account's quota, and an invalid one costs a
+/// signature check and nothing else.
+async fn redeem(
+    body: &[u8],
+    cfg: &NodeConfig,
+    tx: &mpsc::Sender<Admit>,
+    counter: &std::sync::atomic::AtomicU64,
+) -> Vec<u8> {
+    if !cfg.admits_with_passes() {
+        return http_response(403, &refusal("this node does not admit with passes"));
+    }
+    let r: Redemption = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(_) => return http_response(400, &refusal("the request is not a pass")),
+    };
+    let me = match cfg.public_key() {
+        Ok(k) => k,
+        Err(_) => return http_response(500, &refusal("this node cannot read its own key")),
+    };
+    let now = hidravpn_core::timefmt::now_unix();
+    if let Err(e) = r.verify(&cfg.pass_keys, &me, now) {
+        return http_response(403, &refusal(format!("the pass is refused: {e}")));
+    }
+    let valid_until = cfg
+        .pass_keys
+        .iter()
+        .find(|k| k.id.trim().eq_ignore_ascii_case(r.key_id.trim()))
+        .and_then(|k| hidravpn_core::timefmt::rfc3339_to_unix(&k.not_after).ok())
+        .unwrap_or(now);
+    let name = format!(
+        "pass-{}",
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let (reply, rx) = oneshot::channel();
+    if tx
+        .send(Admit {
+            public_key: r.client_public_key.clone(),
+            name,
+            session: false,
+            pass: Some(SpentPass {
+                tag: r.spent_tag(),
+                valid_until,
+            }),
             reply,
         })
         .await
@@ -292,6 +427,31 @@ async fn admit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_address_holds_a_few_connections_at_most_and_gets_them_back() {
+        let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
+        let ip: IpAddr = "203.0.113.5".parse().unwrap();
+        let held: Vec<_> = (0..CONNECTIONS_PER_IP)
+            .map(|_| OpenPerIp::take(&open, ip).expect("within its share"))
+            .collect();
+        assert!(OpenPerIp::take(&open, ip).is_none(), "one more is closed");
+        let other: IpAddr = "203.0.113.6".parse().unwrap();
+        assert!(
+            OpenPerIp::take(&open, other).is_some(),
+            "another address is not affected"
+        );
+        drop(held);
+        assert!(
+            OpenPerIp::take(&open, ip).is_some(),
+            "closed connections are given back"
+        );
+        assert_eq!(
+            open.lock().unwrap().0.len(),
+            0,
+            "nothing is kept for an address with none open"
+        );
+    }
 
     #[test]
     fn a_source_gets_a_few_tries_per_window_and_the_window_slides() {

@@ -3,7 +3,9 @@
 Phase 5 replaces open admission with **passes**: tokens bought with HNET and
 spent at a node to be admitted. The plan is a Privacy Pass-style scheme of
 blind signatures. This note says what the scheme must guarantee for
-anonymity, and which questions are still open. Nothing here is built yet.
+anonymity, and which questions are still open. It was written before the
+passes were built; what was built, and how it meets requirement 3, is in
+`phase-5.md` and `anonymity.md` (finding 16).
 The decisions marked **[decide]** belong to the maintainers.
 
 What phase 5 starts from (`anonymity.md`):

@@ -85,6 +85,16 @@ function done(extra) {
       done({ state: s.state, killswitch: s.report.killswitch });
       break;
     }
+    case 'refill-off': {
+      const before = await vpn.refill();
+      if (!before.ok || !before.refill || before.refill.enabled !== true) fail('automatic passes were not on by default', before);
+      const r = await vpn.refill(false);
+      if (!r.ok || r.refill.enabled !== false) fail('automatic passes did not switch off', r);
+      const again = await vpn.refill(true);
+      if (!again.ok || again.refill.enabled !== true) fail('automatic passes did not switch back on', again);
+      done({ before: before.refill.enabled, off: r.refill.enabled, on: again.refill.enabled });
+      break;
+    }
     case 'after': {
       const s = await vpn.status();
       done({ state: s.state, killswitch: s.report ? s.report.killswitch : null });

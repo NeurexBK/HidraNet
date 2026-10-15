@@ -2,8 +2,28 @@
 //! `/etc/resolv.conf`.
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
-use super::{clear_plan, run, save_plan, RevertPlan, ViaRouteAdded, Wanted};
+use super::{clear_plan, load_plan, run, save_plan, RevertPlan, ViaRouteAdded, Wanted};
+
+const RESOLV_CONF: &str = "/etc/resolv.conf";
+/// Written beside it and renamed over it, which replaces a link without
+/// touching what the link points at.
+const RESOLV_CONF_TMP: &str = "/etc/.resolv.conf.hidravpn";
+/// What resolv.conf was before it was swapped, kept on disk beside the
+/// client's key: the plan lives in /run and a reboot clears it, but a machine
+/// that lost power while connected comes back with the swapped file, and on a
+/// machine without systemd-resolved nothing else would put it back.
+const RESOLV_SAVED: &str = "/etc/hidravpn/resolv.conf.saved";
+const RESOLV_MARK: &str = "# HidraVPN: restored by `hidravpn down`";
+
+#[derive(Serialize, Deserialize)]
+struct SavedResolvConf {
+    /// Where resolv.conf linked to (NetworkManager's or resolvconf's file in
+    /// /run), if it was a link.
+    link: Option<String>,
+    content: String,
+}
 
 /// The default route's gateway and interface, from `ip route`.
 fn default_route() -> Result<(String, String)> {
@@ -115,14 +135,24 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
         let _ = run("resolvectl", &["default-route", &w.interface, "true"]);
         plan.dns_changed = true;
     } else {
-        let current = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-        plan.resolv_conf_backup = Some(current);
+        let saved = original_resolv_conf();
+        write_saved(&saved)?;
+        plan.resolv_conf_backup = Some(saved.content);
+        plan.resolv_conf_link = saved.link.clone();
         save_plan(&plan)?;
-        std::fs::write(
-            "/etc/resolv.conf",
-            format!("# HidraVPN: restored by `hidravpn down`\nnameserver {dns}\noptions edns0\n"),
-        )
-        .context("writing /etc/resolv.conf")?;
+        let ours = format!("{RESOLV_MARK}\nnameserver {dns}\noptions edns0\n");
+        if saved.link.is_some() {
+            // A link into /run (NetworkManager, resolvconf): the service may
+            // not write there (the unit makes all but /etc read-only), and
+            // the program that owns that file would write over ours. The
+            // link itself is replaced, and put back on the way down.
+            let _ = std::fs::remove_file(RESOLV_CONF_TMP);
+            std::fs::write(RESOLV_CONF_TMP, ours)
+                .and_then(|()| std::fs::rename(RESOLV_CONF_TMP, RESOLV_CONF))
+                .context("replacing /etc/resolv.conf")?;
+        } else {
+            std::fs::write(RESOLV_CONF, ours).context("writing /etc/resolv.conf")?;
+        }
         plan.dns_changed = true;
     }
     save_plan(&plan)?;
@@ -154,7 +184,7 @@ pub fn revert(plan: &RevertPlan) -> Result<()> {
     }
     if plan.dns_changed {
         if let Some(backup) = &plan.resolv_conf_backup {
-            if let Err(e) = std::fs::write("/etc/resolv.conf", backup) {
+            if let Err(e) = put_back_resolv_conf(plan.resolv_conf_link.as_deref(), backup) {
                 problems.push(format!("restoring /etc/resolv.conf: {e}"));
             }
         } else {
@@ -171,5 +201,74 @@ pub fn revert(plan: &RevertPlan) -> Result<()> {
             "not everything could be put back:\n  {}",
             problems.join("\n  ")
         ))
+    }
+}
+
+/// resolv.conf as it is now, unless it is one we wrote and the copy of the
+/// one before it survived: then that copy, so a connection made after a
+/// crash does not save our own file as the machine's.
+fn original_resolv_conf() -> SavedResolvConf {
+    let current = SavedResolvConf {
+        link: std::fs::read_link(RESOLV_CONF)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+        content: std::fs::read_to_string(RESOLV_CONF).unwrap_or_default(),
+    };
+    if current.link.is_none() && current.content.starts_with(RESOLV_MARK) {
+        if let Some(saved) = read_saved() {
+            return saved;
+        }
+    }
+    current
+}
+
+fn read_saved() -> Option<SavedResolvConf> {
+    serde_json::from_slice(&std::fs::read(RESOLV_SAVED).ok()?).ok()
+}
+
+fn write_saved(saved: &SavedResolvConf) -> Result<()> {
+    let path = std::path::Path::new(RESOLV_SAVED);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec(saved)?)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .with_context(|| format!("writing {RESOLV_SAVED}"))
+}
+
+fn put_back_resolv_conf(link: Option<&str>, content: &str) -> std::io::Result<()> {
+    match link {
+        Some(target) => {
+            let _ = std::fs::remove_file(RESOLV_CONF_TMP);
+            std::os::unix::fs::symlink(target, RESOLV_CONF_TMP)?;
+            std::fs::rename(RESOLV_CONF_TMP, RESOLV_CONF)?;
+        }
+        None => std::fs::write(RESOLV_CONF, content)?,
+    }
+    let _ = std::fs::remove_file(RESOLV_SAVED);
+    Ok(())
+}
+
+/// After a reboot that came while connected: no plan is left (it lived in
+/// /run), but resolv.conf is still ours. Put the machine's back. A
+/// resolv.conf someone changed since is left as it is.
+pub fn recover_dns() {
+    if !matches!(load_plan(), Ok(None)) {
+        return;
+    }
+    let Some(saved) = read_saved() else {
+        return;
+    };
+    let ours = std::fs::read_link(RESOLV_CONF).is_err()
+        && std::fs::read_to_string(RESOLV_CONF)
+            .map(|c| c.starts_with(RESOLV_MARK))
+            .unwrap_or(false);
+    if ours {
+        if put_back_resolv_conf(saved.link.as_deref(), &saved.content).is_ok() {
+            tracing::info!("put back the DNS settings a connection cut short had left");
+        }
+    } else {
+        let _ = std::fs::remove_file(RESOLV_SAVED);
     }
 }

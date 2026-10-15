@@ -29,6 +29,9 @@ has "it opens the admission port too"   "UDP 51820 (the tunnel) and TCP 51821 (a
 has "it says how to get the node's record for the list" "hidravpn-node record >"
 has "it says how clients join an open node" "hidravpn nodes join --all"
 has "it installs the systemd unit"      "hidravpn-node.service"
+has "the unit runs the installed binary with the settings init wrote" "it runs /usr/local/bin/hidravpn-node --config /etc/hidravpn/node.toml run"
+OUT2=$(HIDRAVPN_PREFIX=/opt/hv/bin HIDRAVPN_ETC=/opt/hv/etc bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name node-1 --out-interface eth9 2>&1)
+echo "$OUT2" | grep -q "it runs /opt/hv/bin/hidravpn-node --config /opt/hv/etc/node.toml run" && pass "with HIDRAVPN_PREFIX and HIDRAVPN_ETC the unit runs that binary with those settings" || fail "custom paths: $(echo "$OUT2" | grep 'systemd unit')"
 has "it enables and starts the service" "would run: systemctl enable --now hidravpn-node"
 has "it says which ports must be open and nothing else" "must reach this node; SSH stays as it is"
 has "it prints how to admit a client"   "hidravpn-node admit --name <a-name>"
@@ -58,5 +61,7 @@ if command -v setpriv >/dev/null && [ "$(id -u)" = 0 ]; then
 fi
 bash "$S" --help 2>&1 | grep -q -- "--dry-run" && pass "--help prints the options" || fail "help"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:443 --name x 2>&1); echo "$OUT" | grep -q -- "--port 443 " && echo "$OUT" | grep -q "UDP 443 (the tunnel)" && pass "the port the node listens on is the port the firewall opens" || fail "port mismatch: $(echo "$OUT" | grep -E 'init --endpoint|UDP')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --pass-admission 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --pass-admission" && echo "$OUT" | grep -q "Admission: with a pass" && pass "--pass-admission initialises a node that admits with a pass, and says to add the issuer's key" || fail "pass admission: $(echo "$OUT" | grep -E 'init --endpoint|Admission')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --open-admission --pass-admission 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "choose one" && pass "open and pass admission together: refused" || fail "both admissions accepted"
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

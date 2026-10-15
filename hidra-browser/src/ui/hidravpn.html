@@ -163,9 +163,24 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       <button class="primary" id="btn-fetch" disabled>Get the maintainers' list</button>
       <button id="btn-import" disabled>Import a signed list from a file</button>
     </div>
-    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly needs nothing more: on every Connect it is asked to admit a key made for that one connection, so it cannot tell one of your connections from the next. A node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
+    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly needs nothing more: on every Connect it is asked to admit a key made for that one connection, so it cannot tell one of your connections from the next. A node that admits with a pass takes one pass per connection, which <code>sudo hidravpn passes get</code> asks the list's issuer for, and the issuer never learns which node a pass is for. A node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
     </div>
     <div class="msg" id="nodes-msg"></div>
+  </div>
+  <div class="card" id="passes-card">
+    <h2>Passes</h2>
+    <p class="empty" style="margin-bottom:12px">A node that admits with a pass takes one per connection, and sees a new key every time. Passes come from the issuer the signed list names, against an account: the issuer counts them but never learns which node a pass is for, and a node never learns whose account it came from.</p>
+    <div class="actions">
+      <input id="pass-token" type="password" autocomplete="off" spellcheck="false" placeholder="Account token" aria-label="Account token" style="flex:1;min-width:180px;font-family:inherit;font-size:.9em;padding:10px 12px;border-radius:11px;border:1px solid var(--border2);background:var(--bg2);color:var(--txt)">
+      <button id="btn-token" disabled>Keep the token</button>
+      <button class="primary" id="btn-passes" disabled>Get 10 passes per node</button>
+    </div>
+    <div class="empty" style="margin-top:10px">The token is handed to the service on this machine, which keeps it where only an administrator can read it; this page does not keep it. Anyone with an account on this computer can spend the account's passes.</div>
+    <label class="empty" style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;cursor:pointer">
+      <input type="checkbox" id="auto-passes" disabled style="margin-top:3px">
+      <span><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account's quota.</span></span>
+    </label>
+    <div class="msg" id="passes-msg"></div>
   </div>
 
   <div class="card">
@@ -218,6 +233,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   var api = window.hidra && window.hidra.vpn;
   var busy = false;
   var lastState = null;
+  var hasPassNode = false;
 
   function fmtBytes(n) {
     n = Number(n) || 0;
@@ -348,12 +364,22 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     var reachable = Boolean(r);
     $('btn-import').disabled = busy || !reachable;
     $('btn-fetch').disabled = busy || !reachable;
+    $('btn-token').disabled = busy || !reachable;
+    $('btn-passes').disabled = busy || !reachable || !hasPassNode;
     $('btn-connect').disabled = busy || !reachable;
     $('btn-connect').textContent = (r && r.connected) ? 'Reconnect' : 'Connect';
     $('btn-disconnect').disabled = busy || !reachable || !(r.connected || r.hops > 0 || r.killswitch);
     $('btn-identity').disabled = busy || !reachable || !r.connected;
   }
 
+  // Each connection through a node that admits with a pass spends one; the
+  // service shows the node a fresh key every time.
+  function passLine(count) {
+    var c = Number(count) || 0;
+    return c > 0
+      ? '; ' + c + (c === 1 ? ' pass left' : ' passes left') + ', one per connection'
+      : '; no pass left: sudo hidravpn passes get';
+  }
   function renderNodes(answer) {
     var box = $('nodes');
     box.textContent = '';
@@ -364,6 +390,8 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       return;
     }
     var list = answer.nodes || [];
+    hasPassNode = list.some(function (n) { return n.admission === 'pass'; });
+    $('btn-passes').disabled = busy || !hasPassNode;
     if (!list.length) {
       var em = document.createElement('div'); em.className = 'empty';
       em.textContent = 'No node yet. A node\'s operator admits this machine\'s key and hands you an invite: hidravpn nodes add --exit invite.json (or --entry). Import a signed node list to see which nodes exist.';
@@ -379,11 +407,15 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       if (known) {
         var why = document.createElement('div'); why.className = 'empty';
         var open = n.admission === 'open';
-        why.textContent = (open ? 'admits openly' : 'admits by hand') + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + (open ? '; asked for a fresh key on every connection' : '; ask its operator, then add the invite');
+        var withPass = n.admission === 'pass';
+        var how = open ? 'admits openly' : withPass ? 'admits with a pass' : 'admits by hand';
+        var next = open ? '; asked for a fresh key on every connection' : withPass ? passLine(n.passes) : '; ask its operator, then add the invite';
+        why.textContent = how + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + next;
         name.appendChild(why);
-      } else if (n.operator || n.role) {
+      } else if (n.operator || n.role || n.admission === 'pass') {
         var who = document.createElement('div'); who.className = 'empty';
-        who.textContent = (n.operator ? 'run by ' + n.operator : '') + (n.role ? (n.operator ? ', ' : '') + n.role : '');
+        who.textContent = (n.operator ? 'run by ' + n.operator : '') + (n.role ? (n.operator ? ', ' : '') + n.role : '') +
+          (n.admission === 'pass' ? passLine(n.passes) : '');
         name.appendChild(who);
       }
       var ep = document.createElement('span'); ep.className = 'ep'; ep.textContent = n.endpoint;
@@ -404,6 +436,27 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   async function refreshNodes() {
     if (!api) return;
     try { renderNodes(await api.nodes()); } catch (e) { renderNodes({ ok: false, error: String(e && e.message || e) }); }
+    await refreshRefill();
+  }
+
+  // Automatic passes: the box shows what the service last said it has
+  // (never what was clicked and not taken), and is usable only when the
+  // service answers and nothing else is under way.
+  var REFILL_ON = 'When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account\'s quota.';
+  var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node).';
+  var lastRefill = null;
+  function renderRefill(r) {
+    var box = $('auto-passes');
+    if (r && r.ok && r.refill) lastRefill = r.refill;
+    if (lastRefill) {
+      box.checked = !!lastRefill.enabled;
+      $('auto-passes-line').textContent = lastRefill.enabled ? REFILL_ON : REFILL_OFF;
+    }
+    box.disabled = busy || !(r && r.ok && r.refill);
+  }
+  async function refreshRefill() {
+    if (!api || !api.refill) return;
+    try { renderRefill(await api.refill()); } catch (e) { renderRefill(null); }
   }
 
   async function act(fn, pending) {
@@ -411,6 +464,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     busy = true;
     message('note', pending);
     $('btn-connect').disabled = $('btn-disconnect').disabled = $('btn-identity').disabled = true;
+    $('auto-passes').disabled = true;
     try {
       var r = await fn();
       if (r && r.ok === false) {
@@ -547,6 +601,60 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection pauses for a moment; the kill switch stays armed throughout.');
   });
 
+
+  $('btn-token').addEventListener('click', async function () {
+    if (!api || busy) return;
+    var field = $('pass-token');
+    var token = field.value;
+    // The field is emptied at once: the page holds the token no longer than
+    // it takes to hand it over.
+    field.value = '';
+    if (!token.trim()) { message('err', 'Paste the account token first.', 'passes-msg'); return; }
+    busy = true;
+    var r;
+    try { r = await api.setPassToken(token); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    token = '';
+    busy = false;
+    message(r && r.ok ? 'note' : 'err', (r && (r.ok ? r.note : r.error)) || 'Could not keep the token.', 'passes-msg');
+    await refresh();
+  });
+
+  $('auto-passes').addEventListener('change', async function () {
+    var box = $('auto-passes');
+    if (!api || busy) {
+      if (lastRefill) box.checked = !!lastRefill.enabled;
+      return;
+    }
+    busy = true;
+    box.disabled = true;
+    var want = box.checked;
+    var r;
+    try { r = await api.refill(want); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      renderRefill(r);
+    } else {
+      message('err', (r && r.error) || 'Could not change automatic passes.', 'passes-msg');
+      // Back to what the service has, read again.
+      await refreshRefill();
+    }
+  });
+
+  $('btn-passes').addEventListener('click', async function () {
+    if (!api || busy) return;
+    busy = true;
+    message('note', 'Asking the issuer for passes.', 'passes-msg');
+    var r;
+    try { r = await api.getPasses(10); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      message('note', r.note || 'Passes received.', 'passes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) || 'Could not get passes.', 'passes-msg');
+    }
+    await refresh();
+  });
 
   $('btn-fetch').addEventListener('click', async function () {
     if (!api || busy) return;

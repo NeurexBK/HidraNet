@@ -1,6 +1,5 @@
-//! Windows: the NetTCPIP and DnsClient PowerShell cmdlets, which sit on the
-//! same IP Helper API phase 2 will call directly when the kill switch (WFP)
-//! arrives. Everything is written to the ActiveStore only: nothing here
+//! Windows: the NetTCPIP and DnsClient PowerShell cmdlets, over the IP Helper
+//! API; the kill switch (WFP) is in `killswitch`. Everything is written to the ActiveStore only: nothing here
 //! survives a reboot, so a crash cannot leave a machine routed into a tunnel
 //! that no longer exists.
 
@@ -142,7 +141,7 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
     }
 
     // DNS on the tunnel adapter, which has the lowest metric and so is asked
-    // first. Phase 2 makes it the only adapter that can be asked at all.
+    // first; the kill switch makes it the only adapter that can be asked.
     ps(&format!(
         "Set-DnsClientServerAddress -InterfaceIndex {idx} -ServerAddresses {}",
         q(&w.dns.to_string())

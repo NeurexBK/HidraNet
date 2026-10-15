@@ -3,8 +3,8 @@
 //! An `Invite` is what the node hands out when it admits a client: the node's
 //! public key and endpoint, the address the client gets inside the tunnel, and
 //! the DNS server to use there. It carries no secret and nothing about the
-//! person, so it can travel over any channel. In phase 5 it will be issued in
-//! exchange for a pass instead of by an administrator.
+//! person, so it can travel over any channel. It comes from the node's
+//! administrator, from open admission, or in exchange for a pass.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -59,6 +59,61 @@ pub struct Invite {
     /// What the node can do, as its record lists it (`directory::features`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+    /// Set by this client, never by a node, for an invite it won by
+    /// redeeming a pass: the fresh key that pass admitted, which the tunnel
+    /// shows instead of the key derived from the master key. Kept in the
+    /// pocket, which only root reads; a node's answer that carries one is
+    /// stripped of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<PassBinding>,
+}
+
+/// What an invite won with a pass remembers: the key it admitted and where
+/// to redeem the next pass.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PassBinding {
+    /// The secret half of the fresh WireGuard key, base64.
+    pub client_secret: String,
+    /// The node's admission port, when not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_port: Option<u16>,
+    /// When the pass was redeemed (seconds since the epoch).
+    #[serde(default)]
+    pub redeemed_at: u64,
+    /// When a circuit last went up or down with this key; 0 until it is
+    /// first used. A node drops a pass's lease fifteen minutes after it was
+    /// granted when it never saw a handshake, and some hours after the last
+    /// one; these two say whether the lease is likely still there.
+    #[serde(default)]
+    pub used_at: u64,
+}
+
+/// A lease never used is gone this long after it was granted (the node's
+/// fifteen minutes, with margin).
+pub const UNUSED_LEASE_SECS: u64 = 600;
+/// A lease last used this long ago may be gone (the node's default is six
+/// hours without a handshake).
+pub const IDLE_LEASE_SECS: u64 = 5 * 3600;
+
+impl PassBinding {
+    /// Redeemed and never used yet, recently enough that its lease stands:
+    /// connecting with it spends nothing, and it shows the node a key it has
+    /// not seen.
+    pub fn fresh(&self, now_unix: u64) -> bool {
+        self.used_at == 0 && now_unix.saturating_sub(self.redeemed_at) < UNUSED_LEASE_SECS
+    }
+
+    /// Whether the node likely still holds this key's lease.
+    pub fn lease_likely_alive(&self, now_unix: u64) -> bool {
+        self.fresh(now_unix)
+            || (self.used_at > 0 && now_unix.saturating_sub(self.used_at) < IDLE_LEASE_SECS)
+    }
+}
+
+impl std::fmt::Debug for PassBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PassBinding(..)")
+    }
 }
 
 fn default_allowed() -> Vec<String> {
@@ -82,7 +137,19 @@ impl Invite {
         serde_json::to_string_pretty(self).expect("an invite always serialises")
     }
 
+    /// Everything `validate_shape` checks, and that the resolver is the node
+    /// inside the tunnel (`check_dns`). What every invite that arrives —
+    /// from a node, a file or the control channel — must pass.
     pub fn validate(&self) -> Result<()> {
+        self.validate_shape()?;
+        self.check_dns()
+    }
+
+    /// The invite is well formed: a key, an IPv4 endpoint, a client address,
+    /// a sane MTU. What a pocket written by an older version is read with:
+    /// an invite that fails only `check_dns` stays in the file, and is
+    /// refused when a circuit is built with it, with the reason.
+    pub fn validate_shape(&self) -> Result<()> {
         public_key_from_base64(&self.node_public_key)?;
         let endpoint = self.endpoint_addr()?;
         if !endpoint.is_ipv4() {
@@ -127,6 +194,42 @@ impl Invite {
         Ok((ip, prefix))
     }
 
+    /// The resolver must be the node itself, inside the tunnel: an address
+    /// of the client's own tunnel subnet, private, and not the client's own.
+    /// An invite travels over channels nobody authenticates (open admission
+    /// is plain HTTP), and the kill switch lets DNS go to this one address
+    /// only, so a resolver out on the internet would hand every name this
+    /// machine looks up to whoever wrote it in. Inside the subnet, a query
+    /// can only reach the node: the node forwards nothing from one client to
+    /// another.
+    fn check_dns(&self) -> Result<()> {
+        let (ip, prefix) = self.client_ip()?;
+        if !(8..=30).contains(&prefix) {
+            return Err(anyhow!(
+                "the client prefix /{prefix} is not a tunnel subnet (between /8 and /30)"
+            ));
+        }
+        let private = |a: Ipv4Addr| {
+            let o = a.octets();
+            a.is_private() || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        };
+        if !private(ip) {
+            return Err(anyhow!(
+                "the client address {ip} is not a private tunnel address"
+            ));
+        }
+        let mask = u32::MAX << (32 - prefix);
+        let same_subnet = (u32::from(self.dns) & mask) == (u32::from(ip) & mask);
+        if !same_subnet || self.dns == ip || !private(self.dns) {
+            return Err(anyhow!(
+                "the invite's DNS server {} is not the node inside the tunnel ({}): refusing an invite that would send this machine's lookups elsewhere",
+                self.dns,
+                self.client_address
+            ));
+        }
+        Ok(())
+    }
+
     pub fn endpoint_ip(&self) -> Result<IpAddr> {
         Ok(self.endpoint_addr()?.ip())
     }
@@ -141,6 +244,16 @@ impl Invite {
     /// Whether the node's record lists this feature.
     pub fn has(&self, feature: &str) -> bool {
         self.features.iter().any(|f| f == feature)
+    }
+
+    /// Whether the node admits a client that redeems a pass (phase 5), as
+    /// the signed list says, or as the pass this invite was won with shows.
+    pub fn takes_passes(&self) -> bool {
+        self.pass.is_some()
+            || self
+                .admission
+                .as_deref()
+                .is_some_and(|a| a.trim().eq_ignore_ascii_case("pass"))
     }
 
     /// Whether the node is asked for a key for each connection: it admits
@@ -211,12 +324,20 @@ impl ClientConfig {
 
     /// The key this node is shown: never the master key's public half.
     pub fn node_key(&self) -> Result<ClientKey> {
+        // A key made for this one connection is shown as it is; so is the
+        // key a pass admitted. Otherwise the key derived for the node.
+        if let ShownKey::Exact(k) = &self.shown {
+            return Ok(k.clone());
+        }
+        if let Some(p) = &self.invite.pass {
+            return ClientKey::from_base64(&p.client_secret)
+                .context("the key of the pass this invite was won with");
+        }
         match &self.shown {
-            ShownKey::Direct => self.key.for_node_base64(&self.invite.node_public_key),
             ShownKey::Behind => self
                 .key
                 .for_node_behind_base64(&self.invite.node_public_key),
-            ShownKey::Exact(k) => Ok(k.clone()),
+            _ => self.key.for_node_base64(&self.invite.node_public_key),
         }
     }
 }
@@ -237,6 +358,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
             country: None,
             admission: None,
             admission_port: None,
@@ -311,5 +433,31 @@ mod tests {
         inv.endpoint = "[2001:db8::10]:51820".into();
         let e = inv.validate().unwrap_err().to_string();
         assert!(e.contains("IPv6") && e.contains("IPv4"), "{e}");
+    }
+
+    #[test]
+    fn the_resolver_must_be_the_node_inside_the_tunnel() {
+        sample().validate().unwrap();
+        // Carrier-grade NAT space is a private tunnel subnet too.
+        let mut inv = sample();
+        inv.client_address = "100.64.3.9/10".into();
+        inv.dns = Ipv4Addr::new(100, 64, 0, 1);
+        inv.validate().unwrap();
+        for (dns, client) in [
+            ("198.51.100.53", "10.77.0.2/16"),    // a resolver on the internet
+            ("10.78.0.1", "10.77.0.2/16"),        // outside the client's subnet
+            ("10.77.0.2", "10.77.0.2/16"),        // the client itself
+            ("198.51.100.53", "198.51.100.2/24"), // a public "tunnel"
+            ("10.0.0.1", "10.0.0.2/1"),           // a prefix that spans everything
+        ] {
+            let mut inv = sample();
+            inv.dns = dns.parse().unwrap();
+            inv.client_address = client.into();
+            let e = inv.validate().unwrap_err().to_string();
+            assert!(
+                e.contains("DNS") || e.contains("tunnel"),
+                "{dns} {client}: {e}"
+            );
+        }
     }
 }

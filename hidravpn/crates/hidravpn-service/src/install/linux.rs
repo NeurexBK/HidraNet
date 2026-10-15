@@ -24,18 +24,20 @@ Type=simple
 ExecStart={bin} run
 Restart=on-failure
 RestartSec=3
-# The control socket and token live here (RAM); kept across a service restart
-# so a reconnect does not need the token re-read, cleared by a reboot.
+# The control socket and token live here (RAM), cleared by a reboot; each
+# start writes a new token, which the browser reads afresh.
 RuntimeDirectory=hidravpn
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 Environment=RUST_LOG=hidravpn_service=info
-# The tunnel interface, routes, nftables and DNS need these; nothing more.
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVERRIDE
+# The tunnel interface, routes, nftables and DNS need these; CAP_CHOWN hands
+# the control socket and token to the hidravpn group. Nothing more.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVERRIDE CAP_CHOWN
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
 ProtectSystem=strict
-# Reads the client key under /etc/hidravpn and writes resolv.conf on non-resolved systems.
+# /etc: the client key, the pocket, the wallet and the pass token live in
+# /etc/hidravpn, and resolv.conf is replaced there on non-resolved systems.
 ReadWritePaths=/etc /proc/sys/net
 ProtectHome=true
 PrivateTmp=true

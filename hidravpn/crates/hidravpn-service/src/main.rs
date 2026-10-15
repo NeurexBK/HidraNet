@@ -142,7 +142,7 @@ fn main() -> Result<()> {
             println!(
                 "{}",
                 if purge {
-                    "HidraVPN removed: the service, the programs, the nodes and this machine's key"
+                    "HidraVPN removed: the service, the programs, the nodes, the passes and this machine's key"
                 } else {
                     "HidraVPN service stopped and removed (the key and the nodes are kept)"
                 }
@@ -343,14 +343,20 @@ fn run_daemon() -> Result<()> {
         let token = ipc::write_token().context("writing the control token")?;
         let daemon = Daemon::new(token);
         tracing::info!("HidraVPN service starting");
+        hidravpn_core::netcfg::recover_dns();
 
         let serve = {
             let d = daemon.clone();
             tokio::spawn(async move { ipc::serve(d).await })
         };
+        let refill = {
+            let d = daemon.clone();
+            tokio::spawn(async move { d.refill_loop().await })
+        };
 
         wait_for_stop().await;
         tracing::info!("stopping; putting the network back");
+        refill.abort();
         daemon.shutdown().await;
         serve.abort();
         Ok::<(), anyhow::Error>(())

@@ -10,8 +10,24 @@ use anyhow::{anyhow, Context, Result};
 
 const TABLE: &str = "inet hidravpn";
 
-pub fn enable_forwarding() -> Result<()> {
-    std::fs::write("/proc/sys/net/ipv4/ip_forward", "1\n").context("enabling IPv4 forwarding")?;
+const IP_FORWARD: &str = "/proc/sys/net/ipv4/ip_forward";
+
+/// Turns IPv4 forwarding on and returns whether it was on before, so that
+/// `restore_forwarding` can leave the host as it found it.
+pub fn enable_forwarding() -> Result<bool> {
+    let was_on = std::fs::read_to_string(IP_FORWARD)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    std::fs::write(IP_FORWARD, "1\n").context("enabling IPv4 forwarding")?;
+    Ok(was_on)
+}
+
+/// Turns forwarding back off when it was off before the node started; when
+/// something else on the host had it on, it stays on.
+pub fn restore_forwarding(was_on: bool) -> Result<()> {
+    if !was_on {
+        std::fs::write(IP_FORWARD, "0\n").context("restoring IPv4 forwarding")?;
+    }
     Ok(())
 }
 

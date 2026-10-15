@@ -138,7 +138,9 @@ impl CircuitSpec {
     /// The MTU of the tunnel that carries the machine's traffic: the exit's
     /// own MTU for one hop; for two, also small enough that an inner packet
     /// plus the outer tunnel's overhead fits the entry's MTU. Never below the
-    /// 1280 that IPv6 requires.
+    /// 1280 that IPv6 requires: with an entry MTU under 1360 an inner packet
+    /// does not fit one outer packet, and the system splits it in two (slower,
+    /// still delivered) rather than lose IPv6 on the inner interface.
     pub fn inner_mtu(&self) -> u16 {
         let mut mtu = self.exit.mtu;
         if let Some(entry) = &self.entry {
@@ -161,9 +163,28 @@ impl CircuitSpec {
     /// different nodes: going through the same node twice costs the latency
     /// of a second hop and buys none of its privacy.
     pub fn validate(&self) -> Result<()> {
-        self.exit.validate().context("the exit invite")?;
+        self.check(Invite::validate)
+    }
+
+    /// `validate` for a circuit not yet prepared: a node that admits openly
+    /// or with a pass is still the stand-in made from its record, whose
+    /// tunnel addresses come with the invite `prepare` wins (checked in full
+    /// then, and again when the circuit comes up), so only its shape is
+    /// checked here.
+    pub fn validate_plan(&self) -> Result<()> {
+        self.check(|i: &Invite| {
+            if i.admits_openly() || i.takes_passes() {
+                i.validate_shape()
+            } else {
+                i.validate()
+            }
+        })
+    }
+
+    fn check(&self, valid: impl Fn(&Invite) -> Result<()>) -> Result<()> {
+        valid(&self.exit).context("the exit invite")?;
         if let Some(entry) = &self.entry {
-            entry.validate().context("the entry invite")?;
+            valid(entry).context("the entry invite")?;
             if entry.node_public_key.trim() == self.exit.node_public_key.trim() {
                 return Err(anyhow!(
                     "the entry and the exit are the same node (same key); two hops need two different nodes"
@@ -352,6 +373,7 @@ impl Circuit {
         if let Ok(Some(old)) = netcfg::load_plan() {
             let _ = netcfg::revert(&old);
         }
+        netcfg::recover_dns();
 
         let outer_name = format!("{}0", opts.interface_base);
 
@@ -551,14 +573,28 @@ impl Circuit {
     }
 }
 
+/// What `prepare` made ready: the circuit, the invites it won with a pass
+/// (for the pocket to keep), and notes for the person.
+pub struct Prepared {
+    pub spec: CircuitSpec,
+    pub redeemed: Vec<Invite>,
+    pub notes: Vec<String>,
+}
+
 /// Gets everything a circuit through `exit` (and `entry`) needs before it
 /// can come up: a key made for this one connection from every node that
-/// admits openly, so no such node sees the same key twice.
+/// admits openly or with a pass, so no such node sees the same key twice.
 ///
 /// - The first hop (the entry, or the only node) is asked directly: it sees
-///   this machine's address in any case.
+///   this machine's address in any case. A node that admits openly is asked
+///   for a session key, paid for with a proof of work; a node that admits
+///   with a pass is given the next pass from `wallet` (one redeemed and not
+///   yet used is used as it is; with none left, the last pass's key, and a
+///   note says so).
 /// - The exit of two hops is asked *through the entry* (`admit_behind`), so
-///   it never hears from this address.
+///   it never hears from this address, with a session key or a pass. It
+///   never falls back to a key it was shown before: with no pass left for
+///   it, the connection is refused and says so.
 ///
 /// A node admitted by hand is used with the key its operator admitted.
 ///
@@ -566,26 +602,31 @@ impl Circuit {
 /// circuit is being replaced it names the first hops the kill switch holds
 /// open, and the hold is widened to exactly the requests this needs. The
 /// hold stays in place when this returns, successfully or not: the circuit
-/// that follows replaces it, or the caller lifts it.
+/// that follows replaces it, or the caller lifts it. A pass that never
+/// reached its node goes back into `wallet`; one a node refused is spent.
 pub async fn prepare(
     exit: &Invite,
     entry: Option<&Invite>,
     key: &ClientKey,
     opts: &CircuitOptions,
     held: &[SocketAddr],
-) -> Result<CircuitSpec> {
+    wallet: &mut crate::pass::Wallet,
+) -> Result<Prepared> {
     let mut spec = CircuitSpec::new(exit.clone(), entry.cloned());
+    let mut redeemed = Vec::new();
+    let mut notes = Vec::new();
     let first = entry.unwrap_or(exit);
     if first.admits_openly() && !first.admits_sessions() {
         return Err(not_updated(first));
     }
+    if (first.admits_sessions() || first.takes_passes()) && !held.is_empty() {
+        let mut nodes = held.to_vec();
+        nodes.push(first.endpoint_addr()?);
+        killswitch::hold_admitting(&nodes, &[first.admission_addr()?], None)
+            .context("could not hold the kill switch to ask the first node for admission")?;
+    }
+    let mut won = None;
     if first.admits_sessions() {
-        if !held.is_empty() {
-            let mut nodes = held.to_vec();
-            nodes.push(first.endpoint_addr()?);
-            killswitch::hold_admitting(&nodes, &[first.admission_addr()?], None)
-                .context("could not hold the kill switch to ask the first node for admission")?;
-        }
         let fresh = ClientKey::generate()?;
         let invite = crate::admission::request_admission(
             &first.record(),
@@ -595,36 +636,126 @@ pub async fn prepare(
         )
         .await
         .with_context(|| format!("asking {} for admission", first.node_name))?;
+        won = Some((invite, Some(fresh)));
+    } else if first.takes_passes() {
+        if let Some(invite) = first_hop_pass(first, wallet, &mut notes).await? {
+            redeemed.push(invite.clone());
+            won = Some((invite, None));
+        }
+    }
+    if let Some((invite, fresh)) = won {
         match entry {
             Some(_) => {
                 spec.entry = Some(invite);
-                spec.entry_key = Some(fresh);
+                spec.entry_key = fresh;
             }
             None => {
                 spec.exit = invite;
-                spec.exit_key = Some(fresh);
+                spec.exit_key = fresh;
             }
         }
     }
     if let Some(entry) = spec.entry.clone() {
-        if exit.admits_openly() {
+        let ask = if exit.admits_openly() {
             if !exit.admits_sessions() {
                 return Err(not_updated(exit));
             }
+            Some(Ask::Session)
+        } else if exit.takes_passes() {
+            let pass = wallet.take_for(&exit.node_public_key).ok_or_else(|| {
+                anyhow!(
+                    "no pass left for {}: as the exit of two hops it is only ever shown a key admitted through the entry, never one it saw before; `hidravpn passes get` asks the issuer for more",
+                    exit.node_name
+                )
+            })?;
+            Some(Ask::Pass(pass))
+        } else {
+            None
+        };
+        if let Some(ask) = ask {
             if !crate::pocket::entry_can_reach(&entry, exit) {
+                if let Ask::Pass(p) = ask {
+                    wallet.passes.push(p);
+                }
                 return Err(anyhow!(
                     "{} cannot ask {} for admission on this machine's behalf: its software is older than that (no `admission-relay` in the node list)",
                     entry.node_name,
                     exit.node_name
                 ));
             }
-            let (invite, fresh) =
-                admit_behind(&entry, spec.entry_shown(), exit, key, opts, held).await?;
+            let (invite, fresh) = admit_behind(
+                &entry,
+                spec.entry_shown(),
+                exit,
+                key,
+                opts,
+                held,
+                ask,
+                wallet,
+            )
+            .await?;
+            if invite.pass.is_some() {
+                redeemed.push(invite.clone());
+            }
             spec.exit = invite;
-            spec.exit_key = Some(fresh);
+            spec.exit_key = fresh;
         }
     }
-    Ok(spec)
+    Ok(Prepared {
+        spec,
+        redeemed,
+        notes,
+    })
+}
+
+/// A first hop that admits with a pass: the next pass, redeemed directly.
+/// None means the invite is used as it is — a pass redeemed and not yet
+/// used, or, with no pass left or none taken, the last pass's key (and a
+/// note says so).
+async fn first_hop_pass(
+    node: &Invite,
+    wallet: &mut crate::pass::Wallet,
+    notes: &mut Vec<String>,
+) -> Result<Option<Invite>> {
+    let now = crate::timefmt::now_unix().max(0) as u64;
+    if node.pass.as_ref().is_some_and(|p| p.fresh(now)) {
+        return Ok(None);
+    }
+    let Some(pass) = wallet.take_for(&node.node_public_key) else {
+        if node.pass.is_some() {
+            notes.push(format!(
+                "no pass left for {}: connecting with the last one's key; `hidravpn passes get` for more",
+                node.node_name
+            ));
+            return Ok(None);
+        }
+        return Err(anyhow!(
+            "no pass left for {}: `hidravpn passes get` asks the issuer for more",
+            node.node_name
+        ));
+    };
+    match crate::admission::redeem_pass(&node.record(), &pass).await {
+        Ok(invite) => Ok(Some(invite)),
+        Err(e) => {
+            if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
+                wallet.passes.push(pass);
+            }
+            if node.pass.is_some() {
+                notes.push(format!("{e:#}; connecting with the last pass's key"));
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// What an exit is asked for through the entry.
+enum Ask {
+    /// A key made for this connection, with a proof of work.
+    Session,
+    /// The key this pass names.
+    Pass(crate::pass::Pass),
 }
 
 fn not_updated(node: &Invite) -> anyhow::Error {
@@ -645,6 +776,7 @@ fn not_updated(node: &Invite) -> anyhow::Error {
 /// exit's admission port. No DNS, nothing else, and no default route into
 /// the entry, which forwards nothing but WireGuard and this request in any
 /// case.
+#[allow(clippy::too_many_arguments)]
 async fn admit_behind(
     entry: &Invite,
     entry_shown: ShownKey,
@@ -652,7 +784,9 @@ async fn admit_behind(
     key: &ClientKey,
     opts: &CircuitOptions,
     held: &[SocketAddr],
-) -> Result<(Invite, ClientKey)> {
+    ask: Ask,
+    wallet: &mut crate::pass::Wallet,
+) -> Result<(Invite, Option<ClientKey>)> {
     entry.validate().context("the entry invite")?;
     let entry_ep = entry.endpoint_addr()?;
     let admission = exit.admission_addr()?;
@@ -696,22 +830,43 @@ async fn admit_behind(
         tunnel,
         runner,
     };
-    let fresh = ClientKey::generate()?;
-    let asked = async {
+    let asked: Result<(Invite, Option<ClientKey>)> = async {
         netcfg::route_host_via(admission.ip(), &ifname)?;
-        crate::admission::request_admission(&exit.record(), &fresh.public_base64(), "client", true)
-            .await
-            .with_context(|| {
-                format!(
-                    "asking {} for admission through {}",
-                    exit.node_name, entry.node_name
+        let how = format!(
+            "asking {} for admission through {}",
+            exit.node_name, entry.node_name
+        );
+        match &ask {
+            Ask::Session => {
+                let fresh = ClientKey::generate()?;
+                let invite = crate::admission::request_admission(
+                    &exit.record(),
+                    &fresh.public_base64(),
+                    "client",
+                    true,
                 )
-            })
+                .await
+                .context(how)?;
+                Ok((invite, Some(fresh)))
+            }
+            Ask::Pass(pass) => {
+                let invite = crate::admission::redeem_pass(&exit.record(), pass)
+                    .await
+                    .context(how)?;
+                Ok((invite, None))
+            }
+        }
     }
     .await;
     // The interface goes, and its route with it, whatever the answer.
     hop.stop().await;
-    Ok((asked?, fresh))
+    if let (Err(e), Ask::Pass(pass)) = (&asked, ask) {
+        // A pass that never reached the node is kept; one it refused is spent.
+        if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
+            wallet.passes.push(pass);
+        }
+    }
+    asked
 }
 
 fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {
@@ -738,6 +893,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
             country: None,
             admission: None,
             admission_port: None,

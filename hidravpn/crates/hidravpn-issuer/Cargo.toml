@@ -1,0 +1,21 @@
+[package]
+name = "hidravpn-issuer"
+description = "The HidraVPN pass issuer: signs passes blind for accounts, under a daily quota"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hidravpn-core = { path = "../hidravpn-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

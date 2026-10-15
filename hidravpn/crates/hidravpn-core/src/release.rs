@@ -4,9 +4,10 @@
 //! public half, embedded here and in the browser so that what verifies a file
 //! never comes from the same place as the file.
 //!
-//! Until the maintainers have generated the key, the constant is empty — and
-//! with no key, nothing verifies. A client that accepted unsigned node lists
-//! "for now" would be a client that accepts unsigned node lists.
+//! Both keys exist and their public halves are embedded below. A build whose
+//! constant is empty verifies nothing and refuses everything: a client that
+//! accepted unsigned node lists "for now" would be a client that accepts
+//! unsigned node lists.
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -133,8 +134,8 @@ mod tests {
 
     #[test]
     fn an_embedded_key_is_either_absent_or_a_real_key() {
-        // Empty until the maintainers run scripts/embed-release-key.sh; a
-        // constant that is set must parse, or every verification would fail
+        // Set by scripts/embed-release-key.sh; a constant that is set must
+        // parse, or every verification would fail
         // for a reason nobody would spot.
         for (name, c, k) in [
             ("release", RELEASE_PUBLIC_KEY_B64, ReleaseKey::embedded()),

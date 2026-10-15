@@ -114,7 +114,10 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   known nodes, ask every known open node for admission; an invite whose key
   or endpoint differs from the record the signed list carried is refused, so
   a node that admits openly can admit a stranger but cannot send them
-  somewhere else. A lease granted openly expires after `--idle-days` (30)
+  somewhere else. Nor can anyone between them change where the client's
+  lookups go: every invite, however it arrived, must name as its DNS server
+  an address inside the client's own private tunnel subnet, which only the
+  node answers; one that names a resolver anywhere else is refused. A lease granted openly expires after `--idle-days` (30)
   without a handshake — the node writes each client's last handshake down
   every quarter of an hour and when it stops, so a restart is not idleness —
   and one whose client never shook hands lapses within fifteen minutes, so
@@ -150,8 +153,9 @@ a node behind a home router (doc 16 §7). The section at the end says so.
 - **A circuit belongs to the account that opened it.** The service remembers
   the user id (`SO_PEERCRED`) that sent `connect` or `up`; `down` and
   `new_identity` from another account are refused, with the reason. Root may
-  do either. On Windows the caller is "elevated or not", so the owner is
-  the elevated prompt or everyone interactive.
+  do either, and a circuit root switched on is root's: a member of the group
+  cannot switch it off. On Windows the caller is "elevated or not", so the
+  owner is the elevated prompt or everyone interactive.
 - **Two keys** (`hidravpn-core/src/release.rs`,
   `hidra-browser/src/main/release-verify.js`). The **release key** says "this
   file came from HidraVPN's maintainers"; the **list key** says "this node

@@ -28,6 +28,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
 C="ip netns exec hv-client"
@@ -164,7 +165,7 @@ PUB_X_1HOP=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$N
 $E env HIDRAVPN_RUN_DIR="$WORK/run-entry" "$BIN/hidravpn-node" --config "$WORK/entry.toml" admit --name laptop --pubkey "$PUB_E" > "$WORK/entry.json" 2>/dev/null
 $X env HIDRAVPN_RUN_DIR="$WORK/run-exit" "$BIN/hidravpn-node" --config "$WORK/exit.toml" admit --name laptop --pubkey "$PUB_X" > "$WORK/exit.json" 2>/dev/null
 $X2 env HIDRAVPN_RUN_DIR="$WORK/run-exit2" "$BIN/hidravpn-node" --config "$WORK/exit2.toml" admit --name laptop --pubkey "$PUB_X2" > "$WORK/exit2.json" 2>/dev/null
-if grep -q '"client_address": "10.77.0.2/16"' "$WORK/entry.json" "$WORK/exit.json" "$WORK/exit2.json" && [ "$(grep -l '"client_address"' "$WORK"/*.json | wc -l)" = 3 ]; then
+if [ "$(grep -l '"client_address": "10.77.0.2/16"' "$WORK/entry.json" "$WORK/exit.json" "$WORK/exit2.json" | wc -l)" = 3 ]; then
   pass "the client is admitted on all three nodes, with the same subnet on each"
 else
   cat "$WORK/entry.json" "$WORK/exit.json" "$WORK/exit2.json"; fail "admission"

@@ -117,6 +117,27 @@ admits only by the operator's hand: the way a friend runs a node for friends.
 An exit with open admission is a public VPN exit. Complaints will come;
 `docs/operators/abuse-response.md` is what to answer.
 
+## Admission with a pass (phase 5)
+
+Open admission lets anyone in. `--pass-admission` lets in a client that
+redeems a **pass**: one connection's worth of admission on this node, signed
+blind by the issuer the list names, which counts passes against an account
+and its daily quota. The issuer never learns which node a pass is for; the
+node never learns which account paid for it; every connection shows the node
+a fresh key. A script with many addresses no longer fills a node: it needs
+many accounts.
+
+```
+sudo bash hidravpn/scripts/install-node-linux.sh --endpoint <ip>:51820 --name ams-2 \
+    --role exit --operator "HidraNet maintainers" --pass-admission
+sudo hidravpn-node pass-key add pass-key.json     # the issuer's key, as the list carries it
+sudo systemctl restart hidravpn-node
+```
+
+Add the next issuer key before the current one expires, and remove an old
+one with `hidravpn-node pass-key remove ID`. `hidravpn/docs/phase-5.md` says
+how the issuer is run and what a pass binds.
+
 ## Publishing the list
 
 Once, offline, make the two keys and embed their public halves (the secret

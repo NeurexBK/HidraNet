@@ -23,6 +23,7 @@
 # Run as root:  hidravpn/scripts/test-admission-netns.sh
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
 C="ip netns exec hv-client"; E="ip netns exec hv-entry"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"
@@ -184,7 +185,7 @@ names_before=$(lease_names)
 kill $NODE_A; wait $NODE_A 2>/dev/null
 python3 -I -c "import json; ls=json.load(open('$WORK/run-a/peers.json'))['leases']; assert any(l['last_seen']>0 for l in ls), ls" && pass "at shutdown the node wrote down our last handshake" || fail "no last_seen recorded: $(cat "$WORK/run-a/peers.json")"
 $N env HIDRAVPN_RUN_DIR="$WORK/run-a" HIDRAVPN_IDLE_SECS=12 HIDRAVPN_SESSION_IDLE_SECS=12 "$BIN/hidravpn-node" --config "$WORK/a.toml" run > "$WORK/a2.log" 2>&1 & PIDS+=($!)
-for i in $(seq 1 150); do grep -q "idle openly-admitted client(s) expired" "$WORK/a2.log" && break; sleep 0.2; done
+for i in $(seq 1 150); do grep -q "idle client(s) expired" "$WORK/a2.log" && break; sleep 0.2; done
 names_after=$(lease_names)
 echo "$names_before" | grep -q "probe-1" && ! echo "$names_after" | grep -q "probe-" && [ -n "$names_after" ] && pass "idle open admissions expired ($names_before -> $names_after): the probes that never shook hands are gone, we are not" || fail "expiry: $names_before -> $names_after; $(grep -c expired "$WORK/a2.log") log lines"
 for i in $(seq 1 100); do [ -z "$(lease_names)" ] && break; sleep 0.2; done

@@ -11,7 +11,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use hidravpn_core::killswitch;
@@ -26,8 +25,10 @@ use crate::ipc::{Command, HopReport, NodeReport, Request, Response, StatusReport
 use crate::paths;
 
 struct Active {
-    /// The account that switched the circuit on (a uid; None on Windows or
-    /// for root), so another account cannot switch it off.
+    /// The account that switched the circuit on (a uid, 0 for root or an
+    /// elevated prompt; None for a non-elevated caller on Windows, where all
+    /// of them are one), so another account cannot switch it off. A circuit
+    /// root switched on is root's: a member of the group cannot take it down.
     owner: Option<u32>,
     circuit: Circuit,
     /// The entry nodes, when there are two hops; `current_entry` is the one
@@ -54,10 +55,23 @@ pub struct Daemon {
     release_key: Option<ReleaseKey>,
     /// One import at a time: load, merge and write back are one step.
     pocket_lock: Mutex<()>,
+    /// Set by `shutdown`: a connect still waiting for the state lock then
+    /// gives up, instead of building a circuit nobody will take down.
+    stopping: std::sync::atomic::AtomicBool,
+    /// After a top-up that failed, none is tried again before this: an
+    /// issuer that counted passes the service then could not keep, or one
+    /// that is down, is not asked every ten minutes.
+    refill_pause: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// How long automatic passes rest after a top-up that failed.
+const REFILL_PAUSE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// What a person is told when a circuit could not be built while the kill
 /// switch was held across a change: the machine is blocked, not open.
+/// The answer to a request without the right control token.
+pub const UNAUTHORISED: &str = "unauthorised: wrong or missing control token";
+
 const HELD: &str = "the kill switch stays armed: nothing leaves this machine until `hidravpn down` or another connect";
 
 /// The same bytes, compared without a short cut: the comparison takes the
@@ -96,7 +110,15 @@ impl Daemon {
             pocket_path,
             release_key,
             pocket_lock: Mutex::new(()),
+            stopping: std::sync::atomic::AtomicBool::new(false),
+            refill_pause: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Whether `token` is the control token, compared in full, in constant
+    /// time.
+    pub fn token_ok(&self, token: &str) -> bool {
+        same_token(token.as_bytes(), self.token.as_bytes())
     }
 
     /// `caller` is the account asking: `Some(0)` for root (an elevated
@@ -110,14 +132,14 @@ impl Daemon {
     pub async fn handle(&self, req: Request, caller: Option<u32>) -> Response {
         let privileged = caller == Some(0);
         // The token is compared in full, in constant time, before anything else.
-        if !same_token(req.token.as_bytes(), self.token.as_bytes()) {
-            return Response::err("unauthorised: wrong or missing control token");
+        if !self.token_ok(&req.token) {
+            return Response::err(UNAUTHORISED);
         }
         match req.cmd {
             Command::Ping => Response::ok(),
             Command::Status => self.status().await,
             Command::Up { .. } if !privileged => Response::err(
-                "`up` with an invite needs root (an administrator prompt on Windows): only root may hand the service a node to route the machine through. Members of the hidravpn group use `connect`, which picks from the pocket root filled.",
+                "`up` with an invite needs root (an administrator prompt on Windows): only root may hand the service a node to route the machine through. Members of the hidravpn group use `hidravpn up --rapido` or `--privado` (or the browser's VPN page), which pick from the pocket root filled.",
             ),
             Command::Up {
                 invite,
@@ -145,7 +167,7 @@ impl Daemon {
                     )
                     .await
                 {
-                    Ok(()) => self.status().await,
+                    Ok(notes) => noting_all(self.status().await, notes),
                     Err(e) => Response::err(format!("{e:#}")),
                 }
             }
@@ -169,22 +191,46 @@ impl Daemon {
                     .connect_from_pocket(&mode, opts, caller, allow_same_operator)
                     .await
                 {
-                    Ok(()) => self.status().await,
+                    Ok(notes) => noting_all(self.status().await, notes),
                     Err(e) => Response::err(format!("{e:#}")),
                 }
             }
             Command::Join { name } => match self.join(name.as_deref()).await {
-                Ok((pocket, outcome)) => Response::with_nodes(node_reports(&pocket)).noting(outcome),
+                Ok((pocket, outcome)) => Response::with_nodes(self.reports(&pocket)).noting(outcome),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::GetPasses { name, count } => match self
+                .get_passes(name.as_deref(), count.unwrap_or(10) as usize)
+                .await
+            {
+                Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token) {
+                Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::Refill {
+                enabled,
+                low,
+                count,
+            } => match self.set_refill(enabled, low, count).await {
+                Ok(r) => {
+                    let note = r.describe();
+                    let mut resp = Response::ok().noting(note);
+                    resp.refill = Some(r);
+                    resp
+                }
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::Nodes => match load_pocket(&self.pocket_path) {
-                Ok(p) => Response::with_nodes(node_reports(&p)),
+                Ok(p) => Response::with_nodes(self.reports(&p)),
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::ImportNodes { list, signature } => {
                 match self.import_nodes(&list, &signature).await {
                     Ok((pocket, merge)) => {
-                        Response::with_nodes(node_reports(&pocket)).noting(merge.summary())
+                        Response::with_nodes(self.reports(&pocket)).noting(merge.summary())
                     }
                     Err(e) => Response::err(format!("{e:#}")),
                 }
@@ -235,7 +281,7 @@ impl Daemon {
         opts: CircuitOptions,
         caller: Option<u32>,
         allow_same_operator: bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         // Everything is checked before anything is touched: every exit with
         // every entry, since any pair may be built later.
         let mut pool = Vec::with_capacity(1 + alternates.len());
@@ -248,26 +294,47 @@ impl Daemon {
         }
         for exit in &pool {
             if entries.is_empty() {
-                CircuitSpec::new(exit.clone(), None).validate()?;
+                CircuitSpec::new(exit.clone(), None).validate_plan()?;
             }
             for entry in &entries {
                 if hidravpn_core::pocket::same_node(entry, exit) {
                     continue;
                 }
-                CircuitSpec::new(exit.clone(), Some(entry.clone())).validate()?;
+                CircuitSpec::new(exit.clone(), Some(entry.clone())).validate_plan()?;
             }
         }
         if let Some(entry) = entries.first() {
-            CircuitSpec::new(pool[0].clone(), Some(entry.clone())).validate()?;
+            CircuitSpec::new(pool[0].clone(), Some(entry.clone())).validate_plan()?;
             if !hidravpn_core::pocket::pair_allowed(entry, &pool[0], allow_same_operator) {
                 return Err(anyhow!("{}", hidravpn_core::pocket::SAME_OPERATOR_REFUSAL));
             }
         }
 
+        // The pocket and the wallet are held first, then the circuit: the
+        // order every other path takes (a top-up holds them, then looks at
+        // the circuit), so nothing waits in a circle and no pass is taken
+        // twice.
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
         let mut guard = self.state.lock().await;
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow!("the service is stopping"));
+        }
+        // The owner is checked again under the lock: two accounts asking at
+        // once both passed `owned_by` on an empty state, and the second must
+        // not take down the circuit the first just built.
+        if caller != Some(0) {
+            if let Some(owner) = guard.as_ref().and_then(|a| a.owner) {
+                if Some(owner) != caller {
+                    return Err(anyhow!(
+                        "the VPN was switched on by another account on this computer; only that account or root may switch it off"
+                    ));
+                }
+            }
+        }
         let old = guard.take();
         let had_old = old.is_some();
-        let circuit = match build(old, &pool[0], entries.first(), &opts).await {
+        let (circuit, notes) = match self.build(old, &pool[0], entries.first(), &opts).await {
             Ok(c) => c,
             Err(Failed::Untouched(e, old)) => {
                 *guard = old.map(|b| *b);
@@ -277,7 +344,7 @@ impl Daemon {
             Err(Failed::Held(e)) => return Err(e),
         };
         *guard = Some(Active {
-            owner: caller.filter(|&u| u != 0),
+            owner: caller,
             circuit,
             entries,
             current_entry: 0,
@@ -287,24 +354,40 @@ impl Daemon {
             allow_same_operator,
         });
         tracing::info!("connected");
-        Ok(())
+        Ok(notes)
+    }
+
+    /// Writes down, for the invites won with a pass that this circuit uses,
+    /// that they were used now: what tells later picks their lease stands.
+    fn note_used(&self, spec: &CircuitSpec) {
+        let keys = spec_keys(spec);
+        if !keys.is_empty() {
+            if let Err(e) = crate::passes::mark_used(&self.pocket_path, &keys) {
+                tracing::warn!("could not note a pass key's use: {e:#}");
+            }
+        }
     }
 
     /// Connects through nodes picked from the pocket: one exit for Rápido, an
     /// entry and an exit for Privado, each at random, the rest kept for
     /// `new_identity` to rotate to. The caller never sees an invite. A node
-    /// that admits openly needs no joining first: it is asked for a key for
-    /// this connection as the circuit is built (`circuit::prepare`), which is
-    /// how a machine that only imported the list connects at all.
+    /// that admits openly or with a pass needs no joining first: it is asked
+    /// for a key for this connection as the circuit is built
+    /// (`circuit::prepare`), which is how a machine that only imported the
+    /// list connects at all. A node a circuit cannot be built with now (one
+    /// that takes passes, with none left for it) is not picked while
+    /// another will do. Returns notes for the person.
     async fn connect_from_pocket(
         &self,
         mode: &str,
         opts: CircuitOptions,
         caller: Option<u32>,
         allow_same_operator: bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let pocket = load_pocket(&self.pocket_path)?;
-        let plan = plan_connect(&pocket, mode, allow_same_operator)?;
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        let live = crate::passes::without_dead(&pocket, &wallet, mode, allow_same_operator);
+        let plan = plan_connect(&live, mode, allow_same_operator)?;
         self.up(
             plan.exit,
             plan.entry,
@@ -323,6 +406,7 @@ impl Daemon {
     /// stop the others. Returns the pocket and a line per node.
     async fn join(&self, name: Option<&str>) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let targets: Vec<hidravpn_core::NodeRecord> = pocket
             .joinable()
@@ -335,25 +419,38 @@ impl Daemon {
             .collect();
         if targets.is_empty() {
             return Err(anyhow!(match name {
-                Some(n) => format!("no known node named \"{n}\" admits openly; `nodes list` says whom to ask"),
-                None => "no known node admits openly; import a node list, or ask an operator for an invite".to_string(),
+                Some(n) => format!("no known node named \"{n}\" admits openly or with a pass; `nodes list` says whom to ask"),
+                None => "no known node admits openly or with a pass; import a node list, or ask an operator for an invite".to_string(),
             }));
         }
         let key = load_key()?;
+        let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
+        let wallet_before = wallet.passes.len();
         // The name a node files the lease under is a label for its operator,
         // not this machine's name: nothing identifying leaves here.
         let host = "client".to_string();
         let mut lines = Vec::new();
         let mut joined = 0;
         for rec in targets {
+            if rec.takes_passes() {
+                match crate::passes::redeem_into(&mut pocket, &mut wallet, &rec).await {
+                    Ok(_) => {
+                        joined += 1;
+                        lines.push(format!(
+                            "{}: admitted with a pass as {}",
+                            rec.node_name,
+                            rec.role.as_deref().unwrap_or("both")
+                        ));
+                    }
+                    Err(e) => lines.push(format!("{}: {e:#}", rec.node_name)),
+                }
+                continue;
+            }
             let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
             match hidravpn_core::admission::request_admission(&rec, &shown, &host, false).await {
                 Ok(invite) => {
-                    let mut added = 0;
                     for slot in hidravpn_core::pocket::slots_for_role(rec.role.as_deref()) {
-                        if pocket.add(slot, invite.clone()).is_ok() {
-                            added += 1;
-                        }
+                        let _ = pocket.add(slot, invite.clone());
                     }
                     joined += 1;
                     lines.push(format!(
@@ -361,23 +458,183 @@ impl Daemon {
                         rec.node_name,
                         rec.role.as_deref().unwrap_or("both")
                     ));
-                    let _ = added;
                 }
                 Err(e) => lines.push(format!("{}: {e:#}", rec.node_name)),
             }
         }
         if joined > 0 {
             save_pocket(&self.pocket_path, &pocket)?;
-            tracing::info!(joined, "joined node(s) through open admission");
+            tracing::info!(joined, "joined node(s) through open admission or a pass");
+        }
+        if wallet.passes.len() != wallet_before {
+            crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         }
         Ok((pocket, lines.join("; ")))
     }
 
-    /// Checks a signed node list against the embedded release key, and only
+    /// Keeps the account token passes are asked for with, root only. The
+    /// token is checked for shape and never repeated in an answer.
+    fn set_pass_token(&self, token: &str) -> Result<()> {
+        let t = crate::passes::parse_token(token)?;
+        write_private_atomic(&self.token_path(), t.as_bytes())?;
+        tracing::info!("pass account token replaced");
+        Ok(())
+    }
+
+    /// Reads the automatic-passes setting, and changes what is given. Any
+    /// account that may drive the service may switch it: as with
+    /// `get_passes`, only the account's quota is at stake. In the same
+    /// order as every other change beside the pocket: the service's own
+    /// lock, then the file lock (which a top-up may hold across a fetch;
+    /// this waits for it without blocking a thread).
+    async fn set_refill(
+        &self,
+        enabled: Option<bool>,
+        low: Option<u32>,
+        count: Option<u32>,
+    ) -> Result<crate::passes::Refill> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let mut r = crate::passes::load_refill(&self.pocket_path);
+        let changed = r.apply(enabled, low.map(|n| n as usize), count.map(|n| n as usize))?;
+        if changed {
+            crate::passes::save_refill(&self.pocket_path, &r)?;
+            tracing::info!(on = r.enabled, "automatic passes set");
+            if r.enabled {
+                // Switched on again: try at the next look, not an hour on.
+                *self.refill_pause.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        }
+        Ok(r)
+    }
+
+    /// The pass wallet and the account token sit beside the pocket.
+    fn wallet_path(&self) -> PathBuf {
+        self.pocket_path.with_file_name("passes.json")
+    }
+
+    fn token_path(&self) -> PathBuf {
+        self.pocket_path.with_file_name("pass.token")
+    }
+
+    /// Asks the issuer for passes with the token this machine keeps, `count`
+    /// for each pass node or the one named. Only the account's quota is at
+    /// stake, and the token never leaves the service.
+    async fn get_passes(&self, name: Option<&str>, count: usize) -> Result<(Pocket, String)> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let pocket = load_pocket(&self.pocket_path)?;
+        let token = crate::passes::read_token(&self.token_path())?;
+        let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
+        let line = crate::passes::get_passes(&pocket, &mut wallet, &token, name, count).await?;
+        crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
+        tracing::info!("passes fetched from the issuer");
+        Ok((pocket, line))
+    }
+
+    /// Every so often (`HIDRAVPN_REFILL_SECS`, ten minutes by default, and
+    /// up to half as long again at random, so the issuer cannot set a clock
+    /// by it), tops the wallet up when it runs low.
+    pub async fn refill_loop(&self) {
+        let every: u64 = std::env::var("HIDRAVPN_REFILL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(600);
+        loop {
+            let jitter = hidravpn_core::random::index((every / 2 + 1) as usize).unwrap_or(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(every + jitter)).await;
+            self.refill_once().await;
+        }
+    }
+
+    /// One top-up, when it is on, a token is kept and the circuit is up: the
+    /// issuer is then asked through the tunnel and sees an exit's address.
+    /// Returns what was fetched, if anything.
+    pub async fn refill_once(&self) -> Option<String> {
+        let paused = self
+            .refill_pause
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|until| std::time::Instant::now() < until);
+        if paused {
+            return None;
+        }
+        let r = crate::passes::load_refill(&self.pocket_path);
+        if !r.enabled {
+            return None;
+        }
+        // No token kept: nothing to ask with, and nothing to say.
+        let token = crate::passes::read_token(&self.token_path()).ok()?;
+        if !self.circuit_up().await {
+            return None;
+        }
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = match crate::passes::lock_beside(&self.pocket_path) {
+            Ok(f) => f,
+            Err(_) => return self.refill_failed("the pocket's lock cannot be taken"),
+        };
+        let pocket = match load_pocket(&self.pocket_path) {
+            Ok(p) => p,
+            Err(_) => return self.refill_failed("the pocket cannot be read"),
+        };
+        let mut wallet = match crate::passes::load_wallet(&self.wallet_path()) {
+            Ok(w) => w,
+            Err(_) => return self.refill_failed("the wallet cannot be read"),
+        };
+        // Asked again now that the locks are held: whoever held them may
+        // have been slow, and a `down` meanwhile would send the request,
+        // with the account token, out of this machine's own address.
+        if !self.circuit_up().await {
+            return None;
+        }
+        let before = wallet.passes.len();
+        let got = crate::passes::refill(&pocket, &mut wallet, &token, &r).await;
+        if wallet.passes.len() != before
+            && crate::passes::save_wallet(&self.wallet_path(), &wallet).is_err()
+        {
+            return self
+                .refill_failed("the passes fetched could not be written down, and are lost");
+        }
+        match got {
+            Ok(None) => None,
+            Ok(Some(line)) => {
+                tracing::info!("passes topped up by themselves");
+                Some(line)
+            }
+            // Said without the reason: it can name the issuer's address.
+            Err(_) => self.refill_failed("the issuer could not be asked"),
+        }
+    }
+
+    async fn circuit_up(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|a| a.circuit.status().connected)
+    }
+
+    /// Says why a top-up failed, without an address or a name, and rests
+    /// automatic passes for `REFILL_PAUSE`.
+    fn refill_failed(&self, why: &str) -> Option<String> {
+        tracing::warn!("automatic passes: {why}; resting for an hour");
+        *self.refill_pause.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(std::time::Instant::now() + REFILL_PAUSE);
+        None
+    }
+
+    fn reports(&self, pocket: &Pocket) -> Vec<NodeReport> {
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        node_reports_with_passes(pocket, &wallet)
+    }
+
+    /// Checks a signed node list against the embedded list key, and only
     /// then puts its nodes into the pocket and writes the pocket back. The
     /// pocket on disk is untouched by a list that is refused.
     async fn import_nodes(&self, list: &str, signature: &str) -> Result<(Pocket, Merge)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let merge = hidravpn_core::directory::import_signed(
             &mut pocket,
@@ -403,11 +660,28 @@ impl Daemon {
     /// same exit again. Returns the note for the person: which nodes it got,
     /// or that there was no other to choose, and why.
     async fn new_identity(&self) -> Result<String> {
+        // The same order as `up`: the pocket and the wallet, then the circuit.
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
+        let t = hidravpn_core::timefmt::now_unix().max(0) as u64;
         let mut guard = self.state.lock().await;
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow!("the service is stopping"));
+        }
         let active = guard
             .take()
             .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
-        let (next, next_entry, skipped) = match choose_rotation(&active) {
+        // Among the others, the nodes a circuit can be built with now are
+        // preferred: not one that takes passes with none left for it.
+        let usable = |i: &Invite, behind: bool| {
+            if behind {
+                crate::passes::usable_behind(i, &wallet)
+            } else {
+                crate::passes::usable(i, &wallet, t)
+            }
+        };
+        let (next, next_entry, skipped) = match choose_rotation(&active, usable) {
             Ok(c) => c,
             Err(e) => {
                 *guard = Some(active);
@@ -423,9 +697,9 @@ impl Daemon {
             active.opts.clone(),
             active.allow_same_operator,
         );
-        match build(Some(active), &exit, entry.as_ref(), &opts).await {
-            Ok(circuit) => {
-                let fresh = exit.admits_openly() && entry.is_some();
+        match self.build(Some(active), &exit, entry.as_ref(), &opts).await {
+            Ok((circuit, pass_notes)) => {
+                let fresh = (exit.admits_openly() || exit.takes_passes()) && entry.is_some();
                 let exit_note = if next == current {
                     let why = if skipped.is_empty() {
                         "only one exit node is configured".to_string()
@@ -477,7 +751,12 @@ impl Daemon {
                     allow_same_operator: allow,
                 });
                 tracing::info!("new identity");
-                Ok(format!("{exit_note}{entry_note}"))
+                let passes_note = if pass_notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", pass_notes.join("; "))
+                };
+                Ok(format!("{exit_note}{entry_note}{passes_note}"))
             }
             Err(Failed::Untouched(e, old)) => {
                 *guard = old.map(|b| *b);
@@ -489,6 +768,98 @@ impl Daemon {
                 "the new circuit could not be built; disconnected, and {HELD}"
             ))),
         }
+    }
+
+    /// Builds a circuit through `exit` (and `entry`), replacing `old`, with
+    /// the service's key. The kill switch is held from the moment `old`
+    /// starts to come down until the new circuit's own rules replace the
+    /// hold, so there is no moment on the open network. Every node that
+    /// admits openly or with a pass is shown a key made for this connection
+    /// (`circuit::prepare`); the exit of two hops is asked through the entry.
+    ///
+    /// The caller holds the pocket's locks: the passes this takes come out
+    /// of the wallet, and the invites they win go into the pocket, here.
+    /// Returns the circuit and notes for the person.
+    async fn build(
+        &self,
+        old: Option<Active>,
+        exit: &Invite,
+        entry: Option<&Invite>,
+        opts: &CircuitOptions,
+    ) -> std::result::Result<(Circuit, Vec<String>), Failed> {
+        let ready = (|| -> Result<_> {
+            let key = load_key()?;
+            let first_hop = entry.unwrap_or(exit).endpoint_addr()?;
+            let pocket = load_pocket(&self.pocket_path)?;
+            let wallet = crate::passes::load_wallet(&self.wallet_path())?;
+            Ok((key, first_hop, pocket, wallet))
+        })();
+        let (key, first_hop, mut pocket, mut wallet) = match ready {
+            Ok(r) => r,
+            Err(e) => return Err(Failed::Untouched(e, old.map(Box::new))),
+        };
+        // An invite won with a pass is taken as the pocket has it now: it
+        // says when its key was last used, or holds a newer one.
+        let exit = crate::passes::as_kept(&pocket, exit);
+        let entry = entry.map(|e| crate::passes::as_kept(&pocket, e));
+        let old_first_hop: Vec<std::net::SocketAddr> = old
+            .as_ref()
+            .and_then(|o| o.circuit.spec().first_hop_endpoint().ok())
+            .into_iter()
+            .collect();
+        let had_old = old.is_some();
+        // A kill switch a crashed run left behind is undone first — unless a
+        // circuit is being replaced, when it is held instead: from here on,
+        // only the old and the new first hop may be reached.
+        let mut held = Vec::new();
+        if let Some(o) = old {
+            held.push(first_hop);
+            held.extend(old_first_hop.iter().copied().filter(|a| *a != first_hop));
+            if let Err(e) = killswitch::hold(&held) {
+                return Err(Failed::Untouched(
+                    e.context("could not hold the kill switch across the change; staying on the current circuit"),
+                    Some(Box::new(o)),
+                ));
+            }
+            crate::passes::mark_used_in(&mut pocket, &spec_keys(o.circuit.spec()));
+            let _ = o.circuit.down_with(false).await;
+        } else {
+            let _ = killswitch::remove();
+        }
+        let wallet_before = wallet.to_json();
+        let prepared =
+            circuit::prepare(&exit, entry.as_ref(), &key, opts, &held, &mut wallet).await;
+        let mut notes = Vec::new();
+        // Written whatever happened: a pass taken was spent, or went back.
+        if wallet.to_json() != wallet_before {
+            if let Err(e) = crate::passes::save_wallet(&self.wallet_path(), &wallet) {
+                notes.push(format!("could not write the pass wallet: {e:#}"));
+            }
+        }
+        let built = match prepared {
+            Ok(p) => {
+                for inv in p.redeemed {
+                    let _ = pocket.replace(inv);
+                }
+                notes.extend(p.notes);
+                Circuit::up(p.spec, key.clone(), opts.clone()).await
+            }
+            Err(e) => Err(e),
+        };
+        if let Ok(c) = &built {
+            crate::passes::mark_used_in(&mut pocket, &spec_keys(c.spec()));
+        }
+        if let Err(e) = save_pocket(&self.pocket_path, &pocket) {
+            tracing::warn!("could not write the pocket: {e:#}");
+        }
+        built.map(|c| (c, notes)).map_err(|e| {
+            // A first connection that failed leaves the machine as it found
+            // it; a replacement leaves it held, and the caller says so.
+            if !had_old {
+                let _ = killswitch::remove();
+            }
+            Failed::Held(e)
+        })
     }
 
     pub async fn down(&self) -> Result<&'static str> {
@@ -508,6 +879,7 @@ impl Daemon {
         // first, then the tunnels, waiting for their tasks to let go of the
         // interfaces so the kernel interfaces are gone before we report
         // "disconnected".
+        self.note_used(active.circuit.spec());
         let r = active.circuit.down().await;
         tracing::info!("disconnected");
         r.map(|_| "disconnected")
@@ -583,8 +955,43 @@ impl Daemon {
     }
 
     /// Called when the service is stopping: leave nothing behind.
+    /// Takes the circuit down for good: anything still waiting to connect
+    /// is refused, so the machine is not left routed (and its kill switch
+    /// armed) by a circuit built after the last `down`.
     pub async fn shutdown(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.down().await;
+    }
+}
+
+/// The ones `ok` marks among `from`, when there are any, else all of them:
+/// a node a circuit can be built with now is preferred, without ruling the
+/// others out when none can.
+fn preferring(from: Vec<usize>, ok: impl Fn(usize) -> bool) -> Vec<usize> {
+    let preferred: Vec<usize> = from.iter().copied().filter(|&i| ok(i)).collect();
+    if preferred.is_empty() {
+        from
+    } else {
+        preferred
+    }
+}
+
+/// The node keys of a circuit's invites won with a pass.
+fn spec_keys(spec: &CircuitSpec) -> Vec<String> {
+    std::iter::once(&spec.exit)
+        .chain(spec.entry.as_ref())
+        .filter(|i| i.pass.is_some())
+        .map(|i| i.node_public_key.clone())
+        .collect()
+}
+
+/// A response with the notes, if there are any, joined into one.
+fn noting_all(r: Response, notes: Vec<String>) -> Response {
+    if notes.is_empty() {
+        r
+    } else {
+        r.noting(notes.join("; "))
     }
 }
 
@@ -645,10 +1052,16 @@ pub fn load_pocket(path: &Path) -> Result<Pocket> {
 /// it, so a reader never sees a half-written pocket and a crash mid-write
 /// leaves the old one in place.
 pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
+    write_private_atomic(path, pocket.to_json().as_bytes())
+}
+
+/// Writes a file only root reads, atomically: beside the old one, then
+/// renamed over it, so a reader never sees half a file and a crash leaves
+/// the old one in place.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let bytes = pocket.to_json();
     let tmp = {
         let mut s = path.as_os_str().to_owned();
         s.push(".tmp");
@@ -666,7 +1079,7 @@ pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
         let mut f = opts
             .open(&tmp)
             .with_context(|| format!("writing {}", tmp.display()))?;
-        f.write_all(bytes.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
     }
     #[cfg(unix)]
@@ -682,6 +1095,15 @@ pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
 /// Slots, names and endpoints; never a key. Admitted nodes first, then the
 /// ones this machine only knows of.
 pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
+    node_reports_with_passes(pocket, &hidravpn_core::pass::Wallet::default())
+}
+
+/// `node_reports`, with how many passes the wallet holds for each node that
+/// admits with one. Counts only: never a pass, never a key.
+pub fn node_reports_with_passes(
+    pocket: &Pocket,
+    wallet: &hidravpn_core::pass::Wallet,
+) -> Vec<NodeReport> {
     pocket
         .iter()
         .map(|(slot, inv)| NodeReport {
@@ -691,18 +1113,27 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
             admitted: true,
             operator: inv.operator.clone(),
             role: inv.role.clone(),
-            admission: None,
+            admission: inv.pass.as_ref().map(|_| "pass".to_string()),
+            passes: inv
+                .pass
+                .as_ref()
+                .map(|_| wallet.count_for(&inv.node_public_key)),
             country: inv.country.clone(),
         })
-        .chain(pocket.known.iter().map(|k| NodeReport {
-            slot: "known".to_string(),
-            node_name: k.node_name.clone(),
-            endpoint: k.endpoint.clone(),
-            admitted: false,
-            operator: k.operator.clone(),
-            role: k.role.clone(),
-            admission: k.admission.clone(),
-            country: k.country.clone(),
+        .chain(pocket.known.iter().map(|k| {
+            NodeReport {
+                slot: "known".to_string(),
+                node_name: k.node_name.clone(),
+                endpoint: k.endpoint.clone(),
+                admitted: false,
+                operator: k.operator.clone(),
+                role: k.role.clone(),
+                admission: k.admission.clone(),
+                passes: k
+                    .takes_passes()
+                    .then(|| wallet.count_for(&k.node_public_key)),
+                country: k.country.clone(),
+            }
         }))
         .collect()
 }
@@ -718,70 +1149,23 @@ enum Failed {
     Held(anyhow::Error),
 }
 
-/// Builds a circuit through `exit` (and `entry`), replacing `old`, with the
-/// service's key. The kill switch is held from the moment `old` starts to
-/// come down until the new circuit's own rules replace the hold, so there is
-/// no moment on the open network. An exit of two hops that admits openly is
-/// first asked, through the entry, to admit a fresh key (`admit_behind`).
-async fn build(
-    old: Option<Active>,
-    exit: &Invite,
-    entry: Option<&Invite>,
-    opts: &CircuitOptions,
-) -> std::result::Result<Circuit, Failed> {
-    let key = match load_key() {
-        Ok(k) => k,
-        Err(e) => return Err(Failed::Untouched(e, old.map(Box::new))),
-    };
-    let first_hop = match entry.unwrap_or(exit).endpoint_addr() {
-        Ok(a) => a,
-        Err(e) => return Err(Failed::Untouched(e, old.map(Box::new))),
-    };
-    let old_first_hop: Vec<std::net::SocketAddr> = old
-        .as_ref()
-        .and_then(|o| o.circuit.spec().first_hop_endpoint().ok())
-        .into_iter()
-        .collect();
-    let had_old = old.is_some();
-    // A kill switch a crashed run left behind is undone first — unless a
-    // circuit is being replaced, when it is held instead: from here on, only
-    // the old and the new first hop may be reached.
-    let mut held = Vec::new();
-    if let Some(o) = old {
-        held.push(first_hop);
-        held.extend(old_first_hop.iter().copied().filter(|a| *a != first_hop));
-        if let Err(e) = killswitch::hold(&held) {
-            return Err(Failed::Untouched(
-                e.context("could not hold the kill switch across the change; staying on the current circuit"),
-                Some(Box::new(o)),
-            ));
-        }
-        let _ = o.circuit.down_with(false).await;
-    } else {
-        let _ = killswitch::remove();
-    }
-    let built = async {
-        let spec = circuit::prepare(exit, entry, &key, opts, &held).await?;
-        Circuit::up(spec, key.clone(), opts.clone()).await
-    }
-    .await;
-    built.map_err(|e| {
-        // A first connection that failed leaves the machine as it found it;
-        // a replacement leaves it held, and the caller says so.
-        if !had_old {
-            let _ = killswitch::remove();
-        }
-        Failed::Held(e)
-    })
-}
-
 /// The next pair for a new identity: another exit when one may be paired
 /// with an entry (two operators, or the person's yes), else the same exit;
 /// another entry when there is one that may go with that exit. Also the
 /// names of exits passed over because one operator runs them and the entry.
-fn choose_rotation(a: &Active) -> Result<(usize, usize, Vec<String>)> {
+/// Among them, the nodes `usable` says a circuit can be built with now
+/// (the flag: as the exit of two hops) are preferred.
+fn choose_rotation(
+    a: &Active,
+    usable: impl Fn(&Invite, bool) -> bool,
+) -> Result<(usize, usize, Vec<String>)> {
     if a.entries.is_empty() {
-        let next = random::index_other_than(a.pool.len(), a.current)?.unwrap_or(a.current);
+        let others = (0..a.pool.len()).filter(|&x| x != a.current).collect();
+        let others = preferring(others, |x| usable(&a.pool[x], false));
+        let next = match others.len() {
+            0 => a.current,
+            n => others[random::index(n)?],
+        };
         return Ok((next, 0, Vec::new()));
     }
     let ok = |e: usize, x: usize| {
@@ -800,6 +1184,7 @@ fn choose_rotation(a: &Active) -> Result<(usize, usize, Vec<String>)> {
             skipped.push(a.pool[x].node_name.clone());
         }
     }
+    let other_exits = preferring(other_exits, |x| usable(&a.pool[x], true));
     let next = if other_exits.is_empty() {
         a.current
     } else {
@@ -811,6 +1196,7 @@ fn choose_rotation(a: &Active) -> Result<(usize, usize, Vec<String>)> {
         .copied()
         .filter(|&e| e != a.current_entry)
         .collect();
+    let others = preferring(others, |e| usable(&a.entries[e], false));
     let next_entry = if !others.is_empty() {
         others[random::index(others.len())?]
     } else if entries_ok.contains(&a.current_entry) {
@@ -832,12 +1218,6 @@ fn load_key() -> Result<ClientKey> {
     ClientKey::from_base64(&s)
 }
 
-/// A short wait helper the installer uses when stopping.
-#[allow(dead_code)]
-pub async fn settle() {
-    tokio::time::sleep(Duration::from_millis(200)).await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,6 +1235,7 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            pass: None,
             country: None,
             admission: Some("open".into()),
             admission_port: None,
@@ -1033,6 +1414,17 @@ mod tests {
             )
             .await;
         assert!(ok.ok, "a group member may still ping");
+    }
+
+    #[test]
+    fn a_rotation_prefers_the_nodes_a_circuit_can_be_built_with() {
+        assert_eq!(preferring(vec![1, 2], |i| i == 2), vec![2]);
+        assert_eq!(
+            preferring(vec![0, 2], |_| false),
+            vec![0, 2],
+            "nothing usable: any other one"
+        );
+        assert!(preferring(Vec::new(), |_| true).is_empty());
     }
 
     #[test]

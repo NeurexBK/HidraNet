@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'hidravpn/**'
+      - '.github/workflows/hidravpn-build.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,15 +45,23 @@ jobs:
         run: cargo clippy --manifest-path hidravpn/Cargo.toml --workspace --all-targets -- -D warnings
       - name: tests
         run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
+      # The scripts parse, and the node installer's dry run says what it
+      # would do. The network suites (scripts/test-*-netns.sh) need root and
+      # network namespaces; run them on a throwaway machine or container.
+      - name: scripts parse
+        run: for f in hidravpn/scripts/*.sh hidravpn/scripts/test/*.sh; do bash -n "$f" || exit 1; done
+      - name: node installer (dry run)
+        run: bash hidravpn/scripts/test-node-installer.sh
 
   netns:
     name: who can see what, end to end (Linux namespaces, as root, with IPv6)
     # Every namespace suite, twice in a row: the client, the service, two
-    # hops, open admission, the browser's module against a real service, and
-    # the anonymity suite with packet captures. The hosted runner has IPv6,
-    # so the anonymity suite's IPv6 checks must run here, not be skipped.
+    # hops, open admission, the browser's module against a real service, the
+    # anonymity suite with packet captures, and the passes of phases 5 and 6
+    # (two hops with a pass exit included). The hosted runner has IPv6, so
+    # the anonymity suite's IPv6 checks must run here, not be skipped.
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -76,7 +85,9 @@ jobs:
           for round in 1 2; do
             for t in test-netns test-killswitch test-service-netns test-multihop-netns \
                      test-admission-netns test-browser-netns test-directory \
-                     test-node-installer test-client-installer test-anonymity-netns; do
+                     test-node-installer test-client-installer test-anonymity-netns \
+                     test-passes-netns test-refill-netns test-unit-sandbox-netns \
+                     test-fuzz-netns test-load-netns; do
               echo "::group::round $round: $t"
               sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
               echo "::endgroup::"

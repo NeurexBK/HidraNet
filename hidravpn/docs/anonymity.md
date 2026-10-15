@@ -50,6 +50,9 @@ The other gaps are closed too:
   address.
 - A node whose software is older than all this is passed over, and the
   person is told why.
+- Nodes that admit with a pass (phase 5) follow the same rule: each
+  connection shows them the next pass's key, and the exit of two hops
+  redeems it through the entry, never from your address (finding 16).
 
 ## Who learns what
 
@@ -59,7 +62,7 @@ The other gaps are closed too:
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (blocked). |
 | **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:570`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:107-123`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:648`), and an inner address leased to it. | Your address (test A: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:607`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:376`, `daemon.rs:782`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
@@ -347,6 +350,51 @@ A CI job runs the unit tests on Windows. It cannot arm a firewall on a hosted
 runner: that would cut the runner off from GitHub. The run-time check is
 `scripts/windows/phase4-test.ps1` on a real PC, still to do.
 
+### 16. Critical — passes would have shown the exit your address and its key again (merge with phases 5 and 6)
+
+Phase 5 added nodes that admit with a pass, and phase 6 tops passes up
+by themselves. They were written beside this audit, and merging them
+brought finding 1 back for a pass node used as the exit of two hops: the
+pass was redeemed straight from the client's address, and the exit then saw
+the key it had just handed out carrying the two-hop traffic. It also kept a
+node's key across a new identity when the node was part of the circuit in
+use.
+
+Fixed in the merge:
+
+- Passes are spent in one place, `circuit::prepare`
+  (`circuit.rs:607`), the same one that asks open nodes for a session key.
+  The first hop redeems its pass directly: it sees the address anyway
+  (`circuit.rs:715`). The exit of two hops redeems its pass *through the
+  entry* (`admit_behind`, `circuit.rs:780`), so its redemption and its
+  tunnel come from the entry's address.
+- The exit of two hops never falls back to a key it saw before: with no pass
+  left for it, the connection is refused and says so (`circuit.rs:667`). A
+  first hop with no pass left may reuse its last key, with a note, since it
+  sees the address anyway.
+- A pick or a rotation prefers nodes it can build with: no pass exit without
+  a pass (`passes.rs:69`, `daemon.rs:1158`).
+- A new identity redeems the next pass even for the node it leaves and
+  comes back to: the kill switch holds the machine to that node's own ports
+  while it asks (`daemon.rs:783`).
+- The service takes the pocket, the wallet and the circuit in one order
+  everywhere (`daemon.rs:318`), so a top-up and a connection never wait on
+  each other in a circle or spend one pass twice.
+- Phase 6's stricter invite check (the resolver inside the tunnel) is kept;
+  a node not yet admitted is checked for shape only until `prepare` has won
+  its invite, which is then checked in full (`circuit.rs:174`).
+
+Proved by `scripts/test-passes-netns.sh`, which now also builds two hops
+with an open entry and a pass exit:
+
+- the exit never exchanges a packet with the client's address, and the
+  redemption reaches it from the entry's address;
+- with no pass left for the exit, `connect` is refused and the exit hears
+  nothing;
+- a new identity through the same pass node shows it a fresh key.
+
+The same checks fail on the code of phase 6 alone (see the report).
+
 ## Open
 
 None of these is claimed as solved.
@@ -354,8 +402,10 @@ None of these is claimed as solved.
 1. **Timing.** Two colluding operators can match times and volumes,
    including the moment the entry forwards an admission request and the exit
    admits a fresh key. Padding and delays are not attempted.
-2. **Admission is paid in work, not identity.** Someone with many machines
-   can still fill a node for a while. Phase 5's passes are the answer.
+2. **Admission is paid in work, not identity**, on nodes that admit openly.
+   Someone with many machines can still fill such a node for a while.
+   Nodes that admit with a pass (phase 5) are the answer; an operator
+   chooses which a node is.
 3. **IPv6 has not run on this machine.** Its kernel boots with IPv6
    disabled (`ipv6.disable=1`), so the three IPv6 checks print SKIP here.
    The CI job `netns` (`.github/workflows/hidravpn-build.yml`) runs every
@@ -420,5 +470,11 @@ IPv6 unless `HIDRAVPN_REQUIRE_IPV6=1` makes them required):
   is not used, the person is told why, and nothing is sent to it.
 - **F.** At DEBUG, failures included, no log names the client's address, its
   tunnel addresses, a key it presented or the canary.
+
+The passes, two hops with a pass exit included (finding 16):
+
+```
+sudo bash hidravpn/scripts/test-passes-netns.sh
+```
 
 The design note for the passes of phase 5 is in `phase-5-anonymity.md`.

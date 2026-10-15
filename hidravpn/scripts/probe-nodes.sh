@@ -23,7 +23,7 @@ while [ $# -gt 0 ]; do
     --direct) DIRECT="--direct"; shift ;;
     --timeout) TIMEOUT="${2:?}"; shift 2 ;;
     --pocket) HV="$HV --pocket ${2:?}"; shift 2 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +43,10 @@ seen_ip() {
   printf '%s\n' "$out" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-fA-F:]*:[0-9a-fA-F:]+' | head -1
 }
 rows=(); failed=0
+# This machine's own address, seen before any tunnel: an answer that shows
+# it is the check getting out before the circuit is up, not the node.
+$HV down $DIRECT >/dev/null 2>&1
+OWN_IP="$(seen_ip)"
 for name in "${EXITS[@]}"; do
   # A name goes into file names, JSON and markdown: only these characters do.
   name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9._-' | cut -c1-32)
@@ -58,7 +62,7 @@ for name in "${EXITS[@]}"; do
     alive=1; deadline=$(( $(date +%s) + TIMEOUT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
       if ! kill -0 "$UP" 2>/dev/null; then alive=0; break; fi
-      ip="$(seen_ip)"; [ -n "$ip" ] && break; sleep 1
+      ip="$(seen_ip)"; [ -n "$ip" ] && [ "$ip" != "$OWN_IP" ] && break; ip=""; sleep 1
     done
     if [ "$alive" = 1 ]; then
       # A background job of a script has Ctrl+C ignored, so it is told to stop
@@ -76,7 +80,7 @@ for name in "${EXITS[@]}"; do
       rows+=("{\"node\":\"$name\",\"up\":false,\"why\":\"connect failed\",\"seconds\":$(( $(date +%s) - t0 ))}"); failed=1; continue
     fi
     deadline=$(( $(date +%s) + TIMEOUT ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do ip="$(seen_ip)"; [ -n "$ip" ] && break; sleep 1; done
+    while [ "$(date +%s)" -lt "$deadline" ]; do ip="$(seen_ip)"; [ -n "$ip" ] && [ "$ip" != "$OWN_IP" ] && break; ip=""; sleep 1; done
     $HV down >/dev/null 2>&1
   fi
   if [ -n "$ip" ]; then

@@ -8,10 +8,10 @@
 //! goes nowhere: better no IPv6 than IPv6 beside the tunnel.
 //!
 //! Every change is recorded in a plan file before it is made, so `down` can
-//! undo it after a crash, a kill, or a reboot that left things half-done. In
-//! this phase the changes are made with the system's own tools (`ip`,
-//! `resolvectl`, `netsh`); phase 2 moves the Windows side to the IP Helper and
-//! WFP APIs when the kill switch arrives.
+//! undo it after a crash, a kill, or a reboot that left things half-done. The
+//! changes are made with the system's own tools (`ip`, `resolvectl`, the
+//! PowerShell network cmdlets); the kill switch (nftables, WFP) is apart, in
+//! `killswitch`.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
@@ -37,6 +37,10 @@ pub struct RevertPlan {
     pub dns_changed: bool,
     /// Linux without systemd-resolved: the resolv.conf that was replaced.
     pub resolv_conf_backup: Option<String>,
+    /// Linux: where resolv.conf linked to, when it was a link (into /run,
+    /// NetworkManager's or resolvconf's). Absent in plans from before.
+    #[serde(default)]
+    pub resolv_conf_link: Option<String>,
     /// Windows: the interface index of the tunnel adapter.
     pub if_index: Option<u32>,
     /// Host routes added through a tunnel interface: a two-hop circuit sends
@@ -78,7 +82,11 @@ pub fn save_plan(plan: &RevertPlan) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    std::fs::write(&path, serde_json::to_vec_pretty(plan)?)
+    // Beside and renamed over: a crash mid-write must not leave a plan that
+    // cannot be read, and with it routes nobody undoes.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(plan)?)
+        .and_then(|()| std::fs::rename(&tmp, &path))
         .with_context(|| format!("writing {}", path.display()))
 }
 
@@ -90,6 +98,14 @@ pub fn load_plan() -> Result<Option<RevertPlan>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Puts the machine's DNS back when a connection was cut short by a reboot
+/// and left its resolv.conf behind. Nothing to do elsewhere: systemd-resolved
+/// and Windows forget a tunnel's DNS with its interface.
+pub fn recover_dns() {
+    #[cfg(target_os = "linux")]
+    linux::recover_dns();
 }
 
 pub fn clear_plan() {
@@ -123,13 +139,20 @@ pub struct ViaRoute {
 /// Routes everything through the tunnel. Returns the plan that undoes it,
 /// already saved to disk.
 pub fn apply(w: &Wanted) -> Result<RevertPlan> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     {
-        linux::apply(w)
-    }
-    #[cfg(windows)]
-    {
-        windows::apply(w)
+        #[cfg(target_os = "linux")]
+        let r = linux::apply(w);
+        #[cfg(windows)]
+        let r = windows::apply(w);
+        // Failed partway: what was done is in the plan saved step by step,
+        // and is undone now, not left until the next connection.
+        if r.is_err() {
+            if let Ok(Some(done)) = load_plan() {
+                let _ = revert(&done);
+            }
+        }
+        r
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {

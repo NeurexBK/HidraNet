@@ -173,12 +173,6 @@ fn v4(ep: &SocketAddr) -> Result<(u32, u16)> {
 /// across a rotation (`hold`): the catch-all blocks, loopback, the tunnel
 /// interfaces given, the nodes given, DHCP.
 fn install(allow: &Allow<'_>) -> Result<()> {
-    // Start clean so a half-applied earlier run cannot leave stray filters.
-    // A few milliseconds pass with no filters; Linux replaces its table in
-    // one transaction, and this is to be done the same way once the Windows
-    // half has run on a real machine.
-    let _ = remove();
-
     if allow.nodes.len() > F_NODE_V4.len()
         || allow.peered.len() > F_PEERED_V4.len()
         || allow.direct_tcp.len() > F_DIRECT_TCP_V4.len()
@@ -201,6 +195,14 @@ fn install(allow: &Allow<'_>) -> Result<()> {
     let engine = open_engine()?;
     let result = (|| -> Result<()> {
         ok(unsafe { FwpmTransactionBegin0(engine, 0) })?;
+
+        // The old filters go in the same transaction the new ones come in,
+        // as Linux replaces its table: there is no moment with none, and a
+        // failure below aborts the whole of it, leaving the old ones in
+        // place (blocked, never open). "Not found" is fine.
+        for key in ALL_FILTER_KEYS.iter() {
+            let _ = unsafe { FwpmFilterDeleteByKey0(engine, key) };
+        }
 
         // Provider.
         let mut prov_name = wide("HidraVPN");
@@ -480,9 +482,7 @@ pub fn is_active() -> bool {
     match open_engine() {
         Ok(engine) => {
             let mut present = false;
-            // A cheap existence check: try to delete-by-key inside an aborted
-            // transaction would change state, so instead re-add is wrong too.
-            // Use the sublayer getter.
+            // The sublayer is there exactly while the kill switch is.
             use windows::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmSubLayerGetByKey0;
             let mut out = std::ptr::null_mut();
             let code = unsafe { FwpmSubLayerGetByKey0(engine, &SUBLAYER_KEY, &mut out) };

@@ -1054,6 +1054,20 @@ function setupIPC(tabs, proxy) {
     const r = await vpnManager.importNodesFromTexts(list, signature);
     return { ...r, url: VPN_LIST_URL };
   });
+  // Passes: the service asks the issuer with the token it keeps; the page
+  // hands the token over once and never gets it back.
+  ipcMain.handle('vpn:get-passes', (event, count) => {
+    vpnOnlyOurs(event);
+    return vpnManager.getPasses(Number.isInteger(count) ? count : 10);
+  });
+  ipcMain.handle('vpn:set-pass-token', (event, token) => {
+    vpnOnlyOurs(event);
+    return vpnManager.setPassToken(typeof token === 'string' ? token : '');
+  });
+  ipcMain.handle('vpn:refill', (event, enabled) => {
+    vpnOnlyOurs(event);
+    return vpnManager.refill(typeof enabled === 'boolean' ? enabled : undefined);
+  });
   // Checks a downloaded release file against FILE.sig with the release key
   // this build embeds. With no key embedded it says so and accepts nothing.
   ipcMain.handle('vpn:verify-file', async (event) => {

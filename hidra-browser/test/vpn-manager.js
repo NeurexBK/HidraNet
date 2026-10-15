@@ -50,6 +50,7 @@ function fakeService(behaviour) {
   fs.writeFileSync(tokenPath, TOKEN + '\n', { mode: 0o600 });
   const seen = [];
   let connected = false;
+  let refillOn = true;
   const status = () => ({
     connected,
     node_name: connected ? 'exit-a' : null,
@@ -95,6 +96,20 @@ function fakeService(behaviour) {
           { slot: 'exit', node_name: 'exit-1', endpoint: '203.0.113.10:51820' },
         ] };
         else answer = { ok: false, error: 'the node list is not accepted: the signature does not match: the file was changed, or was not signed with the release key' };
+      }
+      else if (req.cmd === 'get_passes') {
+        if (!fs.existsSync(tokenPath + '.pass')) answer = { ok: false, error: 'no pass account token at /etc/hidravpn/pass.token' };
+        else answer = { ok: true, note: `${req.count} pass(es) for 1 node(s); the account has 7 left today`, nodes: [
+          { slot: 'exit', node_name: 'node-p', endpoint: '203.0.113.30:51820', admitted: true, admission: 'pass', passes: req.count },
+        ] };
+      }
+      else if (req.cmd === 'refill') {
+        if (typeof req.enabled === 'boolean') refillOn = req.enabled;
+        answer = { ok: true, refill: { enabled: refillOn, low: 3, count: 10 }, note: refillOn ? 'automatic passes on' : 'automatic passes off' };
+      }
+      else if (req.cmd === 'set_pass_token') {
+        fs.writeFileSync(tokenPath + '.pass', req.pass_token);
+        answer = { ok: true, note: 'the account token is kept on this machine, readable by root only' };
       }
       else if (req.cmd === 'nodes') answer = { ok: true, nodes: [
         { slot: 'entry', node_name: 'entry-a', endpoint: '203.0.113.20:51820' },
@@ -228,6 +243,37 @@ function fakeService(behaviour) {
 
     await check('the browser has no way to join a node: open nodes are asked for a fresh key on every connection', async () => {
       assert.strictEqual(typeof vpn.join, 'undefined');
+    });
+
+    await check('passes: the token goes to the service once, is never echoed, and passes are counted per node', async () => {
+      let r = await vpn.getPasses(5);
+      assert.strictEqual(r.ok, false);
+      assert.ok(/token/.test(r.error), r.error);
+      r = await vpn.setPassToken('two words');
+      assert.strictEqual(r.ok, false, 'a token with a space never reaches the service');
+      r = await vpn.setPassToken('  acct-token-123\n');
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'set_pass_token', pass_token: 'acct-token-123' });
+      assert.ok(!JSON.stringify(r).includes('acct-token-123'));
+      r = await vpn.getPasses(5);
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.strictEqual(r.nodes[0].passes, 5);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 5 });
+      await vpn.getPasses(1000, 'node-p');
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 10, name: 'node-p' });
+    });
+
+    await check('automatic passes are read without changing them, and switched with a boolean only', async () => {
+      let r = await vpn.refill();
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.strictEqual(r.refill.enabled, true);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill' });
+      r = await vpn.refill(false);
+      assert.strictEqual(r.refill.enabled, false);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill', enabled: false });
+      r = await vpn.refill('off');
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill' }, 'anything but a boolean only reads');
+      await vpn.refill(true);
     });
 
     await check('a list fetched as text goes to the service only with its signature', async () => {
@@ -385,6 +431,20 @@ function fakeService(behaviour) {
     const vpn = new VpnManager({ endpoint: svc.sockPath, tokenPath: svc.tokenPath, timeoutMs: 3000 });
     const s = await vpn.status();
     assert.strictEqual(s.state, 'bad-answer');
+    await svc.close();
+  });
+
+  await check('a command that waits on the network gets the long timeout, a status the short one', async () => {
+    const svc = await fakeService({ raw: (sock, line) => {
+      setTimeout(() => sock.end('{"ok":true}\n'), 1500);
+    } });
+    const vpn = new VpnManager({ endpoint: svc.sockPath, tokenPath: svc.tokenPath, timeoutMs: 1000, slowTimeoutMs: 4000 });
+    const r = await vpn.request({ cmd: 'connect', mode: 'rapido' });
+    assert.strictEqual(r.ok, true, 'a connect that takes longer than the short timeout is still waited for');
+    await assert.rejects(vpn.request({ cmd: 'status' }), (e) => e instanceof VpnUnavailable && e.code === 'timeout');
+    const d = new VpnManager({});
+    assert.strictEqual(d.timeoutMs, 8000);
+    assert.strictEqual(d.slowTimeoutMs, 120000);
     await svc.close();
   });
 

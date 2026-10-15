@@ -15,16 +15,16 @@
 //! two nodes get two unrelated keys: an entry and an exit that compared the
 //! keys they were shown would find nothing in common.
 //!
-//! That key is the one a node sees when the client reaches it from its own
-//! address: the entry of two hops, the only node of one. A node reached
+//! That key is the one a node admitted by hand sees when the client reaches
+//! it from its own address: the entry of two hops, the only node of one. A
+//! node that admits openly, or with a pass, is shown a fresh key every
+//! connection instead (`circuit::prepare`, `pass.rs`). A node reached
 //! *through* an entry — the exit of two hops — must never be shown a key it
 //! could also have seen arriving from the client's address, or it could tie
 //! the traffic it carries back to that address. So an exit behind an entry
-//! is shown either a fresh random key made for that one connection and
-//! admitted through the entry (`ClientKey::generate`, the rule for every node
-//! that admits openly), or, for an exit an operator admitted by hand, a key
-//! derived with another salt (`for_node_behind`), which no one-hop session
-//! ever presents.
+//! is shown a fresh key admitted through the entry, or, for an exit an
+//! operator admitted by hand, a key derived with another salt
+//! (`for_node_behind`), which no one-hop session ever presents.
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;

@@ -72,6 +72,9 @@ if (isInternalPage) {
       nodes: () => ipcRenderer.invoke('vpn:nodes'),
       importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
       fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
+      getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
+      setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
+      refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
       verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
     },
   });
