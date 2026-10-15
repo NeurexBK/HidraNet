@@ -223,6 +223,9 @@ class VpnManager {
       mode: m,
       allow_lan: Boolean(options.allowLan),
       keep_ipv6: Boolean(options.keepIpv6),
+      // Sent only when true, so a service from before it existed still reads
+      // the request.
+      ...(options.allowSameOperator === true ? { allow_same_operator: true } : {}),
     });
   }
 
@@ -272,13 +275,6 @@ class VpnManager {
     if (Buffer.byteLength(list) > MAX_LIST_BYTES) return { ok: false, error: `the list is far larger than a node list (${MAX_LIST_BYTES} bytes at most)` };
     if (typeof signature !== 'string' || !signature.trim()) return { ok: false, error: 'the list came without its signature, so it cannot be checked and is not imported' };
     return this._command({ cmd: 'import_nodes', list, signature: signature.trim() });
-  }
-
-  // Ask admission from known nodes that admit openly: one by name, or all
-  // when `name` is empty. The service does the asking and the checking.
-  async join(name) {
-    const n = typeof name === 'string' && name.trim() ? name.trim() : null;
-    return this._command(n ? { cmd: 'join', name: n } : { cmd: 'join' });
   }
 
   async _command(cmd) {

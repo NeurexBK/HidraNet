@@ -157,6 +157,29 @@ pub fn revert(plan: &RevertPlan) -> Result<()> {
     }
 }
 
+/// Routes one host into a tunnel interface, and nothing else: how the
+/// client reaches an exit's admission port through the entry before any
+/// circuit exists. The route goes away with the interface.
+pub fn route_host_via(host: IpAddr, interface: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let prefix = match host {
+            IpAddr::V4(a) => format!("{a}/32"),
+            IpAddr::V6(a) => format!("{a}/128"),
+        };
+        run("ip", &["route", "replace", &prefix, "dev", interface]).map(|_| ())
+    }
+    #[cfg(windows)]
+    {
+        windows::route_host_via(host, interface)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (host, interface);
+        anyhow::bail!("this operating system is not supported yet")
+    }
+}
+
 /// Runs a system tool and gives its output or a readable error.
 pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String> {
     let out = std::process::Command::new(cmd)

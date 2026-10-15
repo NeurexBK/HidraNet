@@ -33,6 +33,11 @@ pub struct Lease {
     /// what makes a restart not count as idleness.
     #[serde(default)]
     pub last_seen: u64,
+    /// The bytes received from this key when last looked at, in memory only:
+    /// more than that since means the client is still there, even between
+    /// handshakes (WireGuard shakes hands only every two minutes).
+    #[serde(skip)]
+    rx_seen: u64,
 }
 
 fn manual() -> String {
@@ -41,6 +46,16 @@ fn manual() -> String {
 
 /// How long an openly admitted lease with no handshake ever is kept.
 pub const NEVER_CAME_SECS: u64 = 900;
+
+/// How long a session lease — a key made for one connection, asked for
+/// through an entry — outlives its last handshake. A live WireGuard session
+/// shakes hands every two minutes, so ten minutes of silence means the
+/// connection is over; the node then forgets the key and its address.
+pub const SESSION_IDLE_SECS: u64 = 600;
+
+/// A session lease whose key never shook hands is gone after this: the
+/// client that asked for it connects within seconds, or never.
+pub const SESSION_NEVER_CAME_SECS: u64 = 120;
 
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
@@ -99,18 +114,26 @@ impl Leases {
     }
 
     /// Admits a key through the admission service, or returns the lease it
-    /// already has.
-    pub fn admit_open(&mut self, name: &str, public_key: &str, net: &TunnelNet) -> Result<Lease> {
+    /// already has. `session` marks a key made for one connection: its lease
+    /// lapses soon after the connection ends (`expire_idle`).
+    pub fn admit_open(
+        &mut self,
+        name: &str,
+        public_key: &str,
+        net: &TunnelNet,
+        session: bool,
+    ) -> Result<Lease> {
         let had = self.find(public_key).is_some();
         let mut lease = self.admit(name, public_key, net)?;
         if !had {
-            lease.source = "open".into();
+            let source = if session { "session" } else { "open" };
+            lease.source = source.into();
             if let Some(l) = self
                 .leases
                 .iter_mut()
                 .find(|l| l.public_key == lease.public_key)
             {
-                l.source = "open".into();
+                l.source = source.into();
             }
         }
         Ok(lease)
@@ -137,23 +160,52 @@ impl Leases {
         touched
     }
 
+    /// Writes down `now` as the last sign of life of every lease that has
+    /// received bytes since the last look (`rx_bytes` is per key, as the
+    /// tunnel counts it). Returns whether anything advanced.
+    pub fn note_traffic(
+        &mut self,
+        now: u64,
+        rx_bytes: &std::collections::HashMap<String, u64>,
+    ) -> bool {
+        let mut touched = false;
+        for l in self.leases.iter_mut() {
+            if let Some(&rx) = rx_bytes.get(&l.public_key) {
+                if rx > l.rx_seen {
+                    l.rx_seen = rx;
+                    if now > l.last_seen {
+                        l.last_seen = now;
+                        touched = true;
+                    }
+                }
+            }
+        }
+        touched
+    }
+
     /// Drops openly admitted leases that have been idle for `idle_secs`:
     /// nothing from the client since it was admitted or since the last
     /// handshake written down (`note_handshakes` first). Manual leases never
     /// expire. Returns what was dropped.
-    pub fn expire_idle(&mut self, now: u64, idle_secs: u64) -> Vec<Lease> {
-        if idle_secs == 0 {
-            return Vec::new();
-        }
+    pub fn expire_idle(&mut self, now: u64, idle_secs: u64, session_secs: u64) -> Vec<Lease> {
         // A lease whose client never completed a handshake is a request, not
         // a client: it lapses after NEVER_CAME_SECS (or the idle window, if
         // that is shorter), so admissions cost tunnels, not HTTP requests.
-        let never_came = idle_secs.min(NEVER_CAME_SECS);
-        let (gone, kept): (Vec<Lease>, Vec<Lease>) = self.leases.drain(..).partition(|l| {
-            l.source == "open"
-                && (now.saturating_sub(l.admitted_at.max(l.last_seen)) >= idle_secs
-                    || (l.last_seen == 0 && now.saturating_sub(l.admitted_at) >= never_came))
-        });
+        // A session lease lapses `session_secs` after its last sign of life,
+        // whatever the idle window: it was made for one connection.
+        let lapsed = |l: &Lease, window: u64, never_came: u64| {
+            let quiet = now.saturating_sub(l.admitted_at.max(l.last_seen));
+            quiet >= window
+                || (l.last_seen == 0 && now.saturating_sub(l.admitted_at) >= window.min(never_came))
+        };
+        let (gone, kept): (Vec<Lease>, Vec<Lease>) =
+            self.leases
+                .drain(..)
+                .partition(|l| match l.source.as_str() {
+                    "open" => idle_secs > 0 && lapsed(l, idle_secs, NEVER_CAME_SECS),
+                    "session" => lapsed(l, session_secs.max(1), SESSION_NEVER_CAME_SECS),
+                    _ => false,
+                });
         self.leases = kept;
         gone
     }
@@ -182,6 +234,7 @@ impl Leases {
             admitted_at: now_unix(),
             source: manual(),
             last_seen: 0,
+            rx_seen: 0,
         };
         self.leases.push(lease.clone());
         Ok(lease)
@@ -256,9 +309,9 @@ mod tests {
         let open_active = Key::generate_private().get_public().to_base64();
         let open_new = Key::generate_private().get_public().to_base64();
         let manual_quiet = Key::generate_private().get_public().to_base64();
-        l.admit_open("q", &open_quiet, &net()).unwrap();
-        l.admit_open("a", &open_active, &net()).unwrap();
-        l.admit_open("n", &open_new, &net()).unwrap();
+        l.admit_open("q", &open_quiet, &net(), false).unwrap();
+        l.admit_open("a", &open_active, &net(), false).unwrap();
+        l.admit_open("n", &open_new, &net(), false).unwrap();
         l.admit("m", &manual_quiet, &net()).unwrap();
         let t0 = now_unix();
         // Pretend the first three were admitted long ago, except the new one.
@@ -272,7 +325,7 @@ mod tests {
         age.insert(open_active.clone(), Some(std::time::Duration::from_secs(5)));
         age.insert(manual_quiet.clone(), None);
         assert!(l.note_handshakes(t0, &age), "handshakes were written down");
-        let gone = l.expire_idle(t0, 60);
+        let gone = l.expire_idle(t0, 60, SESSION_IDLE_SECS);
         assert_eq!(gone.len(), 1);
         assert_eq!(gone[0].public_key, open_quiet);
         assert!(l.find(&open_active).is_some(), "an active one stays");
@@ -284,7 +337,10 @@ mod tests {
             l.find(&manual_quiet).is_some(),
             "a manual lease never expires"
         );
-        assert!(l.expire_idle(t0, 0).is_empty(), "0 means never");
+        assert!(
+            l.expire_idle(t0, 0, SESSION_IDLE_SECS).is_empty(),
+            "0 means never"
+        );
 
         // A restart: the tunnel knows no handshake for anyone. What was
         // written down decides — each lease goes once it has been quiet for
@@ -292,9 +348,9 @@ mod tests {
         // whichever is later.
         let nothing = std::collections::HashMap::new();
         assert!(!l.note_handshakes(t0 + 30, &nothing));
-        let gone = l.expire_idle(t0 + 30, 60);
+        let gone = l.expire_idle(t0 + 30, 60, SESSION_IDLE_SECS);
         assert!(gone.is_empty(), "nothing is 60 s idle yet: {gone:?}");
-        let gone = l.expire_idle(t0 + 56, 60);
+        let gone = l.expire_idle(t0 + 56, 60, SESSION_IDLE_SECS);
         assert_eq!(gone.len(), 1, "{gone:?}");
         assert_eq!(
             gone[0].public_key, open_active,
@@ -304,7 +360,7 @@ mod tests {
             l.find(&open_new).is_some(),
             "admitted at t0: 56 s quiet only"
         );
-        let gone = l.expire_idle(t0 + 61, 60);
+        let gone = l.expire_idle(t0 + 61, 60, SESSION_IDLE_SECS);
         assert_eq!(gone.len(), 1, "{gone:?}");
         assert_eq!(gone[0].public_key, open_new, "never seen since admission");
         assert!(
@@ -319,8 +375,8 @@ mod tests {
         let never = Key::generate_private().get_public().to_base64();
         let came = Key::generate_private().get_public().to_base64();
         let by_hand = Key::generate_private().get_public().to_base64();
-        l.admit_open("never", &never, &net()).unwrap();
-        l.admit_open("came", &came, &net()).unwrap();
+        l.admit_open("never", &never, &net(), false).unwrap();
+        l.admit_open("came", &came, &net(), false).unwrap();
         l.admit("hand", &by_hand, &net()).unwrap();
         let t0 = now_unix();
         for lease in l.leases.iter_mut() {
@@ -331,13 +387,13 @@ mod tests {
         l.note_handshakes(t0, &age);
         // Thirty days of idle window; the one that never came is gone after
         // NEVER_CAME_SECS, the one that came stays, the manual one stays.
-        let gone = l.expire_idle(t0, 30 * 86_400);
+        let gone = l.expire_idle(t0, 30 * 86_400, SESSION_IDLE_SECS);
         assert_eq!(gone.len(), 1, "{gone:?}");
         assert_eq!(gone[0].public_key, never);
         assert!(l.find(&came).is_some());
         assert!(l.find(&by_hand).is_some());
         // Shorter idle windows keep working as before.
-        assert!(l.expire_idle(t0, 60).is_empty());
+        assert!(l.expire_idle(t0, 60, SESSION_IDLE_SECS).is_empty());
     }
 
     #[test]
@@ -346,5 +402,62 @@ mod tests {
         assert!(l.admit("x", "not-a-key", &net()).is_err());
         let k = Key::generate_private().get_public().to_base64();
         assert!(l.admit("has space", &k, &net()).is_err());
+    }
+
+    #[test]
+    fn a_session_lease_lapses_soon_after_its_connection_whatever_the_idle_window() {
+        let mut l = Leases::default();
+        let k = || {
+            wireguard_control::Key::generate_private()
+                .get_public()
+                .to_base64()
+        };
+        let (session, kept_open) = (k(), k());
+        l.admit_open("client", &session, &net(), true).unwrap();
+        l.admit_open("client", &kept_open, &net(), false).unwrap();
+        assert_eq!(l.find(&session).unwrap().source, "session");
+        let t0 = l.find(&session).unwrap().admitted_at;
+        let mut ages = std::collections::HashMap::new();
+        ages.insert(session.clone(), Some(std::time::Duration::from_secs(0)));
+        ages.insert(kept_open.clone(), Some(std::time::Duration::from_secs(0)));
+        l.note_handshakes(t0 + 100, &ages);
+        // Alive: nothing goes.
+        assert!(l.expire_idle(t0 + 100 + 30, 30 * 86_400, 60).is_empty());
+        // Quiet for the session window: the session lease goes, the
+        // ordinary open one (thirty days) stays.
+        let gone = l.expire_idle(t0 + 100 + 60, 30 * 86_400, 60);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].public_key, session);
+        assert!(l.find(&kept_open).is_some());
+        // Even with idle expiry off for open leases, a session lease lapses.
+        let s2 = k();
+        l.admit_open("client", &s2, &net(), true).unwrap();
+        let t = l.find(&s2).unwrap().admitted_at;
+        assert_eq!(l.expire_idle(t + 61, 0, 60).len(), 1);
+    }
+
+    #[test]
+    fn traffic_between_handshakes_keeps_a_session_alive() {
+        let mut l = Leases::default();
+        let k = wireguard_control::Key::generate_private()
+            .get_public()
+            .to_base64();
+        l.admit_open("client", &k, &net(), true).unwrap();
+        let t0 = l.find(&k).unwrap().admitted_at;
+        let mut rx = std::collections::HashMap::new();
+        rx.insert(k.clone(), 500u64);
+        assert!(l.note_traffic(t0 + 50, &rx));
+        assert!(
+            !l.note_traffic(t0 + 70, &rx),
+            "no new bytes, no new sign of life"
+        );
+        assert!(
+            l.expire_idle(t0 + 100, 0, 60).is_empty(),
+            "50 s quiet of 60"
+        );
+        rx.insert(k.clone(), 900);
+        assert!(l.note_traffic(t0 + 105, &rx));
+        assert!(l.expire_idle(t0 + 160, 0, 60).is_empty());
+        assert_eq!(l.expire_idle(t0 + 166, 0, 60).len(), 1);
     }
 }

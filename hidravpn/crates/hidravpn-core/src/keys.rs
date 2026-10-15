@@ -13,8 +13,18 @@
 //!
 //! The derivation is deterministic, so there is nothing new to store, and
 //! two nodes get two unrelated keys: an entry and an exit that compared the
-//! keys they were shown would find nothing in common. Once passes exist
-//! (phase 5) the client will use a fresh key for every connection instead.
+//! keys they were shown would find nothing in common.
+//!
+//! That key is the one a node sees when the client reaches it from its own
+//! address: the entry of two hops, the only node of one. A node reached
+//! *through* an entry — the exit of two hops — must never be shown a key it
+//! could also have seen arriving from the client's address, or it could tie
+//! the traffic it carries back to that address. So an exit behind an entry
+//! is shown either a fresh random key made for that one connection and
+//! admitted through the entry (`ClientKey::generate`, the rule for every node
+//! that admits openly), or, for an exit an operator admitted by hand, a key
+//! derived with another salt (`for_node_behind`), which no one-hop session
+//! ever presents.
 
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -27,10 +37,22 @@ use sha2::Sha256;
 /// change every derived key, and every client would need admitting again.
 const PER_NODE_SALT: &[u8] = b"HidraVPN per-node key v1";
 
+/// The salt of the key shown to a node admitted by hand when it is the exit
+/// of two hops: never the key a one-hop session shows the same node.
+const BEHIND_SALT: &[u8] = b"HidraVPN key behind an entry v1";
+
 /// Clone so the two hops of a circuit can each derive their own key from it.
 #[derive(Clone)]
 pub struct ClientKey {
     secret: StaticSecret,
+}
+
+/// Never prints the secret, nor the public half: a key in a log would let
+/// whoever reads the log recognise the client.
+impl std::fmt::Debug for ClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClientKey(..)")
+    }
 }
 
 impl ClientKey {
@@ -68,7 +90,26 @@ impl ClientKey {
     /// nodes get keys with nothing in common, and none of them is the master
     /// key itself.
     pub fn for_node(&self, node_public: &PublicKey) -> ClientKey {
-        let hk = Hkdf::<Sha256>::new(Some(PER_NODE_SALT), &self.secret.to_bytes());
+        self.derive(PER_NODE_SALT, node_public)
+    }
+
+    /// The key shown to a node admitted by hand when it is the exit of two
+    /// hops, reached through an entry. Unrelated to `for_node` for the same
+    /// node, so the one-hop key and this one cannot be matched; stable, so
+    /// the operator admits it once (and so that operator can recognise the
+    /// key from one two-hop session to the next: a node that admits openly
+    /// is shown a fresh key every time instead).
+    pub fn for_node_behind(&self, node_public: &PublicKey) -> ClientKey {
+        self.derive(BEHIND_SALT, node_public)
+    }
+
+    /// `for_node_behind` from the node's public key in base64.
+    pub fn for_node_behind_base64(&self, node_public: &str) -> Result<ClientKey> {
+        Ok(self.for_node_behind(&public_key_from_base64(node_public)?))
+    }
+
+    fn derive(&self, salt: &[u8], node_public: &PublicKey) -> ClientKey {
+        let hk = Hkdf::<Sha256>::new(Some(salt), &self.secret.to_bytes());
         let mut okm = [0u8; 32];
         hk.expand(node_public.as_bytes(), &mut okm)
             .expect("32 bytes is well within what HKDF-SHA256 can expand");
@@ -181,6 +222,23 @@ mod tests {
             // Nor is it the key a node would derive for itself.
             assert_ne!(derived.public_base64(), B64.encode(node.as_bytes()));
         }
+    }
+
+    #[test]
+    fn the_key_behind_an_entry_is_not_the_one_hop_key() {
+        let master = ClientKey::generate().unwrap();
+        let node = ClientKey::generate().unwrap().public();
+        let direct = master.for_node(&node);
+        let behind = master.for_node_behind(&node);
+        assert_ne!(direct.public_base64(), behind.public_base64());
+        assert_ne!(behind.public_base64(), master.public_base64());
+        // Stable, so an operator admits it once.
+        assert_eq!(
+            behind.public_base64(),
+            master.for_node_behind(&node).public_base64()
+        );
+        // And a key never prints itself.
+        assert_eq!(format!("{behind:?}"), "ClientKey(..)");
     }
 
     /// A fixed vector, so a change to the salt, the hash, the info or the

@@ -65,7 +65,7 @@ sleep 1
 
 # ── Two nodes, two roles, both admitting openly ─────────────────────────────
 $N "$BIN/hidravpn-node" --config "$WORK/a.toml" init --endpoint 10.202.0.1:51820 --name node-a --role exit --operator maintainers --contact nodes@example.org --open-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-a.log" 2>&1 || { cat "$WORK/init-a.log"; fail "node-a init"; exit 1; }
-$E "$BIN/hidravpn-node" --config "$WORK/b.toml" init --endpoint 10.200.0.1:51820 --tunnel 10.78.0.0/16 --name node-b --role entry --operator maintainers --open-admission --max-clients 2 --dns udp://10.201.0.2 --out-interface e-x > "$WORK/init-b.log" 2>&1 || { cat "$WORK/init-b.log"; fail "node-b init"; exit 1; }
+$E "$BIN/hidravpn-node" --config "$WORK/b.toml" init --endpoint 10.200.0.1:51820 --tunnel 10.78.0.0/16 --name node-b --role entry --operator maintainers --open-admission --max-clients 4 --dns udp://10.201.0.2 --out-interface e-x > "$WORK/init-b.log" 2>&1 || { cat "$WORK/init-b.log"; fail "node-b init"; exit 1; }
 # Two userspace WireGuard nodes on one host need two interface names: the
 # control socket lives at /var/run/wireguard/<interface>.sock, outside the
 # network namespaces.
@@ -95,7 +95,7 @@ OUT=$("$BIN/hidravpn" nodes import "$WORK/nodes.json" --pubkey "$LISTPUB" 2>&1);
 "$BIN/hidravpn" nodes list 2>/dev/null | grep -q "^known  node-a .*exit  admits openly" && "$BIN/hidravpn" nodes list 2>/dev/null | grep -q "^known  node-b .*entry  admits openly" && pass "nodes list shows role and open admission" || fail "list: $("$BIN/hidravpn" nodes list 2>&1)"
 # With known nodes that admit by hand only, `up` has nobody to ask and says so.
 python3 -I -c "import json; p=json.load(open('/etc/hidravpn/circuit.json')); [k.__setitem__('admission','manual') for k in p['known']]; json.dump(p, open('$WORK/by-hand.json','w'))"
-OUT=$($C "$BIN/hidravpn" up --rapido --direct --pocket "$WORK/by-hand.json" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "admitted on none yet" && pass "with known nodes that admit by hand only, up is refused and says whom to ask" || fail "up by-hand: $OUT"
+OUT=$($C "$BIN/hidravpn" up --rapido --direct --pocket "$WORK/by-hand.json" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "none admits openly" && pass "with known nodes that admit by hand only, up is refused and says whom to ask" || fail "up by-hand: $OUT"
 
 # ── The service: connect joins, then connects ───────────────────────────────
 $C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
@@ -115,9 +115,9 @@ print(buf.decode().strip())
 PY
 }
 R=$(svc '{"cmd":"connect","mode":"rapido"}')
-echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q 'node-a: admitted as exit' && echo "$R" | grep -q 'node-b: admitted as entry' && pass "connect with only known nodes joined both through open admission and connected ($(echo "$R" | grep -o '"note":"[^"]*"' | cut -c1-90))" || { echo "$R"; tail -5 "$WORK/svc.log"; fail "connect+join"; }
-grep -q '"node_name": "node-a"' /etc/hidravpn/circuit.json && python3 -I -c "import json,sys; p=json.load(open('/etc/hidravpn/circuit.json')); sys.exit(0 if len(p['exits'])==1 and len(p['entries'])==1 and not p.get('known') else 1)" && pass "the pocket now holds node-a as exit and node-b as entry, and no known nodes" || fail "pocket after join: $(cat /etc/hidravpn/circuit.json | tr -d '\n ' | cut -c1-200)"
-grep -q "admitted a client through the admission service" "$WORK/a.log" && grep -q "admitted a client through the admission service" "$WORK/b.log" && pass "both nodes logged an admission, as a count" || fail "node logs"
+echo "$R" | grep -q '"ok":true' && pass "connect rapido with only known nodes asks the exit for a key for this connection and connects ($(echo "$R" | grep -o '"note":"[^"]*"' | cut -c1-90))" || { echo "$R"; tail -5 "$WORK/svc.log"; fail "connect+join"; }
+grep -q '"node_name": "node-a"' /etc/hidravpn/circuit.json && python3 -I -c "import json,sys; p=json.load(open('/etc/hidravpn/circuit.json')); sys.exit(0 if not p.get('exits') and not p.get('entries') and len(p.get('known',[]))==2 else 1)" && pass "nothing was joined: the pocket still only knows both nodes, and no known nodes" || fail "pocket after join: $(cat /etc/hidravpn/circuit.json | tr -d '\n ' | cut -c1-200)"
+grep -q "admitted a client through the admission service" "$WORK/a.log" && ! grep -q "admitted a client through the admission service" "$WORK/b.log" && pass "node-a logged an admission, as a count; node-b was not asked" || fail "node logs"
 for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
 svc '{"cmd":"status"}' | grep -q '"connected":true' && pass "connected, one hop" || fail "never connected: $(svc '{"cmd":"status"}')"
 EXIT_IP=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.201.0.1" ] && pass "the internet sees the exit's address" || fail "exit IP '$EXIT_IP'"
@@ -129,16 +129,18 @@ $C "$BIN/hidravpn" up --rapido --node node-a --direct --pocket "$WORK/cli-pocket
 for i in $(seq 1 100); do grep -q "^connected" "$WORK/cli-up.log" && break; sleep 0.2; done
 CLI_IP=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)
 kill -TERM $CLI_UP 2>/dev/null; wait $CLI_UP 2>/dev/null
-grep -q "node-a: admitted" "$WORK/cli-up.log" && [ "$CLI_IP" = "10.201.0.1" ] && pass "up --rapido --node node-a with a pocket that only knows nodes joins node-a by itself and connects" || { cat "$WORK/cli-up.log"; fail "cli auto-join (ip '$CLI_IP')"; }
+grep -q "asking node-a for a key for this connection" "$WORK/cli-up.log" && [ "$CLI_IP" = "10.201.0.1" ] && pass "up --rapido --node node-a with a pocket that only knows nodes asks node-a for a key of its own and connects" || { cat "$WORK/cli-up.log"; fail "cli auto-join (ip '$CLI_IP')"; }
 $C ip link show hvpn0 >/dev/null 2>&1 && fail "the CLI left a tunnel up after SIGTERM" || pass "SIGTERM put the network back"
 
-R=$(svc '{"cmd":"connect","mode":"privado"}'); echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q '"hops":2' && pass "two hops: entry node-b then exit node-a" || { echo "$R"; fail "privado"; }
+R=$(svc '{"cmd":"connect","mode":"privado"}'); echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q 'same operator' && pass "two hops under one operator (maintainers) are refused without the person's yes, and it says why" || { echo "$R"; fail "privado under one operator was not refused"; }
+R=$(svc '{"cmd":"connect","mode":"privado","allow_same_operator":true}'); echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q '"hops":2' && pass "two hops: entry node-b then exit node-a, with the person's yes" || { echo "$R"; fail "privado"; }
 for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
 S=$(svc '{"cmd":"status"}'); echo "$S" | grep -q '"same_operator":true' && pass "status says both hops are one operator's (maintainers)" || fail "same_operator: $S"
 EXIT_IP=$($C curl -s --max-time 10 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.201.0.1" ] && pass "two hops carry traffic and the internet still sees the exit" || fail "exit IP over two hops '$EXIT_IP'"
 svc '{"cmd":"down"}' >/dev/null
 
 # ── An entry used as an exit forwards nothing but WireGuard ─────────────────
+$C "$BIN/hidravpn" nodes join node-b > /dev/null 2>&1
 python3 -I -c "import json; p=json.load(open('/etc/hidravpn/circuit.json')); open('$WORK/b-invite.json','w').write(json.dumps(p['entries'][0]))"
 $C "$BIN/hidravpn-service" up "$WORK/b-invite.json" > "$WORK/up-b.log" 2>&1 && pass "root may still hand the service an invite (node-b, one hop)" || { cat "$WORK/up-b.log"; fail "up via b"; }
 for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
@@ -152,7 +154,8 @@ post() { $C curl -s -o "$WORK/post.out" -w '%{http_code}' --max-time 5 -X POST -
 codes=""; for i in 1 2 3 4 5; do K=$("$BIN/hidravpn-sign" keygen --out "$WORK/k$i" 2>/dev/null); codes="$codes $(post "{\"public_key\":\"$K\",\"name\":\"probe-$i\"}" 10.202.0.1)"; done
 echo "$codes" | grep -q 200 && echo "$codes" | grep -q 429 && pass "the admission service admits a few and then rate-limits the address ($codes)" || fail "rate limit codes: $codes"
 [ "$($C curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://10.202.0.1:51821/nowhere)" = 404 ] && pass "an unknown path: 404" || fail "404"
-# node-b holds at most 2 leases: ours, one more, and then it is full.
+# node-b holds at most 4 leases: the two-hop session, the lease joined for
+# `up` by hand, that `up`'s own session key, one more, and then it is full.
 K=$("$BIN/hidravpn-sign" keygen --out "$WORK/kb1" 2>/dev/null); C1=$(post "{\"public_key\":\"$K\",\"name\":\"probe-b1\"}" 10.200.0.1)
 K=$("$BIN/hidravpn-sign" keygen --out "$WORK/kb2" 2>/dev/null); C2=$(post "{\"public_key\":\"$K\",\"name\":\"probe-b2\"}" 10.200.0.1)
 [ "$C1" = 200 ] && [ "$C2" = 503 ] && grep -q "full" "$WORK/post.out" && pass "a node admits up to --max-clients and then answers 503 full ($C1 $C2)" || fail "max_clients: $C1 $C2 $(cat "$WORK/post.out")"
@@ -180,7 +183,7 @@ lease_names() { python3 -I -c "import json; print(' '.join(sorted(l['name'] for 
 names_before=$(lease_names)
 kill $NODE_A; wait $NODE_A 2>/dev/null
 python3 -I -c "import json; ls=json.load(open('$WORK/run-a/peers.json'))['leases']; assert any(l['last_seen']>0 for l in ls), ls" && pass "at shutdown the node wrote down our last handshake" || fail "no last_seen recorded: $(cat "$WORK/run-a/peers.json")"
-$N env HIDRAVPN_RUN_DIR="$WORK/run-a" HIDRAVPN_IDLE_SECS=12 "$BIN/hidravpn-node" --config "$WORK/a.toml" run > "$WORK/a2.log" 2>&1 & PIDS+=($!)
+$N env HIDRAVPN_RUN_DIR="$WORK/run-a" HIDRAVPN_IDLE_SECS=12 HIDRAVPN_SESSION_IDLE_SECS=12 "$BIN/hidravpn-node" --config "$WORK/a.toml" run > "$WORK/a2.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 150); do grep -q "idle openly-admitted client(s) expired" "$WORK/a2.log" && break; sleep 0.2; done
 names_after=$(lease_names)
 echo "$names_before" | grep -q "probe-1" && ! echo "$names_after" | grep -q "probe-" && [ -n "$names_after" ] && pass "idle open admissions expired ($names_before -> $names_after): the probes that never shook hands are gone, we are not" || fail "expiry: $names_before -> $names_after; $(grep -c expired "$WORK/a2.log") log lines"

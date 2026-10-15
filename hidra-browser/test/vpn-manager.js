@@ -96,12 +96,6 @@ function fakeService(behaviour) {
         ] };
         else answer = { ok: false, error: 'the node list is not accepted: the signature does not match: the file was changed, or was not signed with the release key' };
       }
-      else if (req.cmd === 'join') {
-        if (!req.name || req.name === 'node-1') answer = { ok: true, note: 'node-1: admitted as exit', nodes: [
-          { slot: 'exit', node_name: 'node-1', endpoint: '203.0.113.10:51820', admitted: true, operator: 'the maintainers', role: 'exit' },
-        ] };
-        else answer = { ok: false, error: `no known node named "${req.name}" admits openly; \`nodes list\` says whom to ask` };
-      }
       else if (req.cmd === 'nodes') answer = { ok: true, nodes: [
         { slot: 'entry', node_name: 'entry-a', endpoint: '203.0.113.20:51820' },
         { slot: 'exit', node_name: 'exit-a', endpoint: '203.0.113.10:51820' },
@@ -148,6 +142,13 @@ function fakeService(behaviour) {
       assert.strictEqual(s.state, 'connected');
       assert.strictEqual(s.report.killswitch, true);
       assert.strictEqual(s.report.hops_detail.length, 2);
+    });
+
+    await check('two hops under one operator are asked for only on a strict true', async () => {
+      await vpn.connect('privado', { allowSameOperator: 'yes' });
+      assert.ok(!('allow_same_operator' in JSON.parse(svc.seen[svc.seen.length - 1])));
+      await vpn.connect('privado', { allowSameOperator: true });
+      assert.strictEqual(JSON.parse(svc.seen[svc.seen.length - 1]).allow_same_operator, true);
     });
 
     await check('no invite and no key ever travel between the browser and the service', async () => {
@@ -225,17 +226,8 @@ function fakeService(behaviour) {
       assert.ok(/far smaller/.test(r.error), r.error);
     });
 
-    await check('join asks the service, by name or for every open node, and reports in its words', async () => {
-      let r = await vpn.join('node-1');
-      assert.strictEqual(r.ok, true, JSON.stringify(r));
-      assert.ok(/admitted as exit/.test(r.note));
-      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'join', name: 'node-1' });
-      r = await vpn.join('');
-      assert.strictEqual(r.ok, true);
-      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'join' });
-      r = await vpn.join('nowhere');
-      assert.strictEqual(r.ok, false);
-      assert.ok(/admits openly/.test(r.error), r.error);
+    await check('the browser has no way to join a node: open nodes are asked for a fresh key on every connection', async () => {
+      assert.strictEqual(typeof vpn.join, 'undefined');
     });
 
     await check('a list fetched as text goes to the service only with its signature', async () => {

@@ -159,10 +159,14 @@ mod node {
 
     pub async fn main() -> Result<()> {
         tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive("hidravpn_node=info".parse()?),
-            )
+            // HidraVPN's own crates only, whatever RUST_LOG says: a library
+            // at DEBUG would write the names clients look up.
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                hidravpn_core::logging::directives(
+                    std::env::var("RUST_LOG").ok().as_deref(),
+                    "hidravpn_node=info",
+                ),
+            ))
             .with_target(false)
             // Logs go to stderr so that what `admit` and `invite` print on
             // stdout is the invite and nothing else.
@@ -318,6 +322,17 @@ mod node {
             operator: cfg.operator.clone(),
             role: Some(cfg.role.clone()),
             country: cfg.country.clone(),
+            admission: Some(
+                if cfg.admission_is_open() {
+                    "open"
+                } else {
+                    "manual"
+                }
+                .into(),
+            ),
+            admission_port: Some(cfg.admission_port),
+            behind: false,
+            features: cfg.features(),
         })
     }
 
@@ -371,9 +386,18 @@ mod node {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(u64::from(cfg.idle_days) * 86_400);
+        // A session lease (a key made for one connection) is forgotten soon
+        // after the connection ends. HIDRAVPN_SESSION_IDLE_SECS shortens the
+        // window for tests.
+        let session_secs: u64 = std::env::var("HIDRAVPN_SESSION_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::leases::SESSION_IDLE_SECS);
         // At most a quarter of an hour between checks, so a lease that never
-        // came (leases::NEVER_CAME_SECS) is gone soon after it lapses.
-        let period = Duration::from_secs((idle_secs / 4).clamp(2, 900));
+        // came (leases::NEVER_CAME_SECS) is gone soon after it lapses, and a
+        // quarter of the session window, so a session's key does not linger.
+        let period =
+            Duration::from_secs((idle_secs.max(1) / 4).min(session_secs / 4).clamp(2, 900));
         let mut reaper = tokio::time::interval(period);
         reaper.tick().await; // the first tick is immediate; skip it
 
@@ -394,7 +418,7 @@ mod node {
                     let answer = if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
                         Err((503, "this node is full; try another".to_string()))
                     } else {
-                        match leases.admit_open(&req.name, &req.public_key, &net) {
+                        match leases.admit_open(&req.name, &req.public_key, &net, req.session) {
                             Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip)) {
                                 Ok(()) => { info!("admitted a client through the admission service ({} leases)", leases.len()); invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}"))) }
                                 Err(e) => Err((500, format!("could not admit: {e:#}"))),
@@ -405,13 +429,14 @@ mod node {
                     let _ = req.reply.send(answer);
                 }
                 _ = reaper.tick() => {
-                    if idle_secs > 0 {
+                    {
                         match dev.peer_stats() {
                             Ok(stats) => {
                                 let ages = stats.iter().map(|(k, s)| (k.clone(), s.last_handshake)).collect();
                                 let now = crate::leases::now_unix();
-                                let touched = leases.note_handshakes(now, &ages);
-                                let gone = leases.expire_idle(now, idle_secs);
+                                let rx = stats.iter().map(|(k, s)| (k.clone(), s.rx_bytes)).collect();
+                                let touched = leases.note_handshakes(now, &ages) | leases.note_traffic(now, &rx);
+                                let gone = leases.expire_idle(now, idle_secs, session_secs);
                                 for l in &gone { let _ = dev.remove_peer(&l.public_key); }
                                 if touched || !gone.is_empty() {
                                     if let Err(e) = leases.save() { warn!("saving leases: {e}"); }
@@ -435,7 +460,9 @@ mod node {
                 .iter()
                 .map(|(k, s)| (k.clone(), s.last_handshake))
                 .collect();
-            if leases.note_handshakes(crate::leases::now_unix(), &ages) {
+            let rx = stats.iter().map(|(k, s)| (k.clone(), s.rx_bytes)).collect();
+            let now = crate::leases::now_unix();
+            if leases.note_handshakes(now, &ages) | leases.note_traffic(now, &rx) {
                 if let Err(e) = leases.save() {
                     warn!("saving leases at shutdown: {e}");
                 }

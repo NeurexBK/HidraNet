@@ -57,7 +57,8 @@ sudo bash hidravpn/scripts/install-node-linux.sh \
     --name hel-1 --role exit --operator "HidraNet maintainers" \
     --contact nodes@hidranet.org --open-admission
 
-# an entry (forwards only WireGuard to other nodes; sees addresses, not traffic)
+# an entry (forwards only WireGuard, and clients' admission requests, to other
+# nodes; sees addresses, not traffic)
 sudo bash hidravpn/scripts/install-node-linux.sh \
     --endpoint <ip>:51820 --name ams-1 --role entry \
     --operator "HidraNet maintainers" --open-admission
@@ -69,13 +70,23 @@ the node to report ready, and prints the node's record. **Back up
 `/etc/hidravpn/node.toml`**: it is the node's identity.
 
 Then, on the server: `hidravpn-node record > hel-1.json`, and send that file to
-whoever makes the list.
+whoever makes the list. The record lists what the node's software can do
+(`features`); clients rely on it.
 
 ## Open admission: what it means
 
 With `--open-admission`, any client that knows the node (from the list) is
-admitted when it asks, at most three times per address every ten minutes and
-120 per node, up to `--max-clients` (4000). A client that never completes a
+admitted when it asks. Clients ask for a **session**: a key made for one
+connection, which the node forgets about ten minutes after the last packet
+it received under it. A session request must carry a proof of work bound to
+this node, that key and the current minute: about a second of one core at
+the default of 20 bits (`admission_work_bits` in `/etc/hidravpn/node.toml`;
+raise it if scripts fill the node). Sessions are not counted per address,
+because an exit sees every client of an entry under the entry's address;
+the node takes at most 600 every ten minutes. A lasting lease (`hidravpn
+nodes join`) is still counted the old way, at most three times per address
+every ten minutes and 120 per node. Everything together stays under
+`--max-clients` (4000). A client that never completes a
 handshake loses its lease within about fifteen minutes, so a script that
 only asks cannot keep a node full; one that stops coming loses it after
 `--idle-days` (30; the node writes each client's last handshake down, so a
@@ -83,9 +94,19 @@ restart is not idleness). A manually admitted client (`hidravpn-node admit`) is 
 expired. Both numbers are installer flags too (`--max-clients`,
 `--idle-days`) and settings in `/etc/hidravpn/node.toml`.
 
-An entry forwards only to UDP 51820, the default tunnel port: keep exits on
-that port, or an entry cannot reach them. It forwards that port to any
-address, not only to listed nodes: the node has no list. Whatever the role,
+An entry forwards only to UDP 51820, the default tunnel port, and to TCP
+51821, the default admission port, so a client can ask an exit for admission
+through the entry: keep exits on those ports, or an entry cannot reach them.
+It forwards those ports to any address, not only to listed nodes: the node
+has no list.
+
+## Updating a node
+
+Clients pass over an open node whose record does not list `sessions`, and
+use an entry for an open exit only if its record lists `admission-relay`.
+A node updated to this release says so in `hidravpn-node record`. After
+updating the nodes, make and sign the list again from the new records:
+until then, clients cannot use them. Whatever the role,
 traffic from the tunnel reaches the node's outside interface and nothing
 else of the host — not a private network interface, not a service on the
 node itself other than its DNS forwarder.
@@ -126,12 +147,12 @@ anywhere else you like.
 
 In the browser: open HidraVPN, press **Get the maintainers' list**, press
 **Connect**. The service checks the list's signature, writes the nodes down,
-asks the open ones to admit it, and connects. On the command line:
+and connects, asking each open node it uses to admit a key made for that
+connection. On the command line:
 
 ```
 sudo hidravpn nodes import nodes.json     # checked against the list key built in
-sudo hidravpn nodes join --all            # admitted on every open node
-sudo hidravpn up --privado                # two hops, two nodes
+sudo hidravpn up --privado                # two hops, two nodes, a fresh key for each
 ```
 
 A node that admits by hand shows up as known with its contact; the client

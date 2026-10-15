@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The uptime prober: tries every exit this machine is admitted on, one at a
-# time, and writes down which ones carried traffic. Run it hourly (cron or a
+# The uptime prober: tries every exit this machine can use — admitted on by
+# hand, or known from the signed list as admitting openly (asked for a key
+# of its own on each connection) — one at a time, and writes down which ones
+# carried traffic. Run it hourly (cron or a
 # systemd timer) on a small machine of the maintainers' that is admitted on
 # every node; publish the status file. That is the uptime measurement
 # docs/business/16 promises, the "a stranger connects" check, and an
@@ -28,7 +30,7 @@ done
 [ "$(id -u)" = 0 ] || { echo "run as root (it brings the tunnel up and down)"; exit 1; }
 mkdir -p "$OUT"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-mapfile -t EXITS < <($HV nodes list 2>/dev/null | awk '$1=="exit"{print $2}')
+mapfile -t EXITS < <($HV nodes list 2>/dev/null | awk '$1=="exit" || ($1=="known" && ($4=="exit" || $4=="both") && / admits openly/) { if (!seen[$2]++) print $2 }')
 if [ ${#EXITS[@]} -eq 0 ]; then
   echo "no exits in the pocket; nothing to probe" >&2
   printf '{"checked":"%s","nodes":[]}\n' "$NOW" > "$OUT/status.json"; exit 0

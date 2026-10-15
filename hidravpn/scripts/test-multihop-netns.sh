@@ -126,9 +126,9 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "the client c
 # default 10.77.0.0/16 on purpose, the same as the exits, to prove the client
 # copes with both hops handing it the same subnet.
 mkdir -p "$WORK/run-entry" "$WORK/run-exit" "$WORK/run-exit2"
-$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --endpoint 10.200.0.1:51820 --name entry-node --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
-$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --endpoint 10.202.0.1:51820 --name exit-node --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
-$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --endpoint 10.202.0.3:51820 --name exit-two --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
+$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --endpoint 10.200.0.1:51820 --name entry-node --operator op-entry --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
+$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --endpoint 10.202.0.1:51820 --name exit-node --operator op-exit-1 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
+$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --endpoint 10.202.0.3:51820 --name exit-two --operator op-exit-2 --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/exit.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvx1"/' "$WORK/exit2.toml"
 grep -q '^interface = "hvx0"' "$WORK/exit.toml" && grep -q '^interface = "hvx1"' "$WORK/exit2.toml" && pass "three nodes set up: entry on hvpn0, exits on hvx0 and hvx1" || fail "could not give the exits their own interface names"
@@ -152,10 +152,15 @@ NODE_PUB_X=$(grep -o 'node public key: .*' "$WORK/init-exit.log" | cut -d' ' -f4
 NODE_PUB_X2=$(grep -o 'node public key: .*' "$WORK/init-exit2.log" | cut -d' ' -f4)
 [ "$($E "$BIN/hidravpn-node" --config "$WORK/entry.toml" pubkey 2>/dev/null)" = "$NODE_PUB_E" ] && pass "hidravpn-node pubkey prints the node's public key (what init printed)" || fail "hidravpn-node pubkey"
 PUB_E=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_E" 2>/dev/null)
-PUB_X=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_X" 2>/dev/null)
-PUB_X2=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_X2" 2>/dev/null)
+# The exits are reached through the entry, so each is admitted for the key
+# behind an entry — never the one-hop key, which this machine shows from its
+# own address.
+PUB_X=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_X" --behind 2>/dev/null)
+PUB_X2=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_X2" --behind 2>/dev/null)
+PUB_X_1HOP=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_PUB_X" 2>/dev/null)
 [ ${#PUB_E} -eq 44 ] && [ ${#PUB_X} -eq 44 ] && [ ${#PUB_X2} -eq 44 ] && [ "$PUB_E" != "$PUB_X" ] && [ "$PUB_X" != "$PUB_X2" ] && [ "$PUB_E" != "$PUB_X2" ] && pass "three different keys derived for the three nodes" || fail "per-node keys: '$PUB_E' '$PUB_X' '$PUB_X2'"
 [ "$PUB_E" != "$MASTER" ] && [ "$PUB_X" != "$MASTER" ] && [ "$PUB_X2" != "$MASTER" ] && pass "none of them is the master key" || fail "a per-node key equals the master key"
+[ ${#PUB_X_1HOP} -eq 44 ] && [ "$PUB_X_1HOP" != "$PUB_X" ] && pass "the key exit-node is shown behind an entry is not the one it is shown for one hop" || fail "behind key '$PUB_X' vs one-hop key '$PUB_X_1HOP'"
 $E env HIDRAVPN_RUN_DIR="$WORK/run-entry" "$BIN/hidravpn-node" --config "$WORK/entry.toml" admit --name laptop --pubkey "$PUB_E" > "$WORK/entry.json" 2>/dev/null
 $X env HIDRAVPN_RUN_DIR="$WORK/run-exit" "$BIN/hidravpn-node" --config "$WORK/exit.toml" admit --name laptop --pubkey "$PUB_X" > "$WORK/exit.json" 2>/dev/null
 $X2 env HIDRAVPN_RUN_DIR="$WORK/run-exit2" "$BIN/hidravpn-node" --config "$WORK/exit2.toml" admit --name laptop --pubkey "$PUB_X2" > "$WORK/exit2.json" 2>/dev/null
@@ -220,8 +225,8 @@ grep -q "laptop" "$WORK/entry-status.log" && ! grep -q "never" "$WORK/entry-stat
 
 echo "── the kill switch"
 $C nft list table inet hidravpn_ks > "$WORK/ks.log" 2>&1 && pass "the kill switch is armed" || fail "the kill switch is not armed"
-grep -q 'ip daddr 10.200.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -q 'ip daddr 10.202.0.1' "$WORK/ks.log" && pass "the entry's endpoint is the only address allowed off-tunnel" || fail "kill switch rules: $(grep -c accept "$WORK/ks.log") accepts"
-grep -q 'oifname "hvpn1" accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" accept' "$WORK/ks.log" && pass "both tunnel interfaces are allowed" || fail "an interface is missing from the kill switch"
+grep -q 'ip daddr 10.200.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -v 'oifname' "$WORK/ks.log" | grep -q 'ip daddr 10.202.0.1' && pass "the entry's endpoint is the only address allowed off-tunnel" || fail "kill switch rules: $(grep -c accept "$WORK/ks.log") accepts"
+grep -q 'oifname "hvpn1" accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -q 'oifname "hvpn0" accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
 $C curl -s --max-time 3 http://10.200.0.1:8081/ >/dev/null 2>&1 && fail "a plain request to the physical link got through the kill switch" || pass "a plain request to a host on the physical link is blocked"
 
 echo "── new identity: the exit changes"
@@ -258,7 +263,7 @@ wait_connected && [ "$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)" 
 $C "$BIN/hidravpn" down > /dev/null 2>&1 && ! $C ip link show hvpn1 >/dev/null 2>&1 && pass "down again, clean" || fail "second down"
 
 echo "── the pocket: nodes add, up --privado, new-identity rotates to another exit"
-$C "$BIN/hidravpn" nodes add --entry "$WORK/entry.json" > "$WORK/nodes.log" 2>&1 && $C "$BIN/hidravpn" nodes add --exit "$WORK/exit.json" >> "$WORK/nodes.log" 2>&1 && $C "$BIN/hidravpn" nodes add --exit "$WORK/exit2.json" >> "$WORK/nodes.log" 2>&1 && grep -q "1 entries, 2 exits" "$WORK/nodes.log" && [ -f /etc/hidravpn/circuit.json ] && pass "nodes add: one entry and two exits in /etc/hidravpn/circuit.json" || { cat "$WORK/nodes.log"; fail "nodes add"; }
+$C "$BIN/hidravpn" nodes add --entry "$WORK/entry.json" > "$WORK/nodes.log" 2>&1 && $C "$BIN/hidravpn" nodes add --exit "$WORK/exit.json" --behind >> "$WORK/nodes.log" 2>&1 && $C "$BIN/hidravpn" nodes add --exit "$WORK/exit2.json" --behind >> "$WORK/nodes.log" 2>&1 && grep -q "1 entries, 2 exits" "$WORK/nodes.log" && [ -f /etc/hidravpn/circuit.json ] && pass "nodes add: one entry and two exits in /etc/hidravpn/circuit.json" || { cat "$WORK/nodes.log"; fail "nodes add"; }
 $C "$BIN/hidravpn" nodes add --exit "$WORK/exit.json" > "$WORK/nodes-dup.log" 2>&1 && fail "the same node was added twice" || pass "adding a node already in the pocket is refused: $(head -1 "$WORK/nodes-dup.log" | cut -c1-70)"
 $C "$BIN/hidravpn" nodes list > "$WORK/list.log" 2>&1
 grep -q "^entry  entry-node .*10.200.0.1:51820" "$WORK/list.log" && grep -q "^exit   exit-node .*10.202.0.1:51820" "$WORK/list.log" && grep -q "^exit   exit-two .*10.202.0.3:51820" "$WORK/list.log" && pass "nodes list names the three nodes and their endpoints" || { cat "$WORK/list.log"; fail "nodes list"; }
@@ -277,6 +282,11 @@ POCKET_IP2=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)
 [ -n "$POCKET_IP2" ] && [ "$POCKET_IP2" != "$POCKET_IP1" ] && pass "the exit changed: the internet now sees $POCKET_IP2 (was $POCKET_IP1)" || fail "exit IP after the rotation was '$POCKET_IP2' (before: '$POCKET_IP1')"
 $C "$BIN/hidravpn" down > /dev/null 2>&1 && ! $C ip link show hvpn1 >/dev/null 2>&1 && pass "down, clean" || fail "down after the pocket"
 $C "$BIN/hidravpn" nodes remove exit-two > "$WORK/rm.log" 2>&1 && grep -q "1 entries, 1 exits left" "$WORK/rm.log" && ! grep -q exit-two <($C "$BIN/hidravpn" nodes list 2>&1) && pass "nodes remove: exit-two is gone from the pocket" || { cat "$WORK/rm.log"; fail "nodes remove"; }
+# exit-node's lease in the pocket is for the key behind an entry: one hop
+# may not use it. One hop needs its own admission, of the one-hop key.
+$C "$BIN/hidravpn" up --rapido > "$WORK/up4.log" 2>&1 && fail "one hop used a lease meant for two" || pass "a lease for the key behind an entry is not used for one hop: $(head -1 "$WORK/up4.log" | cut -c1-80)"
+$X env HIDRAVPN_RUN_DIR="$WORK/run-exit" "$BIN/hidravpn-node" --config "$WORK/exit.toml" admit --name laptop-1hop --pubkey "$PUB_X_1HOP" > "$WORK/exit-1hop.json" 2>/dev/null
+$C "$BIN/hidravpn" nodes remove exit-node > /dev/null 2>&1; $C "$BIN/hidravpn" nodes add --exit "$WORK/exit-1hop.json" > /dev/null 2>&1
 $C "$BIN/hidravpn" up --rapido > "$WORK/up4.log" 2>&1 && grep -q "rapido, 1 hop: exit-node" "$WORK/up4.log" && grep -q "the node sees your address and your traffic" "$WORK/up4.log" && pass "up --rapido picks the one exit left and says what one hop hides" || { cat "$WORK/up4.log"; fail "up --rapido"; }
 # One hop to an exit cannot carry traffic here: the exits have no route back
 # to the client's link (only the entry has), which is what makes this network

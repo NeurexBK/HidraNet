@@ -189,6 +189,15 @@ impl Pocket {
                 inv.country = record.country.clone();
                 changed.push("country".into());
             }
+            if inv.admission != record.admission || inv.admission_port != record.admission_port {
+                inv.admission = record.admission.clone();
+                inv.admission_port = record.admission_port;
+                changed.push("admission".into());
+            }
+            if inv.features != record.features {
+                inv.features = record.features.clone();
+                changed.push("features".into());
+            }
             if !name_taken && inv.node_name.trim() != record.node_name.trim() {
                 inv.node_name = record.node_name.clone();
                 changed.push("name".into());
@@ -278,14 +287,76 @@ impl Pocket {
             .chain(self.exits.iter().map(|i| (Slot::Exit, i)))
     }
 
+    /// The nodes that may fill a slot, for one connection.
+    ///
+    /// A node that admits openly is asked for a fresh key on every
+    /// connection, whether this machine joined it once or only knows it from
+    /// the signed list — so known records count, and a stable lease this
+    /// machine may hold there is never used. Such a node is skipped when its
+    /// record does not list `sessions`: its software is older than
+    /// per-connection keys, and the stable key it would need is what lets a
+    /// node recognise a person from one connection to the next. A node
+    /// admitted by hand is used with its lease. `accept` says which leases
+    /// suit the slot. Returns the nodes and how many were skipped as not
+    /// updated.
+    fn candidates(&self, slot: Slot, accept: impl Fn(&Invite) -> bool) -> (Vec<Invite>, usize) {
+        let list = match slot {
+            Slot::Entry => &self.entries,
+            Slot::Exit => &self.exits,
+        };
+        let known = self
+            .joinable()
+            .into_iter()
+            .filter(|r| slots_for_role(r.role.as_deref()).contains(&slot))
+            .map(stand_in);
+        let mut out: Vec<Invite> = Vec::new();
+        let mut outdated = 0;
+        for c in list.iter().filter(|i| accept(i)).cloned().chain(known) {
+            if out
+                .iter()
+                .any(|o| o.node_public_key.trim() == c.node_public_key.trim())
+            {
+                continue;
+            }
+            if c.admits_openly() && !c.admits_sessions() {
+                outdated += 1;
+                continue;
+            }
+            out.push(c);
+        }
+        (out, outdated)
+    }
+
+    /// The nodes one hop may go through: open nodes (asked for a key for
+    /// this connection), or a lease granted by hand for the one-hop key —
+    /// never one for the key behind an entry.
+    pub fn rapido_exits(&self) -> (Vec<Invite>, usize) {
+        self.candidates(Slot::Exit, |i| !i.behind)
+    }
+
+    /// The nodes two hops may enter through.
+    pub fn privado_entries(&self) -> (Vec<Invite>, usize) {
+        self.candidates(Slot::Entry, |_| true)
+    }
+
+    /// The nodes that may be the exit of two hops: open nodes (asked through
+    /// the entry for a key for this connection), or a lease an operator
+    /// granted by hand to the key behind an entry. An exit admitted by hand
+    /// for the one-hop key is not one: that key may have arrived from this
+    /// machine's own address.
+    pub fn privado_exits(&self) -> (Vec<Invite>, usize) {
+        self.candidates(Slot::Exit, |i| i.behind || i.admits_openly())
+    }
+
     /// One exit, at random. The other exits come along for rotation.
     pub fn pick_rapido(&self) -> Result<Pick> {
-        if self.exits.is_empty() {
+        let (mut exits, outdated) = self.rapido_exits();
+        if exits.is_empty() {
             return Err(anyhow!(
-                "the pocket has no exit node; add one with `hidravpn nodes add --exit exit.json`"
+                "no node can carry one hop: {}",
+                missing("exit", outdated, "`hidravpn nodes add --exit exit.json`")
             ));
         }
-        let mut exits = self.exits.clone();
         let exit = exits.remove(crate::random::index(exits.len())?);
         Ok(Pick {
             exit,
@@ -296,47 +367,67 @@ impl Pocket {
         })
     }
 
-    /// One exit and one entry, at random, that are two different nodes. The
-    /// other exits and entries come along for rotation.
-    pub fn pick_privado(&self) -> Result<Pick> {
-        if self.exits.is_empty() {
+    /// One exit and one entry, at random, that are two different nodes run
+    /// by two different operators — unless `allow_same_operator`, the
+    /// person's explicit yes to two hops one operator could watch together
+    /// (or whose operators the list does not name). An exit asked through
+    /// the entry needs an entry that relays the request. The other exits and
+    /// entries come along for rotation.
+    pub fn pick_privado(&self, allow_same_operator: bool) -> Result<Pick> {
+        let (entries_all, entries_outdated) = self.privado_entries();
+        if entries_all.is_empty() {
             return Err(anyhow!(
-                "the pocket has no exit node; add one with `hidravpn nodes add --exit exit.json`"
+                "no node can be the entry of two hops: {}",
+                missing(
+                    "entry",
+                    entries_outdated,
+                    "`hidravpn nodes add --entry entry.json`"
+                )
             ));
         }
-        if self.entries.is_empty() {
+        let (exits_all, exits_outdated) = self.privado_exits();
+        if exits_all.is_empty() {
+            let by_hand = self.exits.iter().any(|i| !i.behind && !i.admits_openly());
             return Err(anyhow!(
-                "the pocket has no entry node; add one with `hidravpn nodes add --entry entry.json`"
+                "no node can be the exit of two hops: {}",
+                if by_hand && exits_outdated == 0 {
+                    "the exits in the pocket were admitted by hand for the one-hop key, which this machine shows from its own address. Ask the operator to admit `hidravpn pubkey --node <its key> --behind` and add that invite with `hidravpn nodes add --exit exit.json --behind`".to_string()
+                } else {
+                    missing("exit", exits_outdated, "a lease for the key behind an entry: `hidravpn pubkey --node <its key> --behind`, then `hidravpn nodes add --exit exit.json --behind`")
+                }
             ));
         }
-        // Every (entry, exit) pair of two different nodes; among them, the
-        // pairs run by two different operators when there are any, because
-        // two hops under one operator are one operator's view. One of those
-        // at random, so no pair is favoured.
-        let pairs: Vec<(usize, usize)> = (0..self.entries.len())
-            .flat_map(|e| (0..self.exits.len()).map(move |x| (e, x)))
-            .filter(|&(e, x)| !same_node(&self.entries[e], &self.exits[x]))
+        let pairs: Vec<(usize, usize)> = (0..entries_all.len())
+            .flat_map(|e| (0..exits_all.len()).map(move |x| (e, x)))
+            .filter(|&(e, x)| !same_node(&entries_all[e], &exits_all[x]))
             .collect();
         if pairs.is_empty() {
             return Err(anyhow!(
                 "every entry in the pocket is the same node as every exit; two hops need two different nodes"
             ));
         }
-        let different: Vec<(usize, usize)> = pairs
+        let relayed: Vec<(usize, usize)> = pairs
             .iter()
             .copied()
-            .filter(|&(e, x)| same_operator(&self.entries[e], &self.exits[x]) == Some(false))
+            .filter(|&(e, x)| entry_can_reach(&entries_all[e], &exits_all[x]))
             .collect();
-        let pairs = if different.is_empty() {
-            pairs
-        } else {
-            different
-        };
-        let (e, x) = pairs[crate::random::index(pairs.len())?];
-        let same_operator = same_operator(&self.entries[e], &self.exits[x]);
-        let mut exits = self.exits.clone();
+        if relayed.is_empty() {
+            return Err(anyhow!(
+                "no entry can ask an exit for admission on this machine's behalf: their software is older than that (no `admission-relay` in the node list); the entries' operators need to update them"
+            ));
+        }
+        let allowed: Vec<(usize, usize)> = relayed
+            .into_iter()
+            .filter(|&(e, x)| pair_allowed(&entries_all[e], &exits_all[x], allow_same_operator))
+            .collect();
+        if allowed.is_empty() {
+            return Err(anyhow!("{}", SAME_OPERATOR_REFUSAL));
+        }
+        let (e, x) = allowed[crate::random::index(allowed.len())?];
+        let same_operator = same_operator(&entries_all[e], &exits_all[x]);
+        let mut exits = exits_all;
         let exit = exits.remove(x);
-        let mut entries = self.entries.clone();
+        let mut entries = entries_all;
         let entry = entries.remove(e);
         Ok(Pick {
             exit,
@@ -352,6 +443,55 @@ impl Pocket {
             Slot::Entry => &mut self.entries,
             Slot::Exit => &mut self.exits,
         }
+    }
+}
+
+/// Why two hops are refused when no pair has two operators.
+pub const SAME_OPERATOR_REFUSAL: &str = "two hops refused: every entry and exit available is run by the same operator, or the node list does not say who runs them. One operator running both hops can see who you are and where you go, which is what two hops exist to prevent. Connect anyway only if you accept that: `--allow-same-operator` on the command line, or the box on the VPN page";
+
+/// Whether two hops through `entry` and `exit` may be built: two operators,
+/// or the person's explicit yes.
+pub fn pair_allowed(entry: &Invite, exit: &Invite, allow_same_operator: bool) -> bool {
+    allow_same_operator || same_operator(entry, exit) == Some(false)
+}
+
+/// Whether `entry` can carry the admission request `exit` needs: an exit
+/// admitted by hand needs none; one asked for a key per connection needs an
+/// entry whose software relays the request.
+pub fn entry_can_reach(entry: &Invite, exit: &Invite) -> bool {
+    !exit.admits_openly() || entry.has(crate::directory::features::ADMISSION_RELAY)
+}
+
+/// Why no node fills a slot, and what to do.
+fn missing(slot: &str, outdated: usize, add: &str) -> String {
+    if outdated > 0 {
+        format!(
+            "{outdated} {slot} node(s) that admit openly run software older than per-connection keys (no `sessions` in the node list) and are not used; their operators need to update them and publish the list again"
+        )
+    } else {
+        format!("the pocket has no {slot} node; import the signed node list, or add one: {add}")
+    }
+}
+
+/// What the pocket knows of an exit it has not joined: enough to pick it
+/// and ask it for admission, never enough to connect (it has no lease).
+fn stand_in(r: &NodeRecord) -> Invite {
+    Invite {
+        node_name: r.node_name.clone(),
+        node_public_key: r.node_public_key.clone(),
+        endpoint: r.endpoint.clone(),
+        client_address: "0.0.0.0/32".into(),
+        dns: std::net::Ipv4Addr::UNSPECIFIED,
+        allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
+        mtu: 1420,
+        keepalive: 25,
+        operator: r.operator.clone(),
+        role: r.role.clone(),
+        country: r.country.clone(),
+        admission: r.admission.clone(),
+        admission_port: r.admission_port,
+        behind: false,
+        features: r.features.clone(),
     }
 }
 
@@ -409,7 +549,64 @@ mod tests {
             operator: None,
             role: None,
             country: None,
+            admission: None,
+            admission_port: None,
+            behind: false,
+            features: Vec::new(),
         }
+        .open()
+    }
+
+    impl Invite {
+        /// A node that admits openly, with today's software.
+        fn open(mut self) -> Self {
+            self.admission = Some("open".into());
+            self.features = vec![
+                crate::directory::features::SESSIONS.into(),
+                crate::directory::features::ADMISSION_RELAY.into(),
+            ];
+            self
+        }
+    }
+
+    #[test]
+    fn a_node_older_than_per_connection_keys_is_passed_over_and_said_so() {
+        let mut p = Pocket::default();
+        let mut old_entry = run_by(invite("e-old", "203.0.113.20:51820"), "a");
+        old_entry.features.clear();
+        p.add(Slot::Entry, old_entry).unwrap();
+        p.add(Slot::Exit, run_by(invite("x", "203.0.113.10:51820"), "b"))
+            .unwrap();
+        let e = p.pick_privado(false).unwrap_err().to_string();
+        assert!(e.contains("older than per-connection keys"), "{e}");
+        // An entry that takes session keys but does not relay admission
+        // cannot carry an exit that is asked through it.
+        let mut no_relay = run_by(invite("e-norelay", "203.0.113.21:51820"), "a");
+        no_relay.features = vec![crate::directory::features::SESSIONS.into()];
+        p.add(Slot::Entry, no_relay).unwrap();
+        let e = p.pick_privado(false).unwrap_err().to_string();
+        assert!(e.contains("admission-relay"), "{e}");
+        p.add(
+            Slot::Entry,
+            run_by(invite("e-new", "203.0.113.22:51820"), "a"),
+        )
+        .unwrap();
+        for _ in 0..20 {
+            assert_eq!(
+                p.pick_privado(false).unwrap().entry.unwrap().node_name,
+                "e-new"
+            );
+        }
+        // One hop through an old open exit: passed over too.
+        let mut q = Pocket::default();
+        let mut old_exit = invite("x-old", "203.0.113.30:51820");
+        old_exit.features.clear();
+        q.add(Slot::Exit, old_exit).unwrap();
+        assert!(q
+            .pick_rapido()
+            .unwrap_err()
+            .to_string()
+            .contains("older than per-connection keys"));
     }
 
     fn run_by(mut inv: Invite, op: &str) -> Invite {
@@ -418,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn two_hops_prefer_two_operators_and_say_when_they_could_not() {
+    fn two_hops_need_two_operators_or_the_persons_yes() {
         let mut p = Pocket::default();
         p.add(
             Slot::Entry,
@@ -436,29 +633,77 @@ mod tests {
         )
         .unwrap();
         for _ in 0..30 {
-            let pick = p.pick_privado().unwrap();
+            let pick = p.pick_privado(false).unwrap();
             assert_eq!(
                 pick.exit.node_name, "x-b",
-                "the pair under two operators is the one taken"
+                "the pair under two operators is the only one taken"
             );
             assert_eq!(pick.same_operator, Some(false));
         }
         p.remove("x-b");
-        let pick = p.pick_privado().unwrap();
+        let e = p.pick_privado(false).unwrap_err().to_string();
+        assert!(
+            e.contains("same operator") && e.contains("--allow-same-operator"),
+            "{e}"
+        );
+        let pick = p.pick_privado(true).unwrap();
         assert_eq!(
             pick.same_operator,
             Some(true),
-            "with no other choice, it says so"
+            "with the person's yes, and said"
         );
         p.remove("x-a");
         p.add(Slot::Exit, invite("x-c", "203.0.113.12:51820"))
             .unwrap();
-        assert_eq!(
-            p.pick_privado().unwrap().same_operator,
-            None,
-            "an invite that does not say leaves it unknown"
+        assert!(
+            p.pick_privado(false).is_err(),
+            "an operator nobody named could be the entry's: refused too"
         );
+        assert_eq!(p.pick_privado(true).unwrap().same_operator, None);
         assert_eq!(p.pick_rapido().unwrap().same_operator, None);
+    }
+
+    #[test]
+    fn only_an_open_exit_or_one_admitted_for_the_key_behind_an_entry_is_a_privado_exit() {
+        let mut p = Pocket::default();
+        p.add(Slot::Entry, run_by(invite("e", "203.0.113.20:51820"), "a"))
+            .unwrap();
+        let mut by_hand = run_by(invite("x-hand", "203.0.113.10:51820"), "b");
+        by_hand.admission = Some("manual".into());
+        p.add(Slot::Exit, by_hand).unwrap();
+        let e = p.pick_privado(false).unwrap_err().to_string();
+        assert!(e.contains("--behind"), "{e}");
+        assert_eq!(p.pick_rapido().unwrap().exit.node_name, "x-hand");
+        let mut behind = run_by(invite("x-behind", "203.0.113.11:51820"), "b");
+        behind.admission = Some("manual".into());
+        behind.behind = true;
+        p.add(Slot::Exit, behind).unwrap();
+        for _ in 0..20 {
+            assert_eq!(p.pick_privado(false).unwrap().exit.node_name, "x-behind");
+            assert_eq!(
+                p.pick_rapido().unwrap().exit.node_name,
+                "x-hand",
+                "a lease for the key behind an entry is never used for one hop"
+            );
+        }
+        // A known exit that admits openly is a candidate before it is joined.
+        p.remove("x-behind");
+        p.learn(NodeRecord {
+            node_name: "x-known".into(),
+            node_public_key: ClientKey::generate().unwrap().public_base64(),
+            endpoint: "203.0.113.12:51820".into(),
+            operator: Some("c".into()),
+            contact: None,
+            role: Some("exit".into()),
+            admission: Some("open".into()),
+            admission_port: None,
+            country: None,
+            features: vec![crate::directory::features::SESSIONS.into()],
+        })
+        .unwrap();
+        let pick = p.pick_privado(false).unwrap();
+        assert_eq!(pick.exit.node_name, "x-known");
+        assert!(pick.exit.admits_openly());
     }
 
     #[test]
@@ -483,7 +728,7 @@ mod tests {
     #[test]
     fn a_pocket_round_trips_and_an_empty_file_reads() {
         let mut p = Pocket::default();
-        p.add(Slot::Entry, invite("e1", "1.1.1.1:51820")).unwrap();
+        p.add(Slot::Entry, invite("e1", "192.0.2.1:51820")).unwrap();
         p.add(Slot::Exit, invite("x1", "198.51.100.2:51820"))
             .unwrap();
         let again = Pocket::from_json(&p.to_json()).unwrap();
@@ -541,17 +786,17 @@ mod tests {
         p.add(Slot::Exit, invite("x1", "198.51.100.1:51820"))
             .unwrap();
         assert!(p
-            .pick_privado()
+            .pick_privado(true)
             .unwrap_err()
             .to_string()
             .contains("no entry"));
-        p.add(Slot::Entry, invite("e1", "1.1.1.1:51820")).unwrap();
-        p.add(Slot::Entry, invite("e2", "1.1.1.2:51820")).unwrap();
+        p.add(Slot::Entry, invite("e1", "192.0.2.1:51820")).unwrap();
+        p.add(Slot::Entry, invite("e2", "192.0.2.2:51820")).unwrap();
         p.add(Slot::Exit, invite("x2", "198.51.100.2:51820"))
             .unwrap();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..200 {
-            let pick = p.pick_privado().unwrap();
+            let pick = p.pick_privado(true).unwrap();
             let entry = pick.entry.as_ref().unwrap();
             assert!(!same_node(entry, &pick.exit));
             assert_eq!(pick.other_exits.len(), 1);
@@ -564,20 +809,20 @@ mod tests {
     #[test]
     fn privado_never_pairs_a_node_with_itself() {
         let mut p = Pocket::default();
-        let node = invite("both", "1.1.1.1:51820");
+        let node = invite("both", "192.0.2.1:51820");
         p.add(Slot::Entry, node.clone()).unwrap();
         let mut as_exit = node.clone();
         as_exit.node_name = "both-as-exit".into();
         p.add(Slot::Exit, as_exit).unwrap();
         assert!(p
-            .pick_privado()
+            .pick_privado(true)
             .unwrap_err()
             .to_string()
             .contains("same node"));
         p.add(Slot::Exit, invite("x2", "198.51.100.2:51820"))
             .unwrap();
         for _ in 0..20 {
-            assert_eq!(p.pick_privado().unwrap().exit.node_name, "x2");
+            assert_eq!(p.pick_privado(true).unwrap().exit.node_name, "x2");
         }
     }
 }

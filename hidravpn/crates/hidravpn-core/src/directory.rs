@@ -78,6 +78,22 @@ pub struct NodeRecord {
     /// measured: a list is only as right as its signer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+    /// What this node's software can do beyond phase 4 (`features`): a
+    /// client never asks a node for something its record does not list, so
+    /// a node not yet updated is passed over instead of failing a
+    /// connection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
+/// What a node can do, as its record lists it.
+pub mod features {
+    /// Admits a key for one connection only (`"session": true`), against a
+    /// proof of work, and forgets it soon after the connection ends.
+    pub const SESSIONS: &str = "sessions";
+    /// As an entry, forwards a client's admission request to an exit
+    /// (TCP 51821), so the exit is asked from the entry's address.
+    pub const ADMISSION_RELAY: &str = "admission-relay";
 }
 
 /// A country as two ASCII letters, upper case; anything else is refused, so
@@ -166,7 +182,24 @@ impl NodeRecord {
                 ));
             }
         }
+        if self.features.len() > 16
+            || self.features.iter().any(|f| {
+                f.is_empty()
+                    || f.len() > 32
+                    || !f.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+            })
+        {
+            return Err(anyhow!(
+                "the features of {} must be at most 16 short lower-case words",
+                self.node_name
+            ));
+        }
         Ok(())
+    }
+
+    /// Whether the record lists this feature.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
     }
 
     pub fn is_open(&self) -> bool {
@@ -383,6 +416,7 @@ mod tests {
             admission: Some("open".into()),
             admission_port: None,
             country: None,
+            features: Vec::new(),
         }
     }
 
@@ -399,6 +433,10 @@ mod tests {
             operator: r.operator.clone(),
             role: r.role.clone(),
             country: None,
+            admission: None,
+            admission_port: None,
+            behind: false,
+            features: Vec::new(),
         }
     }
 

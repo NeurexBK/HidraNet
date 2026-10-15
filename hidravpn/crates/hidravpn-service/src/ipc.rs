@@ -50,6 +50,10 @@ pub enum Command {
         alternates: Vec<Invite>,
         #[serde(default)]
         alternate_entries: Vec<Invite>,
+        /// Two hops whose operator is the same, or not named, are refused
+        /// unless this is true: the person's explicit yes.
+        #[serde(default)]
+        allow_same_operator: bool,
     },
     /// Disconnect and put the network back.
     Down,
@@ -70,6 +74,10 @@ pub enum Command {
         allow_lan: bool,
         #[serde(default)]
         keep_ipv6: bool,
+        /// Two hops whose operator is the same, or not named, are refused
+        /// unless this is true: the person's explicit yes.
+        #[serde(default)]
+        allow_same_operator: bool,
     },
     /// The nodes in the pocket: slots, names and endpoints, never keys.
     Nodes,
@@ -817,6 +825,10 @@ mod tests {
             operator: None,
             role: None,
             country: None,
+            admission: None,
+            admission_port: None,
+            behind: false,
+            features: Vec::new(),
         }
     }
 
@@ -848,8 +860,9 @@ mod tests {
                 allow_lan: false,
                 keep_ipv6: false,
                 via: Some(invite("entry", "203.0.113.20:51820")),
-                alternates: vec![invite("exit2", "9.9.9.9:51820")],
+                alternates: vec![invite("exit2", "198.51.100.9:51820")],
                 alternate_entries: vec![invite("entry2", "203.0.113.21:51820")],
+                allow_same_operator: false,
             },
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -1002,7 +1015,12 @@ mod tests {
                 mode,
                 allow_lan,
                 keep_ipv6,
+                allow_same_operator,
             } => {
+                assert!(
+                    !allow_same_operator,
+                    "two hops under one operator only when asked"
+                );
                 assert_eq!(mode, "privado");
                 assert!(!allow_lan);
                 assert!(!keep_ipv6);
@@ -1017,6 +1035,7 @@ mod tests {
                 mode: "rapido".into(),
                 allow_lan: false,
                 keep_ipv6: true,
+                allow_same_operator: false,
             },
         })
         .unwrap();
@@ -1083,6 +1102,7 @@ mod tests {
                 mode: "rapido".into(),
                 allow_lan: false,
                 keep_ipv6: false,
+                allow_same_operator: false,
             },
         )
         .await
@@ -1111,6 +1131,7 @@ mod tests {
                 mode: "turbo".into(),
                 allow_lan: false,
                 keep_ipv6: false,
+                allow_same_operator: false,
             },
         )
         .await
@@ -1126,6 +1147,7 @@ mod tests {
                 mode: "privado".into(),
                 allow_lan: false,
                 keep_ipv6: false,
+                allow_same_operator: false,
             },
         )
         .await
@@ -1159,6 +1181,7 @@ mod tests {
             admission: Some("manual".into()),
             admission_port: None,
             country: None,
+            features: Vec::new(),
         };
         let dir = hidravpn_core::Directory {
             version: 1,
@@ -1248,6 +1271,7 @@ mod tests {
                 mode: "rapido".into(),
                 allow_lan: false,
                 keep_ipv6: false,
+                allow_same_operator: false,
             },
         )
         .await

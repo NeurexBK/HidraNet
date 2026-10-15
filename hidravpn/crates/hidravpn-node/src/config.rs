@@ -53,6 +53,11 @@ pub struct NodeConfig {
     /// tried once. Manually admitted clients are never expired.
     #[serde(default = "default_idle_days")]
     pub idle_days: u32,
+    /// How many bits of proof of work a session admission must carry
+    /// (`hidravpn_core::admission::work`): about a second of one core at the
+    /// default. Raise it if scripts fill the node.
+    #[serde(default = "default_admission_work_bits")]
+    pub admission_work_bits: u8,
 }
 
 fn default_interface() -> String {
@@ -72,6 +77,9 @@ fn default_max_clients() -> u32 {
 }
 fn default_idle_days() -> u32 {
     30
+}
+fn default_admission_work_bits() -> u8 {
+    hidravpn_core::admission::work::DEFAULT_BITS
 }
 
 /// The tunnel subnet, worked out once.
@@ -120,6 +128,7 @@ impl NodeConfig {
             admission_port: default_admission_port(),
             max_clients: default_max_clients(),
             idle_days: default_idle_days(),
+            admission_work_bits: default_admission_work_bits(),
         };
         cfg.tunnel_network()?;
         for d in &cfg.dns {
@@ -195,7 +204,20 @@ impl NodeConfig {
                 Some(self.admission_port)
             },
             country: self.country.clone(),
+            features: self.features(),
         })
+    }
+
+    /// What this node's software does beyond phase 4, as its record and its
+    /// invites list it: session keys with a proof of work, and, as an entry,
+    /// relaying a client's admission request to an exit.
+    pub fn features(&self) -> Vec<String> {
+        use hidravpn_core::directory::features;
+        let mut f = vec![features::SESSIONS.to_string()];
+        if !self.role.eq_ignore_ascii_case("exit") {
+            f.push(features::ADMISSION_RELAY.to_string());
+        }
+        f
     }
 
     pub fn public_key(&self) -> Result<String> {

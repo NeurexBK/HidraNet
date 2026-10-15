@@ -45,6 +45,60 @@ jobs:
       - name: tests
         run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
 
+  netns:
+    name: who can see what, end to end (Linux namespaces, as root, with IPv6)
+    # Every namespace suite, twice in a row: the client, the service, two
+    # hops, open admission, the browser's module against a real service, and
+    # the anonymity suite with packet captures. The hosted runner has IPv6,
+    # so the anonymity suite's IPv6 checks must run here, not be skipped.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: tools the suites use
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3
+      - name: build the release binaries
+        run: cargo build --release --manifest-path hidravpn/Cargo.toml --workspace
+      - name: every suite, twice
+        env:
+          HIDRAVPN_REQUIRE_IPV6: "1"
+        run: |
+          set -e
+          for round in 1 2; do
+            for t in test-netns test-killswitch test-service-netns test-multihop-netns \
+                     test-admission-netns test-browser-netns test-directory \
+                     test-node-installer test-client-installer test-anonymity-netns; do
+              echo "::group::round $round: $t"
+              sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
+              echo "::endgroup::"
+            done
+          done
+
+  windows-tests:
+    name: unit tests (Windows)
+    # The Windows code paths (the WFP kill switch, routes, the pipe) compile
+    # and their unit tests run here. Nothing in this job arms a firewall: a
+    # kill switch on a hosted runner would cut the runner off from GitHub.
+    # The run-time checks stay with scripts/windows/*.ps1, on a real PC.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: tests
+        run: cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-service -p hidravpn
+
   build-windows:
     name: build Windows executables
     runs-on: ubuntu-latest

@@ -125,23 +125,31 @@ impl Tunnel {
         ));
         let mut timers = tokio::spawn(drive_timers(self.tunn.clone(), self.sock.clone()));
 
-        let outcome = tokio::select! {
-            r = &mut to_net => r.map_err(|e| anyhow!("TUN reader stopped: {e}"))?,
-            r = &mut to_tun => r.map_err(|e| anyhow!("network reader stopped: {e}"))?,
-            r = &mut timers => r.map_err(|e| anyhow!("timer stopped: {e}"))?,
-            _ = stop_rx.changed() => Ok(()),
+        // Which task ended, so it is not awaited a second time (a finished
+        // JoinHandle polled again panics).
+        let (outcome, done) = tokio::select! {
+            r = &mut to_net => (r.map_err(|e| anyhow!("TUN reader stopped: {e}")).and_then(|r| r), 0),
+            r = &mut to_tun => (r.map_err(|e| anyhow!("network reader stopped: {e}")).and_then(|r| r), 1),
+            r = &mut timers => (r.map_err(|e| anyhow!("timer stopped: {e}")).and_then(|r| r), 2),
+            _ = stop_rx.changed() => (Ok(()), 3),
         };
 
-        // Stop the other two tasks and wait for them to let go. Each holds a
+        // Stop the other tasks and wait for them to let go. Each holds a
         // clone of the TUN device; only once all are dropped does the kernel
         // interface go away — which matters to the service, where the process
         // keeps running after a disconnect instead of exiting.
         to_net.abort();
         to_tun.abort();
         timers.abort();
-        let _ = to_net.await;
-        let _ = to_tun.await;
-        let _ = timers.await;
+        if done != 0 {
+            let _ = to_net.await;
+        }
+        if done != 1 {
+            let _ = to_tun.await;
+        }
+        if done != 2 {
+            let _ = timers.await;
+        }
         outcome
     }
 
@@ -160,10 +168,12 @@ impl Tunnel {
             }
         };
         if let Some(p) = out {
-            self.sock
-                .send(&p)
-                .await
-                .context("could not send the handshake")?;
+            match self.sock.send(&p).await {
+                Ok(_) => {}
+                // The node is away for now; the timers try again.
+                Err(e) if transient(&e) => {}
+                Err(e) => return Err(anyhow::Error::new(e).context("could not send the handshake")),
+            }
         }
         Ok(())
     }
@@ -204,6 +214,16 @@ async fn tun_to_network(
     }
 }
 
+/// Errors a connected UDP socket reports when the peer or the path is away
+/// for a while; none of them means the socket itself is broken.
+fn transient(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        e.kind(),
+        ConnectionRefused | ConnectionReset | HostUnreachable | NetworkUnreachable | NetworkDown
+    )
+}
+
 async fn network_to_tun(
     tunn: Arc<Mutex<Tunn>>,
     sock: Arc<UdpSocket>,
@@ -214,10 +234,18 @@ async fn network_to_tun(
     let mut out = vec![0u8; BUF];
     let peer_ip: Option<IpAddr> = sock.peer_addr().ok().map(|a| a.ip());
     loop {
-        let n = sock
-            .recv(&mut dgram)
-            .await
-            .context("reading the UDP socket")?;
+        let n = match sock.recv(&mut dgram).await {
+            Ok(n) => n,
+            // A node that is down answers with an ICMP error, which a
+            // connected UDP socket reports on the next read. That is the node
+            // being away, not the tunnel being broken: keep listening, and
+            // the timers keep shaking hands until it is back.
+            Err(e) if transient(&e) => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context("reading the UDP socket")),
+        };
         // One datagram can produce a packet for the interface, a reply for the
         // network (handshake response, keepalive), and then queued packets
         // that were waiting for the session; drain them all.

@@ -14,6 +14,7 @@ pub mod config;
 pub mod directory;
 pub mod keys;
 pub mod killswitch;
+pub mod logging;
 pub mod netcfg;
 pub mod pocket;
 pub mod random;
@@ -22,7 +23,7 @@ pub mod timefmt;
 pub mod tunnel;
 
 pub use circuit::{Circuit, CircuitOptions, CircuitSpec, CircuitStatus, HopStatus, Mode, Role};
-pub use config::{ClientConfig, Invite};
+pub use config::{ClientConfig, Invite, ShownKey};
 pub use directory::{Directory, Merge, NodeRecord};
 pub use keys::ClientKey;
 pub use pocket::{Pick, Pocket, Slot};

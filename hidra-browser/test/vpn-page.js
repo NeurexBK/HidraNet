@@ -78,7 +78,7 @@ const vpnAt = preload.indexOf('vpn: {');
 expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && vpnAt > internalStart && vpnAt < appsStart, `positions: internal ${internalStart}, vpn ${vpnAt}, apps ${appsStart}`);
 expect('the apps branch does not offer vpn', !preload.slice(appsStart).includes('vpn:'), 'vpn appears after the apps branch starts');
 const handlers = [...main.matchAll(/ipcMain\.handle\('vpn:([a-z-]+)', (?:async )?\((event[^)]*)\) => \{\s*vpnOnlyOurs\(event\);/g)].map((m) => m[1]).sort();
-expect('every vpn handler checks who asked before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'import-nodes', 'install', 'join', 'leak-test', 'new-identity', 'nodes', 'status', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('every vpn handler checks who asked before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'import-nodes', 'install', 'leak-test', 'new-identity', 'nodes', 'status', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
 const ungated = [...main.matchAll(/ipcMain\.handle\('vpn:[a-z-]+'/g)].length;
 expect('no vpn handler is without the check', ungated === handlers.length, `${ungated} handlers, ${handlers.length} gated`);
 expect('the check accepts only our own pages, by their path on disk', /function isInternalSender[\s\S]*?return url\.startsWith\(UI_ROOT_URL\);/.test(main), 'isInternalSender does not compare against UI_ROOT_URL alone');
@@ -87,10 +87,10 @@ expect('the check wants the main frame, not a frame inside a page', /frame !== e
 
 // ── The main process never hands the renderer a key ──────────────────────
 const manager = read(ROOT, 'src', 'main', 'vpn-manager.js');
-expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes', 'join'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: 'up'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
+expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: '(up|join)'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
 expect('the fetched list is sent to the service unverified by the browser, with its .sig, from one fixed address', /VPN_LIST_URL \+ '\.sig'/.test(main) && /const VPN_LIST_URL = 'https:\/\//.test(main) && /importNodesFromTexts\(list, signature\)/.test(main), 'the fetch handler does not pass the signature through, or the URL is not fixed');
 expect('the page says when one operator runs both hops', /One operator runs both hops/.test(page) && /same_operator === true/.test(page), 'no one-operator warning driven from status.same_operator');
-expect('the page offers to join open nodes and to fetch the list', /id="btn-join-all"/.test(page) && /id="btn-fetch"/.test(page) && /api\.join\(/.test(page) && /api\.fetchList\(\)/.test(page), 'buttons or calls missing');
+expect('the page fetches the list and never joins a node: open nodes are asked for a fresh key on every connection', /id="btn-fetch"/.test(page) && /api\.fetchList\(\)/.test(page) && !/api\.join\(/.test(page) && !/btn-join/.test(page), 'the fetch button is missing, or the page still joins nodes (a lasting lease a node could recognise)');
 expect('the page never names a file path: the person chooses in a dialog', /dialog\.showOpenDialog/.test(main) && !/filePaths?\s*[:=]/.test(page), 'a path travels from the page');
 expect('the browser does not verify the list itself; the service that writes the pocket does', !/releaseVerify\.verify(File|Bytes)\([^)]*list/.test(main), 'the browser verifies the node list, which would let a convinced browser feed an unconvinced service');
 expect('the browser reads the token fresh on every request', /_readToken\(\)/.test(manager) && !/this\.token\s*=/.test(manager), 'the token is cached');
@@ -105,6 +105,10 @@ for (const ch of ["'vpn:leak-test'", "'vpn:install'", "'vpn:uninstall'", "'vpn:c
 }
 expect('the local network is off unless the person ticks it', /<input type="checkbox" id="allow-lan">/.test(page), 'allow-lan is missing or pre-checked');
 expect('only a strict true reaches the service as allow_lan', /options\.allowLan === true/.test(main), 'main.js does not insist on a boolean');
+expect('two hops under one operator are off unless the person ticks it', /<input type="checkbox" id="allow-same-operator">/.test(page), 'allow-same-operator is missing or pre-checked');
+expect('only a strict true reaches the service as allow_same_operator', /options\.allowSameOperator === true/.test(main) && /options\.allowSameOperator === true/.test(manager), 'main.js or vpn-manager.js does not insist on a boolean');
+expect('the VPN page\'s own requests carry no browser name and no cookies', /credentials: 'omit'/.test(main) && /VPN_FETCH_UA = 'Mozilla\/5\.0'/.test(main) && /probe\.setUserAgent\(VPN_FETCH_UA\)/.test(main), 'a VPN fetch identifies the browser or sends cookies');
+expect('the list and release fetches never go out while Tor is not ready', (main.match(/vpnFetchAllowed\(url\);/g) || []).length === 2, 'fetchText or fetchBuffer skips the network-lock check');
 expect('the leak test asks without the Tor proxy, from its own session', /setProxy\(\{ mode: 'direct' \}\)/.test(main), 'no direct session for the leak test');
 expect('a country reaches the page as text, never as markup', !/innerHTML/.test(page), 'the page uses innerHTML');
 expect('uninstalling asks first', /window\.confirm\(question\)/.test(page), 'no confirmation before removing');

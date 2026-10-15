@@ -22,6 +22,22 @@ connect on the first try — which is what open admission below is. What it
 does **not** do is make that admission accountable (Phase 5's passes) or run
 a node behind a home router (doc 16 §7). The section at the end says so.
 
+> **Changed since, by the anonymity audit (`anonymity.md`).** Some of what
+> follows works differently now:
+>
+> - A node that admits openly is never joined: on every connection it is
+>   asked to admit a key made for that one connection, the exit of two hops
+>   through the entry. The page has no Join buttons, and the browser sends no
+>   `join`. `hidravpn nodes join` stays on the command line, for root's `up`
+>   with an invite.
+> - Such admissions are paid for with a proof of work instead of being
+>   counted per address.
+> - A node is used for that only if its record lists `sessions` (and, as an
+>   entry for an open exit, `admission-relay`).
+> - Two hops under one operator need the person's yes.
+>
+> The text below is kept as written for phase 4.
+
 ## What is new
 
 - **The service picks the nodes.** Two commands on the control channel:
@@ -111,7 +127,9 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   by address and, with `--trust`, writes it down as known — for a node you
   know by other means than a list, such as your own.
 - **Roles** (`--role entry|exit|both`, `hidravpn-node/src/nat.rs`). An entry
-  forwards only WireGuard (UDP 51820) onward and nothing to the internet; an
+  forwards only WireGuard (UDP 51820) onward, and the admission requests a
+  client sends an exit through it (TCP 51821, see `anonymity.md`), and nothing
+  to the internet; an
   exit forwards the internet and never mail (port 25) or the usual abuse
   ports (135–139, 445, 1433, 3389); both does both. Whatever the role, the
   tunnel reaches the node's outside interface and nothing else: not another
@@ -121,10 +139,14 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   offered as an exit. An entry forwards to UDP 51820 only, so an exit meant
   to be reached through entries listens on that port, the default.
 - **Who runs the pair.** Every record and invite names its operator. Privado
-  prefers an entry and an exit run by different operators when the pocket
-  has them, `status` says `same_operator` when it could not, and the page
-  shows it in so many words. It does not refuse the pair: in Phase 0 every
-  node is the maintainers', and refusing would mean no Privado at all.
+  takes an entry and an exit run by different operators. A pair under one
+  operator, or whose operators the list does not name, is refused unless the
+  person says yes (`allow_same_operator`, `--allow-same-operator`, a box on
+  the page, off by default); `status` then says `same_operator`. A new
+  identity never moves to such a pair by itself. (Changed by the anonymity
+  audit, `anonymity.md`: it used to fall back silently. In Phase 0 every node
+  is the maintainers', so Privado needs that yes until a second operator
+  runs nodes.)
 - **A circuit belongs to the account that opened it.** The service remembers
   the user id (`SO_PEERCRED`) that sent `connect` or `up`; `down` and
   `new_identity` from another account are refused, with the reason. Root may
@@ -260,7 +282,7 @@ only remove the way to install; whether to hide it is the maintainers' call.
 ## What the browser never sees
 
 The browser's module sends six commands — `status`, `connect`, `down`,
-`new_identity`, `nodes`, `join` — and `import_nodes` with the text of a list
+`new_identity`, `nodes` (and, before the audit, `join`) — and `import_nodes` with the text of a list
 the person chose in a file dialog or that the main process fetched from the
 published address. It never reads the pocket, never sees an
 invite, never sees a key, and never decides whether a list is genuine: the
@@ -281,7 +303,7 @@ sudo hidravpn nodes join --all                    # ask every known open node fo
 sudo hidravpn nodes join <name>                   # ask one
 sudo hidravpn nodes discover <ip>[:51821] --trust # a node you know by other means (your own)
 sudo hidravpn up --rapido --node <name>           # one hop through that node
-sudo hidravpn up --privado                        # two hops; joins first if the pocket only knows nodes
+sudo hidravpn up --privado                        # two hops; open nodes are asked for a key for this connection
 
 # on a server
 sudo bash hidravpn/scripts/install-node-linux.sh --endpoint <public-ip>:51820 --name <name> \
@@ -388,6 +410,25 @@ Then the existing suites still pass: unit tests (78 in the workspace),
 (73), `test-browser-netns.sh` (28), `test-directory.sh` (19),
 `test-node-installer.sh` (32), and every browser test.
 
+After the anonymity audit (`anonymity.md`), add:
+
+```
+sudo bash hidravpn/scripts/test-anonymity-netns.sh   # who can see what: captures, counters, the exit's own peer table, logs at DEBUG
+```
+
+It proves, in 46 checks (3 more for IPv6 print SKIP on a kernel without
+IPv6), that no node that admits openly sees the same key twice, that the
+exit of two hops never hears from the client's address, that the entry
+learns no destination, that admission is paid in work rather than counted
+per address, that a node not yet updated is passed over, that two hops
+under one operator need the person's yes, that nothing leaves outside the
+tunnel through a rotation, a reconnect or a dead exit, and that no log at
+DEBUG names the client. With it the counts are: unit tests 98,
+`test-netns.sh` 24, `test-killswitch.sh` 14, `test-service-netns.sh` 19,
+`test-multihop-netns.sh` 76, `test-admission-netns.sh` 37,
+`test-browser-netns.sh` 28, `test-directory.sh` 23, `test-node-installer.sh`
+32, `test-client-installer.sh` 17.
+
 ## How to check it on Windows
 
 By hand, on a PC with the service installed from this build, in PowerShell.
@@ -457,9 +498,9 @@ New-Item "$env:ProgramData\HidraVPN\probe.txt" -ItemType File
   that node. Today the person runs `nodes remove NAME`, imports or discovers
   the node again and joins; a client that notices the silence and asks again
   on its own is the next step.
-- **The pair may still be one operator's.** Privado prefers two operators
-  and says when it could not have them; it does not refuse. In Phase 0 every
-  node is the maintainers', so Privado's sentence — no node sees both — is
+- **The pair may still be one operator's, if you say so.** Privado refuses
+  one operator's pair unless the person ticks the box. In Phase 0 every node
+  is the maintainers', so Privado's sentence — no node sees both — is then
   true of the nodes and not of their operator, and the page says so.
 - **A pipe can be squatted while the service is down.** With the service
   running, every instance is the service's. With it stopped there is no pipe,

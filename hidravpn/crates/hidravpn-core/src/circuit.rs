@@ -10,8 +10,12 @@
 //! The entry sees who the client is but not where the traffic goes; the exit
 //! sees the traffic but gets it from the entry's address.
 //!
-//! Each hop is shown its own key, derived from the client's master key for
-//! that node (see `keys`): the entry and the exit have no key in common.
+//! Each hop is shown its own key (see `keys`): the entry, reached from the
+//! client's address, the key derived for it; the exit, reached through the
+//! entry, a fresh key admitted through the entry for this one connection
+//! (`admit_behind`), or for an exit admitted by hand the key derived for it
+//! behind an entry — never a key it could have seen from the client's own
+//! address.
 //!
 //! With no entry the circuit is exactly the single tunnel of phases 1 and 2.
 //!
@@ -24,7 +28,7 @@ use anyhow::{anyhow, Context, Result};
 use hidravpn_tun::TunConfig;
 use tokio::task::JoinHandle;
 
-use crate::config::{ClientConfig, Invite};
+use crate::config::{ClientConfig, Invite, ShownKey};
 use crate::keys::ClientKey;
 use crate::killswitch::{self, KillConfig};
 use crate::netcfg::{self, RevertPlan, ViaRoute, Wanted};
@@ -77,9 +81,44 @@ pub struct CircuitSpec {
     pub exit: Invite,
     /// The node the client talks to first, when there are two hops.
     pub entry: Option<Invite>,
+    /// The key the exit is shown when it was made for this connection
+    /// (`prepare`). None: the key derived for it — for one hop, the per-node
+    /// key; for two, the key behind an entry (an exit admitted by hand).
+    pub exit_key: Option<ClientKey>,
+    /// The key the entry is shown when it was made for this connection.
+    /// None: the per-node key derived for it.
+    pub entry_key: Option<ClientKey>,
 }
 
 impl CircuitSpec {
+    /// One hop, or two with the exit shown the key derived for it behind an
+    /// entry.
+    pub fn new(exit: Invite, entry: Option<Invite>) -> Self {
+        Self {
+            exit,
+            entry,
+            exit_key: None,
+            entry_key: None,
+        }
+    }
+
+    /// Which key the exit is shown.
+    fn exit_shown(&self) -> ShownKey {
+        match (&self.exit_key, &self.entry) {
+            (Some(k), _) => ShownKey::Exact(k.clone()),
+            (None, None) => ShownKey::Direct,
+            (None, Some(_)) => ShownKey::Behind,
+        }
+    }
+
+    /// Which key the entry is shown.
+    fn entry_shown(&self) -> ShownKey {
+        match &self.entry_key {
+            Some(k) => ShownKey::Exact(k.clone()),
+            None => ShownKey::Direct,
+        }
+    }
+
     pub fn hops(&self) -> u8 {
         if self.entry.is_some() {
             2
@@ -333,6 +372,7 @@ impl Circuit {
             let cfg = ClientConfig {
                 invite: entry.clone(),
                 key: key.clone(),
+                shown: spec.entry_shown(),
             };
             let tunnel = Arc::new(
                 Tunnel::new(&cfg, tun)
@@ -392,6 +432,7 @@ impl Circuit {
         let cfg = ClientConfig {
             invite: spec.exit.clone(),
             key,
+            shown: spec.exit_shown(),
         };
         let tunnel = Arc::new(
             Tunnel::new(&cfg, tun)
@@ -405,20 +446,23 @@ impl Circuit {
         // worse than no tunnel. (`tunnel` is dropped on the way out, which
         // closes its socket and removes the interface.)
         if opts.kill_switch {
-            let (interface, extra_interface, node_endpoint) = match (&spec.entry, &steps.outer) {
-                (Some(entry), Some(outer)) => (
-                    outer.interface.clone(),
-                    Some(inner_ifname.clone()),
-                    entry.endpoint_addr()?,
-                ),
-                _ => (inner_ifname.clone(), None, spec.exit.endpoint_addr()?),
-            };
+            let (interface, extra_interface, node_endpoint, outer_peer) =
+                match (&spec.entry, &steps.outer) {
+                    (Some(entry), Some(outer)) => (
+                        outer.interface.clone(),
+                        Some(inner_ifname.clone()),
+                        entry.endpoint_addr()?,
+                        Some(spec.exit.endpoint_addr()?),
+                    ),
+                    _ => (inner_ifname.clone(), None, spec.exit.endpoint_addr()?, None),
+                };
             killswitch::apply(&KillConfig {
                 interface,
                 node_endpoint,
                 dns: spec.exit.dns,
                 allow_lan: opts.allow_lan,
                 extra_interface,
+                outer_peer,
             })
             .context("could not arm the kill switch; connection refused")?;
             steps.kill_switch = true;
@@ -507,6 +551,169 @@ impl Circuit {
     }
 }
 
+/// Gets everything a circuit through `exit` (and `entry`) needs before it
+/// can come up: a key made for this one connection from every node that
+/// admits openly, so no such node sees the same key twice.
+///
+/// - The first hop (the entry, or the only node) is asked directly: it sees
+///   this machine's address in any case.
+/// - The exit of two hops is asked *through the entry* (`admit_behind`), so
+///   it never hears from this address.
+///
+/// A node admitted by hand is used with the key its operator admitted.
+///
+/// `held` is empty for a first connection, when nothing is armed yet. When a
+/// circuit is being replaced it names the first hops the kill switch holds
+/// open, and the hold is widened to exactly the requests this needs. The
+/// hold stays in place when this returns, successfully or not: the circuit
+/// that follows replaces it, or the caller lifts it.
+pub async fn prepare(
+    exit: &Invite,
+    entry: Option<&Invite>,
+    key: &ClientKey,
+    opts: &CircuitOptions,
+    held: &[SocketAddr],
+) -> Result<CircuitSpec> {
+    let mut spec = CircuitSpec::new(exit.clone(), entry.cloned());
+    let first = entry.unwrap_or(exit);
+    if first.admits_openly() && !first.admits_sessions() {
+        return Err(not_updated(first));
+    }
+    if first.admits_sessions() {
+        if !held.is_empty() {
+            let mut nodes = held.to_vec();
+            nodes.push(first.endpoint_addr()?);
+            killswitch::hold_admitting(&nodes, &[first.admission_addr()?], None)
+                .context("could not hold the kill switch to ask the first node for admission")?;
+        }
+        let fresh = ClientKey::generate()?;
+        let invite = crate::admission::request_admission(
+            &first.record(),
+            &fresh.public_base64(),
+            "client",
+            true,
+        )
+        .await
+        .with_context(|| format!("asking {} for admission", first.node_name))?;
+        match entry {
+            Some(_) => {
+                spec.entry = Some(invite);
+                spec.entry_key = Some(fresh);
+            }
+            None => {
+                spec.exit = invite;
+                spec.exit_key = Some(fresh);
+            }
+        }
+    }
+    if let Some(entry) = spec.entry.clone() {
+        if exit.admits_openly() {
+            if !exit.admits_sessions() {
+                return Err(not_updated(exit));
+            }
+            if !crate::pocket::entry_can_reach(&entry, exit) {
+                return Err(anyhow!(
+                    "{} cannot ask {} for admission on this machine's behalf: its software is older than that (no `admission-relay` in the node list)",
+                    entry.node_name,
+                    exit.node_name
+                ));
+            }
+            let (invite, fresh) =
+                admit_behind(&entry, spec.entry_shown(), exit, key, opts, held).await?;
+            spec.exit = invite;
+            spec.exit_key = Some(fresh);
+        }
+    }
+    Ok(spec)
+}
+
+fn not_updated(node: &Invite) -> anyhow::Error {
+    anyhow!(
+        "{} admits openly but its software is older than per-connection keys (no `sessions` in the node list); it is not used until its operator updates it",
+        node.node_name
+    )
+}
+
+/// Asks an exit that admits openly to admit a fresh key, through the entry,
+/// so the exit never hears from this machine's own address and never sees a
+/// key it could tie to it. Returns the exit's invite for that key, and the
+/// key, for one connection.
+///
+/// While it runs, the kill switch holds the machine to exactly this: the
+/// encrypted packets to the entry (and to `held`, the first hop of a circuit
+/// being replaced), and inside the entry's tunnel one TCP connection to the
+/// exit's admission port. No DNS, nothing else, and no default route into
+/// the entry, which forwards nothing but WireGuard and this request in any
+/// case.
+async fn admit_behind(
+    entry: &Invite,
+    entry_shown: ShownKey,
+    exit: &Invite,
+    key: &ClientKey,
+    opts: &CircuitOptions,
+    held: &[SocketAddr],
+) -> Result<(Invite, ClientKey)> {
+    entry.validate().context("the entry invite")?;
+    let entry_ep = entry.endpoint_addr()?;
+    let admission = exit.admission_addr()?;
+    let outer_name = format!("{}0", opts.interface_base);
+    let mut nodes = vec![entry_ep];
+    nodes.extend(held.iter().copied().filter(|a| *a != entry_ep));
+    killswitch::hold_admitting(
+        &nodes,
+        &[],
+        Some(&killswitch::Bridge {
+            interface: outer_name.clone(),
+            to: admission,
+        }),
+    )
+    .context("could not hold the kill switch to ask the exit through the entry")?;
+
+    let (ip, _) = entry.client_ip()?;
+    let tun = hidravpn_tun::open(&TunConfig {
+        name: outer_name.clone(),
+        ipv4: (ip, 32),
+        ipv6: None,
+        mtu: entry.mtu,
+    })
+    .context("the outer tunnel interface")?;
+    let ifname = hidravpn_tun::name(&tun).unwrap_or(outer_name);
+    let cfg = ClientConfig {
+        invite: entry.clone(),
+        key: key.clone(),
+        shown: entry_shown,
+    };
+    let tunnel = Arc::new(
+        Tunnel::new(&cfg, tun)
+            .await
+            .context("the tunnel to the entry")?,
+    );
+    let runner = spawn_runner(&tunnel);
+    let hop = Hop {
+        role: Role::Entry,
+        invite: entry.clone(),
+        interface: ifname.clone(),
+        tunnel,
+        runner,
+    };
+    let fresh = ClientKey::generate()?;
+    let asked = async {
+        netcfg::route_host_via(admission.ip(), &ifname)?;
+        crate::admission::request_admission(&exit.record(), &fresh.public_base64(), "client", true)
+            .await
+            .with_context(|| {
+                format!(
+                    "asking {} for admission through {}",
+                    exit.node_name, entry.node_name
+                )
+            })
+    }
+    .await;
+    // The interface goes, and its route with it, whatever the answer.
+    hop.stop().await;
+    Ok((asked?, fresh))
+}
+
 fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {
     let t = tunnel.clone();
     tokio::spawn(async move {
@@ -532,6 +739,10 @@ mod tests {
             operator: None,
             role: None,
             country: None,
+            admission: None,
+            admission_port: None,
+            behind: false,
+            features: Vec::new(),
         }
     }
 
@@ -540,6 +751,8 @@ mod tests {
         let spec = CircuitSpec {
             exit: invite("exit", "203.0.113.10:51820", 1420),
             entry: None,
+            exit_key: None,
+            entry_key: None,
         };
         assert_eq!(spec.hops(), 1);
         assert_eq!(spec.mode(), Mode::Rapido);
@@ -557,6 +770,8 @@ mod tests {
         let spec = CircuitSpec {
             exit: invite("exit", "203.0.113.10:51820", 1420),
             entry: Some(invite("entry", "203.0.113.20:51820", 1420)),
+            exit_key: None,
+            entry_key: None,
         };
         assert_eq!(spec.hops(), 2);
         assert_eq!(spec.mode(), Mode::Privado);
@@ -574,11 +789,15 @@ mod tests {
         let small_exit = CircuitSpec {
             exit: invite("exit", "203.0.113.10:51820", 1300),
             entry: Some(invite("entry", "203.0.113.20:51820", 1500)),
+            exit_key: None,
+            entry_key: None,
         };
         assert_eq!(small_exit.inner_mtu(), 1300);
         let small_entry = CircuitSpec {
             exit: invite("exit", "203.0.113.10:51820", 1500),
             entry: Some(invite("entry", "203.0.113.20:51820", 1280)),
+            exit_key: None,
+            entry_key: None,
         };
         assert_eq!(small_entry.inner_mtu(), 1280);
     }
@@ -589,6 +808,8 @@ mod tests {
         let same_key = CircuitSpec {
             entry: Some(exit.clone()),
             exit: exit.clone(),
+            exit_key: None,
+            entry_key: None,
         };
         let err = same_key.validate().unwrap_err().to_string();
         assert!(err.contains("same node"), "{err}");
@@ -598,6 +819,8 @@ mod tests {
         let same_endpoint = CircuitSpec {
             entry: Some(other_key),
             exit: exit.clone(),
+            exit_key: None,
+            entry_key: None,
         };
         let err = same_endpoint.validate().unwrap_err().to_string();
         assert!(err.contains("same endpoint"), "{err}");
@@ -610,6 +833,8 @@ mod tests {
         let spec = CircuitSpec {
             exit: invite("exit", "203.0.113.10:51820", 1420),
             entry: Some(bad),
+            exit_key: None,
+            entry_key: None,
         };
         assert!(spec.validate().unwrap_err().to_string().contains("entry"));
     }

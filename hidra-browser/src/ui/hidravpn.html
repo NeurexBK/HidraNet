@@ -137,6 +137,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
         <span class="what">No node sees both who you are and where you go. The entry sees your address, the exit sees your traffic. Needs an entry and an exit this machine is admitted to. Two hops run by one operator are one operator's view.</span>
       </label>
     </div>
+    <label class="check"><input type="checkbox" id="allow-same-operator"><span>Allow two hops run by one operator. Two hops are refused when one operator runs both the entry and the exit, or when the node list does not say who runs them: that operator could see both who you are and where you go. Tick this only if you accept that.</span></label>
     <label class="check"><input type="checkbox" id="allow-lan"><span>Allow the local network (printers, a Chromecast, a network drive). Devices on your own network can then be reached directly, outside the tunnel; everything else still goes through it.</span></label>
     <div class="actions">
       <button class="primary" id="btn-connect" disabled>Connect</button>
@@ -160,10 +161,9 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     <div class="nodes" id="nodes"><div class="empty">Checking</div></div>
     <div class="actions" style="margin-top:14px">
       <button class="primary" id="btn-fetch" disabled>Get the maintainers' list</button>
-      <button id="btn-join-all" disabled>Join every open node</button>
       <button id="btn-import" disabled>Import a signed list from a file</button>
     </div>
-    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly admits this machine when you join it, or when you press Connect with nothing joined yet; a node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
+    <div class="empty" style="margin-top:10px">A signed list tells you which nodes exist and who runs them. A node that admits openly needs nothing more: on every Connect it is asked to admit a key made for that one connection, so it cannot tell one of your connections from the next. A node that admits by hand needs its operator, who hands you an invite for <code>hidravpn nodes add</code>.
     </div>
     <div class="msg" id="nodes-msg"></div>
   </div>
@@ -218,7 +218,6 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   var api = window.hidra && window.hidra.vpn;
   var busy = false;
   var lastState = null;
-  var hasOpenKnown = false;
 
   function fmtBytes(n) {
     n = Number(n) || 0;
@@ -349,7 +348,6 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     var reachable = Boolean(r);
     $('btn-import').disabled = busy || !reachable;
     $('btn-fetch').disabled = busy || !reachable;
-    $('btn-join-all').disabled = busy || !reachable || !hasOpenKnown;
     $('btn-connect').disabled = busy || !reachable;
     $('btn-connect').textContent = (r && r.connected) ? 'Reconnect' : 'Connect';
     $('btn-disconnect').disabled = busy || !reachable || !(r.connected || r.hops > 0 || r.killswitch);
@@ -366,8 +364,6 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       return;
     }
     var list = answer.nodes || [];
-    hasOpenKnown = list.some(function (n) { return n.admitted === false && n.admission === 'open'; });
-    $('btn-join-all').disabled = busy || !hasOpenKnown;
     if (!list.length) {
       var em = document.createElement('div'); em.className = 'empty';
       em.textContent = 'No node yet. A node\'s operator admits this machine\'s key and hands you an invite: hidravpn nodes add --exit invite.json (or --entry). Import a signed node list to see which nodes exist.';
@@ -383,7 +379,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       if (known) {
         var why = document.createElement('div'); why.className = 'empty';
         var open = n.admission === 'open';
-        why.textContent = (open ? 'admits openly' : 'admits by hand') + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + (open ? '' : '; ask its operator, then add the invite');
+        why.textContent = (open ? 'admits openly' : 'admits by hand') + (n.operator ? ', run by ' + n.operator : '') + (n.role ? ', ' + n.role : '') + (open ? '; asked for a fresh key on every connection' : '; ask its operator, then add the invite');
         name.appendChild(why);
       } else if (n.operator || n.role) {
         var who = document.createElement('div'); who.className = 'empty';
@@ -392,11 +388,6 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       }
       var ep = document.createElement('span'); ep.className = 'ep'; ep.textContent = n.endpoint;
       el.appendChild(slot); el.appendChild(name); el.appendChild(ep);
-      if (known && n.admission === 'open') {
-        var jb = document.createElement('button'); jb.textContent = 'Join'; jb.style.padding = '6px 10px'; jb.style.fontSize = '.8em';
-        jb.addEventListener('click', function () { joinNodes(n.node_name); });
-        el.appendChild(jb);
-      }
       box.appendChild(el);
     });
   }
@@ -449,7 +440,8 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   $('btn-connect').addEventListener('click', function () {
     var mode = selectedMode();
     var allowLan = $('allow-lan').checked;
-    act(function () { return api.connect(mode, { allowLan: allowLan }); }, 'Connecting (' + mode + (allowLan ? ', local network allowed' : '') + '). The kill switch arms as the last step; until this page shows it Armed, nothing is protected.');
+    var allowSameOperator = $('allow-same-operator').checked;
+    act(function () { return api.connect(mode, { allowLan: allowLan, allowSameOperator: allowSameOperator }); }, 'Connecting (' + mode + (allowLan ? ', local network allowed' : '') + (allowSameOperator ? ', one operator allowed on both hops' : '') + '). The kill switch arms as the last step; until this page shows it Armed, nothing is protected.');
   });
 
   $('btn-leaks').addEventListener('click', async function () {
@@ -555,22 +547,6 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection pauses for a moment; the kill switch stays armed throughout.');
   });
 
-  async function joinNodes(name) {
-    if (!api || busy) return;
-    busy = true;
-    message('note', name ? 'Asking ' + name + ' to admit this machine.' : 'Asking every open node to admit this machine.', 'nodes-msg');
-    var r;
-    try { r = await api.join(name || ''); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-    busy = false;
-    if (r && r.ok) {
-      message('note', r.note || 'Joined.', 'nodes-msg');
-      renderNodes(r);
-    } else {
-      message('err', (r && r.error) || 'Could not join.', 'nodes-msg');
-    }
-    await refresh();
-  }
-  $('btn-join-all').addEventListener('click', function () { joinNodes(''); });
 
   $('btn-fetch').addEventListener('click', async function () {
     if (!api || busy) return;

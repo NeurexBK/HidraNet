@@ -74,6 +74,12 @@ enum Cmd {
         /// Read the node's public key from one of its invites.
         #[arg(long)]
         node_from_invite: Option<PathBuf>,
+        /// The key this node is shown as the exit of two hops, reached
+        /// through an entry: what to give an operator who admits by hand,
+        /// for two hops. Never the one-hop key, so the exit cannot tie the
+        /// traffic it carries to this machine's address.
+        #[arg(long)]
+        behind: bool,
     },
     /// The pocket: the entry and exit nodes `up --privado`, `up --rapido`
     /// and `new-identity` pick from.
@@ -110,6 +116,11 @@ enum Cmd {
         /// One hop through an exit picked at random from the pocket.
         #[arg(long, conflicts_with_all = ["invite", "via", "alternates", "alternate_entries"])]
         rapido: bool,
+        /// Two hops whose entry and exit one operator runs (or whose
+        /// operators are not named) are refused without this: one operator
+        /// running both could see who you are and where you go.
+        #[arg(long)]
+        allow_same_operator: bool,
         /// Leave IPv6 alone instead of routing it into the tunnel (where it is
         /// dropped in this phase). Only for diagnosis: with this, IPv6 traffic
         /// bypasses the VPN.
@@ -145,6 +156,11 @@ enum Nodes {
         /// An invite to use as an exit node (the node that reaches the internet).
         #[arg(long)]
         exit: Option<PathBuf>,
+        /// With --exit: the invite is for the key behind an entry (`pubkey
+        /// --node K --behind`), so the node serves as the exit of two hops
+        /// only.
+        #[arg(long, requires = "exit")]
+        behind: bool,
     },
     /// The nodes in the pocket: names and endpoints, never keys.
     List,
@@ -263,7 +279,7 @@ async fn join_known(
     let mut joined = 0;
     for rec in targets {
         let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
-        match hidravpn_core::admission::request_admission(&rec, &shown, "client").await {
+        match hidravpn_core::admission::request_admission(&rec, &shown, "client", false).await {
             Ok(invite) => {
                 for slot in hidravpn_core::pocket::slots_for_role(rec.role.as_deref()) {
                     let _ = pocket.add(slot, invite.clone());
@@ -324,10 +340,13 @@ fn fmt_bytes(n: u64) -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("hidravpn=info".parse()?),
-        )
+        // HidraVPN's own crates only, whatever RUST_LOG says.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            hidravpn_core::logging::directives(
+                std::env::var("RUST_LOG").ok().as_deref(),
+                "hidravpn=info",
+            ),
+        ))
         .with_target(false)
         .init();
 
@@ -354,6 +373,7 @@ async fn main() -> Result<()> {
         Cmd::Pubkey {
             node,
             node_from_invite,
+            behind,
         } => {
             let key = load_or_create_key(&key_path, false)?;
             let node = match (node, node_from_invite) {
@@ -362,12 +382,19 @@ async fn main() -> Result<()> {
                 (None, None) => None,
             };
             match node {
-                Some(node) => println!(
-                    "{}",
-                    key.for_node_base64(&node)
-                        .context("--node is not a valid node public key")?
-                        .public_base64()
-                ),
+                Some(node) => {
+                    let shown = if behind {
+                        key.for_node_behind_base64(&node)
+                    } else {
+                        key.for_node_base64(&node)
+                    };
+                    println!(
+                        "{}",
+                        shown
+                            .context("--node is not a valid node public key")?
+                            .public_base64()
+                    )
+                }
                 None => {
                     eprintln!("this is the master key's public half; no node admits it. For the key a node admits: hidravpn pubkey --node <that node's public key>");
                     println!("{}", key.public_base64());
@@ -378,13 +405,18 @@ async fn main() -> Result<()> {
             require_admin()?;
             let mut pocket = load_pocket(&pocket_path)?;
             match what {
-                Nodes::Add { entry, exit } => {
+                Nodes::Add {
+                    entry,
+                    exit,
+                    behind,
+                } => {
                     let (slot, path) = match (entry, exit) {
                         (Some(p), _) => (Slot::Entry, p),
                         (None, Some(p)) => (Slot::Exit, p),
                         (None, None) => unreachable!("clap requires one of --entry and --exit"),
                     };
-                    let invite = read_invite(&path)?;
+                    let mut invite = read_invite(&path)?;
+                    invite.behind = behind;
                     let name = invite.node_name.clone();
                     pocket.add(slot, invite)?;
                     save_pocket(&pocket_path, &pocket)?;
@@ -438,7 +470,7 @@ async fn main() -> Result<()> {
                         );
                     }
                     if pocket.known.iter().any(|k| k.is_open()) {
-                        println!("known nodes that admit openly: `sudo hidravpn nodes join --all` (or one by name) admits this machine on them.");
+                        println!("known nodes that admit openly need no joining: each is asked for a key of its own on every connection.");
                     }
                     if pocket.known.iter().any(|k| !k.is_open()) {
                         println!("known nodes that admit by hand: run `hidravpn pubkey --node <its key>` (the key is in the list) and send the result to the operator; add the invite they return with `hidravpn nodes add --exit` (or --entry).");
@@ -555,37 +587,30 @@ async fn main() -> Result<()> {
             keep_ipv6,
             interface,
             no_kill_switch,
+            allow_same_operator,
         } => {
             let (spec, alternates, alternate_entries) = if privado || rapido {
-                let mut pocket = load_pocket(&pocket_path)?;
-                if pocket.is_empty() && !pocket.joinable().is_empty() {
-                    // Known nodes that admit openly, and none admitted yet:
-                    // ask them first, as the service does on `connect`.
-                    eprintln!(
-                        "no node has admitted this machine yet; asking the known node(s) that admit openly"
-                    );
-                    let joined =
-                        join_known(&mut pocket, &key_path, node.as_deref(), node.is_none()).await?;
-                    if joined > 0 {
-                        save_pocket(&pocket_path, &pocket)?;
-                    }
-                }
-                if pocket.is_empty() && !pocket.known.is_empty() {
-                    return Err(anyhow!(
-                        "this machine knows {} node(s) from the node list but is admitted on none yet: `hidravpn nodes list` says whom to ask and how; add the invite they return with `hidravpn nodes add`",
-                        pocket.known.len()
-                    ));
-                }
-                if pocket.is_empty() {
-                    return Err(anyhow!(
-                        "the pocket at {} is empty; add nodes with `hidravpn nodes add --entry e.json` and `--exit x.json`, or import a signed node list with `hidravpn nodes import nodes.json`",
-                        pocket_path.display()
-                    ));
+                // A node that admits openly needs no joining first: it is
+                // asked for a key for this connection as the circuit is
+                // built, as the service does.
+                let pocket = load_pocket(&pocket_path)?;
+                if pocket.is_empty() && pocket.joinable().is_empty() {
+                    return Err(anyhow!(if pocket.known.is_empty() {
+                        format!(
+                            "the pocket at {} is empty; add nodes with `hidravpn nodes add --entry e.json` and `--exit x.json`, or import a signed node list with `hidravpn nodes import nodes.json`",
+                            pocket_path.display()
+                        )
+                    } else {
+                        format!(
+                            "this machine knows {} node(s) from the node list but none admits openly and none has admitted it by hand: `hidravpn nodes list` says whom to ask and how; add the invite they return with `hidravpn nodes add`",
+                            pocket.known.len()
+                        )
+                    }));
                 }
                 let pick = if privado {
-                    pocket.pick_privado()?
+                    pocket.pick_privado(allow_same_operator)?
                 } else if let Some(wanted) = node.as_deref() {
-                    let mut exits = pocket.exits.clone();
+                    let (mut exits, _) = pocket.rapido_exits();
                     let i = exits
                         .iter()
                         .position(|x| x.node_name.trim().eq_ignore_ascii_case(wanted.trim()))
@@ -602,10 +627,7 @@ async fn main() -> Result<()> {
                     pocket.pick_rapido()?
                 };
                 (
-                    CircuitSpec {
-                        exit: pick.exit,
-                        entry: pick.entry,
-                    },
+                    CircuitSpec::new(pick.exit, pick.entry),
                     pick.other_exits,
                     pick.other_entries,
                 )
@@ -620,9 +642,14 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|p| read_invite(p))
                     .collect::<Result<Vec<_>>>()?;
-                (CircuitSpec { exit, entry }, alternates, alternate_entries)
+                (CircuitSpec::new(exit, entry), alternates, alternate_entries)
             };
             spec.validate()?;
+            if let Some(entry) = &spec.entry {
+                if !hidravpn_core::pocket::pair_allowed(entry, &spec.exit, allow_same_operator) {
+                    return Err(anyhow!("{}", hidravpn_core::pocket::SAME_OPERATOR_REFUSAL));
+                }
+            }
             // Prefer the installed service: it keeps the circuit after this
             // command returns. Only if it is not there do we hold it here.
             match service_call(
@@ -634,6 +661,7 @@ async fn main() -> Result<()> {
                     via: spec.entry.clone(),
                     alternates: alternates.clone(),
                     alternate_entries: alternate_entries.clone(),
+                    allow_same_operator,
                 },
             )
             .await
@@ -822,7 +850,37 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
     if !opts.kill_switch {
         eprintln!("kill switch OFF (--no-kill-switch): traffic can leak if the tunnel drops");
     }
-    let circuit = Circuit::up(spec, key, opts).await?;
+    // Every node that admits openly is asked for a key for this connection:
+    // the first hop directly, the exit of two hops through the entry.
+    if let Some(first) = spec
+        .entry
+        .as_ref()
+        .or(Some(&spec.exit))
+        .filter(|n| n.admits_openly())
+    {
+        eprintln!("asking {} for a key for this connection", first.node_name);
+    }
+    if let (Some(entry), true) = (&spec.entry, spec.exit.admits_openly()) {
+        eprintln!(
+            "asking {} for a key for this connection, through {}",
+            spec.exit.node_name, entry.node_name
+        );
+    }
+    let _ = killswitch::remove();
+    let built = async {
+        let spec =
+            hidravpn_core::circuit::prepare(&spec.exit, spec.entry.as_ref(), &key, &opts, &[])
+                .await?;
+        Circuit::up(spec, key, opts).await
+    }
+    .await;
+    let circuit = match built {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = killswitch::remove();
+            return Err(e);
+        }
+    };
     let st = circuit.status();
     for h in &st.hops {
         eprintln!(
@@ -881,7 +939,7 @@ async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<(
                     waited += 1;
                     if waited == 15 {
                         let pending: Vec<&str> = s.hops.iter().filter(|h| !h.tunnel.connected).map(|h| h.node_name.as_str()).collect();
-                        eprintln!("no answer from {} after 15 s — is UDP {} open, and was this machine's key for that node (hidravpn pubkey --node ...) admitted there?", pending.join(" and "), exit_port);
+                        eprintln!("no answer from {} after 15 s — is UDP {} open, and was this machine's key for that node admitted there? (hidravpn pubkey --node ...; for the exit of two hops admitted by hand, ... --behind)", pending.join(" and "), exit_port);
                     }
                 }
                 if was_connected && waited.is_multiple_of(5) {

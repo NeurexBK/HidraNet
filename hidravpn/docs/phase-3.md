@@ -238,8 +238,10 @@ Then the existing suites still pass: unit tests, `test-netns.sh` (one hop,
 - Each node is shown a different key, derived from the one secret the client
   keeps; the entry and the exit have no key in common to compare. What two
   nodes that conspired could still do is correlate times and volumes — the
-  residue of any two-hop system, which this phase does not remove. Phase 5's
-  passes give every connection a fresh key on top.
+  residue of any two-hop system, which this phase does not remove. (Since the
+  anonymity audit the exit of two hops gets a fresh key on every connection,
+  and an exit admitted by hand a key of its own behind the entry:
+  `anonymity.md`.)
 - A client admitted before per-node keys was admitted with its master key,
   which it no longer presents. It needs admitting once more, with
   `hidravpn pubkey --node ...`, on every node it uses.

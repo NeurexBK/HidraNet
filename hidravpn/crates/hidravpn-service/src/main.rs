@@ -85,6 +85,11 @@ enum Cmd {
         allow_lan: bool,
         #[arg(long)]
         keep_ipv6: bool,
+        /// Two hops whose entry and exit one operator runs (or whose
+        /// operators the invites do not name) are refused without this: one
+        /// operator running both could see who you are and where you go.
+        #[arg(long)]
+        allow_same_operator: bool,
     },
     /// Rebuild the circuit through another exit node given with --alternate
     /// (and another entry given with --alternate-entry), so the address the
@@ -201,6 +206,7 @@ fn main() -> Result<()> {
             alternate_entries,
             allow_lan,
             keep_ipv6,
+            allow_same_operator,
         } => client(async move {
             let inv = read_invite(&invite)?;
             let via = via.as_deref().map(read_invite).transpose()?;
@@ -219,6 +225,7 @@ fn main() -> Result<()> {
                 via,
                 alternates,
                 alternate_entries,
+                allow_same_operator,
             })
             .await?;
             if resp.ok {
@@ -273,6 +280,7 @@ fn main() -> Result<()> {
                         dns,
                         allow_lan,
                         extra_interface,
+                        outer_peer: None,
                     })?;
                     println!("kill switch on");
                 }
@@ -317,10 +325,13 @@ where
 fn run_daemon() -> Result<()> {
     require_admin()?;
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hidravpn_service=info")),
-        )
+        // HidraVPN's own crates only, whatever RUST_LOG says.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            hidravpn_core::logging::directives(
+                std::env::var("RUST_LOG").ok().as_deref(),
+                "hidravpn_service=info",
+            ),
+        ))
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();

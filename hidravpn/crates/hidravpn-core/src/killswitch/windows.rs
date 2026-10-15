@@ -43,8 +43,9 @@ use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
 };
 use windows::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
 
-use super::KillConfig;
+use super::{Bridge, KillConfig};
 
+const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
 
 // Fixed identity for everything we add, so removal is deterministic. The last
@@ -67,8 +68,19 @@ const F_NODE_V4: [GUID; 4] = [
 const F_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0005_0001);
 /// The inner tunnel interface of a two-hop circuit.
 const F_TUNNEL2_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0002);
+/// One destination through one tunnel interface: the outer tunnel of two
+/// hops towards the exit, or towards an exit's admission port.
+const F_PEERED_V4: [GUID; 2] = [
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0006_0001),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0006_0002),
+];
+/// A first hop's admission port, off-tunnel, while a circuit is replaced.
+const F_DIRECT_TCP_V4: [GUID; 2] = [
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0007_0001),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0007_0002),
+];
 
-const ALL_FILTER_KEYS: [GUID; 11] = [
+const ALL_FILTER_KEYS: [GUID; 15] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
@@ -80,6 +92,10 @@ const ALL_FILTER_KEYS: [GUID; 11] = [
     F_NODE_V4[2],
     F_NODE_V4[3],
     F_DHCP_V4,
+    F_PEERED_V4[0],
+    F_PEERED_V4[1],
+    F_DIRECT_TCP_V4[0],
+    F_DIRECT_TCP_V4[1],
 ];
 
 fn ok(code: u32) -> Result<()> {
@@ -139,6 +155,18 @@ struct Allow<'a> {
     /// The nodes reached off-tunnel, IPv4: one for a circuit, the old and
     /// the new first hop while a circuit is replaced.
     nodes: &'a [SocketAddr],
+    /// One destination through one tunnel interface, by protocol.
+    peered: &'a [(&'a str, u8, SocketAddr)],
+    /// TCP destinations off-tunnel: a first hop's admission port.
+    direct_tcp: &'a [SocketAddr],
+}
+
+/// An IPv4 endpoint in the host order WFP wants for UINT32.
+fn v4(ep: &SocketAddr) -> Result<(u32, u16)> {
+    match ep.ip() {
+        IpAddr::V4(a) => Ok((u32::from(a), ep.port())),
+        IpAddr::V6(_) => bail!("the kill switch needs IPv4 endpoints in this phase"),
+    }
 }
 
 /// The whole kill switch, for a running circuit (`apply`) or for the hold
@@ -151,19 +179,23 @@ fn install(allow: &Allow<'_>) -> Result<()> {
     // half has run on a real machine.
     let _ = remove();
 
-    if allow.nodes.len() > F_NODE_V4.len() {
-        bail!(
-            "the kill switch allows at most {} node endpoints at once",
-            F_NODE_V4.len()
-        );
+    if allow.nodes.len() > F_NODE_V4.len()
+        || allow.peered.len() > F_PEERED_V4.len()
+        || allow.direct_tcp.len() > F_DIRECT_TCP_V4.len()
+    {
+        bail!("the kill switch was asked to allow more destinations than it has rules for");
     }
-    let mut nodes = Vec::with_capacity(allow.nodes.len());
-    for ep in allow.nodes {
-        match ep.ip() {
-            // Host order; WFP wants host order for UINT32.
-            IpAddr::V4(a) => nodes.push((u32::from(a), ep.port())),
-            IpAddr::V6(_) => bail!("the kill switch needs an IPv4 node endpoint in this phase"),
-        }
+    let nodes = allow.nodes.iter().map(v4).collect::<Result<Vec<_>>>()?;
+    let direct_tcp = allow
+        .direct_tcp
+        .iter()
+        .map(v4)
+        .collect::<Result<Vec<_>>>()?;
+    let mut peered = Vec::with_capacity(allow.peered.len());
+    for (iface, proto, ep) in allow.peered {
+        // Unlike a whole tunnel, a peered destination is the point of the
+        // rule: an interface that is not up is an error, not a skip.
+        peered.push((luid_of(iface)?, *proto, v4(ep)?));
     }
 
     let engine = open_engine()?;
@@ -299,6 +331,47 @@ fn install(allow: &Allow<'_>) -> Result<()> {
             )?;
         }
 
+        // One destination through a tunnel interface: the outer tunnel of
+        // two hops carries the inner one to the exit and nothing else, so
+        // the entry never receives a packet whose destination it could read.
+        for (i, (luid, proto, (addr, port))) in peered.iter().enumerate() {
+            add_filter(
+                engine,
+                &Filter {
+                    key: F_PEERED_V4[i],
+                    name: "allow one destination through the tunnel",
+                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                    weight: 10,
+                    block: false,
+                    conditions: &[
+                        Cond::LocalInterface(*luid),
+                        Cond::Protocol(*proto),
+                        Cond::RemoteAddrV4(*addr),
+                        Cond::RemotePort(*port),
+                    ],
+                },
+            )?;
+        }
+
+        // A first hop's admission port, while a circuit is replaced.
+        for (i, (addr, port)) in direct_tcp.iter().enumerate() {
+            add_filter(
+                engine,
+                &Filter {
+                    key: F_DIRECT_TCP_V4[i],
+                    name: "allow an admission request to the node",
+                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                    weight: 11,
+                    block: false,
+                    conditions: &[
+                        Cond::Protocol(IPPROTO_TCP),
+                        Cond::RemoteAddrV4(*addr),
+                        Cond::RemotePort(*port),
+                    ],
+                },
+            )?;
+        }
+
         // DHCP so the physical link can keep its address.
         add_filter(
             engine,
@@ -324,13 +397,45 @@ fn install(allow: &Allow<'_>) -> Result<()> {
 }
 
 pub fn apply(cfg: &KillConfig) -> Result<()> {
-    let mut tunnels: Vec<&str> = vec![cfg.interface.as_str()];
-    if let Some(extra) = &cfg.extra_interface {
-        tunnels.push(extra.as_str());
-    }
+    // Two hops: the inner tunnel is allowed whole, the outer one only
+    // towards the exit. One hop: the one tunnel, whole.
+    let (tunnels, peered): (Vec<&str>, Vec<(&str, u8, SocketAddr)>) =
+        match (&cfg.extra_interface, cfg.outer_peer) {
+            (Some(inner), Some(exit)) => (
+                vec![inner.as_str()],
+                vec![(cfg.interface.as_str(), IPPROTO_UDP, exit)],
+            ),
+            (Some(inner), None) => (vec![cfg.interface.as_str(), inner.as_str()], Vec::new()),
+            (None, _) => (vec![cfg.interface.as_str()], Vec::new()),
+        };
     install(&Allow {
         tunnels: &tunnels,
         nodes: &[cfg.node_endpoint],
+        peered: &peered,
+        direct_tcp: &[],
+    })
+}
+
+/// The hold, plus the admission requests a connection needs: TCP to a
+/// first hop's admission port off-tunnel, and to an exit's through the
+/// outer tunnel.
+pub fn hold_admitting(
+    endpoints: &[SocketAddr],
+    direct: &[SocketAddr],
+    bridge: Option<&Bridge>,
+) -> Result<()> {
+    if endpoints.is_empty() {
+        bail!("a hold needs at least one node endpoint to allow");
+    }
+    let peered: Vec<(&str, u8, SocketAddr)> = bridge
+        .map(|b| (b.interface.as_str(), IPPROTO_TCP, b.to))
+        .into_iter()
+        .collect();
+    install(&Allow {
+        tunnels: &[],
+        nodes: endpoints,
+        peered: &peered,
+        direct_tcp: direct,
     })
 }
 
@@ -343,6 +448,8 @@ pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
     install(&Allow {
         tunnels: &[],
         nodes: endpoints,
+        peered: &[],
+        direct_tcp: &[],
     })
 }
 

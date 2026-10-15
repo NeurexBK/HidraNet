@@ -23,11 +23,17 @@ Only what the code proves, and the test scripts check:
 
 - **Nodes run by different people.** An entry and an exit are two ordinary
   nodes; you choose which, invite by invite, or from your own pocket of nodes.
-- **A different identity for every node.** Each node is shown a key derived
-  for it from your one master key; no two nodes see the same key, and none
-  sees the master key. Two operators comparing their peer lists find nothing
-  in common. What remains to two nodes that conspire is the timing and volume
-  of your traffic — the residue of any two-hop design.
+- **A different identity for every node, and for every connection at the
+  exit.** A node reached from your address is shown a key derived for it
+  from your one master key; no two nodes see the same key, and none sees the
+  master key. Every node that admits openly — entry, exit, or the node of one
+  hop — is shown a fresh key on every connection, and forgets it minutes
+  after you leave; the exit of two hops is asked for it through the entry,
+  so it never hears from your address and never sees a key it could tie to
+  it.
+  What remains to two nodes that conspire is the timing and volume of your
+  traffic — the residue of any two-hop design. `docs/anonymity.md` says who
+  can see what, and the test that proves each line.
 - **Two hops where no node sees both.** In Privado the entry sees your
   address but not where your traffic goes; the exit sees the traffic but gets
   it from the entry. The test watches the entry and counts zero plaintext

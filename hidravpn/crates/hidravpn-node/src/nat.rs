@@ -32,11 +32,14 @@ pub fn default_interface() -> Result<String> {
 
 fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
     // What may leave the tunnel. An entry carries nothing but WireGuard to
-    // other nodes; an exit carries the internet, minus mail and the ports
+    // other nodes, and the one request a client makes to an exit's admission
+    // port through it — so the exit is asked from the entry's address, never
+    // the client's; an exit carries the internet, minus mail and the ports
     // abuse comes from.
     let policy = if role.eq_ignore_ascii_case("entry") {
         format!(
             r#"    iifname "{tun_if}" oifname "{out_if}" udp dport 51820 accept comment "an entry forwards only WireGuard, to other nodes"
+    iifname "{tun_if}" oifname "{out_if}" tcp dport 51821 accept comment "and admission requests to exits, so an exit never sees the client's address"
     iifname "{tun_if}" oifname "{out_if}" drop comment "entry policy: nothing else leaves"
 "#
         )
@@ -119,6 +122,7 @@ mod tests {
         assert!(exit.contains(r#"iifname "hvpn0" oifname "eth0" accept"#));
         let entry = ruleset("hvpn0", "eth0", "10.77.0.0/16", "entry");
         assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" udp dport 51820 accept"#));
+        assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" tcp dport 51821 accept"#));
         assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" drop"#));
         assert!(
             !entry.contains(r#"iifname "hvpn0" oifname "eth0" accept"#),

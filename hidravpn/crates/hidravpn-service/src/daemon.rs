@@ -17,8 +17,8 @@ use anyhow::{anyhow, Context, Result};
 use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
 use hidravpn_core::{
-    random, Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Merge, Pocket, ReleaseKey,
-    Role,
+    circuit, random, Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, Merge, Pocket,
+    ReleaseKey, Role,
 };
 use tokio::sync::Mutex;
 
@@ -38,6 +38,8 @@ struct Active {
     pool: Vec<Invite>,
     current: usize,
     opts: CircuitOptions,
+    /// The person said yes to two hops under one operator (or unnamed ones).
+    allow_same_operator: bool,
 }
 
 pub struct Daemon {
@@ -124,6 +126,7 @@ impl Daemon {
                 via,
                 alternates,
                 alternate_entries,
+                allow_same_operator,
             } => {
                 let opts = CircuitOptions {
                     route_ipv6: !keep_ipv6,
@@ -131,7 +134,15 @@ impl Daemon {
                     ..CircuitOptions::default()
                 };
                 match self
-                    .up(invite, via, alternates, alternate_entries, opts, caller)
+                    .up(
+                        invite,
+                        via,
+                        alternates,
+                        alternate_entries,
+                        opts,
+                        caller,
+                        allow_same_operator,
+                    )
                     .await
                 {
                     Ok(()) => self.status().await,
@@ -142,6 +153,7 @@ impl Daemon {
                 mode,
                 allow_lan,
                 keep_ipv6,
+                allow_same_operator,
             } => {
                 // Connecting replaces the circuit that is up: that is a
                 // `down` of it, so the same rule applies.
@@ -153,14 +165,11 @@ impl Daemon {
                     allow_lan,
                     ..CircuitOptions::default()
                 };
-                match self.connect_from_pocket(&mode, opts, caller).await {
-                    Ok(joined) => {
-                        let s = self.status().await;
-                        match joined {
-                            Some(note) => s.noting(note),
-                            None => s,
-                        }
-                    }
+                match self
+                    .connect_from_pocket(&mode, opts, caller, allow_same_operator)
+                    .await
+                {
+                    Ok(()) => self.status().await,
                     Err(e) => Response::err(format!("{e:#}")),
                 }
             }
@@ -216,6 +225,7 @@ impl Daemon {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn up(
         &self,
         exit: Invite,
@@ -224,6 +234,7 @@ impl Daemon {
         alternate_entries: Vec<Invite>,
         opts: CircuitOptions,
         caller: Option<u32>,
+        allow_same_operator: bool,
     ) -> Result<()> {
         // Everything is checked before anything is touched: every exit with
         // every entry, since any pair may be built later.
@@ -237,55 +248,33 @@ impl Daemon {
         }
         for exit in &pool {
             if entries.is_empty() {
-                CircuitSpec {
-                    exit: exit.clone(),
-                    entry: None,
-                }
-                .validate()?;
+                CircuitSpec::new(exit.clone(), None).validate()?;
             }
             for entry in &entries {
-                CircuitSpec {
-                    exit: exit.clone(),
-                    entry: Some(entry.clone()),
+                if hidravpn_core::pocket::same_node(entry, exit) {
+                    continue;
                 }
-                .validate()?;
+                CircuitSpec::new(exit.clone(), Some(entry.clone())).validate()?;
             }
         }
-
-        let next_first_hop = CircuitSpec {
-            exit: pool[0].clone(),
-            entry: entries.first().cloned(),
+        if let Some(entry) = entries.first() {
+            CircuitSpec::new(pool[0].clone(), Some(entry.clone())).validate()?;
+            if !hidravpn_core::pocket::pair_allowed(entry, &pool[0], allow_same_operator) {
+                return Err(anyhow!("{}", hidravpn_core::pocket::SAME_OPERATOR_REFUSAL));
+            }
         }
-        .first_hop_endpoint()?;
 
         let mut guard = self.state.lock().await;
-        // Replacing a running circuit: the kill switch is held across the
-        // change — only the old and the new first hop may be reached — before
-        // the old circuit comes down, and the new circuit's own rules replace
-        // the hold once it is up. There is no moment on the open network; if
-        // the new circuit cannot be built, the machine stays blocked until
-        // `down`, never open.
-        let held = match guard.take() {
-            Some(old) => {
-                let mut allowed = vec![next_first_hop];
-                if let Ok(current) = old.circuit.spec().first_hop_endpoint() {
-                    allowed.push(current);
-                }
-                if let Err(e) = killswitch::hold(&allowed) {
-                    *guard = Some(old);
-                    return Err(e.context(
-                        "could not hold the kill switch across the change; staying on the current circuit",
-                    ));
-                }
-                let _ = old.circuit.down_with(false).await;
-                true
-            }
-            None => false,
-        };
-        let circuit = match connect(&pool[0], entries.first(), &opts, held).await {
+        let old = guard.take();
+        let had_old = old.is_some();
+        let circuit = match build(old, &pool[0], entries.first(), &opts).await {
             Ok(c) => c,
-            Err(e) if held => return Err(e.context(HELD)),
-            Err(e) => return Err(e),
+            Err(Failed::Untouched(e, old)) => {
+                *guard = old.map(|b| *b);
+                return Err(e);
+            }
+            Err(Failed::Held(e)) if had_old => return Err(e.context(HELD)),
+            Err(Failed::Held(e)) => return Err(e),
         };
         *guard = Some(Active {
             owner: caller.filter(|&u| u != 0),
@@ -295,6 +284,7 @@ impl Daemon {
             pool,
             current: 0,
             opts,
+            allow_same_operator,
         });
         tracing::info!("connected");
         Ok(())
@@ -302,24 +292,19 @@ impl Daemon {
 
     /// Connects through nodes picked from the pocket: one exit for Rápido, an
     /// entry and an exit for Privado, each at random, the rest kept for
-    /// `new_identity` to rotate to. The caller never sees an invite. With no
-    /// admitted node but known nodes that admit openly, it asks them first:
-    /// that is how a machine that only imported the list connects at all.
-    /// Returns a note about what it joined, if it joined anything.
+    /// `new_identity` to rotate to. The caller never sees an invite. A node
+    /// that admits openly needs no joining first: it is asked for a key for
+    /// this connection as the circuit is built (`circuit::prepare`), which is
+    /// how a machine that only imported the list connects at all.
     async fn connect_from_pocket(
         &self,
         mode: &str,
         opts: CircuitOptions,
         caller: Option<u32>,
-    ) -> Result<Option<String>> {
-        let mut pocket = load_pocket(&self.pocket_path)?;
-        let mut joined_note = None;
-        if pocket.is_empty() && !pocket.joinable().is_empty() {
-            let (p, note) = self.join(None).await?;
-            pocket = p;
-            joined_note = Some(note);
-        }
-        let plan = plan_connect(&pocket, mode)?;
+        allow_same_operator: bool,
+    ) -> Result<()> {
+        let pocket = load_pocket(&self.pocket_path)?;
+        let plan = plan_connect(&pocket, mode, allow_same_operator)?;
         self.up(
             plan.exit,
             plan.entry,
@@ -327,9 +312,9 @@ impl Daemon {
             plan.alternate_entries,
             opts,
             caller,
+            allow_same_operator,
         )
-        .await?;
-        Ok(joined_note)
+        .await
     }
 
     /// Asks admission from the known nodes that admit openly (one by name,
@@ -362,7 +347,7 @@ impl Daemon {
         let mut joined = 0;
         for rec in targets {
             let shown = key.for_node_base64(&rec.node_public_key)?.public_base64();
-            match hidravpn_core::admission::request_admission(&rec, &shown, &host).await {
+            match hidravpn_core::admission::request_admission(&rec, &shown, &host, false).await {
                 Ok(invite) => {
                     let mut added = 0;
                     for slot in hidravpn_core::pocket::slots_for_role(rec.role.as_deref()) {
@@ -412,68 +397,60 @@ impl Daemon {
 
     /// Rebuilds the circuit through another exit of the pool, chosen at
     /// random among the others, and through another entry when there is
-    /// more than one. Returns the note for the person: which nodes it got,
-    /// or that there was no other to choose.
+    /// more than one — never into a pair one operator runs, unless the
+    /// person said yes to that when connecting. An exit that admits openly
+    /// is shown a fresh key, admitted through the entry, even when it is the
+    /// same exit again. Returns the note for the person: which nodes it got,
+    /// or that there was no other to choose, and why.
     async fn new_identity(&self) -> Result<String> {
         let mut guard = self.state.lock().await;
         let active = guard
             .take()
             .ok_or_else(|| anyhow!("not connected; nothing to rotate"))?;
-        let next =
-            random::index_other_than(active.pool.len(), active.current)?.unwrap_or(active.current);
-        let next_entry = random::index_other_than(active.entries.len(), active.current_entry)?
-            .unwrap_or(active.current_entry);
-
-        // The kill switch is held across the change: before the old circuit
-        // comes down, the rules allow only the old and the new first hop, so
-        // nothing else leaves while the new circuit is built; its own rules
-        // replace the hold once it is up. A rotation that fails leaves the
-        // machine blocked, never open.
-        let mut allowed = Vec::with_capacity(2);
-        if let Ok(current) = active.circuit.spec().first_hop_endpoint() {
-            allowed.push(current);
-        }
-        match (CircuitSpec {
-            exit: active.pool[next].clone(),
-            entry: active.entries.get(next_entry).cloned(),
-        })
-        .first_hop_endpoint()
-        {
-            Ok(a) => allowed.push(a),
+        let (next, next_entry, skipped) = match choose_rotation(&active) {
+            Ok(c) => c,
             Err(e) => {
                 *guard = Some(active);
                 return Err(e);
             }
-        }
-        if let Err(e) = killswitch::hold(&allowed) {
-            *guard = Some(active);
-            return Err(e.context(
-                "could not hold the kill switch across the rotation; staying on the current circuit",
-            ));
-        }
-        let Active {
-            owner: active_owner,
-            circuit,
-            entries,
-            current_entry,
-            pool,
-            current,
-            opts,
-        } = active;
-
-        // The old circuit goes down completely before the new one comes up:
-        // the exit's session and its routes belong to the old identity. The
-        // kill switch stays, as the hold.
-        let _ = circuit.down_with(false).await;
-        match connect(&pool[next], entries.get(next_entry), &opts, true).await {
+        };
+        let exit = active.pool[next].clone();
+        let entry = active.entries.get(next_entry).cloned();
+        let (pool, entries) = (active.pool.clone(), active.entries.clone());
+        let (current, current_entry) = (active.current, active.current_entry);
+        let (owner, opts, allow) = (
+            active.owner,
+            active.opts.clone(),
+            active.allow_same_operator,
+        );
+        match build(Some(active), &exit, entry.as_ref(), &opts).await {
             Ok(circuit) => {
-                let exit_note = if pool.len() == 1 {
-                    "only one exit node is configured; reconnected to the same one, so the address the internet sees has not changed".to_string()
-                } else {
+                let fresh = exit.admits_openly() && entry.is_some();
+                let exit_note = if next == current {
+                    let why = if skipped.is_empty() {
+                        "only one exit node is configured".to_string()
+                    } else {
+                        format!(
+                            "no other exit is run by a different operator than the entry ({} not used)",
+                            skipped.join(", ")
+                        )
+                    };
                     format!(
+                        "{why}; reconnected to the same one, so the address the internet sees has not changed{}",
+                        if fresh { " (it was shown a new key)" } else { "" }
+                    )
+                } else {
+                    let mut n = format!(
                         "new identity: the exit is now {} (was {})",
                         pool[next].node_name, pool[current].node_name
-                    )
+                    );
+                    if !skipped.is_empty() {
+                        n.push_str(&format!(
+                            "; not {}: run by the entry's operator",
+                            skipped.join(", ")
+                        ));
+                    }
+                    n
                 };
                 let entry_note = match entries.len() {
                     0 => String::new(),
@@ -481,30 +458,36 @@ impl Daemon {
                         "; the entry stays {} (only one entry node is configured)",
                         entries[0].node_name
                     ),
+                    _ if next_entry == current_entry => {
+                        format!("; the entry stays {}", entries[next_entry].node_name)
+                    }
                     _ => format!(
                         "; the entry is now {} (was {})",
                         entries[next_entry].node_name, entries[current_entry].node_name
                     ),
                 };
                 *guard = Some(Active {
-                    owner: active_owner,
+                    owner,
                     circuit,
                     entries,
                     current_entry: next_entry,
                     pool,
                     current: next,
                     opts,
+                    allow_same_operator: allow,
                 });
                 tracing::info!("new identity");
                 Ok(format!("{exit_note}{entry_note}"))
             }
-            Err(e) => {
-                // Nothing is up, and the hold still blocks the machine: say
-                // so rather than pretend a circuit is up, or that it is open.
-                Err(e.context(format!(
-                    "the new circuit could not be built; disconnected, and {HELD}"
-                )))
+            Err(Failed::Untouched(e, old)) => {
+                *guard = old.map(|b| *b);
+                Err(e)
             }
+            // Nothing is up, and the hold still blocks the machine: say so
+            // rather than pretend a circuit is up, or that it is open.
+            Err(Failed::Held(e)) => Err(e.context(format!(
+                "the new circuit could not be built; disconnected, and {HELD}"
+            ))),
         }
     }
 
@@ -618,21 +601,21 @@ pub struct Plan {
 /// Picks from the pocket for a mode: "rapido" is one hop through an exit,
 /// "privado" two hops through an entry and an exit that are different nodes.
 /// Choices are uniform and never logged.
-pub fn plan_connect(pocket: &Pocket, mode: &str) -> Result<Plan> {
-    if pocket.is_empty() && !pocket.known.is_empty() {
-        return Err(anyhow!(
-            "this machine knows {} node(s) from the node list but is admitted on none yet: a node that admits openly is joined with `hidravpn nodes join --all` (the service tries that itself when it connects, so if you see this, those nodes refused or did not answer); for one that admits by hand, run `hidravpn pubkey --node <its key>`, send the result to its operator (`hidravpn nodes list` names them) and add the invite with `hidravpn nodes add`",
-            pocket.known.len()
-        ));
-    }
-    if pocket.is_empty() {
+pub fn plan_connect(pocket: &Pocket, mode: &str, allow_same_operator: bool) -> Result<Plan> {
+    if pocket.is_empty() && pocket.known.is_empty() {
         return Err(anyhow!(
             "the pocket has no nodes; add some with `hidravpn nodes add --entry e.json` and `--exit x.json`, or import a signed node list with `hidravpn nodes import nodes.json`"
         ));
     }
+    if pocket.is_empty() && pocket.joinable().is_empty() {
+        return Err(anyhow!(
+            "this machine knows {} node(s) from the node list but none admits openly, and no operator has admitted it by hand: for such a node, run `hidravpn pubkey --node <its key>`, send the result to its operator (`hidravpn nodes list` names them) and add the invite with `hidravpn nodes add`",
+            pocket.known.len()
+        ));
+    }
     let pick = match mode.trim().to_ascii_lowercase().as_str() {
         "rapido" => pocket.pick_rapido()?,
-        "privado" => pocket.pick_privado()?,
+        "privado" => pocket.pick_privado(allow_same_operator)?,
         other => {
             return Err(anyhow!(
                 "unknown mode \"{other}\": use \"rapido\" (one hop) or \"privado\" (two hops)"
@@ -724,29 +707,118 @@ pub fn node_reports(pocket: &Pocket) -> Vec<NodeReport> {
         .collect()
 }
 
-/// Brings a circuit up with the service's key. A kill switch a crashed run
-/// left behind is undone first — unless one is `held` on purpose across a
-/// change, in which case it stays until the new circuit's own rules replace
-/// it in one step.
-async fn connect(
+/// Why a circuit could not be built, and in what state that left the
+/// machine.
+enum Failed {
+    /// Nothing was touched: the old circuit (if any) is still up, as it was.
+    Untouched(anyhow::Error, Option<Box<Active>>),
+    /// The old circuit (if any) is gone. If there was one, the kill switch
+    /// holds the machine blocked; if there was none, the machine is back as
+    /// it was before the attempt.
+    Held(anyhow::Error),
+}
+
+/// Builds a circuit through `exit` (and `entry`), replacing `old`, with the
+/// service's key. The kill switch is held from the moment `old` starts to
+/// come down until the new circuit's own rules replace the hold, so there is
+/// no moment on the open network. An exit of two hops that admits openly is
+/// first asked, through the entry, to admit a fresh key (`admit_behind`).
+async fn build(
+    old: Option<Active>,
     exit: &Invite,
     entry: Option<&Invite>,
     opts: &CircuitOptions,
-    held: bool,
-) -> Result<Circuit> {
-    let key = load_key()?;
-    if !held {
+) -> std::result::Result<Circuit, Failed> {
+    let key = match load_key() {
+        Ok(k) => k,
+        Err(e) => return Err(Failed::Untouched(e, old.map(Box::new))),
+    };
+    let first_hop = match entry.unwrap_or(exit).endpoint_addr() {
+        Ok(a) => a,
+        Err(e) => return Err(Failed::Untouched(e, old.map(Box::new))),
+    };
+    let old_first_hop: Vec<std::net::SocketAddr> = old
+        .as_ref()
+        .and_then(|o| o.circuit.spec().first_hop_endpoint().ok())
+        .into_iter()
+        .collect();
+    let had_old = old.is_some();
+    // A kill switch a crashed run left behind is undone first — unless a
+    // circuit is being replaced, when it is held instead: from here on, only
+    // the old and the new first hop may be reached.
+    let mut held = Vec::new();
+    if let Some(o) = old {
+        held.push(first_hop);
+        held.extend(old_first_hop.iter().copied().filter(|a| *a != first_hop));
+        if let Err(e) = killswitch::hold(&held) {
+            return Err(Failed::Untouched(
+                e.context("could not hold the kill switch across the change; staying on the current circuit"),
+                Some(Box::new(o)),
+            ));
+        }
+        let _ = o.circuit.down_with(false).await;
+    } else {
         let _ = killswitch::remove();
     }
-    Circuit::up(
-        CircuitSpec {
-            exit: exit.clone(),
-            entry: entry.cloned(),
-        },
-        key,
-        opts.clone(),
-    )
-    .await
+    let built = async {
+        let spec = circuit::prepare(exit, entry, &key, opts, &held).await?;
+        Circuit::up(spec, key.clone(), opts.clone()).await
+    }
+    .await;
+    built.map_err(|e| {
+        // A first connection that failed leaves the machine as it found it;
+        // a replacement leaves it held, and the caller says so.
+        if !had_old {
+            let _ = killswitch::remove();
+        }
+        Failed::Held(e)
+    })
+}
+
+/// The next pair for a new identity: another exit when one may be paired
+/// with an entry (two operators, or the person's yes), else the same exit;
+/// another entry when there is one that may go with that exit. Also the
+/// names of exits passed over because one operator runs them and the entry.
+fn choose_rotation(a: &Active) -> Result<(usize, usize, Vec<String>)> {
+    if a.entries.is_empty() {
+        let next = random::index_other_than(a.pool.len(), a.current)?.unwrap_or(a.current);
+        return Ok((next, 0, Vec::new()));
+    }
+    let ok = |e: usize, x: usize| {
+        !hidravpn_core::pocket::same_node(&a.entries[e], &a.pool[x])
+            && hidravpn_core::pocket::entry_can_reach(&a.entries[e], &a.pool[x])
+            && hidravpn_core::pocket::pair_allowed(&a.entries[e], &a.pool[x], a.allow_same_operator)
+    };
+    let mut skipped: Vec<String> = Vec::new();
+    let mut other_exits = Vec::new();
+    for x in (0..a.pool.len()).filter(|&x| x != a.current) {
+        if (0..a.entries.len()).any(|e| ok(e, x)) {
+            other_exits.push(x);
+        } else if (0..a.entries.len())
+            .any(|e| !hidravpn_core::pocket::same_node(&a.entries[e], &a.pool[x]))
+        {
+            skipped.push(a.pool[x].node_name.clone());
+        }
+    }
+    let next = if other_exits.is_empty() {
+        a.current
+    } else {
+        other_exits[random::index(other_exits.len())?]
+    };
+    let entries_ok: Vec<usize> = (0..a.entries.len()).filter(|&e| ok(e, next)).collect();
+    let others: Vec<usize> = entries_ok
+        .iter()
+        .copied()
+        .filter(|&e| e != a.current_entry)
+        .collect();
+    let next_entry = if !others.is_empty() {
+        others[random::index(others.len())?]
+    } else if entries_ok.contains(&a.current_entry) {
+        a.current_entry
+    } else {
+        return Err(anyhow!("{}", hidravpn_core::pocket::SAME_OPERATOR_REFUSAL));
+    };
+    Ok((next, next_entry, skipped))
 }
 
 fn load_key() -> Result<ClientKey> {
@@ -784,6 +856,13 @@ mod tests {
             operator: None,
             role: None,
             country: None,
+            admission: Some("open".into()),
+            admission_port: None,
+            behind: false,
+            features: vec![
+                hidravpn_core::directory::features::SESSIONS.into(),
+                hidravpn_core::directory::features::ADMISSION_RELAY.into(),
+            ],
         }
     }
 
@@ -809,7 +888,7 @@ mod tests {
     #[test]
     fn rapido_plans_one_exit_and_keeps_the_others_for_rotation() {
         let p = pocket(&["e1"], &["x1", "x2", "x3"]);
-        let plan = plan_connect(&p, "rapido").unwrap();
+        let plan = plan_connect(&p, "rapido", true).unwrap();
         assert!(plan.entry.is_none(), "one hop has no entry");
         assert_eq!(plan.alternates.len(), 2);
         assert!(plan.alternate_entries.is_empty());
@@ -818,14 +897,14 @@ mod tests {
             .iter()
             .any(|a| a.node_name == plan.exit.node_name));
         // Case and spacing do not matter to the mode.
-        assert!(plan_connect(&p, " Rapido ").is_ok());
+        assert!(plan_connect(&p, " Rapido ", true).is_ok());
     }
 
     #[test]
     fn privado_plans_an_entry_and_an_exit_that_are_different_nodes() {
         let p = pocket(&["e1", "e2"], &["x1", "x2"]);
         for _ in 0..50 {
-            let plan = plan_connect(&p, "privado").unwrap();
+            let plan = plan_connect(&p, "privado", true).unwrap();
             let entry = plan.entry.expect("two hops have an entry");
             assert_ne!(entry.node_public_key, plan.exit.node_public_key);
             assert_eq!(plan.alternates.len(), 1);
@@ -835,18 +914,18 @@ mod tests {
 
     #[test]
     fn an_empty_pocket_and_an_unknown_mode_are_refused_with_a_way_forward() {
-        let e = plan_connect(&Pocket::default(), "rapido")
+        let e = plan_connect(&Pocket::default(), "rapido", true)
             .unwrap_err()
             .to_string();
         assert!(
             e.contains("no nodes") && e.contains("hidravpn nodes add"),
             "{e}"
         );
-        let e = plan_connect(&pocket(&[], &["x1"]), "fast")
+        let e = plan_connect(&pocket(&[], &["x1"]), "fast", true)
             .unwrap_err()
             .to_string();
         assert!(e.contains("rapido") && e.contains("privado"), "{e}");
-        let e = plan_connect(&pocket(&[], &["x1"]), "privado")
+        let e = plan_connect(&pocket(&[], &["x1"]), "privado", true)
             .unwrap_err()
             .to_string();
         assert!(e.contains("no entry node"), "{e}");
@@ -865,9 +944,10 @@ mod tests {
             admission: None,
             admission_port: None,
             country: None,
+            features: Vec::new(),
         })
         .unwrap();
-        let e = plan_connect(&p, "rapido").unwrap_err().to_string();
+        let e = plan_connect(&p, "rapido", true).unwrap_err().to_string();
         assert!(
             e.contains("knows 1 node(s)") && e.contains("hidravpn pubkey --node"),
             "{e}"
@@ -921,6 +1001,7 @@ mod tests {
                 via: None,
                 alternates: vec![],
                 alternate_entries: vec![],
+                allow_same_operator: false,
             },
         };
         let r = d.handle(up(), Some(1000)).await;

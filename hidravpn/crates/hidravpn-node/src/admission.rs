@@ -23,7 +23,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use hidravpn_core::admission::{http_response, read_request, refusal, AdmissionRequest};
+use hidravpn_core::admission::{
+    http_response, read_request, refusal, refusal_wanting_work, work, AdmissionRequest,
+};
 use hidravpn_core::Invite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
@@ -35,6 +37,8 @@ use crate::config::NodeConfig;
 pub struct Admit {
     pub public_key: String,
     pub name: String,
+    /// A key made for one connection: its lease lapses with the connection.
+    pub session: bool,
     /// The invite, or the HTTP status and reason for refusing.
     pub reply: oneshot::Sender<std::result::Result<Invite, (u16, String)>>,
 }
@@ -43,37 +47,41 @@ const PER_IP: usize = 3;
 const PER_IP_WINDOW: Duration = Duration::from_secs(600);
 const GLOBAL: usize = 120;
 const GLOBAL_WINDOW: Duration = Duration::from_secs(600);
+/// Session admissions (a fresh key per connection) are paid for with a
+/// proof of work instead of being counted per address: they come from the
+/// client's own address for a first hop and from the entry's for an exit,
+/// and counting the entry's address would throttle all its clients
+/// together. They have a node-wide ceiling of their own.
+const SESSION_GLOBAL: usize = 600;
 const CONNECTIONS: usize = 32;
 const PER_CONNECTION: Duration = Duration::from_secs(5);
 
-/// A sliding-window count per source address and overall.
+/// Sliding windows: per source address and overall for lasting leases,
+/// overall only for session leases.
 #[derive(Default)]
 pub struct RateLimiter {
     per_ip: HashMap<IpAddr, VecDeque<Instant>>,
     global: VecDeque<Instant>,
+    sessions: VecDeque<Instant>,
+}
+
+/// Drops what has slid out of the window; true if there is room for one more.
+fn room(q: &mut VecDeque<Instant>, now: Instant, window: Duration, limit: usize) -> bool {
+    while q.front().is_some_and(|t| now.duration_since(*t) > window) {
+        q.pop_front();
+    }
+    q.len() < limit
 }
 
 impl RateLimiter {
-    /// Whether one more admission from `ip` is allowed now; records it if so.
+    /// Whether one more lasting admission from `ip` is allowed now; records
+    /// it if so.
     pub fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
-        while self
-            .global
-            .front()
-            .is_some_and(|t| now.duration_since(*t) > GLOBAL_WINDOW)
-        {
-            self.global.pop_front();
-        }
-        if self.global.len() >= GLOBAL {
+        if !room(&mut self.global, now, GLOBAL_WINDOW, GLOBAL) {
             return false;
         }
         let q = self.per_ip.entry(ip).or_default();
-        while q
-            .front()
-            .is_some_and(|t| now.duration_since(*t) > PER_IP_WINDOW)
-        {
-            q.pop_front();
-        }
-        if q.len() >= PER_IP {
+        if !room(q, now, PER_IP_WINDOW, PER_IP) {
             return false;
         }
         q.push_back(now);
@@ -85,6 +93,16 @@ impl RateLimiter {
                     .is_some_and(|t| now.duration_since(*t) <= PER_IP_WINDOW)
             });
         }
+        true
+    }
+
+    /// Whether one more session admission is allowed now, whoever asks;
+    /// records it if so. The proof of work is checked before this.
+    pub fn allow_session(&mut self, now: Instant) -> bool {
+        if !room(&mut self.sessions, now, GLOBAL_WINDOW, SESSION_GLOBAL) {
+            return false;
+        }
+        self.sessions.push_back(now);
         true
     }
 }
@@ -214,7 +232,34 @@ async fn admit(
             &refusal("public_key is not a WireGuard public key (32 bytes, base64)"),
         );
     }
-    if !limiter.lock().await.allow(ip, Instant::now()) {
+    if req.session {
+        // A session key is paid for with work, bound to this node and this
+        // key, not counted against an address.
+        let bits = cfg.admission_work_bits;
+        let paid = match (
+            req.work,
+            hidravpn_core::keys::public_key_from_base64(&cfg.public_key().unwrap_or_default()),
+            hidravpn_core::keys::public_key_from_base64(&req.public_key),
+        ) {
+            (Some(w), Ok(node), Ok(client)) => work::verify(
+                node.as_bytes(),
+                client.as_bytes(),
+                w,
+                bits,
+                work::now_minute(),
+            ),
+            _ => false,
+        };
+        if !paid {
+            return http_response(428, &refusal_wanting_work(bits));
+        }
+        if !limiter.lock().await.allow_session(Instant::now()) {
+            return http_response(
+                429,
+                &refusal("this node is admitting too many sessions right now; try another"),
+            );
+        }
+    } else if !limiter.lock().await.allow(ip, Instant::now()) {
         return http_response(
             429,
             &refusal("too many admissions from this address; try again later"),
@@ -228,6 +273,7 @@ async fn admit(
     if tx
         .send(Admit {
             public_key: req.public_key,
+            session: req.session,
             name,
             reply,
         })
@@ -262,6 +308,26 @@ mod tests {
             l.allow(ip, t0 + PER_IP_WINDOW + Duration::from_secs(1)),
             "after the window it may ask again"
         );
+    }
+
+    #[test]
+    fn session_admissions_are_not_counted_per_address_but_have_a_ceiling() {
+        let mut l = RateLimiter::default();
+        let entry: IpAddr = "203.0.113.7".parse().unwrap();
+        let t0 = Instant::now();
+        for _ in 0..PER_IP {
+            assert!(l.allow(entry, t0));
+        }
+        assert!(!l.allow(entry, t0), "lasting leases: a few per address");
+        let mut sessions = 0;
+        while l.allow_session(t0) {
+            sessions += 1;
+        }
+        assert_eq!(
+            sessions, SESSION_GLOBAL,
+            "sessions: the node-wide ceiling only"
+        );
+        assert!(l.allow_session(t0 + GLOBAL_WINDOW + Duration::from_secs(1)));
     }
 
     #[test]

@@ -41,12 +41,105 @@ pub struct AdmissionRequest {
     /// A name for the lease, for the operator's `status`; optional.
     #[serde(default)]
     pub name: String,
+    /// A key made for one connection, asked for through an entry: the node
+    /// keeps its lease only while the connection lives (a short idle window,
+    /// not days), so it holds nothing about the client once it is over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub session: bool,
+    /// The proof of work a session admission carries (`work`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Work>,
+}
+
+/// A proof of work: a nonce that makes the digest of this node, this key and
+/// this minute start with enough zero bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Work {
+    pub minute: u64,
+    pub nonce: u64,
+}
+
+/// What a session admission costs the client, instead of who it is.
+///
+/// A node that admits a fresh key for every connection cannot count requests
+/// per client — it does not know who the client is, by design — and counting
+/// per source address would throttle every client of a busy entry together.
+/// So each such request carries a proof of work bound to the node, the key
+/// it asks for and the current minute: about a second of one core for a
+/// person connecting, and the same second again for every lease a script
+/// would take. It is not proof against someone with many machines; passes
+/// (phase 5) are. A key's lease is only granted once, so replaying a proof
+/// buys nothing, and the minute stops proofs being stockpiled.
+pub mod work {
+    use sha2::{Digest, Sha256};
+
+    /// What a client does when the node has not said otherwise.
+    pub const DEFAULT_BITS: u8 = 20;
+    /// What a client agrees to do at most when a node asks for more.
+    pub const MAX_BITS: u8 = 26;
+    /// How far, in minutes, a proof's minute may be from the node's clock.
+    pub const SLACK_MINUTES: u64 = 2;
+    const DOMAIN: &[u8] = b"HidraVPN admission work v1";
+
+    pub fn now_minute() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 60)
+            .unwrap_or(0)
+    }
+
+    fn digest(node: &[u8; 32], client: &[u8; 32], minute: u64, nonce: u64) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(DOMAIN);
+        h.update(node);
+        h.update(client);
+        h.update(minute.to_be_bytes());
+        h.update(nonce.to_be_bytes());
+        h.finalize().into()
+    }
+
+    fn zero_bits(d: &[u8; 32]) -> u32 {
+        let mut n = 0;
+        for b in d {
+            if *b == 0 {
+                n += 8;
+            } else {
+                return n + b.leading_zeros();
+            }
+        }
+        n
+    }
+
+    /// The first nonce that makes the digest start with `bits` zero bits.
+    pub fn solve(node: &[u8; 32], client: &[u8; 32], minute: u64, bits: u8) -> super::Work {
+        let mut nonce = 0u64;
+        while zero_bits(&digest(node, client, minute, nonce)) < u32::from(bits) {
+            nonce += 1;
+        }
+        super::Work { minute, nonce }
+    }
+
+    /// Whether `w` proves `bits` of work for this node and key, made within
+    /// `SLACK_MINUTES` of `now_minute`.
+    pub fn verify(
+        node: &[u8; 32],
+        client: &[u8; 32],
+        w: super::Work,
+        bits: u8,
+        now_minute: u64,
+    ) -> bool {
+        now_minute.abs_diff(w.minute) <= SLACK_MINUTES
+            && zero_bits(&digest(node, client, w.minute, w.nonce)) >= u32::from(bits)
+    }
 }
 
 /// What a node answers when it does not admit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Refusal {
     pub error: String,
+    /// A node that wants more work than a request carried says how much.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_bits: Option<u8>,
 }
 
 // ---- the client ----------------------------------------------------------
@@ -71,23 +164,51 @@ pub async fn request_admission(
     record: &NodeRecord,
     client_public_key: &str,
     name: &str,
+    session: bool,
 ) -> Result<Invite> {
     let endpoint: SocketAddr = record
         .endpoint
         .parse()
         .context("the node's endpoint is not ip:port")?;
     let port = record.admission_port.unwrap_or(DEFAULT_ADMISSION_PORT);
-    let body = serde_json::to_string(&AdmissionRequest {
-        public_key: client_public_key.to_string(),
-        name: name.to_string(),
-    })?;
-    let (status, answer) = http_call(
-        SocketAddr::new(endpoint.ip(), port),
-        "POST",
-        "/admit",
-        &body,
-    )
-    .await?;
+    let mut bits = work::DEFAULT_BITS;
+    let (status, answer) = loop {
+        let proof = if session {
+            let node = *crate::keys::public_key_from_base64(&record.node_public_key)?.as_bytes();
+            let client = *crate::keys::public_key_from_base64(client_public_key)?.as_bytes();
+            let minute = work::now_minute();
+            Some(
+                tokio::task::spawn_blocking(move || work::solve(&node, &client, minute, bits))
+                    .await
+                    .context("working out the proof of work")?,
+            )
+        } else {
+            None
+        };
+        let body = serde_json::to_string(&AdmissionRequest {
+            public_key: client_public_key.to_string(),
+            name: name.to_string(),
+            session,
+            work: proof,
+        })?;
+        let (status, answer) = http_call(
+            SocketAddr::new(endpoint.ip(), port),
+            "POST",
+            "/admit",
+            &body,
+        )
+        .await?;
+        // A node that wants more work says how much, once; within reason.
+        match serde_json::from_str::<Refusal>(&answer)
+            .ok()
+            .and_then(|r| r.work_bits)
+        {
+            Some(want) if status == 428 && session && want > bits && want <= work::MAX_BITS => {
+                bits = want;
+            }
+            _ => break (status, answer),
+        }
+    };
     if status != 200 {
         return Err(anyhow!(
             "{} did not admit this machine ({status}): {}",
@@ -113,6 +234,10 @@ pub async fn request_admission(
     invite.node_name = record.node_name.clone();
     invite.operator = record.operator.clone();
     invite.role = record.role.clone();
+    invite.country = record.country.clone();
+    invite.admission = record.admission.clone();
+    invite.admission_port = record.admission_port;
+    invite.features = record.features.clone();
     Ok(invite)
 }
 
@@ -222,6 +347,7 @@ pub fn http_response(status: u16, body: &str) -> Vec<u8> {
         200 => "OK",
         400 => "Bad Request",
         403 => "Forbidden",
+        428 => "Precondition Required",
         404 => "Not Found",
         405 => "Method Not Allowed",
         429 => "Too Many Requests",
@@ -237,12 +363,51 @@ pub fn http_response(status: u16, body: &str) -> Vec<u8> {
 
 /// A refusal body.
 pub fn refusal(msg: impl Into<String>) -> String {
-    serde_json::to_string(&Refusal { error: msg.into() }).expect("a refusal serialises")
+    serde_json::to_string(&Refusal {
+        error: msg.into(),
+        work_bits: None,
+    })
+    .expect("a refusal serialises")
+}
+
+/// A refusal that says how much work the node wants (status 428).
+pub fn refusal_wanting_work(bits: u8) -> String {
+    serde_json::to_string(&Refusal {
+        error: format!("a session admission here needs a proof of {bits} bits of work"),
+        work_bits: Some(bits),
+    })
+    .expect("a refusal serialises")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_is_bound_to_the_node_the_key_and_the_minute() {
+        let node = [7u8; 32];
+        let client = [9u8; 32];
+        let w = work::solve(&node, &client, 1000, 12);
+        assert!(work::verify(&node, &client, w, 12, 1000));
+        assert!(
+            work::verify(&node, &client, w, 12, 1002),
+            "a little clock skew is fine"
+        );
+        assert!(
+            !work::verify(&node, &client, w, 12, 1003),
+            "an old proof is not"
+        );
+        assert!(
+            !work::verify(&[8u8; 32], &client, w, 12, 1000),
+            "another node"
+        );
+        assert!(!work::verify(&node, &[1u8; 32], w, 12, 1000), "another key");
+        // More bits than were worked for: almost never enough by luck.
+        let hard = (0..64)
+            .filter(|m| work::verify(&node, &client, work::solve(&node, &client, *m, 4), 20, *m))
+            .count();
+        assert!(hard < 2, "{hard}");
+    }
 
     #[tokio::test]
     async fn a_request_is_read_with_its_body_and_limits_hold() {
@@ -298,8 +463,9 @@ mod tests {
             admission: Some("open".into()),
             admission_port: Some(port),
             country: None,
+            features: Vec::new(),
         };
-        let e = request_admission(&record, "k", "laptop")
+        let e = request_admission(&record, "k", "laptop", false)
             .await
             .unwrap_err()
             .to_string();
@@ -332,8 +498,9 @@ mod tests {
             admission: Some("open".into()),
             admission_port: Some(port),
             country: None,
+            features: Vec::new(),
         };
-        let e = request_admission(&record, "k", "laptop")
+        let e = request_admission(&record, "k", "laptop", false)
             .await
             .unwrap_err()
             .to_string();
@@ -361,8 +528,9 @@ mod tests {
             admission: Some("manual".into()),
             admission_port: Some(port),
             country: None,
+            features: Vec::new(),
         };
-        let e = request_admission(&record, "k", "laptop")
+        let e = request_admission(&record, "k", "laptop", false)
             .await
             .unwrap_err()
             .to_string();

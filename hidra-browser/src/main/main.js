@@ -48,9 +48,24 @@ const VPN_LIST_URL = 'https://hidranet.org/vpn/nodes.json';
 // (vpn-installer.js); its .sig sits beside it.
 const VPN_RELEASE_URL = 'https://hidranet.org/vpn/release/manifest.json';
 const VPN_LIST_MAX_BYTES = 1024 * 1024;
+// What the VPN page's own requests say they are: the same short string for
+// every HidraNet user, never this browser's name, version or system, and no
+// cookies either way, so two fetches cannot be tied to one person.
+const VPN_FETCH_UA = 'Mozilla/5.0';
+const VPN_FETCH_OPTS = { cache: 'no-store', credentials: 'omit', headers: { 'User-Agent': VPN_FETCH_UA } };
+
+// The list and the release files go through the browser's own Tor route.
+// Whether the net module honours the network lock's webRequest filter
+// depends on the Electron version, so it is checked here too: with Tor not
+// ready these requests are refused rather than sent from this machine's own
+// address.
+function vpnFetchAllowed(url) {
+  if (networkLock.engaged) throw new Error(`${url}: blocked until Tor is ready (${networkLock.reason})`);
+}
 
 async function fetchText(url, maxBytes) {
-  const res = await net.fetch(url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(15000) });
+  vpnFetchAllowed(url);
+  const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   const tooBig = new Error(`${url}: far larger than a node list`);
   const declared = Number(res.headers.get('content-length') || 0);
@@ -73,7 +88,8 @@ async function fetchText(url, maxBytes) {
 // The same, for a release file: bytes, capped at what the signed manifest
 // says the file weighs, so a server cannot make this process buffer more.
 async function fetchBuffer(url, maxBytes) {
-  const res = await net.fetch(url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(10 * 60 * 1000) });
+  vpnFetchAllowed(url);
+  const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(10 * 60 * 1000) });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   const reader = res.body.getReader();
   const chunks = [];
@@ -92,12 +108,17 @@ const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText,
 
 // The leak test has to see what every other program on this machine sees,
 // not what the browser's own Tor route sees, so it asks from a session with
-// no proxy at all. Used only when the person presses the button.
+// no proxy at all. Used only when the person presses the button, and only
+// once runLeakTest has seen the kill switch armed and the tunnel alive, so
+// what the address service learns is the exit's address. It is told nothing
+// else: a generic user agent, no cookies, an in-memory session.
 function directProbe(url) {
   return new Promise((resolve, reject) => {
     const probe = session.fromPartition('hidravpn-leak-test');
+    probe.setUserAgent(VPN_FETCH_UA);
     probe.setProxy({ mode: 'direct' }).then(() => {
-      const request = net.request({ url, session: probe, useSessionCookies: false });
+      const request = net.request({ url, session: probe, useSessionCookies: false, credentials: 'omit' });
+      request.setHeader('User-Agent', VPN_FETCH_UA);
       let body = '';
       const timer = setTimeout(() => { try { request.abort(); } catch (e) {} reject(new Error('timeout')); }, 10000);
       request.on('response', (res) => {
@@ -958,7 +979,9 @@ function setupIPC(tabs, proxy) {
   ipcMain.handle('vpn:connect', (event, mode, options) => {
     vpnOnlyOurs(event);
     const allowLan = Boolean(options && typeof options === 'object' && options.allowLan === true);
-    return vpnManager.connect(mode, { allowLan });
+    // Two hops under one operator only with the person's explicit tick.
+    const allowSameOperator = Boolean(options && typeof options === 'object' && options.allowSameOperator === true);
+    return vpnManager.connect(mode, { allowLan, allowSameOperator });
   });
   ipcMain.handle('vpn:leak-test', async (event) => {
     vpnOnlyOurs(event);
@@ -1030,10 +1053,6 @@ function setupIPC(tabs, proxy) {
     }
     const r = await vpnManager.importNodesFromTexts(list, signature);
     return { ...r, url: VPN_LIST_URL };
-  });
-  ipcMain.handle('vpn:join', (event, name) => {
-    vpnOnlyOurs(event);
-    return vpnManager.join(typeof name === 'string' ? name : '');
   });
   // Checks a downloaded release file against FILE.sig with the release key
   // this build embeds. With no key embedded it says so and accepts nothing.

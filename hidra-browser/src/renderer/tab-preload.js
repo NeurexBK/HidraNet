@@ -72,7 +72,6 @@ if (isInternalPage) {
       nodes: () => ipcRenderer.invoke('vpn:nodes'),
       importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
       fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
-      join: (name) => ipcRenderer.invoke('vpn:join', name),
       verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
     },
   });

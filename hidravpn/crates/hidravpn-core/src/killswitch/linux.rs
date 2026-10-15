@@ -21,7 +21,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, Context, Result};
 
-use super::KillConfig;
+use super::{Bridge, KillConfig};
 
 const TABLE: &str = "inet hidravpn_ks";
 
@@ -101,11 +101,37 @@ fn ruleset(cfg: &KillConfig) -> String {
         None => (String::new(), String::new()),
     };
 
+    // Two hops: the outer tunnel carries the inner tunnel's packets to the
+    // exit and nothing else, so the entry never receives a packet whose
+    // destination it could read.
+    let (tunnel_out, tunnel_in) = match cfg.outer_peer {
+        Some(peer) => {
+            let (o, i) = peer_rules(iface, "udp", peer);
+            (
+                format!("{o}    oifname \"{iface}\" drop comment \"the outer tunnel carries only the inner one\"\n"),
+                i,
+            )
+        }
+        None => (
+            format!("    oifname \"{iface}\" accept\n"),
+            format!("    iifname \"{iface}\" accept\n"),
+        ),
+    };
     let output = format!(
-        "    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{node_out}    oifname \"{iface}\" accept\n{extra_out}{lan_out}"
+        "    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{node_out}{tunnel_out}{extra_out}{lan_out}"
     );
-    let input = format!("{node_in}    iifname \"{iface}\" accept\n{extra_in}{lan_in}");
+    let input = format!("{node_in}{tunnel_in}{extra_in}{lan_in}");
     table(&output, &input, "nothing leaves outside the tunnel")
+}
+
+/// One destination on one interface, both ways.
+fn peer_rules(iface: &str, proto: &str, peer: SocketAddr) -> (String, String) {
+    let fam = if peer.is_ipv4() { "ip" } else { "ip6" };
+    let (a, p) = (peer.ip(), peer.port());
+    (
+        format!("    oifname \"{iface}\" {fam} daddr {a} {proto} dport {p} accept\n"),
+        format!("    iifname \"{iface}\" {fam} saddr {a} {proto} sport {p} accept\n"),
+    )
 }
 
 /// The ruleset that holds the line while a circuit is replaced: the
@@ -114,6 +140,28 @@ fn ruleset(cfg: &KillConfig) -> String {
 fn hold_ruleset(endpoints: &[SocketAddr]) -> String {
     let (node_out, node_in) = node_rules(endpoints);
     table(&node_out, &node_in, "held: the circuit is being rebuilt")
+}
+
+/// The hold, plus TCP to the `direct` admission ports off-tunnel and to the
+/// bridge's destination through its tunnel.
+fn admitting_ruleset(
+    endpoints: &[SocketAddr],
+    direct: &[SocketAddr],
+    bridge: Option<&Bridge>,
+) -> String {
+    let (mut out, mut inp) = node_rules(endpoints);
+    for d in direct {
+        let fam = if d.is_ipv4() { "ip" } else { "ip6" };
+        let (a, p) = (d.ip(), d.port());
+        out.push_str(&format!("    {fam} daddr {a} tcp dport {p} accept\n"));
+        inp.push_str(&format!("    {fam} saddr {a} tcp sport {p} accept\n"));
+    }
+    if let Some(b) = bridge {
+        let (o, i) = peer_rules(&b.interface, "tcp", b.to);
+        out.push_str(&o);
+        inp.push_str(&i);
+    }
+    table(&out, &inp, "held: asking for admission")
 }
 
 /// `body` installed in place of whatever table is there, in one transaction:
@@ -157,6 +205,19 @@ pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
         return Err(anyhow!("a hold needs at least one node endpoint to allow"));
     }
     nft(&replace_script(&hold_ruleset(endpoints)))
+}
+
+pub fn hold_admitting(
+    endpoints: &[SocketAddr],
+    direct: &[SocketAddr],
+    bridge: Option<&Bridge>,
+) -> Result<()> {
+    if endpoints.is_empty() {
+        return Err(anyhow!("a hold needs at least one node endpoint to allow"));
+    }
+    nft(&replace_script(&admitting_ruleset(
+        endpoints, direct, bridge,
+    )))
 }
 
 pub fn remove() -> Result<()> {
@@ -210,7 +271,49 @@ mod tests {
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allow_lan,
             extra_interface: None,
+            outer_peer: None,
         }
+    }
+
+    #[test]
+    fn with_two_hops_the_outer_tunnel_reaches_the_exit_and_nothing_else() {
+        let mut two = cfg(false);
+        two.extra_interface = Some("hvpn1".into());
+        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        let r = ruleset(&two);
+        assert!(r.contains(r#"oifname "hvpn0" ip daddr 198.51.100.9 udp dport 51820 accept"#));
+        assert!(r.contains(r#"iifname "hvpn0" ip saddr 198.51.100.9 udp sport 51820 accept"#));
+        assert!(r.contains(r#"oifname "hvpn0" drop"#));
+        assert!(!r.contains(r#"oifname "hvpn0" accept"#), "{r}");
+        assert!(!r.contains(r#"iifname "hvpn0" accept"#), "{r}");
+        // The drop comes after the one accept, before anything else could match.
+        assert!(
+            r.find(r#"oifname "hvpn0" ip daddr"#).unwrap()
+                < r.find(r#"oifname "hvpn0" drop"#).unwrap()
+        );
+        assert!(r.contains(r#"oifname "hvpn1" accept"#));
+    }
+
+    #[test]
+    fn a_bridge_lets_one_tcp_destination_through_one_tunnel_and_nothing_else() {
+        let entry = SocketAddr::from(([203, 0, 113, 10], 51820));
+        let b = Bridge {
+            interface: "hvpn0".into(),
+            to: SocketAddr::from(([198, 51, 100, 9], 51821)),
+        };
+        let r = admitting_ruleset(&[entry], &[], Some(&b));
+        assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
+        assert!(r.contains(r#"oifname "hvpn0" ip daddr 198.51.100.9 tcp dport 51821 accept"#));
+        assert!(r.contains(r#"iifname "hvpn0" ip saddr 198.51.100.9 tcp sport 51821 accept"#));
+        assert!(!r.contains(r#"oifname "hvpn0" accept"#));
+        assert!(!r.contains("dport 53"), "no DNS at all while held");
+        assert!(r.contains("policy drop"));
+        // A first hop's admission port, off-tunnel, and nothing else.
+        let adm = SocketAddr::from(([203, 0, 113, 10], 51821));
+        let r = admitting_ruleset(&[entry], &[adm], None);
+        assert!(r.contains("ip daddr 203.0.113.10 tcp dport 51821 accept"));
+        assert!(r.contains("ip saddr 203.0.113.10 tcp sport 51821 accept"));
+        assert!(!r.contains("oifname \"hvpn0\""));
     }
 
     #[test]

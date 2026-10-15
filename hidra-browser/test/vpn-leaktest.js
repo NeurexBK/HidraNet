@@ -27,9 +27,10 @@ const connected = (over = {}) => ({
     connected: true,
     killswitch: true,
     endpoint: '203.0.113.20:51820',
+    last_handshake_secs: 5,
     hops_detail: [
-      { role: 'entry', node_name: 'n1', endpoint: '203.0.113.10:51820', connected: true },
-      { role: 'exit', node_name: 'n2', endpoint: '203.0.113.20:51820', connected: true },
+      { role: 'entry', node_name: 'n1', endpoint: '203.0.113.10:51820', connected: true, last_handshake_secs: 4 },
+      { role: 'exit', node_name: 'n2', endpoint: '203.0.113.20:51820', connected: true, last_handshake_secs: 5 },
     ],
     ...over,
   },
@@ -43,10 +44,10 @@ const by = (r, id) => r.checks.find((c) => c.id === id);
 
 (async () => {
   await check('not connected: the test does not run and says why', async () => {
-    const r = await runLeakTest({ state: 'disconnected', report: { connected: false } }, answers('1.2.3.4', new Error('x')));
+    const r = await runLeakTest({ state: 'disconnected', report: { connected: false } }, answers('192.0.2.4', new Error('x')));
     assert.strictEqual(r.ran, false);
     assert.ok(/connect first/.test(r.error));
-    const u = await runLeakTest({ state: 'not-installed', report: null }, answers('1.2.3.4', new Error('x')));
+    const u = await runLeakTest({ state: 'not-installed', report: null }, answers('192.0.2.4', new Error('x')));
     assert.strictEqual(u.ran, false);
   });
 
@@ -80,10 +81,28 @@ const by = (r, id) => r.checks.find((c) => c.id === id);
     assert.strictEqual(by(r, 'ipv4').verdict, 'warn');
   });
 
-  await check('kill switch off fails the kill switch and DNS', async () => {
-    const r = await runLeakTest(connected({ killswitch: false }), answers('203.0.113.20', new Error('x')));
+  await check('kill switch off fails the kill switch and DNS, and asks no website anything', async () => {
+    let asked = 0;
+    const r = await runLeakTest(connected({ killswitch: false }), async () => { asked++; return JSON.stringify({ ip: '203.0.113.20' }); });
     assert.strictEqual(by(r, 'killswitch').verdict, 'fail');
     assert.strictEqual(by(r, 'dns').verdict, 'fail');
+    assert.strictEqual(by(r, 'ipv4').verdict, 'fail');
+    assert.ok(/Not run/.test(by(r, 'ipv4').detail));
+    assert.strictEqual(asked, 0, 'with the kill switch off the address check could see this machine\'s own address');
+  });
+
+  await check('an exit that has not shaken hands lately: the test waits, asking nothing', async () => {
+    let asked = 0;
+    const stale = connected();
+    stale.report.hops_detail[1].last_handshake_secs = 600;
+    const r = await runLeakTest(stale, async () => { asked++; return '{}'; });
+    assert.strictEqual(r.ran, false);
+    assert.ok(/shaken hands/.test(r.error), r.error);
+    const never = connected();
+    never.report.hops_detail[1].last_handshake_secs = null;
+    never.report.last_handshake_secs = null;
+    assert.strictEqual((await runLeakTest(never, async () => { asked++; return '{}'; })).ran, false);
+    assert.strictEqual(asked, 0);
   });
 
   await check('an answer that is not an address is not trusted', async () => {

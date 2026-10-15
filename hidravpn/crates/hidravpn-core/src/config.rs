@@ -43,6 +43,22 @@ pub struct Invite {
     /// Where the node is, two letters, as the signed list says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+    /// "open" when the node admits any client on request, as the signed list
+    /// says; such a node, as the exit of two hops, is asked for a fresh
+    /// admission through the entry on every connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<String>,
+    /// The node's admission port, when the list names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_port: Option<u16>,
+    /// This invite's lease is for the key shown to the node behind an entry
+    /// (`hidravpn pubkey --node K --behind`): it serves only as the exit of
+    /// two hops, never as a one-hop node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub behind: bool,
+    /// What the node can do, as its record lists it (`directory::features`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 fn default_allowed() -> Vec<String> {
@@ -114,22 +130,94 @@ impl Invite {
     pub fn endpoint_ip(&self) -> Result<IpAddr> {
         Ok(self.endpoint_addr()?.ip())
     }
+
+    /// Whether the node admits any client on request.
+    pub fn admits_openly(&self) -> bool {
+        self.admission
+            .as_deref()
+            .is_some_and(|a| a.trim().eq_ignore_ascii_case("open"))
+    }
+
+    /// Whether the node's record lists this feature.
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+
+    /// Whether the node is asked for a key for each connection: it admits
+    /// openly and its software can.
+    pub fn admits_sessions(&self) -> bool {
+        self.admits_openly() && self.has(crate::directory::features::SESSIONS)
+    }
+
+    /// The node as a list would describe it, for an admission request.
+    pub fn record(&self) -> crate::directory::NodeRecord {
+        crate::directory::NodeRecord {
+            node_name: self.node_name.clone(),
+            node_public_key: self.node_public_key.clone(),
+            endpoint: self.endpoint.clone(),
+            operator: self.operator.clone(),
+            contact: None,
+            role: self.role.clone(),
+            admission: self.admission.clone(),
+            admission_port: self.admission_port,
+            country: self.country.clone(),
+            features: self.features.clone(),
+        }
+    }
+
+    /// Where the node takes admission requests.
+    pub fn admission_addr(&self) -> Result<SocketAddr> {
+        Ok(SocketAddr::new(
+            self.endpoint_ip()?,
+            self.admission_port
+                .unwrap_or(crate::admission::DEFAULT_ADMISSION_PORT),
+        ))
+    }
+}
+
+/// Which key a tunnel shows its node.
+#[derive(Debug, Clone)]
+pub enum ShownKey {
+    /// Derived from the master key for this node: a node reached from the
+    /// client's own address (the entry of two hops, the node of one).
+    Direct,
+    /// Derived with the other salt: an exit admitted by hand, reached
+    /// through an entry.
+    Behind,
+    /// This key exactly: a fresh key made for one connection and admitted
+    /// through the entry.
+    Exact(ClientKey),
 }
 
 /// An invite plus the client's master key: everything the tunnel needs.
 pub struct ClientConfig {
     pub invite: Invite,
     /// The master key. The tunnel never presents it: it presents
-    /// `node_key`, derived for the invite's node.
+    /// `node_key`, derived for the invite's node or made for the connection.
     pub key: ClientKey,
+    /// Which key the node is shown.
+    pub shown: ShownKey,
 }
 
 impl ClientConfig {
-    /// The key this node is shown: the master key derived for the invite's
-    /// node public key. This is the only key a tunnel ever uses, so the
-    /// master key's public half reaches no node.
+    /// A node reached from the client's own address, shown its derived key.
+    pub fn direct(invite: Invite, key: ClientKey) -> Self {
+        Self {
+            invite,
+            key,
+            shown: ShownKey::Direct,
+        }
+    }
+
+    /// The key this node is shown: never the master key's public half.
     pub fn node_key(&self) -> Result<ClientKey> {
-        self.key.for_node_base64(&self.invite.node_public_key)
+        match &self.shown {
+            ShownKey::Direct => self.key.for_node_base64(&self.invite.node_public_key),
+            ShownKey::Behind => self
+                .key
+                .for_node_behind_base64(&self.invite.node_public_key),
+            ShownKey::Exact(k) => Ok(k.clone()),
+        }
     }
 }
 
@@ -150,6 +238,10 @@ mod tests {
             operator: None,
             role: None,
             country: None,
+            admission: None,
+            admission_port: None,
+            behind: false,
+            features: Vec::new(),
         }
     }
 
@@ -168,10 +260,7 @@ mod tests {
     fn the_tunnel_key_is_the_one_derived_for_the_invites_node_not_the_master() {
         let key = ClientKey::generate().unwrap();
         let inv = sample();
-        let cfg = ClientConfig {
-            invite: inv.clone(),
-            key: key.clone(),
-        };
+        let cfg = ClientConfig::direct(inv.clone(), key.clone());
         let shown = cfg.node_key().unwrap();
         assert_ne!(shown.public_base64(), key.public_base64());
         assert_eq!(
@@ -182,8 +271,27 @@ mod tests {
         );
         let mut other = sample();
         other.node_public_key = ClientKey::generate().unwrap().public_base64();
-        let other_shown = ClientConfig { invite: other, key }.node_key().unwrap();
+        let other_shown = ClientConfig::direct(other, key.clone()).node_key().unwrap();
         assert_ne!(other_shown.public_base64(), shown.public_base64());
+        // Behind an entry the same node is shown another key; a key made for
+        // one connection is shown as it is.
+        let behind = ClientConfig {
+            invite: inv.clone(),
+            key: key.clone(),
+            shown: ShownKey::Behind,
+        }
+        .node_key()
+        .unwrap();
+        assert_ne!(behind.public_base64(), shown.public_base64());
+        let fresh = ClientKey::generate().unwrap();
+        let exact = ClientConfig {
+            invite: inv,
+            key,
+            shown: ShownKey::Exact(fresh.clone()),
+        }
+        .node_key()
+        .unwrap();
+        assert_eq!(exact.public_base64(), fresh.public_base64());
     }
 
     #[test]

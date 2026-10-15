@@ -38,6 +38,20 @@ pub struct KillConfig {
     /// circuit. The only address reachable off-tunnel is still `node_endpoint`,
     /// the entry node. None for a single hop.
     pub extra_interface: Option<String>,
+    /// Two hops: the one destination allowed on `interface`, the outer
+    /// tunnel — the exit's WireGuard endpoint. Anything else a program sends
+    /// into the outer tunnel (a name to the entry's resolver, a packet bound
+    /// to that interface on purpose) would show the entry where it goes, so
+    /// it is dropped here, before the entry sees it.
+    pub outer_peer: Option<SocketAddr>,
+}
+
+/// A TCP destination reached through a tunnel interface while a hold is in
+/// force: an exit's admission port, asked through the entry.
+#[derive(Debug, Clone)]
+pub struct Bridge {
+    pub interface: String,
+    pub to: SocketAddr,
 }
 
 /// Turns the kill switch on. Replaces any rules a previous run left behind, so
@@ -79,6 +93,30 @@ pub fn hold(node_endpoints: &[SocketAddr]) -> Result<()> {
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = node_endpoints;
+        anyhow::bail!("the kill switch is not built for this operating system yet")
+    }
+}
+
+/// `hold`, plus exactly the admission requests a connection needs: TCP to
+/// `direct` (a first hop's admission port) over the physical link, and TCP
+/// to the bridge's destination (an exit's admission port) through the outer
+/// tunnel. Nothing else leaves, and nothing else enters the outer tunnel.
+pub fn hold_admitting(
+    node_endpoints: &[SocketAddr],
+    direct: &[SocketAddr],
+    bridge: Option<&Bridge>,
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::hold_admitting(node_endpoints, direct, bridge)
+    }
+    #[cfg(windows)]
+    {
+        windows::hold_admitting(node_endpoints, direct, bridge)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (node_endpoints, direct, bridge);
         anyhow::bail!("the kill switch is not built for this operating system yet")
     }
 }

@@ -75,6 +75,16 @@ fn remove_route(prefix: &str, if_index: Option<u32>) -> Result<()> {
     Ok(())
 }
 
+/// One host into one tunnel interface; the route goes with the interface.
+pub fn route_host_via(host: std::net::IpAddr, interface: &str) -> Result<()> {
+    let prefix = match host {
+        std::net::IpAddr::V4(a) => format!("{a}/32"),
+        std::net::IpAddr::V6(a) => format!("{a}/128"),
+    };
+    let next_hop = if host.is_ipv4() { "0.0.0.0" } else { "::" };
+    add_route(&prefix, if_index(interface)?, next_hop)
+}
+
 pub fn apply(w: &Wanted) -> Result<RevertPlan> {
     let mut plan = RevertPlan {
         interface: w.interface.clone(),
