@@ -375,7 +375,11 @@ async fn wait_for_stop() {
 
 #[cfg(not(unix))]
 async fn wait_for_stop() {
-    let _ = tokio::signal::ctrl_c().await;
+    // A task started at boot may have no console to take a Ctrl+C from; then
+    // it runs until it is ended from outside, never stopping at once.
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 fn require_admin() -> Result<()> {

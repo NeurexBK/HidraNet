@@ -375,6 +375,15 @@ impl Circuit {
         }
         netcfg::recover_dns();
 
+        if let Some(entry) = &spec.entry {
+            if ONE_ADDRESS_PER_INTERFACE && same_address(entry, &spec.exit) {
+                return Err(anyhow!(
+                    "{} and {} gave this machine the same tunnel address, which one machine cannot hold on two interfaces; connect again, or ask an operator to give one of them another tunnel subnet",
+                    entry.node_name,
+                    spec.exit.node_name
+                ));
+            }
+        }
         let outer_name = format!("{}0", opts.interface_base);
 
         // 1. The outer tunnel, to the entry. Its interface carries a /32:
@@ -391,6 +400,7 @@ impl Circuit {
             })
             .context("the outer tunnel interface")?;
             let ifname = hidravpn_tun::name(&tun).unwrap_or(outer_name.clone());
+            netcfg::check_address(&ifname, ip)?;
             let cfg = ClientConfig {
                 invite: entry.clone(),
                 key: key.clone(),
@@ -425,6 +435,7 @@ impl Circuit {
         })
         .context("the tunnel interface")?;
         let inner_ifname = hidravpn_tun::name(&tun).unwrap_or(inner_name);
+        netcfg::check_address(&inner_ifname, ip)?;
 
         // 3. The network plan.
         let (node_ip, via_tunnel) = match (&spec.entry, &steps.outer) {
@@ -683,7 +694,8 @@ pub async fn prepare(
                     exit.node_name
                 ));
             }
-            let (invite, fresh) = admit_behind(
+            let session = matches!(ask, Ask::Session);
+            let (mut invite, mut fresh) = admit_behind(
                 &entry,
                 spec.entry_shown(),
                 exit,
@@ -694,6 +706,26 @@ pub async fn prepare(
                 wallet,
             )
             .await?;
+            // Nodes on the same default subnet can hand this machine the
+            // same address, which Windows cannot hold on two interfaces. A
+            // session is simply asked for again: the exit leases the next
+            // address while the first lease lapses unused.
+            let mut tries = 0;
+            while ONE_ADDRESS_PER_INTERFACE && session && same_address(&entry, &invite) && tries < 3
+            {
+                tries += 1;
+                (invite, fresh) = admit_behind(
+                    &entry,
+                    spec.entry_shown(),
+                    exit,
+                    key,
+                    opts,
+                    held,
+                    Ask::Session,
+                    wallet,
+                )
+                .await?;
+            }
             if invite.pass.is_some() {
                 redeemed.push(invite.clone());
             }
@@ -750,6 +782,16 @@ async fn first_hop_pass(
     }
 }
 
+/// Windows will not hold one address on two interfaces (it gives the second
+/// a link-local one, silently); Linux does, and two hops with the same
+/// address on both interfaces work there.
+const ONE_ADDRESS_PER_INTERFACE: bool = cfg!(windows);
+
+/// Whether two invites give this machine the same tunnel address.
+fn same_address(a: &Invite, b: &Invite) -> bool {
+    matches!((a.client_ip(), b.client_ip()), (Ok((x, _)), Ok((y, _))) if x == y)
+}
+
 /// What an exit is asked for through the entry.
 enum Ask {
     /// A key made for this connection, with a proof of work.
@@ -793,16 +835,11 @@ async fn admit_behind(
     let outer_name = format!("{}0", opts.interface_base);
     let mut nodes = vec![entry_ep];
     nodes.extend(held.iter().copied().filter(|a| *a != entry_ep));
-    killswitch::hold_admitting(
-        &nodes,
-        &[],
-        Some(&killswitch::Bridge {
-            interface: outer_name.clone(),
-            to: admission,
-        }),
-    )
-    .context("could not hold the kill switch to ask the exit through the entry")?;
 
+    // The interface first, then the hold that names it: Windows filters an
+    // interface by its LUID, which exists only once the interface does. An
+    // interface with no route to it carries nothing meanwhile, and whatever
+    // hold or kill switch is already in place still blocks the rest.
     let (ip, _) = entry.client_ip()?;
     let tun = hidravpn_tun::open(&TunConfig {
         name: outer_name.clone(),
@@ -812,6 +849,15 @@ async fn admit_behind(
     })
     .context("the outer tunnel interface")?;
     let ifname = hidravpn_tun::name(&tun).unwrap_or(outer_name);
+    killswitch::hold_admitting(
+        &nodes,
+        &[],
+        Some(&killswitch::Bridge {
+            interface: ifname.clone(),
+            to: admission,
+        }),
+    )
+    .context("could not hold the kill switch to ask the exit through the entry")?;
     let cfg = ClientConfig {
         invite: entry.clone(),
         key: key.clone(),
@@ -900,6 +946,17 @@ mod tests {
             behind: false,
             features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn two_invites_with_one_address_are_seen_as_the_same_address() {
+        let mut a = invite("a", "203.0.113.10:51820", 1420);
+        let mut b = invite("b", "203.0.113.11:51820", 1420);
+        a.client_address = "10.77.0.3/32".into();
+        b.client_address = "10.77.0.3/16".into();
+        assert!(same_address(&a, &b));
+        b.client_address = "10.77.0.4/16".into();
+        assert!(!same_address(&a, &b));
     }
 
     #[test]

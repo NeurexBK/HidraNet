@@ -367,9 +367,37 @@ network by itself, undoing the service's kill switch. Each instance is now
 made afresh after a client, and a client that finds something other than
 the service on the pipe stops with an error instead of going around it.
 
-**Not run on Windows:** two hops (Privado), passes, the browser page. A CI
-job runs the unit tests on Windows. It cannot arm a firewall on a hosted
-runner: that would cut the runner off from GitHub.
+**Two hops on the same PC**, later, with a second node as the entry (run
+by the same person for the test, so `--allow-same-operator`):
+- through the service, the internet saw the exit's address;
+- DNS went to the exit's resolver through the tunnel;
+- both hops shook hands and carried traffic;
+- a capture on the exit while connecting found **0 packets** from the
+  PC's address; the entry, for comparison, received 18 811;
+- run again with a new identity in the middle (the exit shown a new key,
+  as the only exit): 0 packets on the exit, 111 859 on the entry; IPv6
+  blocked, and SSH to either node refused while connected (the kill
+  switch).
+
+Getting there found three more bugs, now fixed:
+- **The hold named an interface that did not exist yet.** Windows filters
+  an interface by its LUID, which exists only once the interface does, so
+  the hold for asking the exit through the entry failed. The outer
+  interface is now made first (`circuit.rs`, `admit_behind`).
+- **Both nodes gave the PC the same tunnel address.** Nodes on the default
+  subnet lease the same first addresses, and Windows will not hold one
+  address on two interfaces: it gave the inner one a link-local address,
+  silently, and nothing passed. On Windows the exit is now asked again for
+  a session when its address matches the entry's, and a tunnel interface
+  that did not take its address stops the connection with an error
+  (`netcfg::check_address`). Linux holds the same address on both
+  interfaces, and `test-multihop-netns.sh` proves it still does.
+- **The service did not run on battery.** The scheduled task kept
+  schtasks' defaults: start only on mains power, stop on battery, stop
+  after three days. It is now described in full (`install/windows.rs`).
+
+**Not run on Windows:** passes and the browser page. A CI job runs the unit tests on Windows. It cannot arm a firewall on
+a hosted runner: that would cut the runner off from GitHub.
 
 ### 16. Critical — passes would have shown the exit your address and its key again (merge with phases 5 and 6)
 
@@ -433,7 +461,8 @@ None of these is claimed as solved.
    suite twice on a runner with IPv6, with `HIDRAVPN_REQUIRE_IPV6=1`, so
    the IPv6 checks must pass there, not be skipped. It runs on the first
    push.
-4. **Windows at run time**: only one hop, by hand, as said in 15.
+4. **Windows at run time**: one hop and two hops by hand, on one PC, as said
+   in 15; passes and the browser page not yet.
 5. **Nodes admitted by hand** keep a stable key. Their operator knows who
    asked; use them as entries.
 6. **The exit's resolver sees every name.** That is inherent: the exit sees
