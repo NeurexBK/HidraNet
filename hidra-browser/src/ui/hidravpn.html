@@ -176,6 +176,10 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       <button class="primary" id="btn-passes" disabled>Get 10 passes per node</button>
     </div>
     <div class="empty" style="margin-top:10px">The token is handed to the service on this machine, which keeps it where only an administrator can read it; this page does not keep it. Anyone with an account on this computer can spend the account's passes.</div>
+    <label class="empty" style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;cursor:pointer">
+      <input type="checkbox" id="auto-passes" disabled style="margin-top:3px">
+      <span><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account's quota.</span></span>
+    </label>
     <div class="msg" id="passes-msg"></div>
   </div>
 
@@ -441,6 +445,27 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
   async function refreshNodes() {
     if (!api) return;
     try { renderNodes(await api.nodes()); } catch (e) { renderNodes({ ok: false, error: String(e && e.message || e) }); }
+    await refreshRefill();
+  }
+
+  // Automatic passes: the box shows what the service last said it has
+  // (never what was clicked and not taken), and is usable only when the
+  // service answers and nothing else is under way.
+  var REFILL_ON = 'When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account\'s quota.';
+  var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node).';
+  var lastRefill = null;
+  function renderRefill(r) {
+    var box = $('auto-passes');
+    if (r && r.ok && r.refill) lastRefill = r.refill;
+    if (lastRefill) {
+      box.checked = !!lastRefill.enabled;
+      $('auto-passes-line').textContent = lastRefill.enabled ? REFILL_ON : REFILL_OFF;
+    }
+    box.disabled = busy || !(r && r.ok && r.refill);
+  }
+  async function refreshRefill() {
+    if (!api || !api.refill) return;
+    try { renderRefill(await api.refill()); } catch (e) { renderRefill(null); }
   }
 
   async function act(fn, pending) {
@@ -448,6 +473,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     busy = true;
     message('note', pending);
     $('btn-connect').disabled = $('btn-disconnect').disabled = $('btn-identity').disabled = true;
+    $('auto-passes').disabled = true;
     try {
       var r = await fn();
       if (r && r.ok === false) {
@@ -615,6 +641,27 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     busy = false;
     message(r && r.ok ? 'note' : 'err', (r && (r.ok ? r.note : r.error)) || 'Could not keep the token.', 'passes-msg');
     await refresh();
+  });
+
+  $('auto-passes').addEventListener('change', async function () {
+    var box = $('auto-passes');
+    if (!api || busy) {
+      if (lastRefill) box.checked = !!lastRefill.enabled;
+      return;
+    }
+    busy = true;
+    box.disabled = true;
+    var want = box.checked;
+    var r;
+    try { r = await api.refill(want); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    if (r && r.ok) {
+      renderRefill(r);
+    } else {
+      message('err', (r && r.error) || 'Could not change automatic passes.', 'passes-msg');
+      // Back to what the service has, read again.
+      await refreshRefill();
+    }
   });
 
   $('btn-passes').addEventListener('click', async function () {

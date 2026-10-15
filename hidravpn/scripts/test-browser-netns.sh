@@ -42,7 +42,7 @@ cleanup() {
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/circuit.json
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/refill.json /etc/hidravpn/circuit.json
   [ "$MADE_GROUP" = 1 ] && groupdel hidravpn 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
@@ -140,6 +140,7 @@ $C curl -s --max-time 3 http://10.201.0.2:25/ >/dev/null 2>&1; RC=$?
 
 OUT=$(drive identity); echo "$OUT" | grep -q '"ok":true' && pass "new identity with one exit says the address did not change ($OUT)" || fail "identity: $OUT"
 OUT=$(drive down); echo "$OUT" | grep -q '"ok":true' && pass "disconnect: disconnected, kill switch off" || fail "down: $OUT"
+OUT=$(drive refill-off); echo "$OUT" | grep -q '"ok":true' && [ "$(stat -c %a /etc/hidravpn/refill.json 2>/dev/null)" = 600 ] && pass "the page's box reads automatic passes (on) and switches them off and on; the service keeps the setting root-only ($OUT)" || fail "refill from the page: $OUT"
 # The command line, run by the same member of the group: `up --rapido` asks
 # the service to pick, as the page does, and `down` takes it down.
 if [ -n "$AS_USER" ]; then

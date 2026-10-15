@@ -155,6 +155,143 @@ pub fn parse_token(text: &str) -> Result<String> {
     Ok(t)
 }
 
+/// Topping the wallet up by itself: when a pass node has fewer than `low`
+/// passes left, the service asks for enough to bring it back to `count` —
+/// only while connected, so the request goes through the tunnel and the
+/// issuer sees an exit's address, not this machine's. Kept beside the
+/// pocket (`refill.json`); with no file, on, 3 and 10.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Refill {
+    pub enabled: bool,
+    pub low: usize,
+    pub count: usize,
+}
+
+impl Default for Refill {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            low: 3,
+            count: 10,
+        }
+    }
+}
+
+impl Refill {
+    /// `low` below `count`, `count` from 1 to 100 (what one fetch allows).
+    pub fn check(&self) -> Result<()> {
+        if self.count == 0 || self.count > 100 {
+            return Err(anyhow!("--count is 1 to 100"));
+        }
+        if self.low >= self.count {
+            return Err(anyhow!("--low must be below --count"));
+        }
+        Ok(())
+    }
+
+    /// Changes what is given and keeps the rest; says whether anything was
+    /// given. Checked: a setting that does not make sense is refused, and
+    /// nothing is changed.
+    pub fn apply(
+        &mut self,
+        enabled: Option<bool>,
+        low: Option<usize>,
+        count: Option<usize>,
+    ) -> Result<bool> {
+        let mut next = self.clone();
+        if let Some(e) = enabled {
+            next.enabled = e;
+        }
+        if let Some(n) = low {
+            next.low = n;
+        }
+        if let Some(n) = count {
+            next.count = n;
+        }
+        next.check()?;
+        *self = next;
+        Ok(enabled.is_some() || low.is_some() || count.is_some())
+    }
+
+    pub fn describe(&self) -> String {
+        if self.enabled {
+            format!(
+                "automatic passes on: a pass node with fewer than {} left gets topped up to {}, only while connected (through the tunnel)",
+                self.low, self.count
+            )
+        } else {
+            "automatic passes off: `hidravpn passes get` fetches them".into()
+        }
+    }
+}
+
+pub fn refill_path(pocket_path: &Path) -> std::path::PathBuf {
+    pocket_path.with_file_name("refill.json")
+}
+
+/// The refill settings beside the pocket; the defaults (on) when there are
+/// none. A file that is there but cannot be read, or says nothing that
+/// makes sense, is taken as **off**: whoever wrote one may have switched
+/// the spending off, and it is never switched back on behind their back.
+pub fn load_refill(pocket_path: &Path) -> Refill {
+    let path = refill_path(pocket_path);
+    match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Refill::default(),
+        read => read
+            .ok()
+            .and_then(|s| serde_json::from_str::<Refill>(&s).ok())
+            .filter(|r| r.check().is_ok())
+            .unwrap_or_else(|| {
+                tracing::warn!("the automatic-passes settings cannot be read; taken as off");
+                Refill {
+                    enabled: false,
+                    ..Refill::default()
+                }
+            }),
+    }
+}
+
+pub fn save_refill(pocket_path: &Path, r: &Refill) -> Result<()> {
+    r.check()?;
+    crate::daemon::write_private_atomic(
+        &refill_path(pocket_path),
+        serde_json::to_string(r)?.as_bytes(),
+    )
+}
+
+/// What a refill would ask for: each pass node of the pocket with fewer than
+/// `low` passes, and how many bring it to `count`.
+pub fn refill_wants(pocket: &Pocket, wallet: &Wallet, r: &Refill) -> Vec<(String, usize)> {
+    pass_nodes(pocket)
+        .into_iter()
+        .filter_map(|(_, k)| {
+            let have = wallet.count_for(&k);
+            (have < r.low).then(|| (k, r.count - have))
+        })
+        .collect()
+}
+
+/// Tops the wallet up as `refill_wants` says, after throwing away the
+/// passes no node takes any more (a pass under an expired key is not one
+/// left). Ok(None) when the wallet is as it was; otherwise it was changed
+/// and is to be saved.
+pub async fn refill(
+    pocket: &Pocket,
+    wallet: &mut Wallet,
+    token: &str,
+    r: &Refill,
+) -> Result<Option<String>> {
+    let dropped = match &pocket.pass_issuer {
+        Some(i) => wallet.drop_expired(&i.keys, hidravpn_core::timefmt::now_unix()),
+        None => 0,
+    };
+    let wants = refill_wants(pocket, wallet, r);
+    if wants.is_empty() {
+        return Ok((dropped > 0).then(|| format!("{dropped} expired pass(es) thrown away")));
+    }
+    fetch_for(pocket, wallet, token, &wants).await.map(Some)
+}
+
 /// The public keys of the nodes in the pocket that admit with a pass: known
 /// ones the list says take passes, and admitted ones joined with a pass.
 pub fn pass_nodes(pocket: &Pocket) -> Vec<(String, String)> {
@@ -189,8 +326,8 @@ pub async fn get_passes(
     let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
         anyhow!("the node list this machine holds names no pass issuer; import a newer list")
     })?;
-    let now = hidravpn_core::timefmt::now_unix();
-    let key = pass::newest_current(&issuer.keys, now).ok_or_else(|| {
+    // Said first, before which node: without an issuer, none would do.
+    pass::newest_current(&issuer.keys, hidravpn_core::timefmt::now_unix()).ok_or_else(|| {
         anyhow!("every pass key the node list names has expired; import a newer list")
     })?;
     let nodes: Vec<(String, String)> = pass_nodes(pocket)
@@ -209,12 +346,34 @@ pub async fn get_passes(
     if count == 0 || count > 100 {
         return Err(anyhow!("ask for 1 to 100 passes per node"));
     }
+    let wants: Vec<(String, usize)> = nodes.into_iter().map(|(_, k)| (k, count)).collect();
+    fetch_for(pocket, wallet, token, &wants).await
+}
+
+/// Asks the issuer for `n` passes for each node key in `wants`, and puts
+/// them in the wallet; returns the line that says how it went.
+async fn fetch_for(
+    pocket: &Pocket,
+    wallet: &mut Wallet,
+    token: &str,
+    wants: &[(String, usize)],
+) -> Result<String> {
+    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
+        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
+    })?;
+    let now = hidravpn_core::timefmt::now_unix();
+    let key = pass::newest_current(&issuer.keys, now).ok_or_else(|| {
+        anyhow!("every pass key the node list names has expired; import a newer list")
+    })?;
     // Order the requests so the issuer cannot tell which node a pass is for
     // from where it sits in a batch: one per node, round and round.
-    let mut wanted = Vec::with_capacity(nodes.len() * count);
-    for _ in 0..count {
-        for (_, k) in &nodes {
-            wanted.push(k.clone());
+    let rounds = wants.iter().map(|(_, n)| *n).max().unwrap_or(0);
+    let mut wanted = Vec::new();
+    for round in 0..rounds {
+        for (k, n) in wants {
+            if round < *n {
+                wanted.push(k.clone());
+            }
         }
     }
     let dropped = wallet.drop_expired(&issuer.keys, now);
@@ -223,7 +382,7 @@ pub async fn get_passes(
     wallet.passes.extend(got.passes);
     let mut line = format!(
         "{n} pass(es) for {} node(s); the account has {} left today",
-        nodes.len(),
+        wants.len(),
         got.remaining_today
     );
     if let Some(why) = got.stopped {
@@ -423,6 +582,134 @@ mod tests {
             signature: String::new(),
         });
         assert!(usable(&lapsed, &w2, t));
+    }
+
+    fn blank_pass(node: &str) -> hidravpn_core::pass::Pass {
+        hidravpn_core::pass::Pass {
+            key_id: "00".into(),
+            node_public_key: node.into(),
+            client_secret: String::new(),
+            nonce: String::new(),
+            randomizer: String::new(),
+            signature: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_refill_tops_up_only_the_pass_nodes_that_run_low_and_back_to_count() {
+        let mut p = Pocket::default();
+        let (a, b) = (record("a", "pass"), record("b", "pass"));
+        p.learn(a.clone()).unwrap();
+        p.learn(b.clone()).unwrap();
+        p.learn(record("c", "open")).unwrap();
+        let mut w = Wallet::default();
+        w.passes.push(blank_pass(&a.node_public_key));
+        for _ in 0..5 {
+            w.passes.push(blank_pass(&b.node_public_key));
+        }
+        let r = Refill::default();
+        // a has 1 (< 3): 9 more brings it to 10; b has 5: left alone; c
+        // takes no passes.
+        assert_eq!(
+            refill_wants(&p, &w, &r),
+            vec![(a.node_public_key.clone(), 9)]
+        );
+        let off = Refill {
+            low: 0,
+            ..r.clone()
+        };
+        assert!(refill_wants(&p, &w, &off).is_empty(), "low 0 never tops up");
+        assert!(Refill {
+            low: 10,
+            count: 10,
+            enabled: true
+        }
+        .check()
+        .is_err());
+        assert!(Refill {
+            low: 1,
+            count: 101,
+            enabled: true
+        }
+        .check()
+        .is_err());
+        let mut a = Refill::default();
+        assert!(
+            a.apply(None, Some(20), None).is_err(),
+            "low 20 is not below 10"
+        );
+        assert_eq!(a, Refill::default(), "and nothing changed");
+        assert!(a.apply(Some(false), None, Some(30)).unwrap());
+        assert!(!a.enabled && a.low == 3 && a.count == 30);
+        assert!(
+            !a.apply(None, None, None).unwrap(),
+            "nothing given, nothing changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_passes_are_not_counted_as_left() {
+        let mut p = Pocket::default();
+        let a = record("a", "pass");
+        p.learn(a.clone()).unwrap();
+        p.pass_issuer = Some(hidravpn_core::directory::PassIssuer {
+            url: "https://passes.example.org".into(),
+            keys: vec![pass::PassKeyRecord {
+                id: "00".into(),
+                key: String::new(),
+                not_after: "2000-01-01T00:00:00Z".into(),
+            }],
+        });
+        let mut w = Wallet::default();
+        for _ in 0..5 {
+            w.passes.push(blank_pass(&a.node_public_key));
+        }
+        // Five passes, all under a key that has expired: none is left, so
+        // the node is to be topped up (the fetch fails here: no current key).
+        let r = Refill::default();
+        let out = refill(&p, &mut w, "token", &r).await;
+        assert!(w.passes.is_empty(), "the expired passes are thrown away");
+        assert!(out.is_err(), "and a fetch is attempted for the node");
+        assert_eq!(
+            refill_wants(&p, &w, &r),
+            vec![(a.node_public_key.clone(), 10)]
+        );
+    }
+
+    #[test]
+    fn refill_settings_default_to_on_and_a_bad_file_is_off() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-refill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket = dir.join("circuit.json");
+        assert_eq!(load_refill(&pocket), Refill::default());
+        let mine = Refill {
+            enabled: false,
+            low: 2,
+            count: 20,
+        };
+        save_refill(&pocket, &mine).unwrap();
+        assert_eq!(load_refill(&pocket), mine);
+        assert!(save_refill(
+            &pocket,
+            &Refill {
+                enabled: true,
+                low: 5,
+                count: 5
+            }
+        )
+        .is_err());
+        std::fs::write(
+            refill_path(&pocket),
+            "{\"enabled\":true,\"low\":9,\"count\":3}",
+        )
+        .unwrap();
+        assert!(
+            !load_refill(&pocket).enabled,
+            "a file that makes no sense is off, never on"
+        );
+        std::fs::write(refill_path(&pocket), "not json").unwrap();
+        assert!(!load_refill(&pocket).enabled);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

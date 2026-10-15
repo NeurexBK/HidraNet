@@ -305,6 +305,12 @@ class VpnManager {
     return this._command({ cmd: 'set_pass_token', pass_token: t });
   }
 
+  // Automatic passes (phase 6): with a boolean, switched on or off; with
+  // nothing, only read. The answer carries the setting as `refill`.
+  async refill(enabled) {
+    return this._command(typeof enabled === 'boolean' ? { cmd: 'refill', enabled } : { cmd: 'refill' });
+  }
+
   async _command(cmd) {
     try {
       const answer = await this.request(cmd);

@@ -12,9 +12,9 @@ Developed in phases; each phase is a working, testable step. See
 switch), `docs/phase-3.md` (two hops, two modes, a new identity),
 `docs/phase-4.md` (the VPN in the browser — installed, updated and removed
 from it, a leak test, the route by country — a signed node list, a node in one
-command) and `docs/phase-5.md` (passes: accountable admission that no one can
-link to its use, a fresh key every connection) for what exists now and how
-to run it.
+command), `docs/phase-5.md` (passes: accountable admission that no one can
+link to its use, a fresh key every connection) and `docs/phase-6.md` (passes
+that top themselves up) for what exists now and how to run it.
 
 Everything in this folder is new and separate from the HidraNet browser,
 mail, chat, forum and relay engine, which it does not change.

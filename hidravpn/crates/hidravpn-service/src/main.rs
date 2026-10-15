@@ -338,9 +338,14 @@ fn run_daemon() -> Result<()> {
             let d = daemon.clone();
             tokio::spawn(async move { ipc::serve(d).await })
         };
+        let refill = {
+            let d = daemon.clone();
+            tokio::spawn(async move { d.refill_loop().await })
+        };
 
         wait_for_stop().await;
         tracing::info!("stopping; putting the network back");
+        refill.abort();
         daemon.shutdown().await;
         serve.abort();
         Ok::<(), anyhow::Error>(())

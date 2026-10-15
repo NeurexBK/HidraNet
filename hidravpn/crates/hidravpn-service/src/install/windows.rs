@@ -47,6 +47,12 @@ pub fn install(bin: &Path) -> Result<()> {
     std::fs::create_dir_all(&data)?;
     let dir = data.to_string_lossy().into_owned();
     let _ = run("takeown", &["/F", &dir, "/R", "/A", "/D", "Y"]);
+    // The folder alone: its rights are made to be inherited (OI, CI). Given
+    // to its files as well (/T), they would lose what they inherited and
+    // gain nothing (an inheritable grant does not apply to a file), and be
+    // left with no rights at all: not even the service could read the key
+    // or the pocket of a machine that had them before this install, or of
+    // any update.
     run(
         "icacls",
         &[
@@ -55,10 +61,27 @@ pub fn install(bin: &Path) -> Result<()> {
             "/grant:r",
             "*S-1-5-18:(OI)(CI)F",
             "*S-1-5-32-544:(OI)(CI)F",
-            "/T",
         ],
     )
     .context("protecting the HidraVPN data folder")?;
+    // What is already inside takes the folder's rights, and only them:
+    // whatever a user gave a file before is replaced. With nothing inside
+    // (a first install) there is nothing to reset, and icacls would fail on
+    // the empty pattern; otherwise a failure stops the install.
+    let has_entries = std::fs::read_dir(&data)
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false);
+    if has_entries {
+        let inside = format!("{dir}\\*");
+        run("icacls", &[&inside, "/reset", "/T", "/C", "/Q"])
+            .context("giving the files in the HidraVPN data folder the folder's rights")?;
+    }
+    // The control token, if the service already wrote one, keeps the one
+    // extra right it has: interactive users may read it.
+    let token = crate::paths::control_token();
+    if token.exists() {
+        crate::ipc::protect_token(&token)?;
+    }
 
     let tr = format!("\"{}\" run", bin.display());
     // /rl HIGHEST + /ru SYSTEM: full rights, no interactive logon needed.

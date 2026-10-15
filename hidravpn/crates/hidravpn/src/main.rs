@@ -216,6 +216,18 @@ enum Passes {
     },
     /// How many passes the wallet holds, per node.
     List,
+    /// Let the service top the wallet up by itself, only while connected
+    /// (through the tunnel): `on`, `off`, or nothing to see how it is set.
+    Auto {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+        /// Top up a node with fewer passes than this (default 3).
+        #[arg(long)]
+        low: Option<usize>,
+        /// ...back to this many (default 10, at most 100).
+        #[arg(long)]
+        count: Option<usize>,
+    },
 }
 
 fn default_key_path() -> PathBuf {
@@ -456,6 +468,17 @@ async fn main() -> Result<()> {
                         Some(i) => println!("issuer: {} ({} key(s))", i.url, i.keys.len()),
                         None => println!("the node list names no pass issuer"),
                     }
+                    println!(
+                        "{}",
+                        hidravpn_service::passes::load_refill(&pocket_path).describe()
+                    );
+                }
+                Passes::Auto { state, low, count } => {
+                    let mut r = hidravpn_service::passes::load_refill(&pocket_path);
+                    if r.apply(state.as_deref().map(|s| s == "on"), low, count)? {
+                        hidravpn_service::passes::save_refill(&pocket_path, &r)?;
+                    }
+                    println!("{}", r.describe());
                 }
             }
         }

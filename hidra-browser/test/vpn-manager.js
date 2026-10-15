@@ -50,6 +50,7 @@ function fakeService(behaviour) {
   fs.writeFileSync(tokenPath, TOKEN + '\n', { mode: 0o600 });
   const seen = [];
   let connected = false;
+  let refillOn = true;
   const status = () => ({
     connected,
     node_name: connected ? 'exit-a' : null,
@@ -107,6 +108,10 @@ function fakeService(behaviour) {
         else answer = { ok: true, note: `${req.count} pass(es) for 1 node(s); the account has 7 left today`, nodes: [
           { slot: 'exit', node_name: 'node-p', endpoint: '203.0.113.30:51820', admitted: true, admission: 'pass', passes: req.count },
         ] };
+      }
+      else if (req.cmd === 'refill') {
+        if (typeof req.enabled === 'boolean') refillOn = req.enabled;
+        answer = { ok: true, refill: { enabled: refillOn, low: 3, count: 10 }, note: refillOn ? 'automatic passes on' : 'automatic passes off' };
       }
       else if (req.cmd === 'set_pass_token') {
         fs.writeFileSync(tokenPath + '.pass', req.pass_token);
@@ -264,6 +269,19 @@ function fakeService(behaviour) {
       assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 5 });
       await vpn.getPasses(1000, 'node-p');
       assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'get_passes', count: 10, name: 'node-p' });
+    });
+
+    await check('automatic passes are read without changing them, and switched with a boolean only', async () => {
+      let r = await vpn.refill();
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.strictEqual(r.refill.enabled, true);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill' });
+      r = await vpn.refill(false);
+      assert.strictEqual(r.refill.enabled, false);
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill', enabled: false });
+      r = await vpn.refill('off');
+      assert.deepStrictEqual(JSON.parse(svc.seen[svc.seen.length - 1]), { token: TOKEN, cmd: 'refill' }, 'anything but a boolean only reads');
+      await vpn.refill(true);
     });
 
     await check('a list fetched as text goes to the service only with its signature', async () => {

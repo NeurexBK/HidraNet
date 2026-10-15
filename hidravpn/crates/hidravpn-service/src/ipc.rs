@@ -103,6 +103,17 @@ pub enum Command {
     /// answer never repeats it.
     /// (`pass_token`, not `token`: that name is the control token's.)
     SetPassToken { pass_token: String },
+    /// Automatic passes (phase 6): what is given is changed, the rest kept;
+    /// with nothing given, only read. The answer carries the setting as
+    /// `refill` and says it as `note`.
+    Refill {
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(default)]
+        low: Option<u32>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
 }
 
 /// One node of the pocket, as `nodes` reports it. No key leaves the service.
@@ -232,6 +243,9 @@ pub struct Response {
     /// The answer to `nodes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nodes: Option<Vec<NodeReport>>,
+    /// The answer to `refill`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refill: Option<crate::passes::Refill>,
 }
 
 impl Response {
@@ -242,6 +256,7 @@ impl Response {
             status: None,
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -251,6 +266,7 @@ impl Response {
             status: Some(s),
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -260,6 +276,7 @@ impl Response {
             status: None,
             note: None,
             nodes: None,
+            refill: None,
         }
     }
     pub fn noting(mut self, note: impl Into<String>) -> Self {
@@ -273,6 +290,7 @@ impl Response {
             status: None,
             note: None,
             nodes: Some(nodes),
+            refill: None,
         }
     }
 }
@@ -310,23 +328,7 @@ pub fn write_token() -> Result<String> {
         // SYSTEM and administrators everything, interactive users read.
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
-        let out = std::process::Command::new("icacls")
-            .arg(&path)
-            .args([
-                "/inheritance:r",
-                "/grant:r",
-                "*S-1-5-18:F",
-                "*S-1-5-32-544:F",
-                "*S-1-5-4:R",
-            ])
-            .output()
-            .context("running icacls on the control token")?;
-        if !out.status.success() {
-            anyhow::bail!(
-                "could not set the control token's rights: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
+        protect_token(&path)?;
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -417,6 +419,30 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
             }
         });
     }
+}
+
+/// The control token's own rights on Windows, inherited from nowhere:
+/// SYSTEM and administrators everything, interactive users read.
+#[cfg(windows)]
+pub fn protect_token(path: &std::path::Path) -> Result<()> {
+    let out = std::process::Command::new("icacls")
+        .arg(path)
+        .args([
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:F",
+            "*S-1-5-32-544:F",
+            "*S-1-5-4:R",
+        ])
+        .output()
+        .context("running icacls on the control token")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "could not set the control token's rights: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// Hands the socket or the token to the control group when this machine has
@@ -1359,6 +1385,52 @@ mod tests {
         } else {
             assert!(err.contains("not accepted"), "{err}");
         }
+    }
+
+    #[tokio::test]
+    async fn automatic_passes_are_read_and_set_over_the_channel() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-refill-{}", rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pocket = dir.join("circuit.json");
+        let sock = start_with_pocket("ref", Some(pocket)).await;
+        let read = || Command::Refill {
+            enabled: None,
+            low: None,
+            count: None,
+        };
+        let resp = call_unix_at(&sock, "ref", read()).await.unwrap();
+        assert!(resp.ok && resp.refill == Some(crate::passes::Refill::default()));
+        assert!(!dir.join("refill.json").exists(), "reading writes nothing");
+        let resp = call_unix_at(
+            &sock,
+            "ref",
+            Command::Refill {
+                enabled: Some(false),
+                low: None,
+                count: Some(20),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        let r = resp.refill.unwrap();
+        assert!(!r.enabled && r.low == 3 && r.count == 20);
+        assert!(resp.note.unwrap().contains("off"));
+        let resp = call_unix_at(
+            &sock,
+            "ref",
+            Command::Refill {
+                enabled: None,
+                low: Some(30),
+                count: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!resp.ok, "a low not below the count is refused");
+        let resp = call_unix_at(&sock, "ref", read()).await.unwrap();
+        assert_eq!(resp.refill.unwrap().count, 20, "and changed nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

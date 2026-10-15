@@ -1045,6 +1045,10 @@ function setupIPC(tabs, proxy) {
     vpnOnlyOurs(event);
     return vpnManager.setPassToken(typeof token === 'string' ? token : '');
   });
+  ipcMain.handle('vpn:refill', (event, enabled) => {
+    vpnOnlyOurs(event);
+    return vpnManager.refill(typeof enabled === 'boolean' ? enabled : undefined);
+  });
   // Checks a downloaded release file against FILE.sig with the release key
   // this build embeds. With no key embedded it says so and accepts nothing.
   ipcMain.handle('vpn:verify-file', async (event) => {

@@ -56,7 +56,14 @@ pub struct Daemon {
     /// Set by `shutdown`: a connect still waiting for the state lock then
     /// gives up, instead of building a circuit nobody will take down.
     stopping: std::sync::atomic::AtomicBool,
+    /// After a top-up that failed, none is tried again before this: an
+    /// issuer that counted passes the service then could not keep, or one
+    /// that is down, is not asked every ten minutes.
+    refill_pause: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// How long automatic passes rest after a top-up that failed.
+const REFILL_PAUSE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// What a person is told when a circuit could not be built while the kill
 /// switch was held across a change: the machine is blocked, not open.
@@ -102,6 +109,7 @@ impl Daemon {
             release_key,
             pocket_lock: Mutex::new(()),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            refill_pause: std::sync::Mutex::new(None),
         })
     }
 
@@ -191,6 +199,19 @@ impl Daemon {
             },
             Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token) {
                 Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::Refill {
+                enabled,
+                low,
+                count,
+            } => match self.set_refill(enabled, low, count).await {
+                Ok(r) => {
+                    let note = r.describe();
+                    let mut resp = Response::ok().noting(note);
+                    resp.refill = Some(r);
+                    resp
+                }
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::Nodes => match load_pocket(&self.pocket_path) {
@@ -555,6 +576,33 @@ impl Daemon {
         Ok(())
     }
 
+    /// Reads the automatic-passes setting, and changes what is given. Any
+    /// account that may drive the service may switch it: as with
+    /// `get_passes`, only the account's quota is at stake. In the same
+    /// order as every other change beside the pocket: the service's own
+    /// lock, then the file lock (which a top-up may hold across a fetch;
+    /// this waits for it without blocking a thread).
+    async fn set_refill(
+        &self,
+        enabled: Option<bool>,
+        low: Option<u32>,
+        count: Option<u32>,
+    ) -> Result<crate::passes::Refill> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let mut r = crate::passes::load_refill(&self.pocket_path);
+        let changed = r.apply(enabled, low.map(|n| n as usize), count.map(|n| n as usize))?;
+        if changed {
+            crate::passes::save_refill(&self.pocket_path, &r)?;
+            tracing::info!(on = r.enabled, "automatic passes set");
+            if r.enabled {
+                // Switched on again: try at the next look, not an hour on.
+                *self.refill_pause.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        }
+        Ok(r)
+    }
+
     /// The pass wallet and the account token sit beside the pocket.
     fn wallet_path(&self) -> PathBuf {
         self.pocket_path.with_file_name("passes.json")
@@ -577,6 +625,98 @@ impl Daemon {
         crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         tracing::info!("passes fetched from the issuer");
         Ok((pocket, line))
+    }
+
+    /// Every so often (`HIDRAVPN_REFILL_SECS`, ten minutes by default, and
+    /// up to half as long again at random, so the issuer cannot set a clock
+    /// by it), tops the wallet up when it runs low.
+    pub async fn refill_loop(&self) {
+        let every: u64 = std::env::var("HIDRAVPN_REFILL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(600);
+        loop {
+            let jitter = hidravpn_core::random::index((every / 2 + 1) as usize).unwrap_or(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(every + jitter)).await;
+            self.refill_once().await;
+        }
+    }
+
+    /// One top-up, when it is on, a token is kept and the circuit is up: the
+    /// issuer is then asked through the tunnel and sees an exit's address.
+    /// Returns what was fetched, if anything.
+    pub async fn refill_once(&self) -> Option<String> {
+        let paused = self
+            .refill_pause
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|until| std::time::Instant::now() < until);
+        if paused {
+            return None;
+        }
+        let r = crate::passes::load_refill(&self.pocket_path);
+        if !r.enabled {
+            return None;
+        }
+        // No token kept: nothing to ask with, and nothing to say.
+        let token = crate::passes::read_token(&self.token_path()).ok()?;
+        if !self.circuit_up().await {
+            return None;
+        }
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = match crate::passes::lock_beside(&self.pocket_path) {
+            Ok(f) => f,
+            Err(_) => return self.refill_failed("the pocket's lock cannot be taken"),
+        };
+        let pocket = match load_pocket(&self.pocket_path) {
+            Ok(p) => p,
+            Err(_) => return self.refill_failed("the pocket cannot be read"),
+        };
+        let mut wallet = match crate::passes::load_wallet(&self.wallet_path()) {
+            Ok(w) => w,
+            Err(_) => return self.refill_failed("the wallet cannot be read"),
+        };
+        // Asked again now that the locks are held: whoever held them may
+        // have been slow, and a `down` meanwhile would send the request,
+        // with the account token, out of this machine's own address.
+        if !self.circuit_up().await {
+            return None;
+        }
+        let before = wallet.passes.len();
+        let got = crate::passes::refill(&pocket, &mut wallet, &token, &r).await;
+        if wallet.passes.len() != before
+            && crate::passes::save_wallet(&self.wallet_path(), &wallet).is_err()
+        {
+            return self
+                .refill_failed("the passes fetched could not be written down, and are lost");
+        }
+        match got {
+            Ok(None) => None,
+            Ok(Some(line)) => {
+                tracing::info!("passes topped up by themselves");
+                Some(line)
+            }
+            // Said without the reason: it can name the issuer's address.
+            Err(_) => self.refill_failed("the issuer could not be asked"),
+        }
+    }
+
+    async fn circuit_up(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|a| a.circuit.status().connected)
+    }
+
+    /// Says why a top-up failed, without an address or a name, and rests
+    /// automatic passes for `REFILL_PAUSE`.
+    fn refill_failed(&self, why: &str) -> Option<String> {
+        tracing::warn!("automatic passes: {why}; resting for an hour");
+        *self.refill_pause.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(std::time::Instant::now() + REFILL_PAUSE);
+        None
     }
 
     fn reports(&self, pocket: &Pocket) -> Vec<NodeReport> {
