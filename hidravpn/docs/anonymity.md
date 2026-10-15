@@ -345,10 +345,31 @@ written for Windows too:
 
 They compile, and `clippy -D warnings` passes for the Windows target.
 
-**Not run on Windows:** nothing of HidraVPN has run on Windows hardware yet.
-A CI job runs the unit tests on Windows. It cannot arm a firewall on a hosted
-runner: that would cut the runner off from GitHub. The run-time check is
-`scripts/windows/phase4-test.ps1` on a real PC, still to do.
+**Run by hand on one Windows PC**, against one updated exit node, one hop
+only:
+- connect through the service;
+- the internet saw the node's address;
+- the node held a different session key for each connection (read from
+  its own lease file);
+- a new identity, `down` and `status` all go through the service.
+
+The person running it reported these three as passing, without sending
+the output:
+- DNS through the tunnel, IPv6 blocked;
+- nothing out while the node was stopped;
+- the machine's own address back after `down`.
+
+That run found a bug, now fixed. The service reused each control-pipe
+instance after a client. On Windows a reused instance no longer showed its
+clients that the service (session 0) held it. So every client after the
+first eight refused the service, and the command line then acted on the
+network by itself, undoing the service's kill switch. Each instance is now
+made afresh after a client, and a client that finds something other than
+the service on the pipe stops with an error instead of going around it.
+
+**Not run on Windows:** two hops (Privado), passes, the browser page. A CI
+job runs the unit tests on Windows. It cannot arm a firewall on a hosted
+runner: that would cut the runner off from GitHub.
 
 ### 16. Critical — passes would have shown the exit your address and its key again (merge with phases 5 and 6)
 
@@ -412,7 +433,7 @@ None of these is claimed as solved.
    suite twice on a runner with IPv6, with `HIDRAVPN_REQUIRE_IPV6=1`, so
    the IPv6 checks must pass there, not be skipped. It runs on the first
    push.
-4. **Windows at run time**, as said in 15.
+4. **Windows at run time**: only one hop, by hand, as said in 15.
 5. **Nodes admitted by hand** keep a stable key. Their operator knows who
    asked; use them as entries.
 6. **The exit's resolver sees every name.** That is inherent: the exit sees

@@ -1005,6 +1005,9 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
     // "command failed".
     match ipc::call(Command::Ping).await {
         Ok(r) if r.ok => Some(ipc::call(cmd).await),
+        // Something else answers in the service's place: say so, and never
+        // act on the network directly while the service may hold it.
+        Err(e) if e.is::<ipc::Impostor>() => Some(Err(e)),
         _ => None,
     }
 }

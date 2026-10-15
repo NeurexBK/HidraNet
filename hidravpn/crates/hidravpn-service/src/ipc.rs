@@ -488,13 +488,14 @@ pub async fn call_unix_at(path: &std::path::Path, token: &str, cmd: Command) -> 
 }
 
 /// A fixed pool of pipe instances, all held by the service for as long as it
-/// runs, and the pipe made with that many as its limit. An instance is never
-/// closed: after one client it is disconnected and listens again. So nobody
-/// else can ever make an instance of `\\.\pipe\hidravpn` while the service
-/// is up — the squat a shared pipe invites, where another user's instance
-/// answers a client in the service's place, needs a free slot, and there is
-/// none. (While the service is down there is no pipe to squat for a client
-/// to find; the service's first instance then fails to start, loudly.)
+/// runs, and the pipe made with that many as its limit, so another user's
+/// instance — the squat a shared pipe invites — has no free slot to take.
+/// After each client an instance is closed and a fresh one made in its
+/// place at once: one disconnected and listened on again no longer tells
+/// its next clients that the service, in session 0, holds it (seen on
+/// Windows: every client after the first eight refused the service). In the
+/// moment between the two a squatter could take the slot; a client then
+/// finds an instance outside session 0 and refuses to talk to it.
 #[cfg(windows)]
 async fn serve_windows(daemon: Arc<Daemon>) -> Result<()> {
     let mut instances = Vec::with_capacity(PIPE_INSTANCES as usize);
@@ -522,7 +523,16 @@ async fn serve_windows(daemon: Arc<Daemon>) -> Result<()> {
                 if let Err(e) = handle_conn(&mut server, d.clone(), caller).await {
                     tracing::debug!("control connection ended: {e}");
                 }
-                let _ = server.disconnect();
+                drop(server);
+                server = loop {
+                    match pipe_acl::instance(false) {
+                        Ok(s) => break s,
+                        Err(e) => {
+                            tracing::warn!("control pipe: could not make a new instance: {e:#}");
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                    }
+                };
             }
         });
     }
@@ -727,6 +737,20 @@ where
 
 // ---- client --------------------------------------------------------------
 
+/// The service's pipe is answered by something that is not the service. A
+/// client says so and stops: it never goes around the service by changing
+/// the network itself, which would undo the service's kill switch.
+#[derive(Debug)]
+pub struct Impostor;
+
+impl std::fmt::Display for Impostor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("something other than the HidraVPN service is answering on its pipe; refusing to talk to it")
+    }
+}
+
+impl std::error::Error for Impostor {}
+
 /// Sends one command to the running service and returns its answer.
 pub async fn call(cmd: Command) -> Result<Response> {
     let token = read_token()?;
@@ -766,9 +790,7 @@ pub async fn call(cmd: Command) -> Result<Response> {
         // The service runs in session 0; a pipe instance made by a signed-in
         // user sits in that user's session.
         if !pipe_acl::server_is_a_service(&stream) {
-            return Err(anyhow!(
-                "something other than the HidraVPN service is answering on its pipe; refusing to talk to it"
-            ));
+            return Err(Impostor.into());
         }
         round_trip(stream, line.as_bytes()).await
     }
