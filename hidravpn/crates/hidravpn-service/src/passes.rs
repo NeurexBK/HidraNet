@@ -18,16 +18,28 @@ use hidravpn_core::{Invite, NodeRecord, Pocket};
 /// An exclusive lock on the pocket's folder, shared by the command line and
 /// the service: whoever loads, changes and saves the pocket or the wallet
 /// holds it, so neither overwrites passes or invites the other just wrote.
-/// Released when the returned file is dropped.
-pub fn lock_beside(pocket_path: &Path) -> Result<std::fs::File> {
+/// Released when the returned file is dropped. Waited for without holding a
+/// thread: the command line may hold it across a fetch over the network,
+/// and the service's other requests (`status`, `down`) must not stall
+/// behind that.
+pub async fn lock_beside(pocket_path: &Path) -> Result<std::fs::File> {
     let f = open_lock(pocket_path)?;
-    f.lock().with_context(|| {
-        format!(
-            "locking {}",
-            pocket_path.with_file_name("hidravpn.lock").display()
-        )
-    })?;
-    Ok(f)
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "locking {}",
+                        pocket_path.with_file_name("hidravpn.lock").display()
+                    )
+                });
+            }
+        }
+    }
 }
 
 /// The lock file beside the pocket, root only, not yet locked.
@@ -111,7 +123,7 @@ pub fn without_dead(
 /// It waits a second at most for the lock (someone may be fetching passes
 /// over the network with it held) and otherwise leaves the times as they
 /// are: they only steer which node is picked, they never decide a spend.
-pub fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
+pub async fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
     let f = open_lock(pocket_path)?;
     let mut held = false;
     for _ in 0..20 {
@@ -119,7 +131,7 @@ pub fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
             held = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     if !held {
         return Ok(());
@@ -327,6 +339,7 @@ pub async fn refill(
     wallet: &mut Wallet,
     token: &str,
     r: &Refill,
+    go_on: &(dyn Fn() -> bool + Sync),
 ) -> Result<Option<String>> {
     let dropped = match &pocket.pass_issuer {
         Some(i) => wallet.drop_expired(&i.keys, hidravpn_core::timefmt::now_unix()),
@@ -336,7 +349,9 @@ pub async fn refill(
     if wants.is_empty() {
         return Ok((dropped > 0).then(|| format!("{dropped} expired pass(es) thrown away")));
     }
-    fetch_for(pocket, wallet, token, &wants).await.map(Some)
+    fetch_for(pocket, wallet, token, &wants, go_on)
+        .await
+        .map(Some)
 }
 
 /// The public keys of the nodes in the pocket that admit with a pass: known
@@ -394,7 +409,7 @@ pub async fn get_passes(
         return Err(anyhow!("ask for 1 to 100 passes per node"));
     }
     let wants: Vec<(String, usize)> = nodes.into_iter().map(|(_, k)| (k, count)).collect();
-    fetch_for(pocket, wallet, token, &wants).await
+    fetch_for(pocket, wallet, token, &wants, &|| true).await
 }
 
 /// Asks the issuer for `n` passes for each node key in `wants`, and puts
@@ -404,6 +419,7 @@ async fn fetch_for(
     wallet: &mut Wallet,
     token: &str,
     wants: &[(String, usize)],
+    go_on: &(dyn Fn() -> bool + Sync),
 ) -> Result<String> {
     let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
         anyhow!("the node list this machine holds names no pass issuer; import a newer list")
@@ -424,7 +440,7 @@ async fn fetch_for(
         }
     }
     let dropped = wallet.drop_expired(&issuer.keys, now);
-    let got = pass::fetch(&issuer.url, token, key, &wanted).await?;
+    let got = pass::fetch(&issuer.url, token, key, &wanted, go_on).await?;
     let n = got.passes.len();
     wallet.passes.extend(got.passes);
     let mut line = format!(
@@ -682,7 +698,7 @@ mod tests {
         // Five passes, all under a key that has expired: none is left, so
         // the node is to be topped up (the fetch fails here: no current key).
         let r = Refill::default();
-        let out = refill(&p, &mut w, "token", &r).await;
+        let out = refill(&p, &mut w, "token", &r, &|| true).await;
         assert!(w.passes.is_empty(), "the expired passes are thrown away");
         assert!(out.is_err(), "and a fetch is attempted for the node");
         assert_eq!(

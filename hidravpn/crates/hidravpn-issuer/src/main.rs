@@ -498,24 +498,32 @@ async fn serve(issuer: Arc<Issuer>, listen: SocketAddr) -> Result<()> {
         let issuer = issuer.clone();
         tokio::spawn(async move {
             let _slot = slot;
-            let _ = tokio::time::timeout(PER_CONNECTION, async move {
-                let (status, body) = match read_request(&mut stream).await {
-                    Err(_) => (400, refusal("not a request this service reads")),
-                    Ok(req) => match (req.method.as_str(), req.path.as_str()) {
-                        // On a task of its own: the connection's timeout
-                        // must not cut it between charging the account and
-                        // signing, or giving the count back.
-                        ("POST", "/issue") => {
-                            let (issuer, body) = (issuer.clone(), req.body);
-                            tokio::spawn(async move { issuer.issue(&body).await })
-                                .await
-                                .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
-                        }
-                        ("GET", "/") | ("GET", "/keys") => (200, issuer.records()),
-                        ("GET", _) | ("POST", _) => (404, refusal("no such path")),
-                        _ => (405, refusal("GET or POST")),
-                    },
-                };
+            // The time limit is on the client: reading its request, and
+            // later taking the answer. The signing in between is never cut
+            // short: an account charged must get its passes.
+            let req = match tokio::time::timeout(PER_CONNECTION, read_request(&mut stream)).await {
+                Ok(Ok(req)) => Ok(req),
+                Ok(Err(_)) => Err(()),
+                Err(_) => return,
+            };
+            let (status, body) = match req {
+                Err(()) => (400, refusal("not a request this service reads")),
+                Ok(req) => match (req.method.as_str(), req.path.as_str()) {
+                    // On a task of its own, so nothing can cut it between
+                    // charging the account and signing, or giving the count
+                    // back.
+                    ("POST", "/issue") => {
+                        let (issuer, body) = (issuer.clone(), req.body);
+                        tokio::spawn(async move { issuer.issue(&body).await })
+                            .await
+                            .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
+                    }
+                    ("GET", "/") | ("GET", "/keys") => (200, issuer.records()),
+                    ("GET", _) | ("POST", _) => (404, refusal("no such path")),
+                    _ => (405, refusal("GET or POST")),
+                },
+            };
+            let _ = tokio::time::timeout(PER_CONNECTION, async {
                 let _ = stream.write_all(&http_response(status, &body)).await;
                 let _ = stream.flush().await;
                 let _ = stream.shutdown().await;
@@ -541,10 +549,14 @@ fn is_loopback(a: &SocketAddr) -> bool {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hidravpn_issuer=info")),
-        )
+        // HidraVPN's own crates only, whatever RUST_LOG says, as the other
+        // programs do.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            hidravpn_core::logging::directives(
+                std::env::var("RUST_LOG").ok().as_deref(),
+                "hidravpn_issuer=info",
+            ),
+        ))
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();

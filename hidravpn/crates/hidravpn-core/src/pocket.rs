@@ -447,7 +447,8 @@ impl Pocket {
             .collect();
         if relayed.is_empty() {
             return Err(anyhow!(
-                "no entry can ask an exit for admission on this machine's behalf: the entries' software is older than that (no `admission-relay` in the node list), or the exits take admission requests on a port other than {}, the one an entry relays; their operators need to update them",
+                "no entry can carry this machine to an exit: the entries' software is older than relaying admission (no `admission-relay` in the node list), or the exits use other ports than WireGuard's {} and admission's {}, the ones an entry forwards; their operators need to update them",
+                crate::admission::DEFAULT_WIREGUARD_PORT,
                 crate::admission::DEFAULT_ADMISSION_PORT
             ));
         }
@@ -498,8 +499,9 @@ pub fn pair_allowed(entry: &Invite, exit: &Invite, allow_same_operator: bool) ->
 /// WireGuard and this request). An exit on another port is still used as
 /// the only hop.
 pub fn entry_can_reach(entry: &Invite, exit: &Invite) -> bool {
-    !(exit.admits_openly() || exit.takes_passes())
-        || (entry.has(crate::directory::features::ADMISSION_RELAY) && on_relayed_port(exit))
+    on_forwarded_port(exit)
+        && (!(exit.admits_openly() || exit.takes_passes())
+            || (entry.has(crate::directory::features::ADMISSION_RELAY) && on_relayed_port(exit)))
 }
 
 fn on_relayed_port(exit: &Invite) -> bool {
@@ -508,10 +510,23 @@ fn on_relayed_port(exit: &Invite) -> bool {
         == crate::admission::DEFAULT_ADMISSION_PORT
 }
 
+/// An entry forwards WireGuard to the standard port only, to any exit,
+/// admitted openly, with a pass or by hand.
+fn on_forwarded_port(exit: &Invite) -> bool {
+    exit.endpoint_addr()
+        .is_ok_and(|a| a.port() == crate::admission::DEFAULT_WIREGUARD_PORT)
+}
+
 /// Why `entry` cannot carry the admission request `exit` needs, when
 /// `entry_can_reach` says so.
 pub fn relay_refusal(entry: &Invite, exit: &Invite) -> String {
-    if on_relayed_port(exit) {
+    if !on_forwarded_port(exit) {
+        format!(
+            "{} listens for WireGuard on another port than {}, the one an entry forwards to: it is used as the only hop, not as the exit of two hops",
+            exit.node_name,
+            crate::admission::DEFAULT_WIREGUARD_PORT
+        )
+    } else if on_relayed_port(exit) {
         format!(
             "{} cannot ask {} for admission on this machine's behalf: its software is older than that (no `admission-relay` in the node list)",
             entry.node_name, exit.node_name
@@ -652,12 +667,19 @@ mod tests {
         std_port.admission_port = Some(crate::admission::DEFAULT_ADMISSION_PORT);
         assert!(entry_can_reach(&entry, &std_port));
         assert!(relay_refusal(&entry, &std_port).contains("admission-relay"));
+        // WireGuard on another port: an entry forwards only the standard
+        // one, to any exit, even one admitted by hand.
+        let mut wg_odd = run_by(invite("x-wg", "203.0.113.12:51900"), "b");
+        assert!(!entry_can_reach(&entry, &wg_odd));
+        assert!(relay_refusal(&entry, &wg_odd).contains("another port than 51820"));
+        wg_odd.admission = Some("manual".into());
+        assert!(!entry_can_reach(&entry, &wg_odd));
 
         let mut p = Pocket::default();
         p.add(Slot::Entry, entry.clone()).unwrap();
         p.add(Slot::Exit, odd.clone()).unwrap();
         let e = p.pick_privado(false).unwrap_err().to_string();
-        assert!(e.contains("a port other than 51821"), "{e}");
+        assert!(e.contains("admission's 51821"), "{e}");
         p.add(Slot::Exit, std_port).unwrap();
         for _ in 0..20 {
             assert_eq!(p.pick_privado(false).unwrap().exit.node_name, "x-std");

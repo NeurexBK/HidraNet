@@ -714,9 +714,7 @@ pub async fn prepare(
         if exit.takes_passes() && wallet.count_for(&exit.node_public_key) == 0 {
             return Err(no_pass_behind(exit));
         }
-        if (exit.admits_openly() || exit.takes_passes())
-            && !crate::pocket::entry_can_reach(entry, exit)
-        {
+        if !crate::pocket::entry_can_reach(entry, exit) {
             return Err(anyhow!("{}", crate::pocket::relay_refusal(entry, exit)));
         }
     }

@@ -3,9 +3,11 @@
 //!
 //! One request, one response, one connection, each a single line of JSON. On
 //! Unix it is a socket in /run that root and the `hidravpn` group may open
-//! (mode 0660); on Windows a named pipe. Either way every request must carry the control token, a
-//! secret the service writes where only the owner can read it, so a web page
-//! that guesses the address still cannot drive the tunnel.
+//! (mode 0660); on Windows a named pipe. Either way every request must carry
+//! the control token, a secret the service writes where only those who may
+//! drive it can read it (root and the group on Unix, mode 0640; on Windows
+//! SYSTEM, administrators and signed-in users), so a web page that guesses
+//! the address still cannot drive the tunnel.
 
 use std::sync::Arc;
 
@@ -18,11 +20,33 @@ use crate::daemon::Daemon;
 use crate::paths;
 
 /// A request from a client. The token is checked before the command is read.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Request {
     pub token: String,
     #[serde(flatten)]
     pub cmd: Command,
+}
+
+/// Printed without the token, so no debug output can ever repeat it.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("token", &"<redacted>")
+            .field("cmd", &self.cmd)
+            .finish()
+    }
+}
+
+/// A secret carried in a command (the pass account's token): the text as
+/// it is on the wire, printed as "<redacted>".
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 // `Up` carries up to a handful of invites and the others nothing; a request
@@ -110,7 +134,7 @@ pub enum Command {
     /// Keep the account token `get_passes` asks with, root only on disk. The
     /// answer never repeats it.
     /// (`pass_token`, not `token`: that name is the control token's.)
-    SetPassToken { pass_token: String },
+    SetPassToken { pass_token: Secret },
     /// Automatic passes (phase 6): what is given is changed, the rest kept;
     /// with nothing given, only read. The answer carries the setting as
     /// `refill` and says it as `note`.
@@ -319,10 +343,12 @@ pub fn write_token() -> Result<String> {
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        // A file of its own every time: one left from an earlier run keeps
+        // its mode and group, which may no longer be the ones wanted.
+        let _ = std::fs::remove_file(&path);
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&path)
             .with_context(|| format!("writing {}", path.display()))?;
@@ -857,7 +883,6 @@ async fn call_pipe(pipe: &str, line: &str, only_the_service: bool) -> Result<Res
     round_trip(stream, line.as_bytes()).await
 }
 
-#[allow(dead_code)]
 async fn round_trip<S>(stream: S, request: &[u8]) -> Result<Response>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -880,6 +905,24 @@ where
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_debug_output_repeats_a_token() {
+        let r = Request {
+            token: "control-secret".into(),
+            cmd: Command::SetPassToken {
+                pass_token: Secret("account-secret".into()),
+            },
+        };
+        let d = format!("{r:?}");
+        assert!(
+            !d.contains("control-secret") && !d.contains("account-secret"),
+            "{d}"
+        );
+        // And the wire form is unchanged: a plain string.
+        let j = serde_json::to_string(&r).unwrap();
+        assert!(j.contains("\"pass_token\":\"account-secret\""), "{j}");
+    }
     use crate::daemon::Daemon;
 
     async fn start(token: &str) -> std::path::PathBuf {
@@ -1546,7 +1589,7 @@ mod tests {
             &sock,
             "tok",
             Command::SetPassToken {
-                pass_token: format!("  {token}\n"),
+                pass_token: Secret(format!("  {token}\n")),
             },
         )
         .await
@@ -1564,7 +1607,7 @@ mod tests {
             &sock,
             "tok",
             Command::SetPassToken {
-                pass_token: "two words".into(),
+                pass_token: Secret("two words".into()),
             },
         )
         .await

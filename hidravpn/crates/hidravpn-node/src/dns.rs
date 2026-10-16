@@ -93,6 +93,12 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
         let resolver = resolver.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
+            // Queries answered at once. Past it a query is dropped, as a
+            // busy resolver drops one, and the client asks again: one client
+            // sending names as fast as it can must not run the node out of
+            // memory, or flood the upstream resolvers through it.
+            const UDP_QUERIES: usize = 256;
+            let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(UDP_QUERIES));
             loop {
                 let (n, from) = match udp.recv_from(&mut buf).await {
                     Ok(r) => r,
@@ -102,10 +108,14 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
                         continue;
                     }
                 };
+                let Ok(slot) = slots.clone().try_acquire_owned() else {
+                    continue;
+                };
                 let q = buf[..n].to_vec();
                 let udp = udp.clone();
                 let resolver = resolver.clone();
                 tokio::spawn(async move {
+                    let _slot = slot;
                     if let Some(mut resp) = answer(&resolver, &q).await {
                         if resp.len() > UDP_MAX {
                             resp = truncated(&q);

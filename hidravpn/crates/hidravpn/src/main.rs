@@ -443,7 +443,7 @@ async fn main() -> Result<()> {
         Cmd::Passes { what } => {
             require_admin()?;
             // The service keeps passes in the same wallet: one writer at a time.
-            let _file = hidravpn_service::passes::lock_beside(&pocket_path)?;
+            let _file = hidravpn_service::passes::lock_beside(&pocket_path).await?;
             let wallet_path = wallet_beside(&pocket_path);
             match what {
                 Passes::Token { file } => {
@@ -511,7 +511,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Nodes { what } => {
             require_admin()?;
-            let _file = hidravpn_service::passes::lock_beside(&pocket_path)?;
+            let _file = hidravpn_service::passes::lock_beside(&pocket_path).await?;
             let mut pocket = load_pocket(&pocket_path)?;
             match what {
                 Nodes::Add {
@@ -1051,7 +1051,7 @@ async fn up(
     let built = async {
         // The pocket and the wallet are held while passes are taken from
         // the one and the invites they win go into the other.
-        let _file = hidravpn_service::passes::lock_beside(pocket_path)?;
+        let _file = hidravpn_service::passes::lock_beside(pocket_path).await?;
         let wallet_path = wallet_beside(pocket_path);
         let mut wallet = hidravpn_service::passes::load_wallet(&wallet_path)?;
         let before = wallet.to_json();
@@ -1106,7 +1106,7 @@ async fn up(
             .collect()
     };
     if !pass_keys.is_empty() {
-        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys);
+        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys).await;
     }
     let st = circuit.status();
     for h in &st.hops {
@@ -1181,7 +1181,7 @@ async fn up(
 
     eprintln!("\ndisconnecting");
     if !pass_keys.is_empty() {
-        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys);
+        let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys).await;
     }
     circuit.down().await.context("restoring the network")?;
     eprintln!("network restored");

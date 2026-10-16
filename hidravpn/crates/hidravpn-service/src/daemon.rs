@@ -62,10 +62,13 @@ pub struct Daemon {
     /// issuer that counted passes the service then could not keep, or one
     /// that is down, is not asked every ten minutes.
     refill_pause: std::sync::Mutex<Option<std::time::Instant>>,
-    /// The circuit being built, while one is: the state lock is held for
-    /// all of it, so `down` stops it through this instead of waiting on the
-    /// nodes, and `status` answers from it.
-    connecting: std::sync::Mutex<Option<Connecting>>,
+    /// The circuits asked for and not built yet: waiting for the pocket's
+    /// locks, or being built under the state lock. `down` stops them through
+    /// this instead of waiting on the nodes (or acknowledging a disconnect
+    /// that a connect still queued would undo), and `status` answers from
+    /// it.
+    connecting: std::sync::Mutex<Vec<(u64, Connecting)>>,
+    next_connect: std::sync::atomic::AtomicU64,
 }
 
 /// A circuit being built: whose it is, what it will be, and the switch that
@@ -77,12 +80,16 @@ struct Connecting {
     stop: tokio::sync::watch::Sender<bool>,
 }
 
-/// Clears `Daemon::connecting` when the build it stands for ends, however.
-struct Built<'a>(&'a std::sync::Mutex<Option<Connecting>>);
+/// Takes its entry out of `Daemon::connecting` when the connect it stands
+/// for ends, however.
+struct Built<'a>(&'a std::sync::Mutex<Vec<(u64, Connecting)>>, u64);
 
 impl Drop for Built<'_> {
     fn drop(&mut self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(id, _)| *id != self.1);
     }
 }
 
@@ -91,6 +98,9 @@ const REFILL_PAUSE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// The answer to a request without the right control token.
 pub const UNAUTHORISED: &str = "unauthorised: wrong or missing control token";
+
+/// What another account is told when it tries to change the circuit.
+const OWNED: &str = "the VPN was switched on by another account on this computer; only that account or root may switch it off";
 
 /// What a person is told when a circuit could not be built while the kill
 /// switch was held across a change: the machine is blocked, not open.
@@ -134,7 +144,8 @@ impl Daemon {
             pocket_lock: Mutex::new(()),
             stopping: std::sync::atomic::AtomicBool::new(false),
             refill_pause: std::sync::Mutex::new(None),
-            connecting: std::sync::Mutex::new(None),
+            connecting: std::sync::Mutex::new(Vec::new()),
+            next_connect: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -151,7 +162,11 @@ impl Daemon {
     /// switched on, rotate, join, and import a signed list — but never hand
     /// the service an invite of their own, which would route the whole
     /// machine through a node nobody vetted, and never switch off what
-    /// another account switched on.
+    /// another account switched on. Members may also look after the passes
+    /// (the account token, fetching passes, automatic top-ups): the browser
+    /// runs as the person, and the VPN page does that for them. What is at
+    /// stake there is the pass account's quota, never the machine's network
+    /// or its key; the token is never repeated in an answer.
     pub async fn handle(&self, req: Request, caller: Option<u32>) -> Response {
         let privileged = caller == Some(0);
         // The token is compared in full, in constant time, before anything else.
@@ -229,7 +244,7 @@ impl Daemon {
                 Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
                 Err(e) => Response::err(format!("{e:#}")),
             },
-            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token) {
+            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token.0) {
                 Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
                 Err(e) => Response::err(format!("{e:#}")),
             },
@@ -262,19 +277,13 @@ impl Daemon {
                 // A circuit still being built is stopped first: otherwise
                 // `down` would wait for every node it is waiting on.
                 self.stop_connecting(caller);
-                if let Err(e) = self.owned_by(caller).await {
-                    return Response::err(format!("{e:#}"));
-                }
-                match self.down().await {
+                match self.down_for(caller).await {
                     Ok(_) => Response::ok(),
                     Err(e) => Response::err(format!("{e:#}")),
                 }
             }
             Command::NewIdentity => {
-                if let Err(e) = self.owned_by(caller).await {
-                    return Response::err(format!("{e:#}"));
-                }
-                match self.new_identity().await {
+                match self.new_identity(caller).await {
                     Ok(note) => self.status().await.noting(note),
                     Err(e) => Response::err(format!("{e:#}")),
                 }
@@ -282,24 +291,37 @@ impl Daemon {
         }
     }
 
-    /// Marks a circuit as being built, for `owner`, until the guard goes;
-    /// returns what stops it.
+    /// Marks a circuit as asked for, for `owner`, until the guard goes —
+    /// before any lock is waited for; returns what stops it.
     fn begin_connecting(&self, owner: Option<u32>, hops: u8) -> (circuit::Cancel, Built<'_>) {
         let (stop, cancel) = circuit::Cancel::new();
-        *self.connecting.lock().unwrap_or_else(|e| e.into_inner()) = Some(Connecting {
-            owner,
-            hops,
-            mode: if hops == 2 { "privado" } else { "rapido" },
-            stop,
-        });
-        (cancel, Built(&self.connecting))
+        let id = self
+            .next_connect
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.connecting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((
+                id,
+                Connecting {
+                    owner,
+                    hops,
+                    mode: if hops == 2 { "privado" } else { "rapido" },
+                    stop,
+                },
+            ));
+        (cancel, Built(&self.connecting, id))
     }
 
-    /// Stops the circuit being built, if there is one and `caller` may: root,
-    /// or the account it is being built for.
+    /// Stops every circuit asked for and not built yet that `caller` may
+    /// stop: root any, an account its own.
     fn stop_connecting(&self, caller: Option<u32>) {
-        let c = self.connecting.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = c.as_ref() {
+        for (_, c) in self
+            .connecting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             if caller == Some(0) || c.owner == caller {
                 let _ = c.stop.send(true);
             }
@@ -312,12 +334,9 @@ impl Daemon {
         if caller == Some(0) {
             return Ok(());
         }
-        let guard = self.state.lock().await;
-        match guard.as_ref().and_then(|a| a.owner) {
-            Some(owner) if Some(owner) != caller => Err(anyhow!(
-                "the VPN was switched on by another account on this computer; only that account or root may switch it off"
-            )),
-            _ => Ok(()),
+        match self.state.lock().await.as_ref() {
+            Some(a) => not_someone_elses(a, caller),
+            None => Ok(()),
         }
     }
 
@@ -360,32 +379,33 @@ impl Daemon {
             }
         }
 
+        // Asked for from here on: a `down` while this waits for the locks
+        // below stops it, rather than tear down what is up and see this
+        // build a new circuit right after.
+        let hops = if entries.is_empty() { 1 } else { 2 };
+        let (cancel, _building) = self.begin_connecting(caller, hops);
+
         // The pocket and the wallet are held first, then the circuit: the
         // order every other path takes (a top-up holds them, then looks at
         // the circuit), so nothing waits in a circle and no pass is taken
         // twice.
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let mut guard = self.state.lock().await;
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(anyhow!("the service is stopping"));
         }
+        if cancel.is_set() {
+            return Err(anyhow!(circuit::CANCELLED));
+        }
         // The owner is checked again under the lock: two accounts asking at
         // once both passed `owned_by` on an empty state, and the second must
         // not take down the circuit the first just built.
-        if caller != Some(0) {
-            if let Some(owner) = guard.as_ref().and_then(|a| a.owner) {
-                if Some(owner) != caller {
-                    return Err(anyhow!(
-                        "the VPN was switched on by another account on this computer; only that account or root may switch it off"
-                    ));
-                }
-            }
+        if let Some(a) = guard.as_ref() {
+            not_someone_elses(a, caller)?;
         }
         let old = guard.take();
         let had_old = old.is_some();
-        let hops = if entries.is_empty() { 1 } else { 2 };
-        let (cancel, _building) = self.begin_connecting(caller, hops);
         let built = self
             .build(old, &pool[0], entries.first(), &opts, &cancel)
             .await;
@@ -397,7 +417,9 @@ impl Daemon {
             }
             // Stopped by `down`, which takes it from here.
             Err(Failed::Held(_)) if cancel.is_set() => return Err(anyhow!(circuit::CANCELLED)),
-            Err(Failed::Held(e)) if had_old => return Err(e.context(HELD)),
+            Err(Failed::Held(e)) if had_old || killswitch::is_active() => {
+                return Err(e.context(HELD));
+            }
             Err(Failed::Held(e)) => return Err(e),
         };
         *guard = Some(Active {
@@ -416,10 +438,9 @@ impl Daemon {
 
     /// Writes down, for the invites won with a pass that this circuit uses,
     /// that they were used now: what tells later picks their lease stands.
-    fn note_used(&self, spec: &CircuitSpec) {
-        let keys = spec_keys(spec);
+    async fn note_used(&self, keys: &[String]) {
         if !keys.is_empty() {
-            if let Err(e) = crate::passes::mark_used(&self.pocket_path, &keys) {
+            if let Err(e) = crate::passes::mark_used(&self.pocket_path, keys).await {
                 tracing::warn!("could not note a pass key's use: {e:#}");
             }
         }
@@ -463,7 +484,7 @@ impl Daemon {
     /// stop the others. Returns the pocket and a line per node.
     async fn join(&self, name: Option<&str>) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let targets: Vec<hidravpn_core::NodeRecord> = pocket
             .joinable()
@@ -553,7 +574,7 @@ impl Daemon {
         count: Option<u32>,
     ) -> Result<crate::passes::Refill> {
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let mut r = crate::passes::load_refill(&self.pocket_path);
         let changed = r.apply(enabled, low.map(|n| n as usize), count.map(|n| n as usize))?;
         if changed {
@@ -581,7 +602,7 @@ impl Daemon {
     /// stake, and the token never leaves the service.
     async fn get_passes(&self, name: Option<&str>, count: usize) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let pocket = load_pocket(&self.pocket_path)?;
         let token = crate::passes::read_token(&self.token_path())?;
         let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
@@ -625,11 +646,11 @@ impl Daemon {
         }
         // No token kept: nothing to ask with, and nothing to say.
         let token = crate::passes::read_token(&self.token_path()).ok()?;
-        if !self.circuit_up().await {
+        if !self.circuit_up() {
             return None;
         }
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = match crate::passes::lock_beside(&self.pocket_path) {
+        let _file = match crate::passes::lock_beside(&self.pocket_path).await {
             Ok(f) => f,
             Err(_) => return self.refill_failed("the pocket's lock cannot be taken"),
         };
@@ -644,11 +665,14 @@ impl Daemon {
         // Asked again now that the locks are held: whoever held them may
         // have been slow, and a `down` meanwhile would send the request,
         // with the account token, out of this machine's own address.
-        if !self.circuit_up().await {
+        if !self.circuit_up() {
             return None;
         }
         let before = wallet.passes.len();
-        let got = crate::passes::refill(&pocket, &mut wallet, &token, &r).await;
+        // Asked again before each request: a `down` while the issuer is
+        // asked must stop the next one before it looks the issuer up.
+        let got =
+            crate::passes::refill(&pocket, &mut wallet, &token, &r, &|| self.circuit_up()).await;
         if wallet.passes.len() != before
             && crate::passes::save_wallet(&self.wallet_path(), &wallet).is_err()
         {
@@ -668,7 +692,7 @@ impl Daemon {
 
     /// Whether a circuit is up now. One being built, or being changed, is
     /// not: the answer does not wait for it.
-    async fn circuit_up(&self) -> bool {
+    fn circuit_up(&self) -> bool {
         self.state
             .try_lock()
             .is_ok_and(|g| g.as_ref().is_some_and(|a| a.circuit.status().connected))
@@ -693,7 +717,7 @@ impl Daemon {
     /// pocket on disk is untouched by a list that is refused.
     async fn import_nodes(&self, list: &str, signature: &str) -> Result<(Pocket, Merge)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let mut pocket = load_pocket(&self.pocket_path)?;
         let merge = hidravpn_core::directory::import_signed(
             &mut pocket,
@@ -718,20 +742,30 @@ impl Daemon {
     /// is shown a fresh key, admitted through the entry, even when it is the
     /// same exit again. Returns the note for the person: which nodes it got,
     /// or that there was no other to choose, and why.
-    async fn new_identity(&self) -> Result<String> {
+    async fn new_identity(&self, caller: Option<u32>) -> Result<String> {
         // Nothing up, nothing to rotate: said before the pocket's files are
         // touched (and checked again below, under the locks).
-        if self.state.lock().await.is_none() {
-            return Err(anyhow!("not connected; nothing to rotate"));
-        }
+        let (owner, hops) = match self.state.lock().await.as_ref() {
+            None => return Err(anyhow!("not connected; nothing to rotate")),
+            Some(a) => (a.owner, if a.entries.is_empty() { 1 } else { 2 }),
+        };
+        // Asked for from here on, as in `up`: a `down` meanwhile stops it.
+        let (cancel, _building) = self.begin_connecting(owner, hops);
         // The same order as `up`: the pocket and the wallet, then the circuit.
         let _one_at_a_time = self.pocket_lock.lock().await;
-        let _file = crate::passes::lock_beside(&self.pocket_path)?;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
         let wallet = crate::passes::load_wallet(&self.wallet_path()).unwrap_or_default();
         let t = hidravpn_core::timefmt::now_unix().max(0) as u64;
         let mut guard = self.state.lock().await;
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(anyhow!("the service is stopping"));
+        }
+        if cancel.is_set() {
+            return Err(anyhow!(circuit::CANCELLED));
+        }
+        // Whose circuit it is, under the same lock that rotates it.
+        if let Some(a) = guard.as_ref() {
+            not_someone_elses(a, caller)?;
         }
         let active = guard
             .take()
@@ -761,8 +795,6 @@ impl Daemon {
             active.opts.clone(),
             active.allow_same_operator,
         );
-        let hops = if entry.is_some() { 2 } else { 1 };
-        let (cancel, _building) = self.begin_connecting(owner, hops);
         let built = self
             .build(Some(active), &exit, entry.as_ref(), &opts, &cancel)
             .await;
@@ -876,10 +908,14 @@ impl Daemon {
             .into_iter()
             .collect();
         let had_old = old.is_some();
-        // A kill switch a crashed run left behind is undone first — unless a
-        // circuit is being replaced, when it is held instead: from here on,
-        // only the old and the new first hop may be reached.
+        // A circuit being replaced is held: from here on, only the old and
+        // the new first hop may be reached. A machine already blocked (a
+        // rotation that failed, a crashed run's rules) stays blocked the
+        // same way while this circuit is built: lifting it would let every
+        // program out in the clear for the proof of work and the requests.
+        // Only a machine that was open is left open.
         let mut held = Vec::new();
+        let mut was_held = false;
         if let Some(o) = old {
             held.push(first_hop);
             held.extend(old_first_hop.iter().copied().filter(|a| *a != first_hop));
@@ -891,8 +927,15 @@ impl Daemon {
             }
             crate::passes::mark_used_in(&mut pocket, &spec_keys(o.circuit.spec()));
             let _ = o.circuit.down_with(false).await;
-        } else {
-            let _ = killswitch::remove();
+        } else if killswitch::is_active() {
+            held.push(first_hop);
+            if let Err(e) = killswitch::hold(&held) {
+                return Err(Failed::Untouched(
+                    e.context("could not hold the kill switch for the new circuit"),
+                    None,
+                ));
+            }
+            was_held = true;
         }
         let wallet_before = wallet.to_json();
         let mut won = Vec::new();
@@ -935,8 +978,9 @@ impl Daemon {
         }
         built.map(|c| (c, notes)).map_err(|e| {
             // A first connection that failed leaves the machine as it found
-            // it; a replacement leaves it held, and the caller says so.
-            if !had_old {
+            // it, open or blocked; a replacement leaves it held, and the
+            // caller says so.
+            if !had_old && !was_held {
                 let _ = killswitch::remove();
             }
             Failed::Held(e)
@@ -944,7 +988,17 @@ impl Daemon {
     }
 
     pub async fn down(&self) -> Result<&'static str> {
+        self.down_for(Some(0)).await
+    }
+
+    /// `down`, for `caller`: whose circuit it is is checked under the same
+    /// lock that takes it down, so another account's connect that got in
+    /// between is never taken down by this one.
+    async fn down_for(&self, caller: Option<u32>) -> Result<&'static str> {
         let mut guard = self.state.lock().await;
+        if let Some(a) = guard.as_ref() {
+            not_someone_elses(a, caller)?;
+        }
         let active = match guard.take() {
             None => {
                 // Even with nothing running, make sure nothing is left armed.
@@ -959,10 +1013,13 @@ impl Daemon {
         // The circuit takes itself down in order: the firewall and the routing
         // first, then the tunnels, waiting for their tasks to let go of the
         // interfaces so the kernel interfaces are gone before we report
-        // "disconnected".
-        self.note_used(active.circuit.spec());
+        // "disconnected". Their use is written down after, with the state
+        // free: the pocket's lock may be held a while by a fetch.
+        let used = spec_keys(active.circuit.spec());
         let r = active.circuit.down().await;
+        drop(guard);
         tracing::info!("disconnected");
+        self.note_used(&used).await;
         r.map(|_| "disconnected")
     }
 
@@ -997,8 +1054,8 @@ impl Daemon {
                     .connecting
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .map(|c| (c.hops, c.mode));
+                    .first()
+                    .map(|(_, c)| (c.hops, c.mode));
                 match building {
                     Some((hops, mode)) => return Self::not_connected(hops, mode),
                     None => self.state.lock().await,
@@ -1067,6 +1124,15 @@ impl Daemon {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.stop_connecting(Some(0));
         let _ = self.down().await;
+    }
+}
+
+/// Root, or the account that switched the circuit on: anyone else may not
+/// switch it off, rotate it, or connect over it.
+fn not_someone_elses(a: &Active, caller: Option<u32>) -> Result<()> {
+    match a.owner {
+        Some(owner) if caller != Some(0) && Some(owner) != caller => Err(anyhow!("{}", OWNED)),
+        _ => Ok(()),
     }
 }
 

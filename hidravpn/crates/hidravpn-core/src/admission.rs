@@ -26,6 +26,9 @@ use crate::directory::NodeRecord;
 
 /// Where a node answers admission requests, unless its record says otherwise.
 pub const DEFAULT_ADMISSION_PORT: u16 = 51821;
+
+/// WireGuard's standard port, the one an entry forwards to an exit.
+pub const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 /// How long the whole exchange may take.
 pub const TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_HEADERS: usize = 8 * 1024;

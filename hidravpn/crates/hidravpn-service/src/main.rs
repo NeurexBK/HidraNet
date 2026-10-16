@@ -418,5 +418,44 @@ fn require_admin() -> Result<()> {
             anyhow::bail!("this needs root: run it with sudo");
         }
     }
+    #[cfg(windows)]
+    {
+        if !this_process_is_elevated() {
+            anyhow::bail!(
+                "this needs an administrator: run it from a PowerShell opened with \"Run as administrator\""
+            );
+        }
+    }
     Ok(())
+}
+
+/// Whether this process runs elevated (an administrator's prompt, or
+/// SYSTEM). Anything that cannot be established counts as not.
+#[cfg(windows)]
+fn this_process_is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token = HANDLE::default();
+    // SAFETY: the current process's pseudo-handle needs no closing; the
+    // token opened here is closed here; every out-pointer is to a local.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let got = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut TOKEN_ELEVATION as *mut std::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        got && elevation.TokenIsElevated != 0
+    }
 }

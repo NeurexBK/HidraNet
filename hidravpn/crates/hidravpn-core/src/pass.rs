@@ -465,11 +465,16 @@ pub struct Fetched {
 /// dropped: if a later request fails (a refusal, a network error, an answer
 /// that does not verify), the passes from the earlier ones come back with
 /// `stopped` saying why. Only a failure before any pass is an error.
+///
+/// `go_on` is asked before each request, before its name is looked up: an
+/// automatic top-up says no once the tunnel is down, so the account token
+/// never leaves from this machine's own address.
 pub async fn fetch(
     issuer_url: &str,
     token: &str,
     key: &PassKeyRecord,
     nodes: &[String],
+    go_on: &(dyn Fn() -> bool + Sync),
 ) -> Result<Fetched> {
     let issuer = key.issuer_key()?;
     let url = crate::http::Url::parse(issuer_url)
@@ -482,6 +487,14 @@ pub async fn fetch(
         stopped: None,
     };
     for chunk in nodes.chunks(MAX_PER_REQUEST) {
+        if !go_on() {
+            const WHY: &str = "stopped: the VPN went down before the rest was asked for";
+            if got.passes.is_empty() {
+                return Err(anyhow!(WHY));
+            }
+            got.stopped = Some(WHY.into());
+            break;
+        }
         match fetch_one(&url, &issuer, token, chunk, &mut got.passes).await {
             Ok(left) => got.remaining_today = left,
             Err(e) if got.passes.is_empty() => return Err(e),
@@ -761,9 +774,15 @@ mod tests {
         let n = node();
         let wanted = vec![n.clone(); MAX_PER_REQUEST + 3];
         let rec = record("2100-01-01T00:00:00Z");
-        let got = fetch(&format!("http://127.0.0.1:{port}"), "t", &rec, &wanted)
-            .await
-            .unwrap();
+        let got = fetch(
+            &format!("http://127.0.0.1:{port}"),
+            "t",
+            &rec,
+            &wanted,
+            &|| true,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             got.passes.len(),
             MAX_PER_REQUEST,
@@ -777,6 +796,54 @@ mod tests {
                 .verify(std::slice::from_ref(&rec), &n, NOW)
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn once_told_to_stop_no_further_request_is_made() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let served = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = served.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                let req = crate::admission::read_request(&mut s).await.unwrap();
+                let r: IssueRequest = serde_json::from_slice(&req.body).unwrap();
+                let signatures = r
+                    .blinded
+                    .iter()
+                    .map(|b| issuer().sign_blinded(b).unwrap())
+                    .collect();
+                let body = serde_json::to_string(&IssueResponse {
+                    signatures,
+                    remaining_today: 9,
+                })
+                .unwrap();
+                let _ = s
+                    .write_all(&crate::admission::http_response(200, &body))
+                    .await;
+            }
+        });
+        let wanted = vec![node(); MAX_PER_REQUEST + 3];
+        let rec = record("2100-01-01T00:00:00Z");
+        let url = format!("http://127.0.0.1:{port}");
+
+        // The tunnel goes down after the first request.
+        let asked = AtomicUsize::new(0);
+        let go_on = || asked.fetch_add(1, Ordering::SeqCst) == 0;
+        let got = fetch(&url, "t", &rec, &wanted, &go_on).await.unwrap();
+        assert_eq!(got.passes.len(), MAX_PER_REQUEST);
+        assert!(got.stopped.unwrap().contains("VPN went down"));
+        assert_eq!(served.load(Ordering::SeqCst), 1, "no second request");
+
+        // Down before the first: nothing is asked at all.
+        let e = fetch(&url, "t", &rec, &wanted, &|| false)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("VPN went down"), "{e}");
+        assert_eq!(served.load(Ordering::SeqCst), 1);
     }
 
     #[test]

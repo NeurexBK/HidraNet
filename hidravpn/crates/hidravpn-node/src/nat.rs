@@ -51,13 +51,17 @@ fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
     // other nodes, and the one request a client makes to an exit's admission
     // port through it — so the exit is asked from the entry's address, never
     // the client's; an exit carries the internet, minus mail and the ports
-    // abuse comes from. Only the standard admission port is relayed: a
-    // client never asks an exit on another one through an entry
+    // abuse comes from. Only the standard WireGuard and admission ports are
+    // relayed: a client never picks an exit on another one behind an entry
     // (`pocket::entry_can_reach`).
+    let (wg, adm) = (
+        hidravpn_core::admission::DEFAULT_WIREGUARD_PORT,
+        hidravpn_core::admission::DEFAULT_ADMISSION_PORT,
+    );
     let policy = if role.eq_ignore_ascii_case("entry") {
         format!(
-            r#"    iifname "{tun_if}" oifname "{out_if}" udp dport 51820 accept comment "an entry forwards only WireGuard, to other nodes"
-    iifname "{tun_if}" oifname "{out_if}" tcp dport 51821 accept comment "and admission requests to exits, so an exit never sees the client's address"
+            r#"    iifname "{tun_if}" oifname "{out_if}" udp dport {wg} accept comment "an entry forwards only WireGuard, to other nodes"
+    iifname "{tun_if}" oifname "{out_if}" tcp dport {adm} accept comment "and admission requests to exits, so an exit never sees the client's address"
     iifname "{tun_if}" oifname "{out_if}" drop comment "entry policy: nothing else leaves"
 "#
         )

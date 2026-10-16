@@ -449,6 +449,20 @@ impl SpentPasses {
         Ok(())
     }
 
+    /// Takes back a pass written down as spent whose admission then failed,
+    /// so the client may use it again. On disk first: if that fails the
+    /// pass stays spent, which never lets it be spent twice.
+    pub fn forget(&mut self, tag: &str) -> Result<()> {
+        let Some(until) = self.tags.remove(tag) else {
+            return Ok(());
+        };
+        if let Err(e) = self.save() {
+            self.tags.insert(tag.to_string(), until);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Whether the journal has grown enough to fold into the snapshot.
     pub fn needs_compacting(&self) -> bool {
         self.journal >= COMPACT_AFTER || self.journal_torn
@@ -792,6 +806,18 @@ mod tests {
         let s6 = SpentPasses::load_from(&dir).unwrap();
         assert_eq!(s6.len(), 3);
         assert!(!s6.contains(&tag(1)) && s6.contains(&tag(5)));
+
+        // A pass taken back (its admission failed) is gone after a restart
+        // too, whether it was in the journal or the snapshot; the others
+        // stay.
+        let mut s7 = SpentPasses::load_from(&dir).unwrap();
+        s7.record(tag(6), 600).unwrap();
+        s7.forget(&tag(6)).unwrap();
+        s7.forget(&tag(5)).unwrap();
+        s7.forget(&tag(9)).unwrap();
+        let s8 = SpentPasses::load_from(&dir).unwrap();
+        assert!(!s8.contains(&tag(6)) && !s8.contains(&tag(5)));
+        assert!(s8.contains(&tag(4)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

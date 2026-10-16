@@ -110,6 +110,12 @@ pub fn uninstall() -> Result<()> {
     let _ = run("systemctl", &["disable", "--now", "hidravpn"]);
     let _ = std::fs::remove_file(UNIT_PATH);
     let _ = run("systemctl", &["daemon-reload"]);
+    // Nothing left armed if the service was killed mid-connection, or its
+    // own `down` failed: with no service left, nothing else would lift it.
+    let _ = hidravpn_core::killswitch::remove();
+    if let Ok(Some(plan)) = hidravpn_core::netcfg::load_plan() {
+        let _ = hidravpn_core::netcfg::revert(&plan);
+    }
     Ok(())
 }
 

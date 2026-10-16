@@ -416,6 +416,48 @@ mod node {
         active
     }
 
+    /// What an admission that failed had done by then, to be undone.
+    enum Undo {
+        /// Nothing written: the refusal as it is.
+        Nothing((u16, String)),
+        /// The pass may have been written down as spent; no lease saved.
+        Spent(String),
+        /// The lease (this key) saved and the pass spent; the peer may be
+        /// added.
+        Admitted(String, String),
+    }
+
+    /// Takes back what a failed admission did, so a client that is told to
+    /// keep its pass (a 5xx) can really use it again. If the pass cannot be
+    /// taken back it stays spent, and the client is told so (a 4xx), rather
+    /// than told to try a pass this node would refuse.
+    fn undo_admission(
+        undo: Undo,
+        pass: Option<&crate::admission::SpentPass>,
+        spent: &mut crate::leases::SpentPasses,
+        dev: &crate::wg::WgDevice,
+    ) -> (u16, String) {
+        let why = match undo {
+            Undo::Nothing(refused) => return refused,
+            Undo::Spent(why) => why,
+            Undo::Admitted(key, why) => {
+                let _ = dev.remove_peer(&key);
+                let _ = Leases::update(|leases| ((), leases.revoke(&key)));
+                why
+            }
+        };
+        match pass {
+            None => (503, why),
+            Some(p) => match spent.forget(&p.tag) {
+                Ok(()) => (503, why),
+                Err(_) => (
+                    409,
+                    format!("{why}; this pass is spent here and cannot be used again"),
+                ),
+            },
+        }
+    }
+
     fn invite_for(cfg: &NodeConfig, lease: &crate::leases::Lease) -> Result<Invite> {
         let net = cfg.tunnel_network()?;
         Ok(Invite {
@@ -431,9 +473,12 @@ mod node {
             role: Some(cfg.role.clone()),
             pass: None,
             country: cfg.country.clone(),
+            // What `record` says the node does, word for word.
             admission: Some(
                 if cfg.admission_is_open() {
                     "open"
+                } else if cfg.admits_with_passes() {
+                    "pass"
                 } else {
                     "manual"
                 }
@@ -477,7 +522,12 @@ mod node {
 
         let dns_addr = SocketAddr::new(IpAddr::V4(net.node_ip), 53);
         let mut dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
-        info!("DNS forwarder on {dns_addr} → {}", cfg.dns.join(", "));
+        // How many upstreams, not which: no address goes into a log.
+        info!(
+            "DNS forwarder on port {} ({} upstream(s))",
+            dns_addr.port(),
+            cfg.dns.len()
+        );
 
         // The admission service: describes the node always, admits when
         // open or for a pass.
@@ -586,37 +636,58 @@ mod node {
                             {
                                 return (Err((503, "this node is full; try another".to_string())), false);
                             }
-                            // Written down as spent before its key is
-                            // admitted, so a crash in between cannot let it
-                            // be spent again.
-                            if let Some(p) = &req.pass {
-                                if let Err(e) = spent.record(p.tag.clone(), p.valid_until) {
-                                    return (Err((503, format!("could not write the pass down: {e:#}"))), false);
-                                }
-                            }
                             let r = if req.pass.is_some() {
                                 leases.admit_pass(&req.name, &req.public_key, &net)
                             } else {
                                 leases.admit_open(&req.name, &req.public_key, &net, req.session)
                             };
-                            match r {
-                                Ok(lease) => (Ok((lease, leases.len())), true),
-                                Err(e) => (Err((400, e.to_string())), false),
-                            }
-                        });
-                        match admitted {
-                            Ok(Ok((lease, count))) => match dev.add_peer(&lease.public_key, lease.ip) {
-                                Ok(()) => {
-                                    info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, count);
-                                    invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}")))
+                            let lease = match r {
+                                Ok(lease) => lease,
+                                Err(e) => return (Err((400, e.to_string())), false),
+                            };
+                            // Written down as spent before the lease is
+                            // saved (after this returns), so a crash in
+                            // between cannot let it be spent again.
+                            if let Some(p) = &req.pass {
+                                if let Err(e) = spent.record(p.tag.clone(), p.valid_until) {
+                                    return (Err((503, format!("could not write the pass down: {e:#}"))), false);
                                 }
-                                Err(e) => Err((500, format!("could not admit: {e:#}"))),
+                            }
+                            (Ok((lease, leases.len())), true)
+                        });
+                        let admitted = match admitted {
+                            Ok(Ok((lease, count))) => match dev
+                                .add_peer(&lease.public_key, lease.ip)
+                                .map_err(|e| format!("could not admit: {e:#}"))
+                                .and_then(|()| invite_for(&cfg, &lease).map_err(|e| format!("{e:#}")))
+                            {
+                                Ok(invite) => {
+                                    info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, count);
+                                    Ok(invite)
+                                }
+                                Err(why) => Err(Undo::Admitted(lease.public_key, why)),
                             },
-                            Ok(Err(refused)) => Err(refused),
-                            Err(e) => Err((503, format!("could not write the leases: {e:#}"))),
+                            Ok(Err(refused)) => Err(Undo::Nothing(refused)),
+                            // The pass may have been written down inside.
+                            Err(e) => Err(Undo::Spent(format!("could not write the leases: {e:#}"))),
+                        };
+                        match admitted {
+                            Ok(invite) => Ok(invite),
+                            Err(undo) => Err(undo_admission(undo, req.pass.as_ref(), &mut spent, &dev)),
                         }
                     };
-                    let _ = req.reply.send(answer);
+                    // The admission side stopped waiting meanwhile: its client
+                    // was told to keep its pass, so the pass is taken back.
+                    if let Err(Ok(_)) = req.reply.send(answer) {
+                        if req.pass.is_some() {
+                            let _ = undo_admission(
+                                Undo::Admitted(req.public_key.clone(), "no one was waiting".into()),
+                                req.pass.as_ref(),
+                                &mut spent,
+                                &dev,
+                            );
+                        }
+                    }
                 }
                 _ = reaper.tick() => {
                     let pruned = spent.prune(hidravpn_core::timefmt::now_unix());

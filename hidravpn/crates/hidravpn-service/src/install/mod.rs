@@ -234,7 +234,6 @@ pub fn stop() -> Result<()> {
 }
 
 /// Runs a command and fails with its error output.
-#[allow(dead_code)]
 pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String> {
     let out = std::process::Command::new(cmd)
         .args(args)

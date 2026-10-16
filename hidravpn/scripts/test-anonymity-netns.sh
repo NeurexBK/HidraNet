@@ -445,7 +445,7 @@ HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/l
 cap "$P" i-c "$WORK/isp-port.pcap"; sleep 1
 OUT=$($C "$BIN/hidravpn" --direct --key /etc/hidravpn/client.key up --privado --allow-same-operator --pocket "$WORK/port-pocket.json" 2>&1)
 sleep 1; kill "${CAPS[-1]}" 2>/dev/null; sleep 0.5
-echo "$OUT" | grep -q "a port other than 51821" && pass "an exit on another admission port is not used behind an entry, and the person is told why" || fail "exit on port 51900: $(echo "$OUT" | tail -2)"
+echo "$OUT" | grep -q "admission's 51821" && pass "an exit on another admission port is not used behind an entry, and the person is told why" || fail "exit on port 51900: $(echo "$OUT" | tail -2)"
 N=$(count "$WORK/isp-port.pcap" "ip and src host $CLIENT and tcp")
 [ "$N" = 0 ] && pass "nothing was asked of the entry for it: 0 TCP packets left the client" || fail "$N TCP packet(s) left the client for an exit no entry relays to"
 

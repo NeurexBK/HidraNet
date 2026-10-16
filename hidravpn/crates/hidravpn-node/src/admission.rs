@@ -192,7 +192,7 @@ pub async fn serve(
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
-        .with_context(|| format!("binding the admission port {listen}"))?;
+        .with_context(|| format!("binding the admission port {}", listen.port()))?;
     info!(
         "admission service on TCP {} ({})",
         listen.port(),
@@ -211,6 +211,14 @@ pub async fn serve(
         warn!(
             "entries relay admission requests only to TCP {}: on another port this node is used as the only hop, never as the exit of two hops",
             hidravpn_core::admission::DEFAULT_ADMISSION_PORT
+        );
+    }
+    if cfg.public_endpoint.port() != hidravpn_core::admission::DEFAULT_WIREGUARD_PORT
+        && !cfg.role.eq_ignore_ascii_case("entry")
+    {
+        warn!(
+            "entries forward WireGuard only to UDP {}: on another port this node is used as the only hop, never as the exit of two hops",
+            hidravpn_core::admission::DEFAULT_WIREGUARD_PORT
         );
     }
     let limiter = Arc::new(Mutex::new(RateLimiter::default()));
