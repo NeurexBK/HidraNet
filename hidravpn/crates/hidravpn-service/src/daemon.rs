@@ -719,6 +719,11 @@ impl Daemon {
     /// same exit again. Returns the note for the person: which nodes it got,
     /// or that there was no other to choose, and why.
     async fn new_identity(&self) -> Result<String> {
+        // Nothing up, nothing to rotate: said before the pocket's files are
+        // touched (and checked again below, under the locks).
+        if self.state.lock().await.is_none() {
+            return Err(anyhow!("not connected; nothing to rotate"));
+        }
         // The same order as `up`: the pocket and the wallet, then the circuit.
         let _one_at_a_time = self.pocket_lock.lock().await;
         let _file = crate::passes::lock_beside(&self.pocket_path)?;

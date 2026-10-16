@@ -77,6 +77,18 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3
       - name: build the release binaries
         run: cargo build --release --manifest-path hidravpn/Cargo.toml --workspace
+      # The suites give each namespace its own resolv.conf the way `ip netns
+      # exec` does it: /etc/netns/NAME/resolv.conf mounted over
+      # /etc/resolv.conf. On this runner /etc/resolv.conf is a link to
+      # systemd-resolved's stub, so the mount lands on the stub, the client
+      # changes a file the suite never reads, and glibc asks systemd-resolved
+      # (outside the namespace) before DNS. A plain file and no resolved, as
+      # on a machine without it; the suites need nothing from the internet.
+      - name: a plain resolv.conf, as the namespace suites assume
+        run: |
+          sudo systemctl stop systemd-resolved
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
       - name: every suite, twice
         env:
           HIDRAVPN_REQUIRE_IPV6: "1"
