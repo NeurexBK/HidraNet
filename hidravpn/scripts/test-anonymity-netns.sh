@@ -34,7 +34,8 @@
 #     a name it looked up or a byte it sent.
 #
 # Run as root:  sudo bash hidravpn/scripts/test-anonymity-netns.sh
-# Needs: the release binaries built, python3, curl, nft, tcpdump, ip netns, /dev/net/tun.
+# Needs: the release binaries built, python3, curl, nft, tcpdump, ip netns, /dev/net/tun,
+# and wg (wireguard-tools) where the kernel has WireGuard.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../target/release"
@@ -154,8 +155,16 @@ table inet hv_observe {
 EOF
 obs() { $E nft list table inet hv_observe | grep "comment \"$1\"" | sed -E 's/.*packets ([0-9]+).*/\1/'; }
 
-# A node's own peer table, as its operator can read it: "key endpoint" lines.
-peers() { python3 -I - "$1" <<'PY'
+# A node's own peer table, as its operator can read it: "key endpoint
+# handshake" lines. A node on userspace WireGuard answers on its control
+# socket; one on the kernel's (as on a CI runner) through `wg`. Arguments:
+# the interface, then the namespace prefix it lives in.
+peers() {
+  if [ -S "/var/run/wireguard/$1.sock" ]; then peers_uapi "/var/run/wireguard/$1.sock"
+  else $2 wg show "$1" dump 2>/dev/null | awk 'NR > 1 { ep = $3; if (ep == "(none)") ep = "-"; else sub(/:[0-9]+$/, "", ep); print $1, ep, $5 }'
+  fi
+}
+peers_uapi() { python3 -I - "$1" <<'PY'
 import socket, sys, base64
 s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b"get=1\n\n")
 buf = b""
@@ -177,7 +186,7 @@ PY
 }
 # Every key the exit has ever seen arrive from an address, appended over the run.
 # The same for the entry.
-watch_exit() { while true; do peers /var/run/wireguard/hvx0.sock >> "$WORK/exit-seen.txt" 2>/dev/null; peers /var/run/wireguard/hve0.sock >> "$WORK/entry-seen.txt" 2>/dev/null; sleep 0.5; done; }
+watch_exit() { while true; do peers hvx0 "$X" >> "$WORK/exit-seen.txt" 2>/dev/null; peers hve0 "$E" >> "$WORK/entry-seen.txt" 2>/dev/null; sleep 0.5; done; }
 watch_exit & PIDS+=($!)
 # How many different keys a node's table ever showed arriving from an address, with a handshake.
 keys_from() { python3 -I -c "
@@ -219,7 +228,7 @@ exit_of() { svc '{"cmd":"status"}' | python3 -I -c "import json,sys; print(json.
 SEEN_KEYS=()
 current_exit_key() {
   sleep 1
-  peers /var/run/wireguard/hvx0.sock | awk '$3 > 0' | sort -k3 -n | python3 -I -c "
+  peers hvx0 "$X" | awk '$3 > 0' | sort -k3 -n | python3 -I -c "
 import sys
 seen = set(sys.argv[1:])
 rows = [l.split() for l in sys.stdin if l.split() and l.split()[0] not in seen]
@@ -340,7 +349,7 @@ svc '{"cmd":"status"}' | grep -q '"killswitch":true' && pass "with the exit dead
 # minutes): the client's lease must still be there.
 start_exit HIDRAVPN_SESSION_IDLE_SECS=60; sleep 2
 for i in $(seq 1 60); do [ "$($C curl -s --max-time 2 http://10.201.0.2/ 2>/dev/null)" = 10.201.0.1 ] && break; sleep 0.5; done
-[ "$($C curl -s --max-time 3 http://10.201.0.2/ 2>/dev/null)" = 10.201.0.1 ] && pass "when the exit comes back, the session resumes through it" || fail "no traffic after the exit came back: exit peers $(peers /var/run/wireguard/hvx0.sock | tr '\n' ';') status $(svc '{"cmd":"status"}' | cut -c1-600)"
+[ "$($C curl -s --max-time 3 http://10.201.0.2/ 2>/dev/null)" = 10.201.0.1 ] && pass "when the exit comes back, the session resumes through it" || fail "no traffic after the exit came back: exit peers $(peers hvx0 "$X" | tr '\n' ';') status $(svc '{"cmd":"status"}' | cut -c1-600)"
 wait $KNOCK 2>/dev/null
 sleep 1; kill "${CAPS[-1]}" 2>/dev/null; sleep 0.5
 N=$(count "$WORK/isp-d.pcap" "ip and src host $CLIENT and not (udp and dst host $ENTRY and dst port 51820) and not (tcp and host $ENTRY and port 51821) and not (icmp[icmptype] == icmp-unreach and dst host $ENTRY)")

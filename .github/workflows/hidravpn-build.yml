@@ -74,7 +74,7 @@ jobs:
       - name: tools the suites use
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3
+          sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3 wireguard-tools
       - name: build the release binaries
         run: cargo build --release --manifest-path hidravpn/Cargo.toml --workspace
       # The suites give each namespace its own resolv.conf the way `ip netns
