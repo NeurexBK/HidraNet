@@ -25,26 +25,35 @@ struct SavedResolvConf {
     content: String,
 }
 
-/// The default route's gateway and interface, from `ip route`.
-fn default_route() -> Result<(String, String)> {
+/// The default route's gateway, if it has one, and its interface, from `ip
+/// route`.
+fn default_route() -> Result<(Option<String>, String)> {
     let out = run("ip", &["-4", "route", "show", "default"])?;
-    // "default via 10.0.0.1 dev eth0 proto dhcp metric 100"
     let line = out
         .lines()
         .next()
         .ok_or_else(|| anyhow!("this machine has no default route; is it online?"))?;
+    parse_default_route(line)
+}
+
+/// "default via 10.0.0.1 dev eth0 proto dhcp metric 100", or a link with no
+/// gateway at all ("default dev ppp0 scope link": a modem, a point-to-point
+/// link), where the node is reached on the interface itself.
+fn parse_default_route(line: &str) -> Result<(Option<String>, String)> {
     let words: Vec<&str> = line.split_whitespace().collect();
-    let via = words
-        .iter()
-        .position(|w| *w == "via")
-        .and_then(|i| words.get(i + 1));
-    let dev = words
-        .iter()
-        .position(|w| *w == "dev")
-        .and_then(|i| words.get(i + 1));
-    match (via, dev) {
-        (Some(v), Some(d)) => Ok((v.to_string(), d.to_string())),
-        _ => Err(anyhow!("could not read the default route: {line}")),
+    let after = |key: &str| {
+        words
+            .iter()
+            .position(|w| *w == key)
+            .and_then(|i| words.get(i + 1))
+            .map(|v| v.to_string())
+    };
+    match after("dev") {
+        Some(dev) => Ok((after("via"), dev)),
+        // Said without the line: it names the gateway's address.
+        None => Err(anyhow!(
+            "could not read the default route: it names no interface"
+        )),
     }
 }
 
@@ -81,16 +90,19 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
     save_plan(&plan)?;
 
     let (gw, dev) = default_route()?;
-    plan.gateway = Some(gw.clone());
+    plan.gateway = gw.clone();
     plan.gateway_if = Some(dev.clone());
 
     // The node stays reachable the ordinary way.
     if w.node_ip.is_ipv4() {
         let r = format!("{}/32", w.node_ip);
-        run(
-            "ip",
-            &["-4", "route", "replace", &r, "via", &gw, "dev", &dev],
-        )?;
+        match &gw {
+            Some(gw) => run(
+                "ip",
+                &["-4", "route", "replace", &r, "via", gw, "dev", &dev],
+            )?,
+            None => run("ip", &["-4", "route", "replace", &r, "dev", &dev])?,
+        };
         plan.routes_added.push(r);
         save_plan(&plan)?;
     }
@@ -270,5 +282,26 @@ pub fn recover_dns() {
         }
     } else {
         let _ = std::fs::remove_file(RESOLV_SAVED);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_default_route_with_or_without_a_gateway_is_read() {
+        assert_eq!(
+            parse_default_route("default via 10.0.0.1 dev eth0 proto dhcp metric 100").unwrap(),
+            (Some("10.0.0.1".into()), "eth0".into())
+        );
+        assert_eq!(
+            parse_default_route("default dev ppp0 scope link").unwrap(),
+            (None, "ppp0".into())
+        );
+        let e = parse_default_route("default via 10.0.0.1")
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("10.0.0.1"), "an error names no address: {e}");
     }
 }

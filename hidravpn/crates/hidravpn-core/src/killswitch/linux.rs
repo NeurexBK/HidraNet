@@ -117,8 +117,11 @@ fn ruleset(cfg: &KillConfig) -> String {
             format!("    iifname \"{iface}\" accept\n"),
         ),
     };
+    // The tunnel's own packets to the node come first: a node whose
+    // WireGuard port is 53 (to get past firewalls that allow DNS) must not
+    // fall to the DNS rules, which are about names, not about the tunnel.
     let output = format!(
-        "    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{node_out}{tunnel_out}{extra_out}{lan_out}"
+        "{node_out}    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{tunnel_out}{extra_out}{lan_out}"
     );
     let input = format!("{node_in}{tunnel_in}{extra_in}{lan_in}");
     table(&output, &input, "nothing leaves outside the tunnel")
@@ -178,13 +181,14 @@ fn nft(input: &str) -> Result<()> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .context("running nft (is nftables installed?)")?;
-    child
+    let written = child
         .stdin
         .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .context("writing the ruleset to nft")?;
+        .map(|mut stdin| stdin.write_all(input.as_bytes()))
+        .unwrap_or(Ok(()));
+    // Waited for in any case, so a failed write leaves no zombie behind.
     let out = child.wait_with_output()?;
+    written.context("writing the ruleset to nft")?;
     if !out.status.success() {
         return Err(anyhow!(
             "nft rejected the kill-switch ruleset: {}",
@@ -230,6 +234,11 @@ pub fn hold_admitting(
 ) -> Result<()> {
     if endpoints.is_empty() {
         return Err(anyhow!("a hold needs at least one node endpoint to allow"));
+    }
+    if let Some(b) = bridge {
+        if !interface_name_ok(&b.interface) {
+            return Err(anyhow!("not an interface name the kill switch accepts"));
+        }
     }
     nft(&replace_script(&admitting_ruleset(
         endpoints, direct, bridge,
@@ -362,6 +371,16 @@ mod tests {
         let r = ruleset(&cfg(false));
         assert!(r.contains("udp dport 53 ip daddr != 10.77.0.1 drop"));
         assert!(r.contains("tcp dport 53 ip daddr != 10.77.0.1 drop"));
+    }
+
+    #[test]
+    fn a_node_on_port_53_is_reached_before_the_dns_rules() {
+        let mut c = cfg(false);
+        c.node_endpoint = SocketAddr::from(([203, 0, 113, 10], 53));
+        let r = ruleset(&c);
+        let node = r.find("ip daddr 203.0.113.10 udp dport 53 accept").unwrap();
+        let dns = r.find("udp dport 53 ip daddr != 10.77.0.1 drop").unwrap();
+        assert!(node < dns, "{r}");
     }
 
     #[test]

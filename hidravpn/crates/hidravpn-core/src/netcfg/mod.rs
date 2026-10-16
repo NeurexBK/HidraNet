@@ -80,14 +80,45 @@ pub fn plan_path() -> PathBuf {
 pub fn save_plan(plan: &RevertPlan) -> Result<()> {
     let path = plan_path();
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     // Beside and renamed over: a crash mid-write must not leave a plan that
-    // cannot be read, and with it routes nobody undoes.
+    // cannot be read, and with it routes nobody undoes. Root's only: it
+    // names the node's address and this machine's gateway.
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(plan)?)
+    let _ = std::fs::remove_file(&tmp);
+    write_private(&tmp, &serde_json::to_vec_pretty(plan)?)
         .and_then(|()| std::fs::rename(&tmp, &path))
         .with_context(|| format!("writing {}", path.display()))
+}
+
+/// The plan's folder, made as the service's unit makes it (no access for
+/// other accounts) when the command line gets there first.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o750)
+            .create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)?.write_all(bytes)
 }
 
 pub fn load_plan() -> Result<Option<RevertPlan>> {

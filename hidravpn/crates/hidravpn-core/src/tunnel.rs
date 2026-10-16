@@ -208,7 +208,9 @@ async fn tun_to_network(
             match t.encapsulate(&pkt[..n], &mut out) {
                 TunnResult::WriteToNetwork(p) => Some(p.len()),
                 // No session yet: the packet is queued inside Tunn and a
-                // handshake goes out; the timer task flushes the queue.
+                // handshake goes out; the queue is sent once the node's
+                // answer completes it (the `decapsulate(None, ..)` loop in
+                // the receiving task).
                 TunnResult::Done => None,
                 TunnResult::Err(_) => None,
                 _ => None,
@@ -284,8 +286,9 @@ fn passing(e: &std::io::Error) -> bool {
     )
 }
 
-/// WireGuard's timers: handshake retries, keepalives, rekeying and the
-/// flush of packets queued before a session existed.
+/// WireGuard's timers: handshake retries, keepalives and rekeying. (Packets
+/// queued before a session existed are sent by the receiving task, when the
+/// handshake completes.)
 async fn drive_timers(tunn: Arc<Mutex<Tunn>>, sock: Arc<UdpSocket>) -> Result<()> {
     let mut out = vec![0u8; BUF];
     let mut tick = tokio::time::interval(Duration::from_millis(250));

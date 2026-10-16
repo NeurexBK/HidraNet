@@ -307,13 +307,21 @@ fn checked_invite(record: &NodeRecord, answer: &str) -> Result<Invite> {
     invite.admission_port = record.admission_port;
     invite.features = record.features.clone();
     invite.pass = None;
+    // Only this client says a key was derived behind an entry (an exit
+    // admitted by hand); a node that set it would take itself out of
+    // one-hop picks.
+    invite.behind = false;
     Ok(invite)
 }
 
+/// What a node said when it refused, as text fit for a terminal: at most
+/// 200 characters, and none that would steer it (escape sequences, other
+/// control characters).
 fn refusal_text(body: &str) -> String {
-    serde_json::from_str::<Refusal>(body)
+    let text = serde_json::from_str::<Refusal>(body)
         .map(|r| r.error)
-        .unwrap_or_else(|_| body.trim().chars().take(200).collect())
+        .unwrap_or_else(|_| body.trim().to_string());
+    text.chars().filter(|c| !c.is_control()).take(200).collect()
 }
 
 async fn http_call(
@@ -441,6 +449,15 @@ pub fn refusal_wanting_work(bits: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_reaches_the_terminal_without_control_characters() {
+        let t = refusal_text("{\"error\":\"no\\u001b[2J\\u0007 room\"}");
+        assert_eq!(t, "no[2J room");
+        let t = refusal_text(&format!("plain\u{1b}]0;title\u{7}{}", "x".repeat(500)));
+        assert!(!t.chars().any(|c| c.is_control()));
+        assert_eq!(t.chars().count(), 200);
+    }
 
     #[test]
     fn work_is_bound_to_the_node_the_key_and_the_minute() {

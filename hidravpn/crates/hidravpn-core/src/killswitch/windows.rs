@@ -28,9 +28,9 @@ use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmEngineClose0, FwpmEngineOpen0, FwpmFilterAdd0, FwpmFilterDeleteByKey0, FwpmProviderAdd0,
     FwpmProviderDeleteByKey0, FwpmSubLayerAdd0, FwpmSubLayerDeleteByKey0, FwpmTransactionAbort0,
     FwpmTransactionBegin0, FwpmTransactionCommit0, FWPM_ACTION0, FWPM_ACTION0_0,
-    FWPM_CONDITION_FLAGS, FWPM_CONDITION_IP_LOCAL_INTERFACE, FWPM_CONDITION_IP_PROTOCOL,
-    FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT, FWPM_DISPLAY_DATA0,
-    FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+    FWPM_CONDITION_FLAGS, FWPM_CONDITION_IP_LOCAL_INTERFACE, FWPM_CONDITION_IP_LOCAL_PORT,
+    FWPM_CONDITION_IP_PROTOCOL, FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT,
+    FWPM_DISPLAY_DATA0, FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4,
     FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_PROVIDER0, FWPM_SUBLAYER0, FWP_ACTION_BLOCK,
     FWP_ACTION_PERMIT, FWP_CONDITION_FLAG_IS_LOOPBACK,
 };
@@ -39,7 +39,7 @@ use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FWP_VALUE0, FWP_VALUE0_0,
 };
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
-    FWP_UINT16, FWP_UINT32, FWP_UINT64, FWP_UINT8,
+    FWP_UINT16, FWP_UINT32, FWP_UINT64, FWP_UINT8, FWP_V4_ADDR_AND_MASK, FWP_V4_ADDR_MASK,
 };
 use windows::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
 
@@ -80,7 +80,29 @@ const F_DIRECT_TCP_V4: [GUID; 2] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0007_0002),
 ];
 
-const ALL_FILTER_KEYS: [GUID; 15] = [
+/// "Allow LAN": the private ranges, as on Linux (`LAN_V4`).
+const F_LAN_V4: [GUID; 4] = [
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0008_0001),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0008_0002),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0008_0003),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0008_0004),
+];
+/// …but never DNS to them: names go to the node, LAN or not.
+const F_LAN_DNS_V4: [GUID; 4] = [
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0001),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0002),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0003),
+    GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0004),
+];
+/// The private ranges "Allow LAN" opens: address and mask, host order.
+const LAN_V4: [(u32, u32); 4] = [
+    (0x0A00_0000, 0xFF00_0000), // 10.0.0.0/8
+    (0xAC10_0000, 0xFFF0_0000), // 172.16.0.0/12
+    (0xC0A8_0000, 0xFFFF_0000), // 192.168.0.0/16
+    (0xA9FE_0000, 0xFFFF_0000), // 169.254.0.0/16
+];
+
+const ALL_FILTER_KEYS: [GUID; 23] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
@@ -96,6 +118,14 @@ const ALL_FILTER_KEYS: [GUID; 15] = [
     F_PEERED_V4[1],
     F_DIRECT_TCP_V4[0],
     F_DIRECT_TCP_V4[1],
+    F_LAN_V4[0],
+    F_LAN_V4[1],
+    F_LAN_V4[2],
+    F_LAN_V4[3],
+    F_LAN_DNS_V4[0],
+    F_LAN_DNS_V4[1],
+    F_LAN_DNS_V4[2],
+    F_LAN_DNS_V4[3],
 ];
 
 fn ok(code: u32) -> Result<()> {
@@ -159,6 +189,8 @@ struct Allow<'a> {
     peered: &'a [(&'a str, u8, SocketAddr)],
     /// TCP destinations off-tunnel: a first hop's admission port.
     direct_tcp: &'a [SocketAddr],
+    /// "Allow LAN": the private ranges off-tunnel, never their DNS.
+    lan: bool,
 }
 
 /// An IPv4 endpoint in the host order WFP wants for UINT32.
@@ -374,7 +406,42 @@ fn install(allow: &Allow<'_>) -> Result<()> {
             )?;
         }
 
-        // DHCP so the physical link can keep its address.
+        // "Allow LAN": the private ranges off-tunnel, at a weight below
+        // every tunnel and node permit; and above it, a block of DNS to
+        // those ranges, so a router's resolver is never asked. DNS inside
+        // the tunnel is permitted earlier, by its interface.
+        if allow.lan {
+            for (i, (addr, mask)) in LAN_V4.iter().enumerate() {
+                add_filter(
+                    engine,
+                    &Filter {
+                        key: F_LAN_DNS_V4[i],
+                        name: "no DNS to the local network",
+                        layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                        weight: 9,
+                        block: true,
+                        conditions: &[Cond::RemoteSubnetV4(*addr, *mask), Cond::RemotePort(53)],
+                    },
+                )?;
+                add_filter(
+                    engine,
+                    &Filter {
+                        key: F_LAN_V4[i],
+                        name: "allow the local network",
+                        layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+                        weight: 8,
+                        block: false,
+                        conditions: &[Cond::RemoteSubnetV4(*addr, *mask)],
+                    },
+                )?;
+            }
+        }
+
+        // DHCP so the physical link can keep its address: from the client
+        // port to the server port, broadcast only, as the official client
+        // allows it. Any UDP to port 67 would have let a program reach a
+        // host of its choosing off the tunnel, from the machine's own
+        // address; a broadcast stays on the local link.
         add_filter(
             engine,
             &Filter {
@@ -383,7 +450,12 @@ fn install(allow: &Allow<'_>) -> Result<()> {
                 layer: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
                 weight: 10,
                 block: false,
-                conditions: &[Cond::Protocol(IPPROTO_UDP), Cond::RemotePort(67)],
+                conditions: &[
+                    Cond::Protocol(IPPROTO_UDP),
+                    Cond::LocalPort(68),
+                    Cond::RemotePort(67),
+                    Cond::RemoteAddrV4(u32::MAX),
+                ],
             },
         )?;
 
@@ -415,6 +487,7 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
         nodes: &[cfg.node_endpoint],
         peered: &peered,
         direct_tcp: &[],
+        lan: cfg.allow_lan,
     })
 }
 
@@ -438,6 +511,7 @@ pub fn hold_admitting(
         nodes: endpoints,
         peered: &peered,
         direct_tcp: direct,
+        lan: false,
     })
 }
 
@@ -452,6 +526,7 @@ pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
         nodes: endpoints,
         peered: &[],
         direct_tcp: &[],
+        lan: false,
     })
 }
 
@@ -476,9 +551,8 @@ pub fn remove() -> Result<()> {
 }
 
 pub fn is_active() -> bool {
-    // The sublayer exists only while the kill switch is on. Opening the engine
-    // and trying to read it is enough; we keep it simple and just report
-    // whether the engine opens and our block filter can be looked up.
+    // The sublayer exists only while the kill switch is on: looking it up is
+    // enough.
     match open_engine() {
         Ok(engine) => {
             let mut present = false;
@@ -508,6 +582,9 @@ enum Cond {
     Protocol(u8),
     RemoteAddrV4(u32),
     RemotePort(u16),
+    LocalPort(u16),
+    /// An address and a mask, host order.
+    RemoteSubnetV4(u32, u32),
 }
 
 struct Filter<'a> {
@@ -520,11 +597,13 @@ struct Filter<'a> {
 }
 
 fn add_filter(engine: HANDLE, f: &Filter) -> Result<()> {
-    // Backing storage that must outlive the FwpmFilterAdd0 call.
+    // Backing storage that must outlive the FwpmFilterAdd0 call. Its
+    // capacity is set once, so the pointers into it stay where they are.
     let mut luid_store: u64 = 0;
+    let mut masks: Vec<FWP_V4_ADDR_AND_MASK> = Vec::with_capacity(f.conditions.len());
     let mut conds: Vec<FWPM_FILTER_CONDITION0> = Vec::with_capacity(f.conditions.len());
     for c in f.conditions {
-        conds.push(build_condition(c, &mut luid_store));
+        conds.push(build_condition(c, &mut luid_store, &mut masks));
     }
 
     let mut name = wide(f.name);
@@ -557,7 +636,11 @@ fn add_filter(engine: HANDLE, f: &Filter) -> Result<()> {
     ok(unsafe { FwpmFilterAdd0(engine, &filter, None, None) })
 }
 
-fn build_condition(c: &Cond, luid_store: &mut u64) -> FWPM_FILTER_CONDITION0 {
+fn build_condition(
+    c: &Cond,
+    luid_store: &mut u64,
+    masks: &mut Vec<FWP_V4_ADDR_AND_MASK>,
+) -> FWPM_FILTER_CONDITION0 {
     match c {
         Cond::LoopbackFlag => FWPM_FILTER_CONDITION0 {
             fieldKey: FWPM_CONDITION_FLAGS,
@@ -600,6 +683,30 @@ fn build_condition(c: &Cond, luid_store: &mut u64) -> FWPM_FILTER_CONDITION0 {
         },
         Cond::RemotePort(p) => FWPM_FILTER_CONDITION0 {
             fieldKey: FWPM_CONDITION_IP_REMOTE_PORT,
+            matchType: FWP_MATCH_EQUAL,
+            conditionValue: FWP_CONDITION_VALUE0 {
+                r#type: FWP_UINT16,
+                Anonymous: FWP_CONDITION_VALUE0_0 { uint16: *p },
+            },
+        },
+        Cond::RemoteSubnetV4(addr, mask) => {
+            debug_assert!(masks.len() < masks.capacity(), "pointers must not move");
+            masks.push(FWP_V4_ADDR_AND_MASK {
+                addr: *addr,
+                mask: *mask,
+            });
+            let last = masks.last_mut().expect("just pushed") as *mut FWP_V4_ADDR_AND_MASK;
+            FWPM_FILTER_CONDITION0 {
+                fieldKey: FWPM_CONDITION_IP_REMOTE_ADDRESS,
+                matchType: FWP_MATCH_EQUAL,
+                conditionValue: FWP_CONDITION_VALUE0 {
+                    r#type: FWP_V4_ADDR_MASK,
+                    Anonymous: FWP_CONDITION_VALUE0_0 { v4AddrMask: last },
+                },
+            }
+        }
+        Cond::LocalPort(p) => FWPM_FILTER_CONDITION0 {
+            fieldKey: FWPM_CONDITION_IP_LOCAL_PORT,
             matchType: FWP_MATCH_EQUAL,
             conditionValue: FWP_CONDITION_VALUE0 {
                 r#type: FWP_UINT16,

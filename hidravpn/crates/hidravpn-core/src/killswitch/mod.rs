@@ -6,8 +6,14 @@
 //!
 //! Two leaks the ordinary routing of phase 1 could still allow are closed here:
 //! IPv6 (blocked outright, since the tunnel carries only IPv4 in this phase)
-//! and DNS (allowed only to the node's own resolver, never to any other server
-//! the system might still be configured to ask).
+//! and DNS (never off the tunnel: on Linux allowed only to the node's own
+//! resolver; on Windows any resolver, but only through the tunnel, which
+//! carries it to the exit).
+//!
+//! On Windows the rules apply to connections this machine opens
+//! (`ALE_AUTH_CONNECT`). A program listening for connections from the local
+//! network can still answer one off the tunnel; whoever connected already
+//! knows this machine's address. Linux drops those too.
 //!
 //! Like the rest of the client's network changes, this touches only a table of
 //! our own, so removing it removes everything and nothing else on the machine

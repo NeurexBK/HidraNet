@@ -190,9 +190,11 @@ impl CircuitSpec {
                     "the entry and the exit are the same node (same key); two hops need two different nodes"
                 ));
             }
-            if entry.endpoint_addr()? == self.exit.endpoint_addr()? {
+            // The same address on two ports is one machine: its route would
+            // go into the outer tunnel, and nothing would pass.
+            if entry.endpoint_ip()? == self.exit.endpoint_ip()? {
                 return Err(anyhow!(
-                    "the entry and the exit have the same endpoint; two hops need two different nodes"
+                    "the entry and the exit are at the same address; two hops need two different machines"
                 ));
             }
         }
@@ -271,7 +273,8 @@ struct Hop {
     invite: Invite,
     interface: String,
     tunnel: Arc<Tunnel>,
-    runner: JoinHandle<()>,
+    /// Taken by `stop`, which waits for it.
+    runner: Option<JoinHandle<()>>,
 }
 
 impl Hop {
@@ -287,10 +290,24 @@ impl Hop {
 
     /// Asks the tunnel to stop and waits until its tasks have let go of the
     /// interface, so that dropping the hop really removes it.
-    async fn stop(self) {
+    async fn stop(mut self) {
         self.tunnel.stop();
-        let _ = self.runner.await;
-        drop(self.tunnel);
+        if let Some(runner) = self.runner.take() {
+            let _ = runner.await;
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.runner.as_ref().is_none_or(|r| r.is_finished())
+    }
+}
+
+/// A hop dropped without `stop` (an error or a panic on the way, or a
+/// future given up) still tells its tunnel to stop: otherwise the runner,
+/// which holds its own reference, would keep the interface for good.
+impl Drop for Hop {
+    fn drop(&mut self) {
+        self.tunnel.stop();
     }
 }
 
@@ -417,7 +434,7 @@ impl Circuit {
                 invite: entry.clone(),
                 interface: ifname,
                 tunnel,
-                runner,
+                runner: Some(runner),
             });
         }
 
@@ -499,6 +516,11 @@ impl Circuit {
             })
             .context("could not arm the kill switch; connection refused")?;
             steps.kill_switch = true;
+        } else {
+            // Asked to run without one (`--no-kill-switch`): a hold left by
+            // the admission through the entry, or by a rotation, would keep
+            // dropping this circuit's own packets.
+            killswitch::remove().context("lifting the hold the admission left")?;
         }
 
         // 6. Only now the inner tunnel runs and shakes hands.
@@ -508,7 +530,7 @@ impl Circuit {
             invite: spec.exit.clone(),
             interface: inner_ifname,
             tunnel,
-            runner,
+            runner: Some(runner),
         });
         Ok(())
     }
@@ -550,12 +572,7 @@ impl Circuit {
 
     /// Whether some tunnel task has died, so the caller can give up.
     pub fn is_finished(&self) -> bool {
-        self.inner.runner.is_finished()
-            || self
-                .outer
-                .as_ref()
-                .map(|o| o.runner.is_finished())
-                .unwrap_or(false)
+        self.inner.finished() || self.outer.as_ref().map(|o| o.finished()).unwrap_or(false)
     }
 
     /// Takes the circuit down in reverse: the kill switch, the routes and
@@ -1004,7 +1021,7 @@ async fn bridge_to(
         invite: entry.clone(),
         interface: ifname,
         tunnel,
-        runner,
+        runner: Some(runner),
     };
     Ok((hop, admission))
 }
@@ -1168,7 +1185,23 @@ mod tests {
             entry_key: None,
         };
         let err = same_endpoint.validate().unwrap_err().to_string();
-        assert!(err.contains("same endpoint"), "{err}");
+        assert!(err.contains("same address"), "{err}");
+
+        // The same address on another port is still one machine.
+        let mut other_port = exit.clone();
+        other_port.node_public_key = ClientKey::generate().unwrap().public_base64();
+        let ip = exit.endpoint_ip().unwrap();
+        other_port.endpoint = format!("{ip}:51900");
+        let err = CircuitSpec {
+            entry: Some(other_port),
+            exit: exit.clone(),
+            exit_key: None,
+            entry_key: None,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("same address"), "{err}");
     }
 
     #[test]

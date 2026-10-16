@@ -562,10 +562,11 @@ fn stand_in(r: &NodeRecord) -> Invite {
 }
 
 /// Two invites name the same node when they carry the same key or the same
-/// endpoint — the same test `CircuitSpec::validate` makes.
+/// endpoint address (whatever the port: one machine) — the same test
+/// `CircuitSpec::validate` makes.
 pub fn same_node(a: &Invite, b: &Invite) -> bool {
     a.node_public_key.trim() == b.node_public_key.trim()
-        || matches!((a.endpoint_addr(), b.endpoint_addr()), (Ok(x), Ok(y)) if x == y)
+        || matches!((a.endpoint_ip(), b.endpoint_ip()), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Whether two invites name the same operator: `Some(true)` or `Some(false)`
@@ -830,7 +831,7 @@ mod tests {
             .unwrap();
         let mut json: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
         // An invite written by hand, before the resolver had to be the node.
-        json["exits"][0]["dns"] = "1.1.1.1".into();
+        json["exits"][0]["dns"] = "198.51.100.53".into();
         let again = Pocket::from_json(&json.to_string()).unwrap();
         assert_eq!(again.exits.len(), 1, "the pocket still reads");
         let e = crate::circuit::CircuitSpec::new(again.exits[0].clone(), None)

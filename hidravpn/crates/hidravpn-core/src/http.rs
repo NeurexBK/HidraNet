@@ -84,10 +84,15 @@ impl Url {
         })
     }
 
-    /// The same host and port, another path.
+    /// The same host and port, with `path` under the URL's own path: an
+    /// issuer at "https://example.org/passes/" is asked at "/passes/issue".
     pub fn with_path(&self, path: &str) -> Url {
         let mut u = self.clone();
-        u.path = path.to_string();
+        u.path = format!(
+            "{}/{}",
+            self.path.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
         u
     }
 
@@ -260,7 +265,9 @@ fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>> {
         if size == 0 {
             return Ok(out);
         }
-        if after.len() < size + 2 {
+        // The size comes from the other end: compared without adding to it,
+        // so a size near usize::MAX is refused, not wrapped or overflowed.
+        if size > after.len() || after.len() - size < 2 {
             return Err(anyhow!("a chunked answer ends mid-chunk"));
         }
         out.extend_from_slice(&after[..size]);
@@ -283,6 +290,9 @@ mod tests {
         );
         let u = Url::parse("https://passes.example.org:8443").unwrap();
         assert_eq!((u.port, u.path.as_str()), (8443, "/"));
+        assert_eq!(u.with_path("/issue").path, "/issue");
+        let under = Url::parse("https://example.org/passes/").unwrap();
+        assert_eq!(under.with_path("/issue").path, "/passes/issue");
         let u = Url::parse("http://10.201.0.2:8080/x").unwrap();
         assert_eq!((u.https, u.port), (false, 8080));
         Url::parse("http://127.0.0.1/").unwrap();
@@ -326,6 +336,13 @@ mod tests {
         .unwrap();
         assert_eq!(b, "\"é\"");
         assert!(parse_response(&vec![b'a'; MAX_ANSWER]).is_err());
+        // A chunk size the far end cannot mean: refused, never a panic.
+        for size in ["ffffffffffffffff", "fffffffffffffffe", "10000000000000000"] {
+            let raw = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{size}\r\nab\r\n0\r\n\r\n"
+            );
+            assert!(parse_response(raw.as_bytes()).is_err(), "{size}");
+        }
     }
 
     #[test]
