@@ -205,9 +205,9 @@ now_exit() { svc '{"cmd":"status"}' | python3 -I -c "import json,sys; print(json
 # Each rotation takes the old circuit down and holds the kill switch to the
 # next node's own ports while its next pass is redeemed: the node sees this
 # machine's address, as it does in any case as the only hop.
-rotate() { svc '{"cmd":"new_identity"}'; for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done; }
+rotate() { svc '{"cmd":"new_identity"}'; for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done; }
 [ "$(now_exit)" = node-q ] && rotate > /dev/null
-NOW=$(now_exit); OTHER=node-q
+OTHER=node-q
 # node-q's key from its join was never used: a rotation to it uses that key
 # and spends no pass. Back to node-p and to node-q again: now node-q's key
 # has carried a circuit, so the next pass is redeemed.
@@ -297,7 +297,7 @@ sed -i 's/^interface = "hvpn0"/interface = "hvf0"/' "$WORK/f.toml"
 $F "$BIN/hidravpn-node" --config "$WORK/f.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-f" "$WORK/f"
 $F env HIDRAVPN_RUN_DIR="$WORK/run-f" "$BIN/hidravpn-node" --config "$WORK/f.toml" run > "$WORK/node-f.log" 2>&1 & PIDS+=($!)
-for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node-f.log" && grep -q "admission service on" "$WORK/node-f.log" && break; sleep 0.2; done
+for _ in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node-f.log" && grep -q "admission service on" "$WORK/node-f.log" && break; sleep 0.2; done
 $F "$BIN/hidravpn-node" --config "$WORK/f.toml" record > "$WORK/rec-f.json" 2>/dev/null
 HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes4.json" --sequence 4 \
   --issuer-url http://10.200.0.1:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec-f.json" "$WORK/rec-q.json" > /dev/null 2>&1

@@ -199,7 +199,7 @@ if (-not (Test-Path $ExePath)) {
     Log 'no downloaded hidravpn.exe with the expected hash in Downloads, Desktop or Documents'
     Log "building it on the node instead: ssh $SshUser@$Server (the MinGW cross toolchain is installed there once; a few minutes)"
     $remote = "set -e; cd '$ServerSource' || { echo 'no source checkout at $ServerSource' >&2; exit 2; }; " +
-              'git fetch -q origin feature/hidravpn && git checkout -q feature/hidravpn && git merge -q --ff-only origin/feature/hidravpn; ' +
+              'git fetch -q origin main && git checkout -q main && git merge -q --ff-only origin/main; ' +
               "bash hidravpn/scripts/build-windows-client.sh '$ServerSource'"
     & ssh.exe -o ConnectTimeout=20 "$SshUser@$Server" $remote
     if ($LASTEXITCODE -ne 0) { Fail-Now "the build on the node failed (exit $LASTEXITCODE); see above" }

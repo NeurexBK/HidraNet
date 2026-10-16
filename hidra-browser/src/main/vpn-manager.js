@@ -71,8 +71,9 @@ class VpnManager {
     // Commands that wait on the network (an admission, a pass redeemed, the
     // issuer, a circuit built): eight seconds would give up while the
     // service is still working, and the page would say it did not answer
-    // while the machine was being routed.
-    this.slowTimeoutMs = options.slowTimeoutMs || options.timeoutMs || 120000;
+    // while the machine was being routed. A shorter timeoutMs never
+    // shortens this one.
+    this.slowTimeoutMs = options.slowTimeoutMs || Math.max(this.timeoutMs, 120000);
     // Injected by tests to stand in for the file system and the socket.
     this._fs = options.fs || fs;
     this._net = options.net || net;

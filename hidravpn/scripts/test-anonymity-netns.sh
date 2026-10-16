@@ -475,7 +475,7 @@ echo "── F. the logs"
 kill -9 $(pgrep -f "x2.toml run") 2>/dev/null
 svc '{"cmd":"connect","mode":"privado","allow_same_operator":true}' > /dev/null
 svc '{"cmd":"down"}' > /dev/null
-kill -INT $SVC; for i in $(seq 1 25); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done; SVC=""
+kill -INT $SVC; for _ in $(seq 1 25); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done; SVC=""
 for p in "${PIDS[@]}"; do kill -INT "$p" 2>/dev/null; done; sleep 1
 LOGS=("$WORK/e.log" "$WORK/x.log" "$WORK/x2.log" "$WORK/svc.log")
 [ "$(cat "${LOGS[@]}" | wc -l)" -gt 20 ] && pass "every node and the service ran with RUST_LOG=debug, failures included ($(cat "${LOGS[@]}" | wc -l) log lines)" || fail "the logs are nearly empty"

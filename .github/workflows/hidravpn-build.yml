@@ -17,10 +17,14 @@ on:
     tags: ['hidravpn-v*']
     paths:
       - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
       - '.github/workflows/hidravpn-build.yml'
   pull_request:
     paths:
       - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
       - '.github/workflows/hidravpn-build.yml'
   workflow_dispatch:
 
@@ -33,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -64,6 +70,8 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -115,6 +123,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -129,6 +139,8 @@ jobs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
@@ -162,7 +174,11 @@ jobs:
     name: sign with SignPath
     needs: build-windows
     # Off until the SignPath Foundation project is approved and configured.
-    if: ${{ vars.SIGNPATH_ENABLED == 'true' }}
+    # Only main and release tags are signed (a push, or Run workflow on
+    # them): a pull request or a side branch never spends a signing request.
+    if: >-
+      ${{ vars.SIGNPATH_ENABLED == 'true' && github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/hidravpn-v')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,7 +205,7 @@ jobs:
 
   release-windows:
     name: Windows release (hidravpn-v* tag, signed builds only)
-    needs: [check, sign-windows]
+    needs: [check, netns, windows-tests, sign-windows]
     # Only a tag makes a release, and only a signed build is ever released:
     # an unsigned HidraVPN must never reach a download page.
     if: ${{ startsWith(github.ref, 'refs/tags/hidravpn-v') && vars.SIGNPATH_ENABLED == 'true' }}
@@ -201,9 +217,12 @@ jobs:
       # SHA-256 of the official wintun-0.14.1.zip from wintun.net. The
       # repository variable WINTUN_SHA256 overrides it. A mismatch fails the
       # release rather than ship a wrong driver.
+      WINTUN_SHA256: ${{ vars.WINTUN_SHA256 }}
       WINTUN_SHA256_DEFAULT: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: hidravpn-windows-signed
@@ -211,7 +230,7 @@ jobs:
       - name: fetch and verify wintun.dll (the WireGuard LLC-signed driver)
         run: |
           set -euo pipefail
-          want="${{ vars.WINTUN_SHA256 }}"; want="${want:-$WINTUN_SHA256_DEFAULT}"
+          want="${WINTUN_SHA256:-$WINTUN_SHA256_DEFAULT}"
           curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
           got=$(sha256sum wintun.zip | cut -d' ' -f1)
           if [ "$got" != "$want" ]; then

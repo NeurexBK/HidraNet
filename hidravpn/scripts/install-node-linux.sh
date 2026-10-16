@@ -5,7 +5,7 @@
 #
 # Options:
 #   --endpoint IP:PORT    the address clients will reach this node at (required)
-#   --name NAME           what clients see this node called (default: the hostname)
+#   --name NAME           what clients see this node called (default: node-<random>, never the hostname)
 #   --dns URL ...         resolvers for DNS-over-HTTPS (default: the node's own list)
 #   --out-interface IF    the interface traffic leaves by (default: the default route's)
 #   --role ROLE           entry, exit or both (default both): what this node lets itself be
@@ -110,20 +110,28 @@ if [ -z "$OUT_IF" ]; then
   [ -n "$OUT_IF" ] || OUT_IF="eth0"
 fi
 
-# cargo may live in a user's ~/.cargo when invoked under sudo.
-if [ -n "${SUDO_USER:-}" ] && [ -f "/home/$SUDO_USER/.cargo/env" ]; then
-  # shellcheck disable=SC1090,SC1091
-  . "/home/$SUDO_USER/.cargo/env"
-fi
-
 if [ ! -x "$BIN/hidravpn-node" ]; then
-  if ! command -v cargo >/dev/null; then
+  # Built as the person who ran sudo, with their own Rust, never as root
+  # with their ~/.cargo/env: that would leave target/ owned by root in their
+  # checkout. Logged in as root (no sudo), root's own cargo builds it.
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    # shellcheck disable=SC2016 # the inner script expands its own $HOME and $1
+    BUILD=(sudo -u "$SUDO_USER" -H bash -c '{ [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"; true; } && command -v cargo >/dev/null && cargo build --release --manifest-path "$1/Cargo.toml" -p hidravpn-node' _ "$ROOT")
+    WHO="$SUDO_USER"
+  elif command -v cargo >/dev/null; then
+    BUILD=(cargo build --release --manifest-path "$ROOT/Cargo.toml" -p hidravpn-node)
+    WHO=root
+  else
+    BUILD=()
+  fi
+  if [ ${#BUILD[@]} -eq 0 ]; then
     echo "hidravpn-node is not built and cargo is not installed." >&2
     echo "Either install Rust (https://rustup.rs) or build elsewhere and copy hidravpn-node into $BIN, then run this again." >&2
     [ "$DRY" = 1 ] || exit 1
+  else
+    step "building the node as $WHO (a few minutes; or build on another machine and copy hidravpn-node into $BIN)"
+    run "${BUILD[@]}" || { echo "building hidravpn-node failed (is Rust installed for $WHO?)" >&2; exit 1; }
   fi
-  step "building the node (a few minutes; as root, from this checkout — build on another machine and copy the binary in if that is not what you want)"
-  run cargo build --release --manifest-path "$ROOT/Cargo.toml" -p hidravpn-node
 fi
 
 step "installing the binary to $PREFIX/hidravpn-node"

@@ -51,8 +51,9 @@ configuration only — no code changes.
      `SIGNPATH_POLICY_SLUG`, `SIGNPATH_ARTIFACT_SLUG` = the values from step 1.
    - *Variables*: `SIGNPATH_ENABLED` = `true`. This is the switch.
 3. **Prove it signs**: *Actions → HidraVPN build → Run workflow* (on
-   `feature/hidravpn`). The `sign with SignPath` job must now run (it was
-   skipped before) and leave a `hidravpn-windows-signed` artifact. Download
+   `main`; only `main` and `hidravpn-v*` tags are ever signed, never a pull
+   request or another branch). The `sign with SignPath` job must now run (it
+   was skipped before) and leave a `hidravpn-windows-signed` artifact. Download
    it on a Windows machine and check one file:
    `Get-AuthenticodeSignature .\hidravpn.exe` → *Status: Valid*, signer
    SignPath Foundation / HidraNet.
@@ -67,10 +68,11 @@ the release jobs are skipped, so nothing breaks in the meantime.
 
 A release is made by a **git tag** of the form `hidravpn-vX.Y.Z`; nothing else
 publishes anything, and an unsigned build is never released (the release job
-only runs when `SIGNPATH_ENABLED` is `true` and only after signing succeeded).
+only runs when `SIGNPATH_ENABLED` is `true`, and only after the checks, every
+namespace suite, the Windows unit tests and signing have succeeded).
 
 ```
-git checkout feature/hidravpn && git pull
+git checkout main && git pull
 git tag -a hidravpn-v0.3.0 -m "HidraVPN 0.3.0"
 git push origin hidravpn-v0.3.0
 ```

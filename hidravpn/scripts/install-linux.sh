@@ -5,8 +5,8 @@
 #
 # It builds the release binaries if they are not already built, installs them
 # to /usr/local/bin, installs and starts the systemd service, makes this
-# machine's key if there is none, and prints the public key to give the node's
-# administrator. It touches only HidraVPN; nothing else on the machine changes.
+# machine's key if there is none, and says how to get admitted on a node. It
+# touches only HidraVPN; nothing else on the machine changes.
 #
 # Uninstall with:  sudo hidravpn-service uninstall
 set -euo pipefail
@@ -74,8 +74,14 @@ cat <<EOF
 ────────────────────────────────────────────────────────────────────────
 HidraVPN is installed and the service is running.
 
+Nodes from the signed list that admit openly need no administrator:
+
+  sudo hidravpn nodes import <signed list>   the nodes to start with
+  sudo hidravpn nodes join --all             ask each open node for admission
+  sudo hidravpn up --rapido                  connect (or --privado for two hops)
+
 Every node is shown a different key, derived from this machine's one master
-key. To be admitted on a node:
+key. To be admitted on a node by its administrator instead:
 
   1. the node's administrator runs   hidravpn-node pubkey   and sends you the key
   2. you run                         hidravpn pubkey --node <that key>

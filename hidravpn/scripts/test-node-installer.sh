@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The one-command node installer, without installing anything: its syntax,
-# shellcheck when available, every step it would take in --dry-run, and the
+# a shellcheck pass when available, every step it would take in --dry-run, and the
 # ways it must refuse (no endpoint, a bad endpoint, not root).
 #
 #   bash hidravpn/scripts/test-node-installer.sh

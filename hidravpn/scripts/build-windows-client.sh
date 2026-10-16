@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Builds the Windows client (hidravpn.exe) on a Linux machine that already
-# builds the node — typically the node itself — so that a Windows test
-# machine can fetch it with scp instead of trusting a download.
+# Builds the Windows client and service (hidravpn.exe, hidravpn-service.exe)
+# on a Linux machine that already builds the node — typically the node
+# itself — so that a Windows test machine can fetch them with scp instead of
+# trusting a download.
 #
 #   bash hidravpn/scripts/build-windows-client.sh [SOURCE_DIR] [OUT_DIR]
 #
 # SOURCE_DIR is a checkout of the repository (default /opt/hidranet-src); it
-# is fast-forwarded to origin/feature/hidravpn first. OUT_DIR (default
-# /root/hidravpn-win) receives hidravpn.exe and its SHA-256. Needs root for
-# the one-time install of the MinGW cross toolchain.
+# is fast-forwarded to origin/main first (HIDRAVPN_BRANCH picks another
+# branch). OUT_DIR (default /root/hidravpn-win) receives both executables
+# and prints their SHA-256. Needs root for the one-time install of the MinGW
+# cross toolchain.
 set -euo pipefail
 
 SRC="${1:-/opt/hidranet-src}"
 OUT="${2:-/root/hidravpn-win}"
-BRANCH="${HIDRAVPN_BRANCH:-feature/hidravpn}"
+BRANCH="${HIDRAVPN_BRANCH:-main}"
 TARGET=x86_64-pc-windows-gnu
 
 say() { printf '>> %s\n' "$*" >&2; }
@@ -42,7 +44,7 @@ say "updating $SRC to origin/$BRANCH"
 git -C "$SRC" fetch -q origin "$BRANCH"
 git -C "$SRC" checkout -q "$BRANCH"
 git -C "$SRC" merge -q --ff-only "origin/$BRANCH"
-say "building hidravpn.exe from $(git -C "$SRC" rev-parse --short HEAD) (a few minutes the first time)"
+say "building hidravpn.exe and hidravpn-service.exe from $(git -C "$SRC" rev-parse --short HEAD) (a few minutes the first time)"
 cargo build --release --manifest-path "$SRC/hidravpn/Cargo.toml" --target "$TARGET" -p hidravpn -p hidravpn-service
 
 mkdir -p "$OUT"

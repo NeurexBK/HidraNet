@@ -115,7 +115,7 @@ PY
 }
 count() { svc '{"cmd":"nodes"}' | grep -o '"passes":[0-9]*' | head -1 | cut -d: -f2; }
 wait_count() { for i in $(seq 1 "$2"); do [ "$(count)" = "$1" ] && return 0; sleep 1; done; return 1; }
-connected() { for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && return 0; sleep 0.4; done; return 1; }
+connected() { for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && return 0; sleep 0.4; done; return 1; }
 
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); echo "$R" | grep -q '"ok":true' && connected && pass "connected: a pass redeemed on node-p for this connection, no join first (1 left)" || { echo "$R"; fail "connect"; }
 wait_count 6 20 && pass "the service topped node-p up to 6 by itself while connected" || fail "no top-up: $(count) pass(es)"

@@ -500,13 +500,18 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
 
   $('btn-leaks').addEventListener('click', async function () {
     if (!api || busy) return;
+    // Busy while it runs: a connect or disconnect in the middle would make
+    // the answer about neither connection.
+    busy = true;
     var box = $('leaks');
     box.textContent = '';
     message('note', 'Testing. This takes a few seconds.', 'leaks-msg');
     $('btn-leaks').disabled = true;
     var r;
     try { r = await api.leakTest(); } catch (e) { r = { ran: false, error: String(e && e.message || e) }; }
-    $('btn-leaks').disabled = false;
+    busy = false;
+    // Enabled again only if still connected: refresh decides.
+    await refresh();
     if (!r || !r.ran) { message('err', (r && r.error) || 'The test did not run.', 'leaks-msg'); return; }
     var words = { pass: 'Pass', warn: 'Check', fail: 'Leak' };
     var cls = { pass: 'on', warn: 'warn', fail: 'bad' };
@@ -536,7 +541,7 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
       message('note', r.note || 'Installed.', msgId);
       $('btn-update').style.display = 'none';
     } else if (r && r.cancelled) {
-      message('err', r.error, msgId);
+      message('err', r.error || 'Cancelled; nothing was installed.', msgId);
     } else {
       message('err', (r && r.error) || 'Nothing was installed.', msgId);
     }
@@ -569,10 +574,25 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
     }
   });
 
+  // Versions as X.Y.Z with an optional -pre part: 0.3.0-rc.1 < 0.3.0-rc.2 <
+  // 0.3.0. Anything unreadable counts as older than anything readable.
   function compare(a, b) {
-    var pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+    function parts(v) {
+      var m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(String(v || ''));
+      return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+    }
+    var pa = parts(a), pb = parts(b);
+    if (!pa || !pb) return pa ? 1 : pb ? -1 : 0;
     for (var i = 0; i < 3; i++) {
-      var x = isFinite(pa[i]) ? pa[i] : -1, y = isFinite(pb[i]) ? pb[i] : -1;
+      if (pa.core[i] !== pb.core[i]) return pa.core[i] < pb.core[i] ? -1 : 1;
+    }
+    if (!pa.pre.length || !pb.pre.length) return pa.pre.length === pb.pre.length ? 0 : pa.pre.length ? -1 : 1;
+    for (var j = 0; j < Math.max(pa.pre.length, pb.pre.length); j++) {
+      var x = pa.pre[j], y = pb.pre[j];
+      if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+      var nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+      if (nx && ny) { if (+x !== +y) return +x < +y ? -1 : 1; continue; }
+      if (nx !== ny) return nx ? -1 : 1;
       if (x !== y) return x < y ? -1 : 1;
     }
     return 0;
@@ -658,9 +678,13 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
 
   $('btn-fetch').addEventListener('click', async function () {
     if (!api || busy) return;
+    busy = true;
+    $('btn-fetch').disabled = $('btn-import').disabled = true;
     message('', '', 'nodes-msg');
     var r;
     try { r = await api.fetchList(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    await refresh();
     if (r && r.ok) {
       message('note', (r.note || 'Imported.') + ' From ' + r.url + '; checked against the list key built into this machine before a byte was read.', 'nodes-msg');
       renderNodes(r);
@@ -671,9 +695,13 @@ button.danger{color:#ffb3bb;border-color:rgba(255,92,108,.35)}
 
   $('btn-import').addEventListener('click', async function () {
     if (!api || busy) return;
+    busy = true;
+    $('btn-fetch').disabled = $('btn-import').disabled = true;
     message('', '', 'nodes-msg');
     var r;
     try { r = await api.importNodes(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    busy = false;
+    await refresh();
     if (r && r.cancelled) return;
     if (r && r.ok) {
       message('note', (r.note || 'Imported.') + ' Nothing was read from the list before its signature checked out.', 'nodes-msg');

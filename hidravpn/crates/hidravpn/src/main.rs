@@ -6,6 +6,12 @@
 //!   hidravpn nodes add --entry e.json | --exit x.json
 //!   hidravpn nodes list | remove NAME
 //!                                   the pocket: nodes to pick from
+//!   hidravpn nodes import LIST      the signed node list: nodes to start with
+//!   hidravpn nodes join NAME | --all
+//!                                   admission on nodes that admit openly
+//!   hidravpn nodes discover ADDR    a node's own record, by address
+//!   hidravpn passes token | get | list | auto
+//!                                   passes for nodes that admit with one
 //!   hidravpn up --privado           two hops from the pocket (an entry and an exit)
 //!   hidravpn up --rapido            one hop from the pocket
 //!   hidravpn up <exit.json>         connect, one hop (Rápido), this exit

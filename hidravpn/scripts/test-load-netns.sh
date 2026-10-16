@@ -169,7 +169,7 @@ T0=$(date +%s.%N)
 OUT=$($LC "$BIN/hidravpn" passes get --count 100 2>&1)
 T1=$(date +%s.%N)
 echo "$OUT" | grep -q "100 pass(es)" && pass "100 passes in one go ($(python3 -c "print(round($T1-$T0,1))") s, sixteen at a time)" || { fail "passes get: $OUT"; exit 1; }
-N=$($LOAD wallet-to-redemptions /etc/hidravpn/passes.json "$WORK/all.json" "$PPUB")
+$LOAD wallet-to-redemptions /etc/hidravpn/passes.json "$WORK/all.json" "$PPUB" > /dev/null
 cp "$WORK/all.json" "$WORK/reds.json"
 
 # ── 100 passes, each sent twice at once ─────────────────────────────────────

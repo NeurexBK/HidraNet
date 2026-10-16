@@ -71,7 +71,7 @@ $P "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.jso
 mkdir -p "$WORK/run-o" "$WORK/run-p"
 $O env HIDRAVPN_RUN_DIR="$WORK/run-o" "$BIN/hidravpn-node" --config "$WORK/o.toml" run > "$WORK/node-o.log" 2>&1 & PIDS+=($!); O_PID=$!
 $P env HIDRAVPN_RUN_DIR="$WORK/run-p" "$BIN/hidravpn-node" --config "$WORK/p.toml" run > "$WORK/node-p.log" 2>&1 & PIDS+=($!); P_PID=$!
-for i in $(seq 1 100); do grep -q "admission service on" "$WORK/node-o.log" && grep -q "admission service on" "$WORK/node-p.log" && break; sleep 0.2; done
+for _ in $(seq 1 100); do grep -q "admission service on" "$WORK/node-o.log" && grep -q "admission service on" "$WORK/node-p.log" && break; sleep 0.2; done
 grep -q "admission service on TCP 51821 (open" "$WORK/node-o.log" && pass "node-o is up, open" || { tail -5 "$WORK/node-o.log"; fail "node-o"; exit 1; }
 grep -q "admission service on TCP 51821 (with a pass" "$WORK/node-p.log" && pass "node-p is up, with passes" || { tail -5 "$WORK/node-p.log"; fail "node-p"; exit 1; }
 

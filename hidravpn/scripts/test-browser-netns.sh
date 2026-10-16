@@ -155,7 +155,7 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "still reachi
 # ── Nothing identifying in the logs, on either side ─────────────────────────
 grep -qE "10\.200\.0\.2|10\.77\.0\.2|laptop" "$WORK/svc.log" "$WORK/node.log" && fail "a log names the client" || pass "no log names the client's address or name"
 
-kill -INT $SVC 2>/dev/null; for i in $(seq 1 30); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done
+kill -INT $SVC 2>/dev/null; for _ in $(seq 1 30); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done
 kill -0 $SVC 2>/dev/null && fail "the service did not stop on SIGINT" || pass "the service stopped cleanly"
 
 echo

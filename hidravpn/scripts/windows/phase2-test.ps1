@@ -135,7 +135,7 @@ $haveCli = Place 'hidravpn.exe' $CliExe $ClientHash
 $haveSvc = Place 'hidravpn-service.exe' $SvcExe $ServiceHash
 if (-not $haveSvc -or ($Full -and -not $haveCli)) {
   Log "building the executables on the node over ssh ($SshUser@$Server); a few minutes"
-  $remote = "set -e; cd '$ServerSource'; git fetch -q origin feature/hidravpn && git checkout -q feature/hidravpn && git merge -q --ff-only origin/feature/hidravpn; bash hidravpn/scripts/build-windows-client.sh '$ServerSource'"
+  $remote = "set -e; cd '$ServerSource'; git fetch -q origin main && git checkout -q main && git merge -q --ff-only origin/main; bash hidravpn/scripts/build-windows-client.sh '$ServerSource'"
   & ssh.exe -o ConnectTimeout=20 "$SshUser@$Server" $remote
   if ($LASTEXITCODE -ne 0) { Stop-Now "the build on the node failed (exit $LASTEXITCODE)" }
   & scp.exe -q -o ConnectTimeout=20 "${SshUser}@${Server}:/root/hidravpn-win/hidravpn-service.exe" $SvcExe
