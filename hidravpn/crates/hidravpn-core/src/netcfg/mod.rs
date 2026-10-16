@@ -203,6 +203,22 @@ pub fn route_host_via(host: IpAddr, interface: &str) -> Result<()> {
     }
 }
 
+/// Whether a tunnel interface holds the address it was given. Windows will
+/// not put one address on two interfaces, and gives the second a link-local
+/// one instead (169.254.x.x), silently: a circuit through it carries
+/// nothing. Linux has no such case to check.
+pub fn check_address(interface: &str, ip: std::net::Ipv4Addr) -> Result<()> {
+    #[cfg(windows)]
+    {
+        windows::check_address(interface, ip)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (interface, ip);
+        Ok(())
+    }
+}
+
 /// Runs a system tool and gives its output or a readable error.
 pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String> {
     let out = std::process::Command::new(cmd)

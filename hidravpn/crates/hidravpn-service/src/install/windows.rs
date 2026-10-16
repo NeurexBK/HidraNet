@@ -83,18 +83,90 @@ pub fn install(bin: &Path) -> Result<()> {
         crate::ipc::protect_token(&token)?;
     }
 
-    let tr = format!("\"{}\" run", bin.display());
-    // /rl HIGHEST + /ru SYSTEM: full rights, no interactive logon needed.
-    run(
-        "schtasks",
-        &[
-            "/Create", "/TN", TASK, "/TR", &tr, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL",
-            "HIGHEST", "/F",
-        ],
-    )?;
+    // The task is described in full rather than with schtasks' switches,
+    // whose defaults are wrong for a service: start only on mains power,
+    // stop when the laptop goes on battery, stop after three days. Seen on
+    // a laptop: on battery the service never started, or was ended, and the
+    // command line found nothing to talk to.
+    let xml = data.join("task.xml");
+    std::fs::write(&xml, utf16_with_bom(&task_xml(bin)))
+        .with_context(|| format!("writing {}", xml.display()))?;
+    let path = xml.to_string_lossy().into_owned();
+    let made = run("schtasks", &["/Create", "/TN", TASK, "/XML", &path, "/F"]);
+    let _ = std::fs::remove_file(&xml);
+    made.context("creating the HidraVPN task")?;
     // Start it now as well, so the user need not reboot.
     let _ = run("schtasks", &["/Run", "/TN", TASK]);
     Ok(())
+}
+
+/// The task: at boot, as SYSTEM with full rights, on battery as on mains,
+/// for as long as the machine runs, one instance, restarted if it fails.
+fn task_xml(bin: &Path) -> String {
+    let command = bin
+        .display()
+        .to_string()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>HidraVPN service</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>run</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+/// schtasks reads a task file as UTF-16, as Windows writes them.
+fn utf16_with_bom(s: &str) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xFE];
+    for u in s.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out
 }
 
 pub fn uninstall() -> Result<()> {
@@ -140,4 +212,21 @@ pub fn start() -> Result<()> {
 pub fn stop() -> Result<()> {
     let _ = crate::cli_down_blocking();
     run("schtasks", &["/End", "/TN", TASK]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_task_runs_on_battery_for_as_long_as_the_machine_runs() {
+        let xml = task_xml(Path::new(r"C:\Program Files\A&B\hidravpn-service.exe"));
+        assert!(xml.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
+        assert!(xml.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
+        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+        assert!(xml.contains("<UserId>S-1-5-18</UserId>"));
+        assert!(xml.contains(r"<Command>C:\Program Files\A&amp;B\hidravpn-service.exe</Command>"));
+        let bytes = utf16_with_bom("ab");
+        assert_eq!(bytes, vec![0xFF, 0xFE, b'a', 0, b'b', 0]);
+    }
 }
