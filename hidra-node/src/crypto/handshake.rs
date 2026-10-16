@@ -2,10 +2,12 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ml_kem::ml_kem_1024::{Ciphertext, DecapsulationKey, EncapsulationKey};
 use ml_kem::{Decapsulate, Encapsulate, Kem, KeyExport, MlKem1024, TryKeyInit};
 use rand_core::OsRng;
-use x25519_dalek::{PublicKey, StaticSecret};
+use subtle::ConstantTimeEq;
+use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{HidraError, Result};
@@ -222,6 +224,23 @@ impl TransportCipher {
     }
 }
 
+/// X25519 with the low-order points refused.
+///
+/// A peer who sends one of the eight low-order points on Curve25519 forces
+/// the shared secret to all zeroes, whatever our private key is. The Noise
+/// spec leaves checking for that optional, because the transcript hash still
+/// differs; here it is done anyway, since a secret an attacker chose is not a
+/// secret, and nothing legitimate ever sends such a point.
+fn dh(secret: &StaticSecret, public: &PublicKey) -> Result<SharedSecret> {
+    let shared = secret.diffie_hellman(public);
+    if !shared.was_contributory() {
+        return Err(HidraError::Handshake(
+            "peer sent a low-order X25519 point".into(),
+        ));
+    }
+    Ok(shared)
+}
+
 // ---------------------------------------------------------------------------
 // HandshakeState — Noise XX: -> e | <- e, ee, s, es | -> s, se
 // ---------------------------------------------------------------------------
@@ -352,8 +371,8 @@ impl HandshakeState {
         let ee = self
             .e
             .as_ref()
-            .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?
-            .diffie_hellman(&re);
+            .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?;
+        let ee = dh(ee, &re)?;
         self.sym()?.mix_key(ee.as_bytes());
 
         // ekem1 — encapsulate to the initiator's ML-KEM key and mix the secret
@@ -374,17 +393,15 @@ impl HandshakeState {
 
         // es — responder: DH(s, re)  |  initiator: DH(e, rs)
         let es_dh = match self.role {
-            Role::Responder => self.s.diffie_hellman(&re),
+            Role::Responder => dh(&self.s, &re)?,
             Role::Initiator => {
                 let rs = self.rs.ok_or_else(|| {
                     HidraError::Handshake("missing remote static for es".into())
                 })?;
-                self.e
-                    .as_ref()
-                    .ok_or_else(|| {
-                        HidraError::Handshake("missing local ephemeral for es".into())
-                    })?
-                    .diffie_hellman(&rs)
+                let e = self.e.as_ref().ok_or_else(|| {
+                    HidraError::Handshake("missing local ephemeral for es".into())
+                })?;
+                dh(e, &rs)?
             }
         };
         self.sym()?.mix_key(es_dh.as_bytes());
@@ -420,8 +437,8 @@ impl HandshakeState {
         let ee = self
             .e
             .as_ref()
-            .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?
-            .diffie_hellman(&re);
+            .ok_or_else(|| HidraError::Handshake("missing local ephemeral for ee".into()))?;
+        let ee = dh(ee, &re)?;
         self.sym()?.mix_key(ee.as_bytes());
 
         // ekem1 — decapsulate and mix the same secret in
@@ -456,14 +473,12 @@ impl HandshakeState {
                 let rs = self.rs.ok_or_else(|| {
                     HidraError::Handshake("missing remote static for es".into())
                 })?;
-                self.e
-                    .as_ref()
-                    .ok_or_else(|| {
-                        HidraError::Handshake("missing local ephemeral for es".into())
-                    })?
-                    .diffie_hellman(&rs)
+                let e = self.e.as_ref().ok_or_else(|| {
+                    HidraError::Handshake("missing local ephemeral for es".into())
+                })?;
+                dh(e, &rs)?
             }
-            Role::Responder => self.s.diffie_hellman(&re),
+            Role::Responder => dh(&self.s, &re)?,
         };
         self.sym()?.mix_key(es_dh.as_bytes());
 
@@ -488,18 +503,16 @@ impl HandshakeState {
                 let re = self.re.ok_or_else(|| {
                     HidraError::Handshake("missing remote ephemeral for se".into())
                 })?;
-                self.s.diffie_hellman(&re)
+                dh(&self.s, &re)?
             }
             Role::Responder => {
                 let rs = self.rs.ok_or_else(|| {
                     HidraError::Handshake("missing remote static for se".into())
                 })?;
-                self.e
-                    .as_ref()
-                    .ok_or_else(|| {
-                        HidraError::Handshake("missing local ephemeral for se".into())
-                    })?
-                    .diffie_hellman(&rs)
+                let e = self.e.as_ref().ok_or_else(|| {
+                    HidraError::Handshake("missing local ephemeral for se".into())
+                })?;
+                dh(e, &rs)?
             }
         };
         self.sym()?.mix_key(se_dh.as_bytes());
@@ -535,18 +548,16 @@ impl HandshakeState {
                 let rs = self.rs.ok_or_else(|| {
                     HidraError::Handshake("missing remote static for se".into())
                 })?;
-                self.e
-                    .as_ref()
-                    .ok_or_else(|| {
-                        HidraError::Handshake("missing local ephemeral for se".into())
-                    })?
-                    .diffie_hellman(&rs)
+                let e = self.e.as_ref().ok_or_else(|| {
+                    HidraError::Handshake("missing local ephemeral for se".into())
+                })?;
+                dh(e, &rs)?
             }
             Role::Initiator => {
                 let re = self.re.ok_or_else(|| {
                     HidraError::Handshake("missing remote ephemeral for se".into())
                 })?;
-                self.s.diffie_hellman(&re)
+                dh(&self.s, &re)?
             }
         };
         self.sym()?.mix_key(se_dh.as_bytes());
@@ -573,13 +584,77 @@ impl HandshakeState {
 
     /// The peer's static public key, once the handshake has learned it.
     ///
-    /// Part of the library's surface and nothing in the binary calls it, which
-    /// is why the allow is here: this module is now shared between the two
-    /// targets, and the binary denies warnings.
+    /// The binary goes through [`verify_remote_static`](Self::verify_remote_static)
+    /// and never reads the key itself, hence the allow: the module is shared
+    /// with the library, and the binary denies warnings.
     #[allow(dead_code)]
     pub fn remote_static_public(&self) -> Option<&PublicKey> {
         self.rs.as_ref()
     }
+
+    /// Check that the peer is who we meant to talk to.
+    ///
+    /// Noise XX authenticates the static key it carries: after message B the
+    /// initiator knows, for certain, which key the responder holds. What it
+    /// does not know is whether that key belongs to the relay it wanted, and
+    /// without this check anyone sitting between the client and the relay
+    /// could answer the handshake with their own key and be accepted. The
+    /// expected key is the base64 of the relay's `noise_static.public`, as
+    /// listed in the config or, later, in its signed DHT descriptor.
+    ///
+    /// Comparison is constant-time: a mismatch is reported, never where it
+    /// mismatched.
+    pub fn verify_remote_static(&self, expected_b64: &str) -> Result<()> {
+        let rs = self.rs.ok_or_else(|| {
+            HidraError::Handshake(
+                "remote static key is not known yet; verify after message B or C".into(),
+            )
+        })?;
+        let expected = BASE64.decode(expected_b64.trim()).map_err(|_| {
+            HidraError::Handshake("expected static key is not valid base64".into())
+        })?;
+        if expected.len() != DH_LEN {
+            return Err(HidraError::Handshake(format!(
+                "expected static key has {} bytes, not {DH_LEN}",
+                expected.len()
+            )));
+        }
+        if rs.as_bytes().ct_eq(&expected).into() {
+            Ok(())
+        } else {
+            Err(HidraError::Handshake(
+                "relay static key does not match the pinned key; refusing — \
+                 this is what an interception looks like"
+                    .into(),
+            ))
+        }
+    }
+}
+
+/// Pin the relay's key when one is known, and say so when it is not.
+///
+/// An empty expectation is the state every relay found through the DHT is in
+/// today: the descriptor does not carry the Noise key yet, so the only
+/// honest thing to do is connect and record that the hop is unverified. It
+/// is said once per process at `warn` and afterwards at `debug`, so a proxy
+/// building circuits all day does not fill the log with the same line.
+pub fn check_relay_identity(handshake: &HandshakeState, expected_b64: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SAID_ONCE: AtomicBool = AtomicBool::new(false);
+
+    if expected_b64.trim().is_empty() {
+        if !SAID_ONCE.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "relay static key is not pinned: the handshake is encrypted and \
+                 authenticated, but nothing proves the far end is the relay that \
+                 was meant. Set noise_pubkey in the relay's config entry to pin it."
+            );
+        } else {
+            tracing::debug!("relay static key is not pinned");
+        }
+        return Ok(());
+    }
+    handshake.verify_remote_static(expected_b64)
 }
 
 #[cfg(test)]
@@ -727,6 +802,58 @@ mod tests {
         let old_style_message_a = vec![0u8; DH_LEN];
         let err = resp.read_message_a(&old_style_message_a).unwrap_err();
         assert!(format!("{err}").contains("too short"));
+    }
+
+    /// A low-order ephemeral point is refused rather than folded into a key
+    /// the attacker already knows.
+    #[test]
+    fn a_low_order_ephemeral_point_is_refused() {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+
+        let mut a = init.write_message_a().unwrap();
+        // The identity point: DH with it is all zeroes for every private key.
+        a[..DH_LEN].copy_from_slice(&[0u8; DH_LEN]);
+        resp.read_message_a(&a).unwrap();
+        let err = resp.write_message_b().unwrap_err();
+        assert!(format!("{err}").contains("low-order"), "{err}");
+    }
+
+    /// The initiator can pin the responder's static key, and a different key
+    /// is refused even though the handshake itself succeeded.
+    #[test]
+    fn the_remote_static_key_can_be_pinned() {
+        let r_static = StaticSecret::random_from_rng(OsRng);
+        let r_public = PublicKey::from(&r_static);
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, r_static);
+
+        // Before message B the key is unknown, and saying so is an error.
+        assert!(init.verify_remote_static(&BASE64.encode([1u8; 32])).is_err());
+
+        let a = init.write_message_a().unwrap();
+        resp.read_message_a(&a).unwrap();
+        let b = resp.write_message_b().unwrap();
+        init.read_message_b(&b).unwrap();
+
+        assert_eq!(init.remote_static_public(), Some(&r_public));
+        init.verify_remote_static(&BASE64.encode(r_public.as_bytes())).unwrap();
+        check_relay_identity(&init, &BASE64.encode(r_public.as_bytes())).unwrap();
+
+        let other = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
+        assert!(init.verify_remote_static(&BASE64.encode(other.as_bytes())).is_err());
+        assert!(check_relay_identity(&init, &BASE64.encode(other.as_bytes())).is_err());
+        assert!(init.verify_remote_static("not base64!").is_err());
+        assert!(init.verify_remote_static(&BASE64.encode([1u8; 16])).is_err());
+    }
+
+    /// No pinned key means connect and warn, not refuse: refusing would take
+    /// every DHT-discovered relay offline until the descriptor carries a key.
+    #[test]
+    fn an_unpinned_relay_is_allowed_through() {
+        let (init, _) = complete();
+        check_relay_identity(&init, "").unwrap();
+        check_relay_identity(&init, "   ").unwrap();
     }
 
     /// Two handshakes never land on the same key.

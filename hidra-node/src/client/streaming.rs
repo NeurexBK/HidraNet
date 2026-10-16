@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
-use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::handshake::{check_relay_identity, HandshakeState, Role};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{
     read_frame, write_frame, Message, SecureConnection,
@@ -49,6 +49,7 @@ impl StreamingCircuit {
             secret_bytes.zeroize();
             let (conn, session_key) = handshake_with_relay(
                 relay.addr,
+                &relay.noise_pubkey_b64,
                 hop_secret,
                 circuit_id,
             )
@@ -304,6 +305,7 @@ fn peel_all_stream_layers(
 
 async fn handshake_with_relay(
     addr: SocketAddr,
+    expected_static_b64: &str,
     static_secret: StaticSecret,
     circuit_id: u32,
 ) -> Result<(SecureConnection, [u8; 32])> {
@@ -320,6 +322,8 @@ async fn handshake_with_relay(
     write_frame(&mut stream, &msg_a).await?;
     let msg_b = read_frame(&mut stream).await?;
     handshake.read_message_b(&msg_b)?;
+    // Known now; refused before our own static key goes out in message C.
+    check_relay_identity(&handshake, expected_static_b64)?;
     let msg_c = handshake.write_message_c()?;
     write_frame(&mut stream, &msg_c).await?;
     debug!(relay = %sensitive(&addr), "handshake done");

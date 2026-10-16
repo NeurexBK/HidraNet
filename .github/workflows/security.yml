@@ -11,7 +11,8 @@ name: security
 
 on:
   push:
-    branches: [main]
+    # feature/hidravpn is where the work lands first; main lags behind it.
+    branches: [main, feature/hidravpn]
   pull_request:
   schedule:
     # 06:17 UTC daily. Not on the hour: everything else is.

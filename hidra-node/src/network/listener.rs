@@ -16,6 +16,9 @@ use crate::safelog::sensitive;
 pub const PROTO_NOISE_SESSION: u8 = 0x00;
 pub const PROTO_FORWARDED_CELL: u8 = 0x01;
 
+/// How long a freshly accepted peer gets to say which protocol it speaks.
+const PROTOCOL_BYTE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct NodeListener {
     listener: TcpListener,
     static_secret: Arc<[u8; 32]>,
@@ -32,29 +35,49 @@ impl NodeListener {
     }
 
     pub async fn accept_loop(&self) -> Result<()> {
-        let router = RelayRouter::new(Arc::clone(&self.static_secret));
+        let router = Arc::new(RelayRouter::new(Arc::clone(&self.static_secret)));
 
         loop {
             let (mut stream, remote_addr) = self.listener.accept().await?;
             info!(remote_addr = %sensitive(&remote_addr), "accepted connection");
 
-            let mut proto_byte = [0u8; 1];
-            if let Err(e) = stream.read_exact(&mut proto_byte).await {
-                warn!(error = %e, "failed to read protocol byte");
-                continue;
-            }
+            // The protocol byte used to be read right here, in the accept
+            // loop. One peer that connected and sent nothing stopped every
+            // other peer from being accepted, for as long as it stayed
+            // quiet. Each connection now waits on its own task, and only
+            // for a bounded time.
+            let router = Arc::clone(&router);
+            tokio::spawn(async move {
+                let mut proto_byte = [0u8; 1];
+                let read = tokio::time::timeout(
+                    PROTOCOL_BYTE_DEADLINE,
+                    stream.read_exact(&mut proto_byte),
+                )
+                .await;
+                match read {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "failed to read protocol byte");
+                        return;
+                    }
+                    Err(_) => {
+                        warn!("peer sent no protocol byte in time, dropping connection");
+                        return;
+                    }
+                }
 
-            match proto_byte[0] {
-                PROTO_NOISE_SESSION => {
-                    router.handle_client_connection(stream, remote_addr).await;
+                match proto_byte[0] {
+                    PROTO_NOISE_SESSION => {
+                        router.handle_client_connection(stream, remote_addr).await;
+                    }
+                    PROTO_FORWARDED_CELL => {
+                        router.handle_forwarded_cell(stream, remote_addr).await;
+                    }
+                    other => {
+                        warn!(proto = other, "unknown protocol byte, dropping connection");
+                    }
                 }
-                PROTO_FORWARDED_CELL => {
-                    router.handle_forwarded_cell(stream, remote_addr).await;
-                }
-                other => {
-                    warn!(proto = other, "unknown protocol byte, dropping connection");
-                }
-            }
+            });
         }
     }
 
@@ -78,7 +101,7 @@ pub async fn connect_to_peer(
     let _span = tracing::info_span!(
         "session",
         session_id = %session_id,
-        remote_addr = %addr,
+        remote_addr = %sensitive(&addr),
         role = "initiator",
     )
     .entered();

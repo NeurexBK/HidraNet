@@ -273,6 +273,9 @@ async fn spawn_local_relays(
         rand::thread_rng().fill_bytes(&mut rng_bytes);
         let relay_secret = StaticSecret::from(rng_bytes);
         rng_bytes.zeroize();
+        // Known here and nowhere else, so the client pins it from here.
+        let relay_pubkey_b64 = base64::engine::general_purpose::STANDARD
+            .encode(x25519_dalek::PublicKey::from(&relay_secret).as_bytes());
 
         let listener = network::listener::NodeListener::bind(addr, relay_secret).await?;
         let relay_num = i + 1;
@@ -288,7 +291,7 @@ async fn spawn_local_relays(
         entries.push(relay::registry::RelayEntry {
             name: format!("local-relay-{relay_num}"),
             addr,
-            noise_pubkey_b64: String::new(),
+            noise_pubkey_b64: relay_pubkey_b64,
         });
     }
 
@@ -571,8 +574,15 @@ async fn run_server_mode(
 
     let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
     for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
+        match config_relays.iter_mut().find(|r| r.addr == lr.addr) {
+            // The config lists this local relay without a key; the key was
+            // generated a moment ago, so fill it in rather than leave the
+            // hop unpinned.
+            Some(r) if r.noise_pubkey_b64.is_empty() => {
+                r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+            }
+            Some(_) => {}
+            None => config_relays.push(lr.clone()),
         }
     }
     let relays = if config_relays.len() >= 3 {
@@ -817,8 +827,15 @@ async fn run_proxy_mode(
     let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
 
     for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
+        match config_relays.iter_mut().find(|r| r.addr == lr.addr) {
+            // The config lists this local relay without a key; the key was
+            // generated a moment ago, so fill it in rather than leave the
+            // hop unpinned.
+            Some(r) if r.noise_pubkey_b64.is_empty() => {
+                r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+            }
+            Some(_) => {}
+            None => config_relays.push(lr.clone()),
         }
     }
 

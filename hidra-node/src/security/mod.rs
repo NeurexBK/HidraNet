@@ -6,6 +6,7 @@ pub mod rate_limiter {
     use std::time::{Duration, Instant};
 
     use crate::error::{HidraError, Result};
+    use crate::safelog::sensitive;
 
     struct TokenBucket {
         tokens: f64,
@@ -101,9 +102,9 @@ pub mod rate_limiter {
 
             if let Some(until) = state.backoff_until {
                 if now < until {
-                    return Err(HidraError::Protocol(format!(
-                        "peer {ip} is temporarily banned"
-                    )));
+                    return Err(HidraError::Protocol(
+                        "peer is temporarily banned".into(),
+                    ));
                 }
                 state.backoff_until = None;
                 state.violations = 0;
@@ -119,15 +120,13 @@ pub mod rate_limiter {
                         ));
                     state.backoff_until = Some(now + backoff);
                     tracing::warn!(
-                        peer = %ip,
+                        peer = %sensitive(&ip),
                         violations = state.violations,
                         ban_secs = backoff.as_secs(),
                         "peer banned (exponential backoff)"
                     );
                 }
-                return Err(HidraError::Protocol(format!(
-                    "rate limit exceeded for {ip}"
-                )));
+                return Err(HidraError::Protocol("rate limit exceeded".into()));
             }
 
             Ok(())
@@ -152,7 +151,7 @@ pub mod rate_limiter {
 
             if state.connection_count >= self.config.max_connections_per_ip {
                 return Err(HidraError::Protocol(format!(
-                    "too many connections from {ip}: {}",
+                    "too many connections from one peer: {}",
                     state.connection_count
                 )));
             }
@@ -675,8 +674,8 @@ pub mod vault {
     ) -> Result<()> {
         let config = VaultConfig::default();
         let sealed = vault_encrypt(passphrase, data, &config)?;
-        std::fs::write(path, &sealed)?;
-        Ok(())
+        // Owner-only from the moment it exists, like every other secret.
+        crate::crypto::keys::write_private_file(path, &sealed)
     }
 
     pub fn vault_load(path: &std::path::Path, passphrase: &[u8]) -> Result<Vec<u8>> {
@@ -722,10 +721,30 @@ pub mod hardening {
         Ok(())
     }
 
+    /// Install a panic hook that says where, not what.
+    ///
+    /// The default hook prints the panic payload, and a payload is whatever
+    /// string the failing code built: an `expect` on a parse carries the
+    /// text it was parsing, which on a relay can be a peer address or a
+    /// destination. The location is enough to find the bug. The payload is
+    /// printed only when the operator has turned unsafe logging on.
+    ///
+    /// The name is historical. It never zeroized anything; secrets are wiped
+    /// by their own `Drop`, which runs during unwinding like any other.
     pub fn zeroize_on_panic() {
         std::panic::set_hook(Box::new(|info| {
-            eprintln!("PANIC: {info}");
-            eprintln!("Sensitive memory may not have been fully zeroized.");
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "unknown location".to_string());
+            if crate::safelog::unsafe_logging() {
+                eprintln!("PANIC at {location}: {info}");
+            } else {
+                eprintln!(
+                    "PANIC at {location} (message withheld; set logging.unsafe_addresses \
+                     to print it)"
+                );
+            }
         }));
     }
 }

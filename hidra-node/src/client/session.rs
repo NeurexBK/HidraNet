@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
-use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::handshake::{check_relay_identity, HandshakeState, Role};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::network::listener::PROTO_NOISE_SESSION;
@@ -36,8 +36,8 @@ pub async fn run_client_session(
     for (i, relay) in relays.iter().take(3).enumerate() {
         info!(
             hop = i,
-            relay = %relay.name,
-            addr = %relay.addr,
+            relay = %sensitive(&relay.name),
+            addr = %sensitive(&relay.addr),
             "establishing Noise XX handshake with relay"
         );
 
@@ -45,8 +45,13 @@ pub async fn run_client_session(
         let hop_secret = StaticSecret::from(secret_bytes);
         secret_bytes.zeroize();
 
-        let (conn, session_key) =
-            handshake_with_relay(relay.addr, hop_secret, circuit_id).await?;
+        let (conn, session_key) = handshake_with_relay(
+            relay.addr,
+            &relay.noise_pubkey_b64,
+            hop_secret,
+            circuit_id,
+        )
+        .await?;
 
         hops.push(CircuitHop {
             addr: relay.addr,
@@ -56,7 +61,7 @@ pub async fn run_client_session(
 
         info!(
             hop = i,
-            relay = %relay.name,
+            relay = %sensitive(&relay.name),
             "handshake completed, circuit extended"
         );
     }
@@ -97,6 +102,7 @@ pub async fn run_client_session(
 
 async fn handshake_with_relay(
     addr: SocketAddr,
+    expected_static_b64: &str,
     static_secret: StaticSecret,
     circuit_id: u32,
 ) -> Result<(SecureConnection, [u8; 32])> {
@@ -113,6 +119,9 @@ async fn handshake_with_relay(
 
     let msg_b = read_frame(&mut stream).await?;
     handshake.read_message_b(&msg_b)?;
+    // The relay's static key is known now. Refuse before sending our own
+    // static key in message C, so an impostor never learns who called.
+    check_relay_identity(&handshake, expected_static_b64)?;
 
     let msg_c = handshake.write_message_c()?;
     write_frame(&mut stream, &msg_c).await?;

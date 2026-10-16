@@ -22,6 +22,9 @@ use crate::onion::layer::{
     decrypt_stream, encrypt_stream, peel_layer, wrap_layer,
 };
 
+/// How long a client gets to finish the three handshake messages.
+const HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
 struct CircuitEntry {
     session_key: [u8; 32],
 }
@@ -60,10 +63,12 @@ impl RelayRouter {
         remote_addr: SocketAddr,
     ) {
         let session_id = Uuid::new_v4().to_string();
+        // Span fields print on every line logged inside the span, so an
+        // address here is an address on every "circuit created" line.
         let span = tracing::info_span!(
             "relay_session",
             session_id = %session_id,
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
             role = "relay_responder",
         );
         let circuits = Arc::clone(&self.circuits);
@@ -94,7 +99,7 @@ impl RelayRouter {
     ) {
         let span = tracing::info_span!(
             "forwarded_cell",
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
         );
         let circuits = Arc::clone(&self.circuits);
         let intro_reg = Arc::clone(&self.intro_registry);
@@ -122,14 +127,21 @@ async fn handle_noise_session(
     let secret = StaticSecret::from(sb);
     sb.zeroize();
     let mut handshake = HandshakeState::new(Role::Responder, secret);
-    let msg_a = read_frame(&mut stream).await?;
-    handshake.read_message_a(&msg_a)?;
-    let msg_b = handshake.write_message_b()?;
-    write_frame(&mut stream, &msg_b).await?;
-    let msg_c = read_frame(&mut stream).await?;
-    handshake.read_message_c(&msg_c)?;
+    // A peer that connects and then says nothing used to hold this task,
+    // and the memory behind it, for as long as it liked. The handshake is
+    // three messages; it either finishes promptly or it is not a client.
+    let (send_cipher, recv_cipher) = tokio::time::timeout(HANDSHAKE_DEADLINE, async {
+        let msg_a = read_frame(&mut stream).await?;
+        handshake.read_message_a(&msg_a)?;
+        let msg_b = handshake.write_message_b()?;
+        write_frame(&mut stream, &msg_b).await?;
+        let msg_c = read_frame(&mut stream).await?;
+        handshake.read_message_c(&msg_c)?;
+        handshake.into_transport()
+    })
+    .await
+    .map_err(|_| HidraError::Handshake("handshake did not finish in time".into()))??;
     info!("relay Noise XX handshake completed");
-    let (send_cipher, recv_cipher) = handshake.into_transport()?;
     let session_key = recv_cipher.session_key()?;
     let mut conn =
         SecureConnection::new(stream, send_cipher, recv_cipher);

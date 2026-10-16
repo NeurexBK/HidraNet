@@ -41,7 +41,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use rand_core::{OsRng, RngCore};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{HidraError, Result};
 
@@ -59,10 +59,12 @@ const ARGON_LANES: u32 = 1;
 /// The environment variable holding the passphrase, or `None`.
 ///
 /// Read fresh each time rather than cached, so a process that clears it after
-/// startup actually stops being able to unseal.
-pub fn passphrase() -> Option<String> {
+/// startup actually stops being able to unseal. Wrapped in `Zeroizing`, so
+/// the copy is wiped when the caller is done with it rather than left in
+/// freed memory for a core dump or a swap file to pick up.
+pub fn passphrase() -> Option<Zeroizing<String>> {
     match std::env::var("HIDRA_KEY_PASSPHRASE") {
-        Ok(p) if !p.is_empty() => Some(p),
+        Ok(p) if !p.is_empty() => Some(Zeroizing::new(p)),
         _ => None,
     }
 }

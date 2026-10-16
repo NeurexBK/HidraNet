@@ -7,9 +7,10 @@ use crate::error::{HidraError, Result};
 pub struct RelayEntry {
     pub name: String,
     pub addr: SocketAddr,
-    // Read by the library's consumers, not by the binary, which resolves a
-    // relay's static key from the DHT descriptor instead of the config file.
-    #[allow(dead_code)]
+    /// Base64 of the relay's `noise_static.public`. When set, the client
+    /// refuses a handshake that lands on any other key; when empty, the hop
+    /// is unverified and the client says so once. Relays found through the
+    /// DHT arrive empty until the descriptor carries the key.
     pub noise_pubkey_b64: String,
 }
 
