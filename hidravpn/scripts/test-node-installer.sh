@@ -57,7 +57,11 @@ OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 2>&1); echo "$OUT" | gre
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 2>&1); echo "$OUT" | grep -qE -- "--name node-[0-9a-f]{8} " && pass "the name defaults to a random one, never the hostname" || fail "default name: $(echo "$OUT" | grep 'init --endpoint')"
 echo "$OUT" | grep -q -- "--name $(hostname -s) " && fail "the hostname leaked into the default name" || pass "the hostname is not the default name"
 if command -v setpriv >/dev/null && [ "$(id -u)" = 0 ]; then
-  OUT=$(setpriv --reuid=nobody --regid=nogroup --clear-groups bash "$S" --endpoint 203.0.113.10:51820 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "run it with sudo" && pass "not root and not a dry run: refused before touching anything" || fail "non-root: $OUT"
+  # A copy nobody can read: the checkout may sit under a home directory
+  # other accounts cannot enter (as on a CI runner).
+  NR="$(mktemp -d)"; cp "$S" "$NR/"; chmod 755 "$NR"; chmod 644 "$NR/$(basename "$S")"
+  OUT=$(setpriv --reuid=nobody --regid=nogroup --clear-groups bash "$NR/$(basename "$S")" --endpoint 203.0.113.10:51820 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "run it with sudo" && pass "not root and not a dry run: refused before touching anything" || fail "non-root: $OUT"
+  rm -rf "$NR"
 fi
 bash "$S" --help 2>&1 | grep -q -- "--dry-run" && pass "--help prints the options" || fail "help"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:443 --name x 2>&1); echo "$OUT" | grep -q -- "--port 443 " && echo "$OUT" | grep -q "UDP 443 (the tunnel)" && pass "the port the node listens on is the port the firewall opens" || fail "port mismatch: $(echo "$OUT" | grep -E 'init --endpoint|UDP')"
