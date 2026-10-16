@@ -306,8 +306,18 @@ def main():
 
     # 2. The issuer with the real token and broken blinded messages: nothing
     # that is not a blinded message is signed, and nothing is charged for it.
+    def not_blinded(s):
+        # rand_string can come up with base64 of exactly the modulus' size:
+        # that is a blinded message, which the issuer rightly signs.
+        try:
+            if len(base64.b64decode(s, validate=True)) == 256:
+                return "=" * 344
+        except Exception:
+            pass
+        return s
+
     for i in range(200):
-        bl = [r.choice([rand_string(r), base64.b64encode(rand_bytes(r, r.choice([255, 257, 0, 512]))).decode(), "=" * 344])
+        bl = [not_blinded(r.choice([rand_string(r), base64.b64encode(rand_bytes(r, r.choice([255, 257, 0, 512]))).decode(), "=" * 344]))
               for _ in range(r.randrange(1, 20))]
         st, body = check("issue-real-token", iss, http("POST", "/issue", json.dumps(dict(good_issue, blinded=bl))))
         if st == 200:
