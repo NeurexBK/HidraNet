@@ -176,7 +176,7 @@ if [ "$DRY" = 0 ]; then
   # A crash-looping unit is "active" for a moment; wait for it to settle and
   # for the node to say it is serving.
   UP=0
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     sleep 0.5
     if ! systemctl is-active --quiet hidravpn-node; then UP=0; break; fi
     if journalctl -u hidravpn-node --since "-2 min" --no-pager 2>/dev/null | grep -q "DNS forwarder ready"; then UP=1; break; fi
