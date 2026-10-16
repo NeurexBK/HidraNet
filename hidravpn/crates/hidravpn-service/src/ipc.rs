@@ -367,7 +367,7 @@ pub async fn serve(daemon: Arc<Daemon>) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        serve_windows(daemon).await
+        serve_windows(daemon, paths::CONTROL_PIPE).await
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -487,61 +487,85 @@ pub async fn call_unix_at(path: &std::path::Path, token: &str, cmd: Command) -> 
     round_trip(stream, line.as_bytes()).await
 }
 
-/// A fixed pool of pipe instances, all held by the service for as long as it
-/// runs, and the pipe made with that many as its limit, so another user's
-/// instance — the squat a shared pipe invites — has no free slot to take.
-/// After each client an instance is closed and a fresh one made in its
-/// place at once: one disconnected and listened on again no longer tells
-/// its next clients that the service, in session 0, holds it (seen on
-/// Windows: every client after the first eight refused the service). In the
-/// moment between the two a squatter could take the slot; a client then
-/// finds an instance outside session 0 and refuses to talk to it.
+/// The pipe's instances, at most `PIPE_INSTANCES`: the limit means another
+/// user's instance (the squat a shared pipe invites) has no free slot to
+/// take while the service holds them. One instance always listens: as soon
+/// as a client connects to it, it goes to that client and a fresh one is
+/// made to listen, so there is never a moment with nothing listening while
+/// a client is served. An instance serves one client and is closed: one
+/// disconnected and listened on again no longer tells its next clients
+/// that the service, in session 0, holds it (seen on Windows). It is closed
+/// only once the client has closed its end, so the answer is never cut off
+/// and the slot is free again at once for the next instance (closing first
+/// left the slot taken until the client let go, and after eight clients in
+/// a row nothing listened for seconds; seen on Windows).
 #[cfg(windows)]
-async fn serve_windows(daemon: Arc<Daemon>) -> Result<()> {
-    let mut instances = Vec::with_capacity(PIPE_INSTANCES as usize);
-    for i in 0..PIPE_INSTANCES {
-        instances.push(pipe_acl::instance(i == 0).context("creating the control pipe")?);
-    }
+async fn serve_windows(daemon: Arc<Daemon>, pipe: &'static str) -> Result<()> {
+    let mut listening = pipe_acl::instance(pipe, true).context("creating the control pipe")?;
     tracing::info!("control channel ready");
-    let mut tasks = tokio::task::JoinSet::new();
-    for mut server in instances {
+    loop {
+        if let Err(e) = listening.connect().await {
+            // An instance whose connect failed is not tried again.
+            tracing::warn!("control pipe: {e}");
+            listening = fresh_instance(pipe).await;
+            continue;
+        }
         let d = daemon.clone();
-        tasks.spawn(async move {
-            loop {
-                if let Err(e) = server.connect().await {
-                    tracing::warn!("control pipe: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    continue;
-                }
-                // Windows has no uid on a pipe; an elevated caller counts as
-                // root, and everyone else as one unnamed account.
-                let caller = if pipe_acl::client_is_elevated(&server) {
-                    Some(0)
-                } else {
-                    None
-                };
-                if let Err(e) = handle_conn(&mut server, d.clone(), caller).await {
-                    tracing::debug!("control connection ended: {e}");
-                }
-                drop(server);
-                server = loop {
-                    match pipe_acl::instance(false) {
-                        Ok(s) => break s,
-                        Err(e) => {
-                            tracing::warn!("control pipe: could not make a new instance: {e:#}");
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        }
-                    }
-                };
-            }
-        });
+        tokio::spawn(serve_one(listening, d));
+        listening = fresh_instance(pipe).await;
     }
-    while let Some(r) = tasks.join_next().await {
-        if let Err(e) = r {
-            tracing::warn!("a control pipe task ended: {e}");
+}
+
+/// A new listening instance, retried until the pool has a slot for it: a
+/// slot frees when a client being served is done.
+#[cfg(windows)]
+async fn fresh_instance(pipe: &str) -> tokio::net::windows::named_pipe::NamedPipeServer {
+    let mut wait = std::time::Duration::from_millis(5);
+    let mut tries = 0u32;
+    loop {
+        match pipe_acl::instance(pipe, false) {
+            Ok(s) => return s,
+            Err(e) => {
+                tries += 1;
+                // Every slot busy is normal for a moment; for long, it is not.
+                if tries == 40 {
+                    tracing::warn!("control pipe: no new instance for a while: {e:#}");
+                }
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(std::time::Duration::from_millis(100));
+            }
         }
     }
-    Ok(())
+}
+
+/// One client on its own instance: its request, the answer, and then the
+/// instance is closed once the client has closed its end (or after a
+/// short wait).
+#[cfg(windows)]
+async fn serve_one(
+    mut server: tokio::net::windows::named_pipe::NamedPipeServer,
+    daemon: Arc<Daemon>,
+) {
+    // Windows has no uid on a pipe; an elevated caller counts as root, and
+    // everyone else as one unnamed account.
+    let caller = if pipe_acl::client_is_elevated(&server) {
+        Some(0)
+    } else {
+        None
+    };
+    if let Err(e) = handle_conn(&mut server, daemon, caller).await {
+        tracing::debug!("control connection ended: {e}");
+    }
+    let mut rest = [0u8; 256];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match server.read(&mut rest).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await;
 }
 
 /// Who may open the control pipe. Its default descriptor lets a signed-in
@@ -640,7 +664,7 @@ mod pipe_acl {
     /// pipe's limit. The descriptor is copied into the pipe when it is made,
     /// so it is freed as soon as this returns and nothing with a raw pointer
     /// is ever held across an await.
-    pub fn instance(first: bool) -> Result<NamedPipeServer> {
+    pub fn instance(pipe: &str, first: bool) -> Result<NamedPipeServer> {
         let wide: Vec<u16> = SDDL.encode_utf16().chain(std::iter::once(0)).collect();
         let mut raw = PSECURITY_DESCRIPTOR::default();
         // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the
@@ -667,7 +691,7 @@ mod pipe_acl {
                 .first_pipe_instance(first)
                 .max_instances(super::PIPE_INSTANCES as usize)
                 .create_with_security_attributes_raw(
-                    super::paths::CONTROL_PIPE,
+                    pipe,
                     &mut attrs as *mut SECURITY_ATTRIBUTES as *mut std::ffi::c_void,
                 )
         }?;
@@ -751,9 +775,24 @@ impl std::fmt::Display for Impostor {
 
 impl std::error::Error for Impostor {}
 
+/// There is no service to ask: no control channel, or no token. Only then
+/// may a client act on the network itself. A service that is there but
+/// does not answer, or answers badly, is a different error: a client says
+/// so and stops, since that service may hold the network.
+#[derive(Debug)]
+pub struct NotRunning(String);
+
+impl std::fmt::Display for NotRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotRunning {}
+
 /// Sends one command to the running service and returns its answer.
 pub async fn call(cmd: Command) -> Result<Response> {
-    let token = read_token()?;
+    let token = read_token().map_err(|e| NotRunning(format!("{e:#}")))?;
     let req = Request { token, cmd };
     let mut line = serde_json::to_string(&req)?;
     line.push('\n');
@@ -763,42 +802,59 @@ pub async fn call(cmd: Command) -> Result<Response> {
         use tokio::net::UnixStream;
         let stream = UnixStream::connect(paths::control_socket())
             .await
-            .map_err(|e| anyhow!("the HidraVPN service is not running ({e})"))?;
+            .map_err(|e| NotRunning(format!("the HidraVPN service is not running ({e})")))?;
         round_trip(stream, line.as_bytes()).await
     }
     #[cfg(windows)]
     {
-        use std::time::Duration;
-        use tokio::net::windows::named_pipe::ClientOptions;
-        // ERROR_PIPE_BUSY: every instance of the fixed pool is serving another
-        // client for the moment; each listens again once its client is done,
-        // so the wait is short; retry briefly rather than report the service
-        // down. A missing pipe (service really not running) fails at once.
-        const ERROR_PIPE_BUSY: i32 = 231;
-        let mut tries = 0u32;
-        let stream = loop {
-            match ClientOptions::new().open(paths::CONTROL_PIPE) {
-                Ok(s) => break s,
-                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 40 => {
-                    tries += 1;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(e) => return Err(anyhow!("the HidraVPN service is not running ({e})")),
-            }
-        };
-        // Before the token goes anywhere: is the service at the other end?
-        // The service runs in session 0; a pipe instance made by a signed-in
-        // user sits in that user's session.
-        if !pipe_acl::server_is_a_service(&stream) {
-            return Err(Impostor.into());
-        }
-        round_trip(stream, line.as_bytes()).await
+        call_pipe(paths::CONTROL_PIPE, &line, true).await
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = line;
         anyhow::bail!("no control channel on this operating system")
     }
+}
+
+/// One request over the pipe `pipe`. `only_the_service` is false only in
+/// tests, which cannot run a server in session 0.
+#[cfg(windows)]
+async fn call_pipe(pipe: &str, line: &str, only_the_service: bool) -> Result<Response> {
+    use std::time::Duration;
+    use tokio::net::windows::named_pipe::ClientOptions;
+    // ERROR_PIPE_BUSY: every instance of the fixed pool is serving another
+    // client for the moment; each listens again once its client is done,
+    // so the wait is short; retry briefly rather than report the service
+    // down. A missing pipe (service really not running) fails at once.
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let mut tries = 0u32;
+    let stream = loop {
+        match ClientOptions::new().open(pipe) {
+            Ok(s) => break s,
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 40 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
+                return Err(
+                    NotRunning(format!("the HidraVPN service is not running ({e})")).into(),
+                );
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "the HidraVPN service is running but its control channel does not answer ({e}); restart it: Stop-ScheduledTask -TaskName HidraVPN, then Start-ScheduledTask -TaskName HidraVPN"
+                ));
+            }
+        }
+    };
+    // Before the token goes anywhere: is the service at the other end?
+    // The service runs in session 0; a pipe instance made by a signed-in
+    // user sits in that user's session.
+    if only_the_service && !pipe_acl::server_is_a_service(&stream) {
+        return Err(Impostor.into());
+    }
+    round_trip(stream, line.as_bytes()).await
 }
 
 #[allow(dead_code)]
@@ -1562,5 +1618,61 @@ mod tests {
         let resp: Response = serde_json::from_str(answer.trim()).unwrap();
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("larger than anything"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::daemon::Daemon;
+
+    fn line(token: &str, cmd: Command) -> String {
+        let mut l = serde_json::to_string(&Request {
+            token: token.into(),
+            cmd,
+        })
+        .unwrap();
+        l.push('\n');
+        l
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_control_pipe_answers_every_client_one_after_another_and_at_once() {
+        let id = std::process::id();
+        let pipe: &'static str =
+            Box::leak(format!(r"\\.\pipe\hidravpn-test-{id}").into_boxed_str());
+        let dir = std::env::temp_dir().join(format!("hidravpn-pipe-test-{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let daemon = Daemon::with_pocket("pipe-test-token".into(), dir.join("circuit.json"));
+        tokio::spawn(serve_windows(daemon, pipe));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let ping = line("pipe-test-token", Command::Ping);
+
+        // One after another, as the command line asks: a probe, then the
+        // command, many times over (the pool has eight instances).
+        for i in 0..200 {
+            let r = call_pipe(pipe, &ping, false)
+                .await
+                .unwrap_or_else(|e| panic!("request {i}: {e:#}"));
+            assert!(r.ok, "request {i}: {:?}", r.error);
+        }
+
+        // And at once: twice as many clients as the pool has instances.
+        let mut set = tokio::task::JoinSet::new();
+        for c in 0..16 {
+            let ping = ping.clone();
+            set.spawn(async move {
+                for i in 0..20 {
+                    let r = call_pipe(pipe, &ping, false)
+                        .await
+                        .unwrap_or_else(|e| panic!("client {c}, request {i}: {e:#}"));
+                    assert!(r.ok, "client {c}, request {i}: {:?}", r.error);
+                }
+            });
+        }
+        while let Some(r) = set.join_next().await {
+            r.unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

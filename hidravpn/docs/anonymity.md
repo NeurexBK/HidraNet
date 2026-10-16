@@ -372,6 +372,21 @@ network by itself, undoing the service's kill switch. Each instance is now
 made afresh after a client, and a client that finds something other than
 the service on the pipe stops with an error instead of going around it.
 
+A later run on the same PC found the fix incomplete: after eight
+commands in a row, the next ones found nothing listening for several
+seconds, and the command line, taking that for "no service", acted on
+the network by itself while the service still held the tunnel. Each
+instance was closed before its client had let go of it, so its slot
+stayed taken, and its replacement waited. Now one instance always
+listens: a fresh one is made as soon as a client connects, and the one
+that served is closed only once the client has closed its end
+(`ipc.rs`, `serve_windows`). The command line acts by itself only when
+there is no service at all (`ipc::NotRunning`); a service that does not
+answer is an error that says how to restart it. Run again on that PC:
+60 connections in a row, all answered. The service also keeps its
+warnings and errors in `C:\ProgramData\HidraVPN\service.log`, readable
+by administrators only.
+
 **Two hops on the same PC**, later, with a second node as the entry (run
 by the same person for the test, so `--allow-same-operator`):
 - through the service, the internet saw the exit's address;

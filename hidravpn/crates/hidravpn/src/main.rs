@@ -1005,10 +1005,16 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
     // "command failed".
     match ipc::call(Command::Ping).await {
         Ok(r) if r.ok => Some(ipc::call(cmd).await),
-        // Something else answers in the service's place: say so, and never
-        // act on the network directly while the service may hold it.
-        Err(e) if e.is::<ipc::Impostor>() => Some(Err(e)),
-        _ => None,
+        // Only with no service at all does this process act on the network
+        // itself. A service that is there but does not answer, answers
+        // badly, or is not the service (an impostor) may hold the network:
+        // say so, and never go around it, which would undo its kill switch.
+        Err(e) if e.is::<ipc::NotRunning>() => None,
+        Err(e) => Some(Err(e)),
+        Ok(r) => Some(Err(anyhow!(
+            "the HidraVPN service refused: {}",
+            r.error.unwrap_or_else(|| "no reason given".into())
+        ))),
     }
 }
 

@@ -322,9 +322,25 @@ where
         .block_on(fut)
 }
 
+/// The service's log file on Windows, appended to, and started afresh when
+/// it has grown past a megabyte. None if it cannot be opened.
+#[cfg(windows)]
+fn windows_log_file() -> Option<std::sync::Arc<std::fs::File>> {
+    let path = hidravpn_service::paths::service_log();
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1024 * 1024) {
+        let _ = std::fs::remove_file(&path);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+        .map(std::sync::Arc::new)
+}
+
 fn run_daemon() -> Result<()> {
     require_admin()?;
-    tracing_subscriber::fmt()
+    let logs = tracing_subscriber::fmt()
         // HidraVPN's own crates only, whatever RUST_LOG says.
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             hidravpn_core::logging::directives(
@@ -332,9 +348,21 @@ fn run_daemon() -> Result<()> {
                 "hidravpn_service=info",
             ),
         ))
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .init();
+        .with_target(false);
+    #[cfg(windows)]
+    match windows_log_file() {
+        // Warnings and errors also go to a file: the scheduled task has no
+        // console. They name no address, key or name, like every log here.
+        Some(file) => {
+            use tracing_subscriber::fmt::writer::MakeWriterExt;
+            logs.with_ansi(false)
+                .with_writer(std::io::stderr.and(file.with_max_level(tracing::Level::WARN)))
+                .init();
+        }
+        None => logs.with_writer(std::io::stderr).init(),
+    }
+    #[cfg(not(windows))]
+    logs.with_writer(std::io::stderr).init();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
