@@ -22,8 +22,10 @@ const uiRoot = (process.argv.find((a) => a.startsWith(UI_ROOT_FLAG)) || '')
 
 const isInternalPage = (() => {
   try {
+    // Only a page shipped under src/ui. Not hidra:// — nothing serves that
+    // scheme to a frame today, and the day something does (published sites
+    // are the obvious candidate) it must not inherit this.
     const href = new URL(window.location.href).href;
-    if (href.startsWith('hidra://')) return true;
     return Boolean(uiRoot) && href.startsWith(uiRoot);
   } catch {
     return false;
@@ -53,6 +55,27 @@ if (isInternalPage) {
     },
     vault: {
       status: () => ipcRenderer.invoke('vault:status'),
+    },
+    // HidraVPN: the browser drives the service installed on this machine
+    // (src/main/vpn-manager.js). Connecting routes the whole machine, so this
+    // is offered to our own pages only, and the main process checks the
+    // caller again before it does anything.
+    vpn: {
+      status: () => ipcRenderer.invoke('vpn:status'),
+      connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
+      leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
+      checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
+      install: () => ipcRenderer.invoke('vpn:install'),
+      uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
+      disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
+      newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),
+      nodes: () => ipcRenderer.invoke('vpn:nodes'),
+      importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
+      fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
+      getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
+      setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
+      refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
+      verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
     },
   });
 }

@@ -87,7 +87,7 @@ An investor will ask. Having the answer ready is worth more than the answer.
 |---|---|
 | **Selling user data** | Destroys the only value proposition we have. Not negotiable. |
 | **Advertising with tracking** | Same. |
-| **Token / cryptocurrency (the BAT model)** | Under MiCA, in the EU, issuing a token is a heavy regulatory burden, delays the company by months and alienates the privacy community, which is our initial audience. Brave did this in 2017, in a different regulatory context. |
+| **A token as revenue or as a reward (the BAT model)** | HNET exists, and its role is narrow on purpose: it pays for HidraVPN and other services inside the HidraNet network ([HNET whitepaper](../../landing/token/index.html)). We do not sell it as a product, promise returns, or pay node operators in it. Under MiCA a wider role is a heavy regulatory burden and alienates the privacy community, which is our initial audience; legal advice comes before payments in HNET go live. |
 | **Operating exit nodes as a company** | Inherits abuse complaints and legal requests. An architecture decision, not a product one. See [document 10](10-legal-and-regulatory-risk.md). |
 | **Selling anonymity as the main product** | The competitor charges zero. |
 

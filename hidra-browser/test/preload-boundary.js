@@ -78,7 +78,7 @@ app.whenReady().then(async () => {
   const APPS = `http://127.0.0.1:${apps.address().port}`;
   const OTHER = `http://127.0.0.1:${other.address().port}`;
 
-  const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault'];
+  const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault', 'vpn'];
   const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status';
   const vaultOnly = (s) => s && s.keys.join() === 'vault' && s.vault.join() === 'get,set,status';
   const none = (s) => s === null;

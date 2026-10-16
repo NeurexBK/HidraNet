@@ -588,10 +588,11 @@ async fn run_server_mode(
     let local_port = app_cfg.hidden_service.local_port;
 
     let intro_addr = relays[0].addr;
-    if let Err(e) = dht.announce_service(
-        service_hash,
+    // Signed by the service's own key: a node on the lookup path can
+    // withhold this descriptor but not swap its introduction points.
+    if let Err(e) = dht.announce_signed_service(
+        &service_keys.signing_key,
         vec![intro_addr],
-        *service_keys.verifying_key.as_bytes(),
     )
     .await {
         warn!(error = %e, "failed to announce service in DHT, continuing with local registration");
@@ -714,15 +715,22 @@ async fn run_server_mode(
         let sn_intro_addr = intro_addr;
         tokio::spawn(async move {
             while let Some(announcement) = dht_rx.recv().await {
-                if let Err(e) = dht.announce_service(
-                    announcement.service_hash,
-                    vec![sn_intro_addr],
-                    announcement.service_pubkey,
-                ).await {
-                    tracing::warn!(error = %e, "failed to publish site to DHT");
-                } else {
-                    let hex: String = announcement.service_hash.iter().map(|b| format!("{b:02x}")).collect();
-                    tracing::info!(address = %sensitive(&hex), "site announced in DHT");
+                match announcement {
+                    apps::sevennine::DhtAnnouncement::Publish { service_hash, service_key } => {
+                        if let Err(e) = dht.announce_signed_service(
+                            &service_key,
+                            vec![sn_intro_addr],
+                        ).await {
+                            tracing::warn!(error = %e, "failed to publish site to DHT");
+                        } else {
+                            let hex: String = service_hash.iter().map(|b| format!("{b:02x}")).collect();
+                            tracing::info!(address = %sensitive(&hex), "site announced in DHT");
+                        }
+                    }
+                    apps::sevennine::DhtAnnouncement::Withdraw { service_hash } => {
+                        dht.withdraw_service(&service_hash).await;
+                        tracing::info!("site withdrawn from DHT republishing");
+                    }
                 }
             }
         });

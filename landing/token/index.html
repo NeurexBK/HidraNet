@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HNET Token Whitepaper</title>
+<meta name="description" content="The HNET token whitepaper: HidraNet's token on Solana. Supply, contract, what HNET is used for, the roadmap, how to buy it safely and the risks.">
+<meta name="theme-color" content="#070809">
+<meta property="og:type" content="article">
+<meta property="og:title" content="HNET Token Whitepaper">
+<meta property="og:description" content="HidraNet's token on Solana: no presale, no mint authority, a supply that can only shrink. Used to fund the network, trade on .hidra and pay for HidraVPN.">
+<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="../whitepaper/">Technical whitepaper</a>
+      <a href="./" class="on">HNET whitepaper</a>
+      <a href="../">Home</a>
+    </nav>
+    <a class="btn btn-primary" href="hnet-whitepaper-v1.pdf" download>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>PDF</span>
+    </a>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>HNET token whitepaper &middot; v1.1 &middot; October 2026</span>
+  <h1>HNET, the token of the <span class="hl">HidraNet privacy network</span></h1>
+  <p class="lede">HNET runs on Solana. It funds the network, settles trades between <code>.hidra</code> shops and
+    their buyers, and will pay for HidraVPN without linking a payment to a connection. This paper gives the
+    facts a buyer needs, each one checkable on chain.</p>
+  <div class="meta">
+    <span><b>Network</b> Solana</span>
+    <span><b>Mint</b> Aov3&#8230;pump</span>
+    <span><b>Launched</b> 8 October 2026</span>
+    <span><b>Companion</b> <a href="../whitepaper/">Technical whitepaper v2.0</a></span>
+  </div>
+  <div class="actions no-print">
+    <a class="btn btn-primary" href="hnet-whitepaper-v1.pdf" download>Download the PDF</a>
+    <a class="btn btn-ghost" href="https://solscan.io/token/Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump" target="_blank" rel="noopener noreferrer">See HNET on Solscan</a>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="n">Solana</div><div class="l">Token-2022, no transfer fee</div></div>
+    <div class="tile"><div class="n c">957M</div><div class="l">supply today, after burns; it can only shrink</div></div>
+    <div class="tile"><div class="n">0</div><div class="l">new HNET can ever be minted</div></div>
+    <div class="tile"><div class="n c">0</div><div class="l">presale or private round</div></div>
+    <div class="tile"><div class="n">2.1%</div><div class="l">held by the team, locked on Streamflow until 2028</div></div>
+    <div class="tile"><div class="n c">Free</div><div class="l">the network stays free to use</div></div>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#summary">Summary</a>
+    <a href="#facts">1. Token facts</a>
+    <a href="#utility">2. What HNET is for</a>
+    <a href="#roadmap">3. Roadmap</a>
+    <a href="#not">4. What HNET is not</a>
+    <a href="#safe">5. Buying safely</a>
+    <a href="#risks">6. Risks</a>
+    <a href="#legal">7. Legal notice</a>
+  </nav>
+
+  <article>
+
+    <section id="summary">
+      <div class="sn">Summary</div>
+      <h2>In one paragraph</h2>
+      <p class="abstract">HidraNet is an open-source privacy network: a browser, encrypted applications, its own
+        <code>.hidra</code> services and HidraVPN, all under the MIT licence. HNET is its token on Solana. It launched
+        with 1,000,000,000 and no presale; burns have taken the supply to 957,402,743, and no one can ever add
+        to it. HNET pays for things that cost money to run: servers and bandwidth
+        today, HidraVPN access and the other paid HidraNet services as they arrive. It also lets people buy and sell
+        on <code>.hidra</code>. Privacy itself is never
+        paywalled: the network, the browser and the apps stay free.</p>
+      <p>Each use of HNET below carries a label: <span class="pill live">Live</span> works today,
+        <span class="pill next">Planned</span> is on the roadmap, and planned is not a promise of a date.</p>
+    </section>
+
+    <section id="facts">
+      <div class="sn">1</div>
+      <h2>Token facts</h2>
+      <p>Every line below can be checked on chain. Open the mint on a block explorer and compare.</p>
+      <div class="addr">
+        <code>Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump</code>
+        <button type="button" class="no-print" data-copy="Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump">Copy mint</button>
+      </div>
+      <div class="no-print" style="display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 4px">
+        <a class="btn btn-ghost" href="https://solscan.io/token/Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump" target="_blank" rel="noopener noreferrer">Solscan</a>
+        <a class="btn btn-ghost" href="https://explorer.solana.com/address/Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump" target="_blank" rel="noopener noreferrer">Solana Explorer</a>
+        <a class="btn btn-ghost" href="https://dexscreener.com/solana/Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump" target="_blank" rel="noopener noreferrer">DEX Screener</a>
+      </div>
+      <div class="tbl"><table>
+        <thead><tr><th>Item</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Name and ticker</td><td>HidraNet (HNET)</td></tr>
+          <tr><td>Network</td><td>Solana mainnet</td></tr>
+          <tr><td>Standard</td><td>SPL Token-2022 (the Token Extensions program); no transfer fee, no transfer hook, no permanent delegate</td></tr>
+          <tr><td>Mint address</td><td><code>Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump</code></td></tr>
+          <tr><td>Supply at launch</td><td>1,000,000,000 HNET</td></tr>
+          <tr><td>Supply today</td><td>957,402,743 HNET, after burns (October 2026)</td></tr>
+          <tr><td>Total burned</td><td>42,597,257 HNET (launch supply minus today's); every burn is a public transaction in the mint's history</td></tr>
+          <tr><td>Decimals</td><td>6</td></tr>
+          <tr><td>Mint authority</td><td>None: no one can create more HNET, so the supply can only go down</td></tr>
+          <tr><td>Freeze authority</td><td>None: no one can freeze a holder's balance</td></tr>
+          <tr><td>Launch</td><td>8 October 2026, an open launch on pump.fun; no presale, no private round</td></tr>
+          <tr><td>Team allocation</td><td>20,548,400 HNET (about 2.1% of today's supply), locked until 2028</td></tr>
+          <tr><td>Team lock</td><td>A Streamflow lock contract; anyone can check its amount and release date by looking up the mint on Streamflow</td></tr>
+          <tr><td>Liquidity</td><td>A PumpSwap pool; HNET graduated from the pump.fun bonding curve</td></tr>
+          <tr><td>Support wallet</td><td><code>ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc</code><br>A single-signature wallet, not a multisig. Every transfer in and out is public on chain.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div><p><strong>The mint is not a wallet.</strong> The mint address ends in <code>pump</code> and is the token
+          itself: never send anything to it. To support the network, send HNET to the support wallet.</p></div>
+      </div>
+    </section>
+
+    <section id="utility">
+      <div class="sn">2</div>
+      <h2>What HNET is for</h2>
+      <figure>
+        <svg viewBox="0 0 900 330" role="img" aria-labelledby="f1t">
+          <title id="f1t">Where HNET goes: to the support wallet, to HidraVPN passes, and to shops on .hidra</title>
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9aa1a9"/></marker>
+          </defs>
+          <g font-family="Inter, sans-serif">
+            <rect x="20" y="118" width="190" height="94" rx="14" fill="#0b0d0f" stroke="#ffffff" stroke-opacity=".22"/>
+            <text x="115" y="150" text-anchor="middle" fill="#9aa1a9" font-size="11" font-family="JetBrains Mono, monospace" letter-spacing="2">YOUR WALLET</text>
+            <text x="115" y="176" text-anchor="middle" fill="#fff" font-size="18" font-weight="700">HNET</text>
+            <text x="115" y="198" text-anchor="middle" fill="#9aa1a9" font-size="12.5">on Solana</text>
+
+            <path d="M210 150 C 290 150, 290 62, 372 62" fill="none" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a1)"/>
+            <path d="M210 165 L 372 165" fill="none" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a1)"/>
+            <path d="M210 180 C 290 180, 290 268, 372 268" fill="none" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a1)"/>
+
+            <rect x="380" y="20" width="500" height="84" rx="14" fill="rgba(0,255,136,.07)" stroke="#00ff88" stroke-opacity=".5"/>
+            <rect x="400" y="34" width="52" height="20" rx="10" fill="rgba(0,255,136,.16)" stroke="#00ff88" stroke-opacity=".6"/>
+            <text x="426" y="48" text-anchor="middle" fill="#00ff88" font-size="10.5" font-weight="700" font-family="JetBrains Mono, monospace">LIVE</text>
+            <text x="466" y="49" fill="#fff" font-size="16" font-weight="650">Support wallet</text>
+            <text x="400" y="82" fill="#9aa1a9" font-size="13">Servers, bandwidth, builds and releases</text>
+
+            <rect x="380" y="123" width="500" height="84" rx="14" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".5"/>
+            <rect x="400" y="137" width="80" height="20" rx="10" fill="rgba(0,204,255,.16)" stroke="#00ccff" stroke-opacity=".6"/>
+            <text x="440" y="151" text-anchor="middle" fill="#00ccff" font-size="10.5" font-weight="700" font-family="JetBrains Mono, monospace">PLANNED</text>
+            <text x="494" y="152" fill="#fff" font-size="16" font-weight="650">HidraVPN passes</text>
+            <text x="400" y="185" fill="#9aa1a9" font-size="13">The issuer sees a payment; the node sees a pass; nobody sees both</text>
+
+            <rect x="380" y="226" width="500" height="84" rx="14" fill="rgba(245,184,61,.07)" stroke="#f5b83d" stroke-opacity=".5"/>
+            <rect x="400" y="240" width="140" height="20" rx="10" fill="rgba(245,184,61,.16)" stroke="#f5b83d" stroke-opacity=".6"/>
+            <text x="470" y="254" text-anchor="middle" fill="#f5b83d" font-size="10.5" font-weight="700" font-family="JetBrains Mono, monospace">BASIC, GROWING</text>
+            <text x="554" y="255" fill="#fff" font-size="16" font-weight="650">Shops on .hidra</text>
+            <text x="400" y="288" fill="#9aa1a9" font-size="13">Wallet to wallet; HidraNet is not a party and never holds the funds</text>
+          </g>
+        </svg>
+        <figcaption><b>Figure 1.</b> Every use of HNET pays for work or for a service. None of them pays a holder for
+          holding.</figcaption>
+      </figure>
+      <div class="cards">
+        <div class="card"><h4>Fund the network <span class="pill live">Live</span></h4><p>HNET sent to the support
+          wallet pays for servers, bandwidth and releases. An independent security audit is the next planned use;
+          the auditor will be named when hired. Every transfer is public on chain.</p></div>
+        <div class="card"><h4>Buy and sell on .hidra <span class="pill live">Live, basic</span></h4><p>Shops published
+          as <code>.hidra</code> sites take HNET straight into the seller's wallet, and HidraReview lists them under
+          Marketplace. An integrated marketplace, with signed listings and encrypted orders, is planned.</p></div>
+        <div class="card"><h4>Pay for HidraVPN and HidraNet services <span class="pill next">Planned</span></h4><p>HidraVPN
+          access first, then the other paid HidraNet services, paid in HNET. VPN access uses passes built on blind
+          signatures: the issuer sees a payment and the VPN node sees a pass, and nothing links the two. Before this
+          goes live we will publish who runs the issuer and how nodes stop a pass being spent twice. Free access
+          stays.</p></div>
+        <div class="card"><h4>Bounties and HidraNet Pro <span class="pill next">Planned</span></h4><p>Rewards in HNET
+          for reported security flaws, and paid extras that cost money to run (more HidraMail storage, more
+          <code>.hidra</code> sites), payable in HNET.</p></div>
+      </div>
+      <div class="addr">
+        <code>ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc</code>
+        <button type="button" class="no-print" data-copy="ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc">Copy support wallet</button>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="sn">3</div>
+      <h2>Roadmap</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Step</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td>HNET launched on Solana; mint and support wallet public</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Team allocation locked on Streamflow until 2028</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Support page in HidraBrowser, with HNET preselected</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Shops on <code>.hidra</code> taking HNET; Marketplace in HidraReview</td><td><span class="pill done">Done, basic</span></td></tr>
+          <tr><td>Security bounties paid in HNET</td><td><span class="pill next">Next</span></td></tr>
+          <tr><td>Independent security audit</td><td><span class="pill next">Planned</span></td></tr>
+          <tr><td>HidraVPN access paid in HNET, through unlinkable passes</td><td><span class="pill next">Planned</span></td></tr>
+          <tr><td>Integrated marketplace on <code>.hidra</code></td><td><span class="pill next">Planned</span></td></tr>
+          <tr><td>Other paid HidraNet services, payable in HNET</td><td><span class="pill next">Planned</span></td></tr>
+          <tr><td>HidraNet Pro, payable in HNET</td><td><span class="pill next">Planned</span></td></tr>
+          <tr><td>Team allocation unlocks</td><td><span class="pill open">2028</span></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="not">
+      <div class="sn">4</div>
+      <h2>What HNET is not</h2>
+      <ul>
+        <li><strong>Not a share.</strong> It gives no claim on HidraNet, its assets, its revenue or its profit.</li>
+        <li><strong>Not a source of income.</strong> No staking rewards, interest, dividends or revenue share.</li>
+        <li><strong>Not a price promise.</strong> No buyback, no burn schedule, no price support.</li>
+        <li><strong>Not a gate.</strong> The network, HidraBrowser and the apps never require HNET.</li>
+        <li><strong>Not a vote.</strong> The code is MIT-licensed; anyone may run it, audit it and fork it.</li>
+      </ul>
+    </section>
+
+    <section id="safe">
+      <div class="sn">5</div>
+      <h2>Buying safely</h2>
+      <div class="callout ok">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <div>
+          <p><strong>Check the mint, not the name.</strong> Anyone can create a token called HNET. The real one is
+            <code>Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump</code>; compare it character by character.</p>
+          <p><strong>Never share a seed phrase or a private key.</strong> HidraNet never asks for one, anywhere.</p>
+          <p><strong>We never write first.</strong> No one from HidraNet starts a private conversation to offer help,
+            an airdrop or a sale.</p>
+          <p><strong>Official sources:</strong> this site, the repository at
+            <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a> and
+            <a href="https://x.com/HidraNetoff" rel="noopener noreferrer">x.com/HidraNetoff</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="risks" class="brk">
+      <div class="sn">6</div>
+      <h2>Risks</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Risk</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td>Price</td><td>HNET can lose all its value. Its price can move sharply in either direction.</td></tr>
+          <tr><td>Liquidity</td><td>There may be no buyer at the price you want; the PumpSwap pool can be thin.</td></tr>
+          <tr><td>Delivery</td><td>Planned uses may arrive late, change, or not arrive.</td></tr>
+          <tr><td>Team unlock</td><td>The team's 20,548,400 HNET become free to move in 2028.</td></tr>
+          <tr><td>Support wallet</td><td>A single-signature wallet, not a multisig: it depends on one key, held by the team.</td></tr>
+          <tr><td>Regulation</td><td>Rules for crypto-assets differ by country and are changing; they may limit how
+            HNET can be offered or used.</td></tr>
+          <tr><td>Technology</td><td>Solana, wallets and exchanges can fail or have bugs.</td></tr>
+          <tr><td>Privacy</td><td>HNET transfers are public and permanent on Solana.</td></tr>
+          <tr><td>Timing</td><td>Even with blind passes, paying and using a pass straight away can let the two be linked by time. Buying passes ahead reduces this.</td></tr>
+          <tr><td>Keys</td><td>A lost or stolen private key means lost HNET. No one can reverse a transfer.</td></tr>
+          <tr><td>Tax</td><td>How HNET is taxed depends on your country, and can change.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="legal" style="break-inside:avoid">
+      <div class="sn">7</div>
+      <h2>Legal notice</h2>
+      <p>This paper is for information only. It is not an offer to sell, or a solicitation of an offer to buy, any
+        token or other asset; it is not a prospectus, and it has not been reviewed or approved by any regulator.
+        Nothing here is investment, legal, tax or financial advice. HNET gives no right to profit, interest,
+        dividends, equity or repayment. Planned features describe present intentions, which can change. Check the
+        law where you live before you buy, hold or use HNET.</p>
+      <p class="no-print" style="margin-top:22px"><a class="btn btn-ghost" href="../whitepaper/">Next: the technical whitepaper</a></p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HNET token whitepaper &middot; v1.1 &middot; October 2026 &middot; Not an offer, not advice &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  // Copy an address, and say so; fall back to selecting it when the
+  // clipboard is not available (an insecure context, an old browser).
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
+    var label = b.textContent;
+    b.addEventListener('click', function () {
+      var text = b.getAttribute('data-copy');
+      var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = label; }, 1600); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { select(b); });
+      } else {
+        select(b);
+      }
+    });
+  });
+  function select(b) {
+    var code = b.parentNode.querySelector('code');
+    var r = document.createRange();
+    r.selectNodeContents(code);
+    var s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+})();
+</script>
+</body>
+</html>

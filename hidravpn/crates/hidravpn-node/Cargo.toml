@@ -1,0 +1,31 @@
+[package]
+name = "hidravpn-node"
+description = "The node: a WireGuard endpoint with NAT and an encrypted DNS forwarder, kernel WireGuard where there is one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "hidravpn-node"
+path = "src/main.rs"
+
+# The node runs on Linux. The crate still builds elsewhere (to a message
+# saying so), so a workspace build on any platform does not fail.
+[target.'cfg(target_os = "linux")'.dependencies]
+hidravpn-core = { path = "../hidravpn-core" }
+boringtun = { workspace = true }
+hidravpn-tun = { path = "../hidravpn-tun" }
+hex = { workspace = true }
+wireguard-control = { workspace = true }
+hickory-resolver = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+base64 = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = "0.2"

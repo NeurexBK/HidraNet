@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HidraNet Technical Whitepaper</title>
+<meta name="description" content="HidraNet technical whitepaper, version 2.0: onion routing over a post-quantum handshake, a Sybil-resistant DHT, self-certifying .hidra services, end-to-end encrypted apps and HidraVPN, verified against the code.">
+<meta name="theme-color" content="#070809">
+<meta property="og:type" content="article">
+<meta property="og:title" content="HidraNet Technical Whitepaper">
+<meta property="og:description" content="What HidraNet does, how, and what it does not do yet. Verified against the code.">
+<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="./" class="on">Technical whitepaper</a>
+      <a href="../token/">HNET whitepaper</a>
+      <a href="../">Home</a>
+    </nav>
+    <a class="btn btn-primary" href="hidranet-technical-whitepaper-v2.pdf" download>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>PDF</span>
+    </a>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>Technical whitepaper &middot; v2.0 &middot; October 2026</span>
+  <h1>An anonymity network you can <span class="hl">check for yourself</span></h1>
+  <p class="lede">HidraNet is an open-source overlay network: onion routing over a post-quantum handshake, a
+    Sybil-resistant DHT, self-certifying <code>.hidra</code> services, end-to-end encrypted applications and
+    HidraVPN. This paper describes what is built, how it works, and, just as plainly, what it does not do yet.
+    Every claim in it points at code anyone can run.</p>
+  <div class="meta">
+    <span><b>Authors</b> Jo&#227;o Brand&#227;o, Leonardo Mello</span>
+    <span><b>Licence</b> MIT</span>
+    <span><b>Source</b> <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></span>
+    <span><b>Supersedes</b> v1.0, September 2026</span>
+  </div>
+  <div class="actions no-print">
+    <a class="btn btn-primary" href="hidranet-technical-whitepaper-v2.pdf" download>Download the PDF</a>
+    <a class="btn btn-ghost" href="../token/">Read the HNET whitepaper</a>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="n">17.7k</div><div class="l">lines of Rust in the network engine</div></div>
+    <div class="tile"><div class="n c">11.5k</div><div class="l">lines of Rust in HidraVPN</div></div>
+    <div class="tile"><div class="n">243</div><div class="l">engine tests, attack scenarios included</div></div>
+    <div class="tile"><div class="n c">250</div><div class="l">VPN checks on real tunnels in 8 network suites</div></div>
+    <div class="tile"><div class="n">1024</div><div class="l">ML-KEM-1024, hybrid with X25519</div></div>
+    <div class="tile"><div class="n c">MIT</div><div class="l">open source, every line</div></div>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#abstract">Abstract</a>
+    <a href="#status">1. Status at a glance</a>
+    <a href="#architecture">2. Architecture</a>
+    <a href="#pq">3. Post-quantum transport</a>
+    <a href="#onion">4. Onion routing</a>
+    <a href="#dht">5. A DHT that resists Sybils</a>
+    <a href="#hidra">6. .hidra services</a>
+    <a href="#apps">7. Applications</a>
+    <a href="#vpn">8. HidraVPN</a>
+    <a href="#machine">9. Protecting the machine</a>
+    <a href="#threat">10. Threat model</a>
+    <a href="#verify">11. Verify it yourself</a>
+    <a href="#roadmap">12. Roadmap</a>
+    <a href="#governance">13. Licence and governance</a>
+    <a href="#refs">14. References</a>
+  </nav>
+
+  <article>
+
+    <section id="abstract">
+      <div class="sn">Abstract</div>
+      <h2>What this paper is</h2>
+      <p class="abstract">HidraNet combines onion routing with a hybrid post-quantum key exchange
+        (X25519 + ML-KEM-1024), a Kademlia DHT hardened with the S/Kademlia defences, self-certifying
+        hidden services and a suite of applications that encrypt on the device. HidraVPN, built
+        alongside it, routes a whole machine through one or two independently run WireGuard nodes behind
+        a kill switch. The reference implementation is a Rust network engine (<code>hidra-node</code>), the
+        HidraVPN workspace and a desktop browser.</p>
+      <p>We state one thing first, because a whitepaper that overstates is worse than none:
+        <strong>today, exit anonymity in HidraBrowser is provided by the Tor network</strong>, which the browser
+        bundles. The HidraNet protocol layer is implemented and tested; its relay population is not yet large
+        enough to provide anonymity on its own. Section 12 sets out how that changes.</p>
+    </section>
+
+    <section id="status">
+      <div class="sn">1</div>
+      <h2>Status at a glance</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Component</th><th>State</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Hybrid post-quantum handshake</td><td><span class="pill done">Built</span></td><td><code>crypto/handshake.rs</code></td></tr>
+          <tr><td>Onion circuits, three hops</td><td><span class="pill open">Layering built; telescoping not yet</span></td><td><code>onion/</code>, <code>client/</code></td></tr>
+          <tr><td>Sybil-resistant DHT (S/Kademlia)</td><td><span class="pill done">Built</span></td><td><code>p2p/dht/</code></td></tr>
+          <tr><td>Signed, expiring <code>.hidra</code> service records</td><td><span class="pill done">Built</span></td><td><code>p2p/dht/descriptor.rs</code></td></tr>
+          <tr><td>HidraVPN: one hop, two hops, kill switch, signed node list</td><td><span class="pill done">Built</span></td><td><code>hidravpn/</code></td></tr>
+          <tr><td>Exit anonymity for the browser</td><td><span class="pill open">Via Tor today</span></td><td>bundled Tor</td></tr>
+          <tr><td>HidraVPN on Windows</td><td><span class="pill open">Compiled, not yet run on hardware</span></td><td><code>hidravpn/scripts/windows</code></td></tr>
+          <tr><td>Independent external security audit</td><td><span class="pill open">Not yet</span></td><td>&sect;12</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="architecture" class="brk">
+      <div class="sn">2</div>
+      <h2>Architecture</h2>
+      <p>Three programs, each doing one job. The browser is what a person opens. The engine carries the
+        network. HidraVPN protects the rest of the machine, and is driven by the browser without ever handing it
+        a key.</p>
+      <figure>
+        <svg viewBox="0 0 900 470" role="img" aria-labelledby="f1t">
+          <title id="f1t">HidraNet architecture: applications over the browser over the engine, with HidraVPN beside them</title>
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#00ff88" stop-opacity=".16"/><stop offset="1" stop-color="#00ccff" stop-opacity=".08"/></linearGradient>
+          </defs>
+          <g font-family="Inter, sans-serif">
+            <rect x="10" y="10" width="610" height="78" rx="14" fill="url(#g1)" stroke="#00ff88" stroke-opacity=".45"/>
+            <text x="30" y="40" fill="#00ff88" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">APPLICATIONS</text>
+            <text x="30" y="66" fill="#fff" font-size="16" font-weight="600">HidraChat &#183; HidraMail &#183; Forum &#183; HidraSearch &#183; SevenNine &#183; HidraReview</text>
+
+            <rect x="10" y="102" width="610" height="70" rx="14" fill="#0b0d0f" stroke="#ffffff" stroke-opacity=".16"/>
+            <text x="30" y="131" fill="#9aa1a9" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">HIDRABROWSER (ELECTRON)</text>
+            <text x="30" y="156" fill="#fff" font-size="15">Per-tab isolation &#183; fingerprint profiles &#183; network lock &#183; bundled Tor</text>
+
+            <rect x="10" y="186" width="610" height="196" rx="14" fill="#0b0d0f" stroke="#00ff88" stroke-opacity=".35"/>
+            <text x="30" y="215" fill="#00ff88" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">HIDRA-NODE (RUST)</text>
+            <g font-size="14" fill="#fff">
+              <rect x="30" y="230" width="135" height="64" rx="10" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".35"/>
+              <text x="44" y="256" font-weight="600">onion/</text><text x="44" y="278" fill="#9aa1a9" font-size="12">circuits, layers</text>
+              <rect x="177" y="230" width="135" height="64" rx="10" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".35"/>
+              <text x="191" y="256" font-weight="600">p2p/dht/</text><text x="191" y="278" fill="#9aa1a9" font-size="12">S/Kademlia</text>
+              <rect x="324" y="230" width="135" height="64" rx="10" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".35"/>
+              <text x="338" y="256" font-weight="600">relay/</text><text x="338" y="278" fill="#9aa1a9" font-size="12">router</text>
+              <rect x="471" y="230" width="135" height="64" rx="10" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".35"/>
+              <text x="485" y="256" font-weight="600">proxy/</text><text x="485" y="278" fill="#9aa1a9" font-size="12">SOCKS5 gateway</text>
+              <rect x="30" y="306" width="576" height="60" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".4"/>
+              <text x="44" y="331" font-weight="600">crypto/</text>
+              <text x="44" y="352" fill="#9aa1a9" font-size="12">ML-KEM-1024 &#183; X25519 &#183; Ed25519 &#183; ChaCha20-Poly1305 &#183; AES-256-GCM &#183; BLAKE3 &#183; Argon2id</text>
+            </g>
+
+            <rect x="10" y="396" width="610" height="62" rx="14" fill="rgba(245,184,61,.07)" stroke="#f5b83d" stroke-opacity=".5" stroke-dasharray="6 5"/>
+            <text x="30" y="424" fill="#f5b83d" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">EXIT LAYER</text>
+            <text x="30" y="446" fill="#fff" font-size="14">Today the Tor network; the HidraNet relay population grows into it (&#167;12)</text>
+
+            <rect x="650" y="10" width="240" height="448" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".45"/>
+            <text x="670" y="40" fill="#00ccff" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">HIDRAVPN (RUST)</text>
+            <g font-size="14" fill="#fff">
+              <rect x="668" y="58" width="204" height="74" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
+              <text x="682" y="84" font-weight="600">hidravpn</text><text x="682" y="106" fill="#9aa1a9" font-size="12">command line</text><text x="682" y="122" fill="#9aa1a9" font-size="12">and the browser's VPN page</text>
+              <rect x="668" y="144" width="204" height="90" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
+              <text x="682" y="170" font-weight="600">hidravpn-service</text><text x="682" y="192" fill="#9aa1a9" font-size="12">holds the circuit</text><text x="682" y="208" fill="#9aa1a9" font-size="12">arms the kill switch</text><text x="682" y="224" fill="#9aa1a9" font-size="12">checks the signed node list</text>
+              <rect x="668" y="246" width="204" height="74" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
+              <text x="682" y="272" font-weight="600">hidravpn-node</text><text x="682" y="294" fill="#9aa1a9" font-size="12">WireGuard, NAT, DNS over</text><text x="682" y="310" fill="#9aa1a9" font-size="12">HTTPS, open admission</text>
+              <rect x="668" y="332" width="204" height="58" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
+              <text x="682" y="358" font-weight="600">hidravpn-sign</text><text x="682" y="378" fill="#9aa1a9" font-size="12">Ed25519 releases and lists</text>
+              <text x="668" y="418" fill="#9aa1a9" font-size="12">Whole-machine protection,</text>
+              <text x="668" y="436" fill="#9aa1a9" font-size="12">one hop or two</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption><b>Figure 1.</b> The engine and the VPN are separate Rust workspaces with separate
+          build pipelines, so a change to one cannot change how the other is built or tested.</figcaption>
+      </figure>
+      <div class="tbl"><table>
+        <thead><tr><th>Component</th><th>Language</th><th>Job</th></tr></thead>
+        <tbody>
+          <tr><td><code>hidra-node</code></td><td>Rust 2024</td><td>Circuits, DHT, relay, SOCKS5 gateway, the apps' local servers</td></tr>
+          <tr><td><code>hidra-browser</code></td><td>JavaScript, Electron</td><td>Interface, tab isolation, fingerprint profiles, Tor management, VPN page</td></tr>
+          <tr><td><code>hidravpn</code></td><td>Rust 2021</td><td>Client, background service, node, signing tool</td></tr>
+          <tr><td>Applications</td><td>JavaScript, Web Crypto; Rust</td><td>Encryption on the device; the network carries ciphertext</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="pq" class="brk">
+      <div class="sn">3</div>
+      <h2>Post-quantum transport</h2>
+      <p>Traffic recorded today can be stored and decrypted the day a cryptographically relevant quantum computer
+        exists. The only defence that works against <em>harvest now, decrypt later</em> is a key exchange that is
+        already quantum-resistant when the recording is made. HidraNet's is.</p>
+      <p>The hybrid is the transport handshake itself, not a layer beside it:
+        <code>Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3</code>. The first message carries an ephemeral
+        ML-KEM-1024 encapsulation key next to the X25519 ephemeral; the second carries the ciphertext, and the
+        shared secret is mixed into the chaining key right after <code>ee</code>, before the responder's static key
+        is encrypted. An adversary with a recording and a quantum computer breaks the X25519 half and still
+        cannot read the static key, let alone the traffic.</p>
+      <figure>
+        <svg viewBox="0 0 900 300" role="img" aria-labelledby="f2t">
+          <title id="f2t">The three handshake messages between initiator and responder</title>
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#00ff88"/></marker>
+            <marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#00ccff"/></marker>
+          </defs>
+          <g font-family="Inter, sans-serif">
+            <rect x="20" y="16" width="170" height="44" rx="10" fill="rgba(0,255,136,.1)" stroke="#00ff88" stroke-opacity=".5"/>
+            <text x="105" y="44" text-anchor="middle" fill="#fff" font-size="15" font-weight="600">Initiator</text>
+            <rect x="710" y="16" width="170" height="44" rx="10" fill="rgba(0,204,255,.1)" stroke="#00ccff" stroke-opacity=".5"/>
+            <text x="795" y="44" text-anchor="middle" fill="#fff" font-size="15" font-weight="600">Responder</text>
+            <line x1="105" y1="62" x2="105" y2="290" stroke="#fff" stroke-opacity=".15" stroke-dasharray="4 5"/>
+            <line x1="795" y1="62" x2="795" y2="290" stroke="#fff" stroke-opacity=".15" stroke-dasharray="4 5"/>
+
+            <line x1="110" y1="106" x2="788" y2="106" stroke="#00ff88" stroke-width="2" marker-end="url(#ar)"/>
+            <text x="450" y="94" text-anchor="middle" fill="#fff" font-size="14"><tspan font-family="JetBrains Mono, monospace" fill="#00ff88">A</tspan>  X25519 ephemeral &#183; ML-KEM-1024 encapsulation key</text>
+
+            <line x1="790" y1="176" x2="112" y2="176" stroke="#00ccff" stroke-width="2" marker-end="url(#arc)"/>
+            <text x="450" y="152" text-anchor="middle" fill="#fff" font-size="14"><tspan font-family="JetBrains Mono, monospace" fill="#00ccff">B</tspan>  X25519 ephemeral &#183; ee &#183; ML-KEM ciphertext, mixed in now</text>
+            <text x="450" y="168" text-anchor="middle" fill="#9aa1a9" font-size="12.5">then the responder's static key, already under both secrets &#183; es</text>
+
+            <line x1="110" y1="236" x2="788" y2="236" stroke="#00ff88" stroke-width="2" marker-end="url(#ar)"/>
+            <text x="450" y="224" text-anchor="middle" fill="#fff" font-size="14"><tspan font-family="JetBrains Mono, monospace" fill="#00ff88">C</tspan>  initiator's static key, encrypted &#183; se</text>
+            <text x="450" y="276" text-anchor="middle" fill="#9aa1a9" font-size="12.5">The protocol name is hashed into the transcript: a peer offering X25519-only Noise cannot complete a handshake.</text>
+          </g>
+        </svg>
+        <figcaption><b>Figure 2.</b> The session is compromised only if both X25519 and ML-KEM-1024 fall.
+          There is no negotiation and no fallback, so there is no downgrade to attack.</figcaption>
+      </figure>
+      <h3>Primitives in use</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Function</th><th>Algorithm</th><th>Standard</th></tr></thead>
+        <tbody>
+          <tr><td>Post-quantum key encapsulation</td><td>ML-KEM-1024 (<code>ml-kem</code>)</td><td>NIST FIPS 203</td></tr>
+          <tr><td>Classical key agreement</td><td>X25519</td><td>RFC 7748</td></tr>
+          <tr><td>Signatures</td><td>Ed25519</td><td>RFC 8032</td></tr>
+          <tr><td>Authenticated encryption</td><td>ChaCha20-Poly1305, AES-256-GCM, XChaCha20-Poly1305</td><td>RFC 8439</td></tr>
+          <tr><td>Hashing</td><td>BLAKE3, SHA-256</td><td></td></tr>
+          <tr><td>Password-based derivation</td><td>Argon2id</td><td>RFC 9106</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <div><p><strong>Why ML-KEM and not Kyber.</strong> The engine used <code>pqc_kyber</code> until an audit of the
+          dependency tree found two unfixable advisories: an AVX2 backend that skipped implicit rejection, handing
+          a chosen-ciphertext attacker the decapsulation key, and KyberSlash timing leaks. The crate was
+          unmaintained, so it was replaced with the FIPS 203 implementation rather than pinned. <code>cargo audit</code>
+          runs in CI on every change.</p></div></div>
+    </section>
+
+    <section id="onion" class="brk">
+      <div class="sn">4</div>
+      <h2>Onion routing</h2>
+      <p>Traffic crosses a circuit of three relays. The client wraps each message in one layer per relay
+        (ChaCha20-Poly1305, a fresh key per hop from that hop's handshake), and each relay removes its layer. In the
+        design, a relay learns only the hop before it and the hop after it, so no single relay knows both who is
+        talking and what they are talking to.</p>
+      <p><strong>The circuit builder does not deliver that yet.</strong> Today the client opens a direct
+        connection and a separate handshake to each of the three relays, with the same client static key on every
+        hop. So every relay on the circuit sees the client's address, and the shared key lets the three relays link
+        their views of the same client. The layers still keep the payload from all but the last relay, but the
+        unlinkability the design promises is not there. The fix is telescoping construction, as in Tor: the client
+        connects only to the entry and extends through it, hop by hop, with a fresh ephemeral key for each hop.
+        It is the first item on the roadmap (&sect;12).</p>
+      <figure>
+        <svg viewBox="0 0 900 230" role="img" aria-labelledby="f3t">
+          <title id="f3t">A three-hop circuit; each relay removes one layer</title>
+          <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9aa1a9"/></marker></defs>
+          <g font-family="Inter, sans-serif" font-size="14">
+            <g>
+              <rect x="14" y="62" width="128" height="76" rx="12" fill="rgba(0,255,136,.1)" stroke="#00ff88" stroke-opacity=".5"/>
+              <text x="78" y="96" text-anchor="middle" fill="#fff" font-weight="600">You</text>
+              <text x="78" y="118" text-anchor="middle" fill="#9aa1a9" font-size="12">3 layers</text>
+            </g>
+            <g>
+              <rect x="208" y="62" width="128" height="76" rx="12" fill="#0b0d0f" stroke="#fff" stroke-opacity=".2"/>
+              <text x="272" y="96" text-anchor="middle" fill="#fff" font-weight="600">Relay 1</text>
+              <text x="272" y="118" text-anchor="middle" fill="#9aa1a9" font-size="12">removes 1</text>
+            </g>
+            <g>
+              <rect x="402" y="62" width="128" height="76" rx="12" fill="#0b0d0f" stroke="#fff" stroke-opacity=".2"/>
+              <text x="466" y="96" text-anchor="middle" fill="#fff" font-weight="600">Relay 2</text>
+              <text x="466" y="118" text-anchor="middle" fill="#9aa1a9" font-size="12">removes 1</text>
+            </g>
+            <g>
+              <rect x="596" y="62" width="128" height="76" rx="12" fill="#0b0d0f" stroke="#fff" stroke-opacity=".2"/>
+              <text x="660" y="96" text-anchor="middle" fill="#fff" font-weight="600">Relay 3</text>
+              <text x="660" y="118" text-anchor="middle" fill="#9aa1a9" font-size="12">removes the last</text>
+            </g>
+            <g>
+              <rect x="776" y="62" width="110" height="76" rx="12" fill="rgba(0,204,255,.08)" stroke="#00ccff" stroke-opacity=".5"/>
+              <text x="831" y="96" text-anchor="middle" fill="#fff" font-weight="600">Service</text>
+              <text x="831" y="118" text-anchor="middle" fill="#9aa1a9" font-size="12">.hidra or web</text>
+            </g>
+            <line x1="144" y1="100" x2="204" y2="100" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a3)"/>
+            <line x1="338" y1="100" x2="398" y2="100" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a3)"/>
+            <line x1="532" y1="100" x2="592" y2="100" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a3)"/>
+            <line x1="726" y1="100" x2="772" y2="100" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a3)"/>
+            <g font-size="12" fill="#9aa1a9" text-anchor="middle">
+              <text x="272" y="172">knows you,</text><text x="272" y="188">not the service</text>
+              <text x="466" y="172">knows neither end</text><text x="466" y="188">(today: sees you too)</text>
+              <text x="660" y="172">knows the service</text><text x="660" y="188">(today: sees you too)</text>
+            </g>
+            <g>
+              <rect x="143" y="18" width="64" height="36" rx="8" fill="rgba(0,255,136,.12)" stroke="#00ff88"/>
+              <rect x="149" y="22" width="52" height="28" rx="6" fill="rgba(0,204,255,.12)" stroke="#00ccff"/>
+              <rect x="155" y="26" width="40" height="20" rx="5" fill="rgba(245,184,61,.14)" stroke="#f5b83d"/>
+              <rect x="161" y="30" width="28" height="12" rx="3" fill="#fff" fill-opacity=".7"/>
+              <rect x="344" y="22" width="52" height="28" rx="6" fill="rgba(0,204,255,.12)" stroke="#00ccff"/>
+              <rect x="350" y="26" width="40" height="20" rx="5" fill="rgba(245,184,61,.14)" stroke="#f5b83d"/>
+              <rect x="356" y="30" width="28" height="12" rx="3" fill="#fff" fill-opacity=".7"/>
+              <rect x="544" y="26" width="40" height="20" rx="5" fill="rgba(245,184,61,.14)" stroke="#f5b83d"/>
+              <rect x="550" y="30" width="28" height="12" rx="3" fill="#fff" fill-opacity=".7"/>
+              <rect x="737" y="30" width="28" height="12" rx="3" fill="#fff" fill-opacity=".7"/>
+            </g>
+            <g font-size="11.5" fill="#9aa1a9">
+              <rect x="226" y="211" width="12" height="12" rx="3" fill="rgba(0,255,136,.12)" stroke="#00ff88"/><text x="244" y="221">relay 1's layer</text>
+              <rect x="356" y="211" width="12" height="12" rx="3" fill="rgba(0,204,255,.12)" stroke="#00ccff"/><text x="374" y="221">relay 2's layer</text>
+              <rect x="486" y="211" width="12" height="12" rx="3" fill="rgba(245,184,61,.14)" stroke="#f5b83d"/><text x="504" y="221">relay 3's layer</text>
+              <rect x="616" y="211" width="12" height="12" rx="3" fill="#fff" fill-opacity=".7"/><text x="634" y="221">the data</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption><b>Figure 3.</b> The layering, and what each relay should learn. Until circuits are built
+          by extending through the entry, every relay also sees the client's address. In HidraBrowser today, web traffic leaves through Tor. HidraNet's own
+          circuits carry <code>.hidra</code> traffic, and are what the volunteer relay population grows into.</figcaption>
+      </figure>
+      <div class="callout warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div><p><strong>Not yet.</strong> Circuits are not yet extended through the entry, as described above. Cells are not padded to a fixed size on the wire and there is no cover
+          traffic, so the size and timing of a page load cross the network largely intact. The padding code exists
+          and is tested, and is not yet on the data path. Circuit construction does not yet pin each relay's static
+          key against a published one; announcing that key through the DHT and checking it is on the roadmap.</p></div></div>
+    </section>
+
+    <section id="dht" class="brk">
+      <div class="sn">5</div>
+      <h2>A DHT that resists Sybils</h2>
+      <p>Peers and services are found through a Kademlia DHT, with no central server. A plain Kademlia has a
+        well-known weakness: node IDs are free, so one operator can mint thousands of them right next to a
+        service's key, own the set of nodes closest to it, and hide the service or point it somewhere dead.
+        HidraNet puts the S/Kademlia defences on the wire.</p>
+      <div class="cards">
+        <div class="card"><h4>IDs cost work, bound to a key</h4><p>A node ID is the first 20 bytes of
+          <code>BLAKE3("hidra/node-id/v1" &#8214; public key &#8214; nonce)</code>, valid only when the rest of that
+          hash starts with 24 zero bits. The ID is unknown until the work is done, so closeness cannot be tested
+          for free.</p></div>
+        <div class="card"><h4>Signed, and bound to the signer</h4><p>Every DHT message is signed with Ed25519.
+          The sender's key must be the signing key and its ID the one that key and nonce derive. Every node named
+          in an answer is checked the same way before it is asked anything.</p></div>
+        <div class="card"><h4>Seated only where it answers</h4><p>A node that writes first is seated after it
+          answers a fresh ping at the address it wrote from. A signed packet replayed from elsewhere seats
+          nothing. Checks are budgeted per network and backed off per host.</p></div>
+        <div class="card"><h4>Three disjoint paths</h4><p>Lookups are dealt to three paths that never ask the same
+          node, seeded one network at a time. Service lookups walk until the 60 closest nodes they have seen have
+          answered, within fifteen seconds.</p></div>
+        <div class="card"><h4>One network, a few seats</h4><p>At most two nodes from one IPv4 /24 (or IPv6 /48) per
+          bucket and ten per table, counted at the address the node answered from, not the one it claims.</p></div>
+        <div class="card"><h4>Records signed by the service</h4><p>A <code>.hidra</code> descriptor carries the
+          service's own signature, expires an hour after signing and is republished every fifteen minutes. A node
+          in the path can withhold a record; it cannot forge one.</p></div>
+      </div>
+      <figure>
+        <svg viewBox="0 0 900 300" role="img" aria-labelledby="f4t">
+          <title id="f4t">Three disjoint lookup paths reach a service's closest nodes; a Sybil cluster can block one path, not all three</title>
+          <g font-family="Inter, sans-serif" font-size="13">
+            <circle cx="70" cy="150" r="36" fill="rgba(0,255,136,.12)" stroke="#00ff88" stroke-opacity=".6"/>
+            <text x="70" y="155" text-anchor="middle" fill="#fff" font-weight="600">Client</text>
+            <circle cx="790" cy="150" r="96" fill="rgba(0,204,255,.06)" stroke="#00ccff" stroke-opacity=".35" stroke-dasharray="5 5"/>
+            <text x="790" y="40" text-anchor="middle" fill="#00ccff" font-size="12" font-family="JetBrains Mono, monospace">closest to the key</text>
+            <circle cx="790" cy="150" r="9" fill="#00ccff"/>
+            <text x="790" y="178" text-anchor="middle" fill="#fff" font-size="12">service key</text>
+            <g fill="#00ff88"><circle cx="740" cy="100" r="7"/><circle cx="845" cy="110" r="7"/><circle cx="835" cy="205" r="7"/><circle cx="745" cy="205" r="7"/></g>
+
+            <path d="M106 138 C 240 60, 420 60, 560 82 S 700 96, 732 100" fill="none" stroke="#00ff88" stroke-width="2"/>
+            <g fill="#0b0d0f" stroke="#00ff88"><circle cx="250" cy="74" r="10"/><circle cx="420" cy="66" r="10"/><circle cx="590" cy="86" r="10"/></g>
+
+            <path d="M106 150 C 260 150, 420 150, 560 150 S 720 150, 778 150" fill="none" stroke="#00ccff" stroke-width="2"/>
+            <g fill="#0b0d0f" stroke="#00ccff"><circle cx="260" cy="150" r="10"/><circle cx="430" cy="150" r="10"/><circle cx="600" cy="150" r="10"/></g>
+
+            <path d="M106 162 C 240 240, 380 250, 470 236" fill="none" stroke="#ff5c6c" stroke-width="2" stroke-dasharray="6 5"/>
+            <g fill="rgba(255,92,108,.18)" stroke="#ff5c6c"><circle cx="500" cy="230" r="11"/><circle cx="526" cy="248" r="11"/><circle cx="520" cy="214" r="11"/><circle cx="548" cy="230" r="11"/></g>
+            <text x="524" y="281" text-anchor="middle" fill="#ff5c6c" font-size="12">Sybil cluster: blocks one path</text>
+            <path d="M564 230 C 640 226, 700 214, 737 207" fill="none" stroke="#ff5c6c" stroke-width="1.4" stroke-dasharray="3 6" opacity=".5"/>
+            <text x="300" y="44" fill="#9aa1a9" font-size="12">path 1</text>
+            <text x="300" y="138" fill="#9aa1a9" font-size="12">path 2</text>
+            <text x="250" y="244" fill="#9aa1a9" font-size="12">path 3</text>
+          </g>
+        </svg>
+        <figcaption><b>Figure 4.</b> Paths never share a node, and each keeps its own closest responders.
+          A cluster closer to a service than every honest node has to win on every path before a lookup stops
+          reaching honest storers.</figcaption>
+      </figure>
+      <h3>What an attack costs</h3>
+      <p>Landing one identity among the K = 20 closest to a key in a network of N nodes costs about
+        (N / 20) &#215; 2<sup>24</sup> hashes; the whole closest set, twenty times that. On one server core,
+        one identity takes about 1.2 seconds. Proof of work alone is therefore cheap for a patient attacker,
+        and it is not what carries the weight: hiding a service also takes addresses in more than sixty distinct
+        networks, seated in honest tables, winning on all three paths.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>ID puzzle difficulty</td><td>24 leading zero bits</td></tr>
+          <tr><td>Disjoint lookup paths</td><td>3</td></tr>
+          <tr><td>Service lookup width</td><td>60 closest nodes</td></tr>
+          <tr><td>Seats per /24 network</td><td>2 per bucket, 10 per table</td></tr>
+          <tr><td>Descriptor lifetime</td><td>1 hour after signing; republished every 15 minutes</td></tr>
+          <tr><td>New services one node may introduce</td><td>32 per hour</td></tr>
+          <tr><td>Wire format</td><td><code>HDT2</code>, incompatible with earlier nodes on purpose</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div><p><strong>What this does not do.</strong> An operator with enough hardware and addresses in many
+          networks can still hide a service, from some clients or from all; it cannot forge one. A client whose
+          every path starts at attacker nodes can be misled. DHT queries still leave from the user's own address;
+          routing them through a circuit is on the roadmap.</p></div></div>
+      <p>Each defence is covered by a test that fails when the defence is removed: 15 DHT integration tests,
+        attack scenarios included, run against real sockets.</p>
+    </section>
+
+    <section id="hidra">
+      <div class="sn">6</div>
+      <h2><code>.hidra</code> services</h2>
+      <p>A <code>.hidra</code> address is the 160-bit BLAKE3 hash of the service's public key. The name is the key:
+        there is no certificate authority to trust and no registrar who can take it away. Resolution is checked by
+        the client itself: a descriptor that the service's key did not sign is refused, and the client keeps the
+        highest revision it can verify. A descriptor names up to eight introduction points, so the host's own
+        address is never published. SevenNine builds and hosts the sites; deleting one withdraws its record,
+        which is gone from the network an hour after it was last signed.</p>
+    </section>
+
+    <section id="apps" class="brk">
+      <div class="sn">7</div>
+      <h2>Applications</h2>
+      <p>Each application encrypts on the device. The network carries ciphertext and has no key to read it with.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>App</th><th>How it protects you</th><th>Not yet</th></tr></thead>
+        <tbody>
+          <tr><td>HidraMail</td><td>Self-certifying <code>@hidra</code> addresses derived from two keys: ECDH P-256
+            for encryption (ECIES, AES-256-GCM, a fresh ephemeral key per message) and ECDSA P-256 for signatures,
+            so the recipient can prove who sent a message. The client refuses a key that does not hash to the
+            address.</td><td>Delivery between nodes connects directly to the recipient; delivery through a circuit
+            is open.</td></tr>
+          <tr><td>HidraChat</td><td>Rooms sealed with a key derived from a shared password. The engine-served chat
+            uses Argon2id (64 MiB, 3 passes) and ChaCha20-Poly1305.</td><td>The browser's chat page still derives its
+            key with PBKDF2 and a fixed salt; moving it to Argon2id is open. Messages travel through public MQTT
+            brokers: content is encrypted, timing is visible to the broker.</td></tr>
+          <tr><td>Forum</td><td>Public discussion on the network.</td><td>Same transport note as chat.</td></tr>
+          <tr><td>HidraSearch</td><td>Meta-search through privacy-respecting engines, no query log.</td><td></td></tr>
+          <tr><td>SevenNine</td><td>Builds and hosts <code>.hidra</code> sites; publishing signs the site's record.</td><td></td></tr>
+          <tr><td>HidraReview</td><td>Reviews of local businesses, each with its own <code>.hidra</code> address.</td><td></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="vpn" class="brk">
+      <div class="sn">8</div>
+      <h2>HidraVPN</h2>
+      <p>The browser protects what happens in the browser. HidraVPN protects the whole machine. It is WireGuard,
+        run as a background service, through nodes run by different people, with a kill switch that is on by default.</p>
+      <figure>
+        <svg viewBox="0 0 900 270" role="img" aria-labelledby="f5t">
+          <title id="f5t">Privado mode: your machine, an entry node and an exit node; neither node sees both who and where</title>
+          <defs><marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9aa1a9"/></marker></defs>
+          <g font-family="Inter, sans-serif" font-size="14">
+            <rect x="12" y="56" width="190" height="110" rx="14" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".55"/>
+            <text x="107" y="92" text-anchor="middle" fill="#fff" font-weight="600">Your machine</text>
+            <text x="107" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">kill switch armed</text>
+            <text x="107" y="132" text-anchor="middle" fill="#9aa1a9" font-size="12">a key per node</text>
+            <rect x="300" y="56" width="190" height="110" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".5"/>
+            <text x="395" y="92" text-anchor="middle" fill="#fff" font-weight="600">Entry node</text>
+            <text x="395" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">forwards only WireGuard</text>
+            <rect x="588" y="56" width="190" height="110" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".5"/>
+            <text x="683" y="92" text-anchor="middle" fill="#fff" font-weight="600">Exit node</text>
+            <text x="683" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">DNS over HTTPS</text>
+            <text x="683" y="132" text-anchor="middle" fill="#9aa1a9" font-size="12">no mail, no abuse ports</text>
+            <rect x="816" y="76" width="72" height="70" rx="12" fill="rgba(255,255,255,.04)" stroke="#fff" stroke-opacity=".2"/>
+            <text x="852" y="116" text-anchor="middle" fill="#fff" font-size="13">Web</text>
+            <rect x="208" y="97" width="86" height="28" rx="14" fill="rgba(0,204,255,.12)" stroke="#00ccff" stroke-opacity=".6"/>
+            <rect x="218" y="104" width="66" height="14" rx="7" fill="rgba(0,255,136,.25)" stroke="#00ff88" stroke-opacity=".7"/>
+            <line x1="492" y1="111" x2="584" y2="111" stroke="#00ff88" stroke-width="2.5" stroke-opacity=".8" marker-end="url(#a5)"/>
+            <line x1="780" y1="111" x2="812" y2="111" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a5)"/>
+            <g font-size="12.5" text-anchor="middle">
+              <text x="395" y="200" fill="#fff">Sees your address</text><text x="395" y="218" fill="#9aa1a9">not where you go</text>
+              <text x="683" y="200" fill="#fff">Sees where you go</text><text x="683" y="218" fill="#9aa1a9">not your address</text>
+              <text x="251" y="152" fill="#9aa1a9" font-size="11">tunnel in a tunnel</text>
+            </g>
+            <text x="450" y="258" text-anchor="middle" fill="#6b727a" font-size="12">Rapido is one hop: faster, and that one node sees both. The app says which mode is on, in those words.</text>
+          </g>
+        </svg>
+        <figcaption><b>Figure 5.</b> Privado nests a WireGuard tunnel to the exit inside a tunnel to the entry.
+          A test watches the entry and counts zero plaintext packets leaving it.</figcaption>
+      </figure>
+      <div class="cards">
+        <div class="card"><h4>A different identity for every node</h4><p>Each node is shown a key derived for it
+          from one master key with HKDF-SHA256. No node sees the master key, and two operators comparing peer lists
+          find nothing in common.</p></div>
+        <div class="card"><h4>Kill switch, including between circuits</h4><p>nftables on Linux, the Windows Filtering
+          Platform on Windows. IPv6 is blocked, DNS is pinned to the node's resolver, and nothing passes for merely
+          being an established connection. When a circuit is rebuilt for a new identity, a hold allows only the old
+          and the new first hop until the new rules replace it.</p></div>
+        <div class="card"><h4>Nodes from a signed list</h4><p>A new client learns which nodes exist from a list
+          signed with Ed25519, checked against a key built into the client before a byte of it is read. Lists carry
+          a sequence and an expiry; an older or expired list is refused, and a newer one follows a node that moved.</p></div>
+        <div class="card"><h4>Open admission, with limits</h4><p>A stranger connects on the first try: a node that
+          admits openly issues an invite on request, at most three per address and 120 per node every ten minutes,
+          up to 4,000 leases. A lease with no handshake lapses within fifteen minutes.</p></div>
+        <div class="card span"><h4>Nothing recorded <span class="pill done">Tested</span></h4><p>No node or service log
+          names an address, a name looked up or a byte of traffic. The network test suites grep every log for them.</p></div>
+      </div>
+      <div class="tbl"><table>
+        <thead><tr><th>Measured</th><th>Before the fix</th><th>Now</th></tr></thead>
+        <tbody>
+          <tr><td>Requests reaching the open network during a new identity</td><td>7</td><td>0</td></tr>
+          <tr><td>A connection opened before the VPN surviving the kill switch</td><td>yes</td><td>no</td></tr>
+        </tbody>
+      </table></div>
+      <p>Both rows come from the network test suites, run against the code before and after the October 2026 fixes.
+        HidraVPN is strong privacy, not anonymity: the app says what each node can see, and nowhere says "anonymous".</p>
+    </section>
+
+    <section id="machine">
+      <div class="sn">9</div>
+      <h2>Protecting the machine</h2>
+      <ul>
+        <li><strong>Local services cannot be reached by web pages.</strong> Everything listens on loopback and screens
+          <code>Host</code> and <code>Origin</code>, so a page cannot reach it by DNS rebinding.</li>
+        <li><strong>Keys at rest.</strong> Secret keys are created readable by the owner only. With a passphrase set,
+          they are sealed with XChaCha20-Poly1305 under a key from Argon2id.</li>
+        <li><strong>The browser's own secrets</strong> live in a vault on the operating system's keychain, one
+          compartment per app.</li>
+        <li><strong>Logs that cannot betray.</strong> Peer addresses, destinations, mail addresses, nicknames and
+          payloads are scrubbed before they reach a log; a test fails if any log line would write one.</li>
+        <li><strong>Fingerprinting.</strong> Each tab gets one coherent profile (system, GPU, screen, timezone,
+          language chosen together), deterministic canvas noise, masked WebGL renderer, and no client-hint headers.
+          WebRTC is held to the proxy in the network stack. The profile is injected when the page's DOM is ready,
+          not yet at document start; that is on the roadmap.</li>
+        <li><strong>Releases you can check.</strong> Release files are signed with Ed25519; the browser verifies them
+          with a key built into it, in the same format the command-line tool uses.</li>
+      </ul>
+    </section>
+
+    <section id="threat" class="brk">
+      <div class="sn">10</div>
+      <h2>Threat model</h2>
+      <p>A threat model that does not say what it does not protect against is advertising, not engineering.</p>
+      <h3>Protected against</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Adversary</th><th>What they get</th></tr></thead>
+        <tbody>
+          <tr><td>Your local network or ISP</td><td>Encrypted traffic to an entry point; neither destination nor content</td></tr>
+          <tr><td>The site you visit</td><td>An exit's address, not yours; a fingerprint that changes per tab</td></tr>
+          <tr><td>One relay in the middle</td><td>By design, the previous and the next hop only. Today it also sees the client's address (&sect;4)</td></tr>
+          <tr><td>Someone recording today for a quantum computer</td><td>Nothing: the handshake needs ML-KEM to fall too</td></tr>
+          <tr><td>A message transport operator</td><td>Ciphertext without a key</td></tr>
+          <tr><td>A Sybil operator in the DHT</td><td>The power to withhold a record, not to forge one</td></tr>
+          <tr><td>A web page attacking local services</td><td>A refusal: loopback services screen Host and Origin</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Not protected against</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Threat</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>An adversary watching both ends</td><td>Timing correlation defeats every low-latency network, Tor included</td></tr>
+          <tr><td>A small network</td><td>Anonymity is a crowd; a few hundred users is a small one</td></tr>
+          <tr><td>Relays comparing notes</td><td>Circuits are not yet telescoped: each relay sees the client's address and the same client key (&sect;4)</td></tr>
+          <tr><td>Traffic shape</td><td>No fixed-size cells on the wire yet and no cover traffic</td></tr>
+          <tr><td>Relays run by one party</td><td>No directory authorities or consensus yet; the largest architectural gap</td></tr>
+          <tr><td>A malicious exit</td><td>It sees what is not end-to-end encrypted. Use HTTPS</td></tr>
+          <tr><td>A compromised device</td><td>The keys are on it</td></tr>
+          <tr><td>What you publish yourself</td><td>No network can hide what a person reveals</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout risk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <div><p><strong>If being identified would put you in danger, use Tor.</strong> HidraNet is young and has not
+          been audited by anyone outside the project. The browser ships with Tor built in for exactly this reason.</p></div></div>
+    </section>
+
+    <section id="verify">
+      <div class="sn">11</div>
+      <h2>Verify it yourself</h2>
+      <p>Nothing in this paper needs to be taken on trust. From a checkout of the repository:</p>
+<pre><code>cargo test --manifest-path hidra-node/Cargo.toml --no-fail-fast    # 243 tests
+cargo test --manifest-path hidra-node/Cargo.toml --test dht_discovery   # the DHT attacks
+cargo test --manifest-path hidra-node/Cargo.toml --test no_addresses_in_logs
+cargo test --manifest-path hidravpn/Cargo.toml --workspace         # VPN unit tests
+sudo hidravpn/scripts/test-multihop-netns.sh                        # two hops, no leak while rotating
+sudo hidravpn/scripts/test-killswitch.sh                            # the leak test
+node hidra-browser/test/anonymity-claims.js                         # every badge is backed by code</code></pre>
+      <div class="tbl"><table>
+        <thead><tr><th>Suite</th><th>Result, October 2026</th></tr></thead>
+        <tbody>
+          <tr><td>Engine (<code>hidra-node</code>)</td><td>243 tests passing, 15 of them DHT attack scenarios</td></tr>
+          <tr><td>HidraVPN unit tests</td><td>86 passing</td></tr>
+          <tr><td>HidraVPN network suites</td><td>8 suites, 250 checks on real tunnels in network namespaces, 0 failures</td></tr>
+          <tr><td>Continuous integration</td><td>Format, lint, tests and <code>cargo audit</code> on every change</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="roadmap" class="brk">
+      <div class="sn">12</div>
+      <h2>Roadmap</h2>
+      <p>Public, with its state, because a security project's credibility is measured by what it says it will fix
+        and then fixes.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Item</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td>Network kill switch in the browser</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Third-party libraries served locally, no CDN</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>WebRTC held to the proxy</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Presence beacon without location or room</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Keys sealed at rest under a passphrase</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Sender signatures in HidraMail</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>S/Kademlia defences in the DHT</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>HidraVPN phases 1 to 4: tunnel, kill switch, two hops, signed list, open admission</td><td><span class="pill done">Done</span></td></tr>
+          <tr><td>Telescoping circuits: connect to the entry only, extend through it, fresh ephemeral key per hop</td><td><span class="pill open">Open, high</span></td></tr>
+          <tr><td>Pin each relay's static key in circuit construction</td><td><span class="pill open">Open, high</span></td></tr>
+          <tr><td>DHT queries through a circuit</td><td><span class="pill open">Open, high</span></td></tr>
+          <tr><td>Message transport on HidraNet itself instead of public MQTT brokers</td><td><span class="pill open">Open, high</span></td></tr>
+          <tr><td>Fingerprint profile at document start, in every frame</td><td><span class="pill open">Open, high</span></td></tr>
+          <tr><td>Argon2id in the browser's chat page</td><td><span class="pill open">Open, medium</span></td></tr>
+          <tr><td>Fixed-size cells and cover traffic on the data path</td><td><span class="pill open">Open, medium</span></td></tr>
+          <tr><td>HidraVPN on Windows, run on real hardware; code signing</td><td><span class="pill next">Next</span></td></tr>
+          <tr><td>HidraVPN phase 5: admission by unlinkable passes</td><td><span class="pill next">Next</span></td></tr>
+          <tr><td>Volunteer relay programme</td><td><span class="pill next">Next</span></td></tr>
+          <tr><td>Independent external security audit, report published</td><td><span class="pill open">Before broad release</span></td></tr>
+        </tbody>
+      </table></div>
+      <p>The audit is a condition for a broad public release of the browser. We do not announce a privacy tool to a
+        wide audience before somebody outside has tried to break it.</p>
+    </section>
+
+    <section id="governance">
+      <div class="sn">13</div>
+      <h2>Licence and governance</h2>
+      <p>All of it is under the MIT licence. The protocol is a common good: anyone may implement it, audit it, fork
+        it and run nodes. The company develops software and services and <strong>does not operate exit
+        nodes</strong>; the network is meant to be run by volunteers, as Tor's is.</p>
+    </section>
+
+    <section id="refs">
+      <div class="sn">14</div>
+      <h2>References</h2>
+      <ul>
+        <li>NIST FIPS 203, Module-Lattice-Based Key-Encapsulation Mechanism Standard (ML-KEM)</li>
+        <li>Perrin, The Noise Protocol Framework; and the hybrid forward secrecy (hfs) extension</li>
+        <li>Dingledine, Mathewson, Syverson, Tor: The Second-Generation Onion Router</li>
+        <li>Maymounkov, Mazi&#232;res, Kademlia: A Peer-to-peer Information System Based on the XOR Metric</li>
+        <li>Baumgart, Mies, S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing</li>
+        <li>Donenfeld, WireGuard: Next Generation Kernel Network Tunnel</li>
+        <li>RFC 7748 (X25519), RFC 8032 (Ed25519), RFC 8439 (ChaCha20-Poly1305), RFC 9106 (Argon2)</li>
+      </ul>
+      <p class="no-print" style="margin-top:22px"><a class="btn btn-ghost" href="../token/">Next: the HNET token whitepaper</a></p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HidraNet technical whitepaper &middot; v2.0 &middot; October 2026 &middot; MIT &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>

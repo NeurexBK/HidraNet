@@ -1,0 +1,43 @@
+[package]
+name = "hidravpn-service"
+description = "The HidraVPN background service: holds the tunnel, the kill switch, and a local control channel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "hidravpn_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hidravpn-service"
+path = "src/main.rs"
+
+[dependencies]
+hidravpn-core = { path = "../hidravpn-core" }
+hidravpn-tun = { path = "../hidravpn-tun" }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }

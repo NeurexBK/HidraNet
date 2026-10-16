@@ -30,6 +30,7 @@ importance.
 | 13 | [Funds and Applications](13-funds-and-applications.md) | NGI Zero, EIC, Portugal 2030 — with deadlines | **Start now** |
 | 14 | [Pitch Deck](14-pitch-deck.md) | Slide by slide, ready to lay out | VC |
 | 15 | [Data Room](15-data-room.md) | What due diligence will ask for | Before the round |
+| 16 | [Network Bootstrap](16-network-bootstrap.md) | Who runs the first nodes, and why; what operators are promised | **Before anyone is told operators are paid** |
 
 ---
 

@@ -1,0 +1,12 @@
+target/
+*.key
+*.secret
+
+# Never commit a node, client or circuit state file, even by accident:
+# the node key, the leases, the pocket, invites, control tokens, test logs.
+node.toml
+peers.json
+circuit.json
+invite*.json
+*.token
+*.log
