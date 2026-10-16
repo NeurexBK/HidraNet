@@ -130,16 +130,23 @@ impl WgDevice {
         }
     }
 
-    pub fn add_peer(&self, public_key: &str, ip: Ipv4Addr) -> Result<()> {
+    pub fn add_peer(
+        &self,
+        public_key: &str,
+        ip: Ipv4Addr,
+        preshared_key: Option<&str>,
+    ) -> Result<()> {
         let key = Key::from_base64(public_key.trim()).map_err(|_| anyhow!("invalid public key"))?;
-        self.apply(
-            DeviceUpdate::new().add_peer(
-                PeerConfigBuilder::new(&key)
-                    .replace_allowed_ips()
-                    .add_allowed_ip(IpAddr::V4(ip), 32),
-            ),
-        )
-        .context("adding the peer")
+        let mut peer = PeerConfigBuilder::new(&key)
+            .replace_allowed_ips()
+            .add_allowed_ip(IpAddr::V4(ip), 32);
+        if let Some(psk) = preshared_key {
+            let psk =
+                Key::from_base64(psk.trim()).map_err(|_| anyhow!("invalid pre-shared key"))?;
+            peer = peer.set_preshared_key(psk);
+        }
+        self.apply(DeviceUpdate::new().add_peer(peer))
+            .context("adding the peer")
     }
 
     pub fn remove_peer(&self, public_key: &str) -> Result<()> {

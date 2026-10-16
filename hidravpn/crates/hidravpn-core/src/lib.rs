@@ -16,6 +16,7 @@ pub mod keys;
 pub mod killswitch;
 pub mod netcfg;
 pub mod pocket;
+pub mod psk;
 pub mod random;
 pub mod release;
 pub mod timefmt;

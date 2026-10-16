@@ -40,6 +40,17 @@ pub struct Invite {
     /// "entry", "exit" or "both": what the node's own firewall lets it be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// WireGuard pre-shared key, base64. Agreed through ML-KEM-1024 during
+    /// open admission, or drawn by the node for a client admitted by hand.
+    /// With it, a recording of the tunnel stays closed to a quantum
+    /// computer; without it the tunnel is X25519 alone. See `psk`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preshared_key: Option<String>,
+    /// On the wire during open admission only: the ML-KEM ciphertext the
+    /// client turns into `preshared_key`. The client clears it before the
+    /// invite is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kem_ciphertext: Option<String>,
 }
 
 fn default_allowed() -> Vec<String> {
@@ -70,7 +81,18 @@ impl Invite {
         if self.mtu < 1280 || self.mtu > 1500 {
             return Err(anyhow!("the MTU must be between 1280 and 1500"));
         }
+        if let Some(psk) = &self.preshared_key {
+            crate::psk::decode(psk)?;
+        }
         Ok(())
+    }
+
+    /// The pre-shared key as WireGuard takes it, when the invite has one.
+    pub fn preshared(&self) -> Result<Option<[u8; 32]>> {
+        self.preshared_key
+            .as_deref()
+            .map(crate::psk::decode)
+            .transpose()
     }
 
     pub fn endpoint_addr(&self) -> Result<SocketAddr> {
@@ -133,6 +155,8 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            preshared_key: None,
+            kem_ciphertext: None,
         }
     }
 
@@ -145,6 +169,22 @@ mod tests {
             again.client_ip().unwrap(),
             (Ipv4Addr::new(10, 77, 0, 2), 16)
         );
+        assert!(again.preshared().unwrap().is_none());
+        assert!(!inv.to_json().contains("preshared_key"), "absent, not null");
+    }
+
+    /// An invite with a pre-shared key carries it through JSON and hands
+    /// WireGuard the 32 bytes; a malformed one is refused on the way in.
+    #[test]
+    fn a_pre_shared_key_rides_the_invite_and_is_checked() {
+        let mut inv = sample();
+        inv.preshared_key = Some(crate::psk::random().unwrap());
+        let again = Invite::from_json(&inv.to_json()).unwrap();
+        assert_eq!(again.preshared_key, inv.preshared_key);
+        assert_eq!(again.preshared().unwrap().unwrap().len(), 32);
+
+        inv.preshared_key = Some("not-a-key".into());
+        assert!(Invite::from_json(&inv.to_json()).is_err());
     }
 
     #[test]

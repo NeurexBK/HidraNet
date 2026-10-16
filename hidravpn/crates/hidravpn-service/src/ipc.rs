@@ -806,6 +806,8 @@ mod tests {
             keepalive: 25,
             operator: None,
             role: None,
+            preshared_key: None,
+            kem_ciphertext: None,
         }
     }
 

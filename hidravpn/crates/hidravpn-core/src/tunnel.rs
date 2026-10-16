@@ -66,11 +66,14 @@ impl Tunnel {
             .with_context(|| format!("could not address the node at {endpoint}"))?;
 
         // The key shown to this node is the one derived for it; the master
-        // key's public half never leaves the client.
+        // key's public half never leaves the client. The pre-shared key,
+        // when the invite has one, is what keeps a recording of this
+        // tunnel closed to a quantum computer.
+        let preshared = cfg.invite.preshared()?;
         let tunn = Tunn::new(
             cfg.node_key()?.secret(),
             node_key,
-            None,
+            preshared,
             Some(cfg.invite.keepalive),
             0,
             None,

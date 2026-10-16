@@ -11,6 +11,14 @@ pub mod protocol {
         pub sealed_body: Vec<u8>,
         pub sender_verifying_key: Vec<u8>,
         pub signature: Vec<u8>,
+        /// The ML-DSA-87 half of the sender's identity. Empty from a sender
+        /// that predates hybrid signatures; the envelope then verifies on
+        /// Ed25519 alone and is marked as such.
+        #[serde(default)]
+        pub sender_pq_verifying_key: Vec<u8>,
+        /// The ML-DSA-87 signature over the same bytes as `signature`.
+        #[serde(default)]
+        pub pq_signature: Vec<u8>,
     }
 
     #[derive(Serialize, Deserialize, Clone)]
@@ -56,60 +64,263 @@ pub mod crypto {
         ChaCha20Poly1305, Nonce,
     };
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use ml_kem::ml_kem_1024::{Ciphertext, DecapsulationKey, EncapsulationKey};
+    use ml_kem::{Decapsulate, Encapsulate, KeyExport, TryKeyInit};
     use rand::RngCore;
     use x25519_dalek::{PublicKey, StaticSecret};
     use zeroize::Zeroize;
 
+    use crate::crypto::hybrid_sig::HybridSigningKey;
+    use crate::crypto::keys::{load_or_create_pq_identity_seed, write_private_file};
     use crate::error::{HidraError, Result};
     use std::path::Path;
 
+    /// Marks a body sealed the hybrid way. A v1 body starts with a random
+    /// nonce, so the chance of a collision is 2^-24 per message, and the
+    /// consequence of one is a failed decryption rather than a wrong one.
+    const V2_MARKER: &[u8; 3] = b"HM2";
+    const KEM_CT_LEN: usize = 1568;
+    const NONCE_LEN: usize = 12;
+
+    /// The mailbox's keys: the X25519 key every sender has used so far, the
+    /// ML-KEM-1024 key that makes a sealed message safe against a recording
+    /// opened by a quantum computer, and the ML-DSA seed that pairs with the
+    /// node's Ed25519 identity for hybrid signatures.
+    ///
+    /// Mail is the one place in HidraNet where "record now, decrypt later"
+    /// is not theoretical: a mailbox *is* a recording. The transport between
+    /// nodes was already hybrid; the body it carried was X25519 alone, so a
+    /// copy of a mailbox taken today would have opened the day the curve
+    /// fell. From here on a body is sealed under both, and the key is only
+    /// recoverable by breaking both.
     pub struct MailKeys {
         secret_bytes: [u8; 32],
         pub public_bytes: [u8; 32],
+        kem_dk: DecapsulationKey,
+        /// The ML-KEM-1024 encapsulation key senders use, 1568 bytes.
+        pub kem_public_bytes: Vec<u8>,
+        pq_seed: [u8; 32],
     }
 
     impl MailKeys {
         pub fn load_or_generate(keys_dir: &Path) -> Result<Self> {
             let key_path = keys_dir.join("mail_x25519.key");
-            if key_path.exists() {
-                let bytes = std::fs::read(&key_path).map_err(HidraError::Io)?;
+            let secret_bytes: [u8; 32] = if key_path.exists() {
+                let mut bytes = std::fs::read(&key_path).map_err(HidraError::Io)?;
                 if bytes.len() != 32 {
+                    bytes.zeroize();
                     return Err(HidraError::Crypto(
                         "invalid mail key file".into(),
                     ));
                 }
                 let mut secret_bytes = [0u8; 32];
                 secret_bytes.copy_from_slice(&bytes);
-                let secret = StaticSecret::from(secret_bytes);
-                let public = PublicKey::from(&secret);
-                Ok(Self {
-                    secret_bytes,
-                    public_bytes: *public.as_bytes(),
-                })
+                bytes.zeroize();
+                crate::crypto::keys::warn_if_group_or_world_readable(&key_path);
+                secret_bytes
             } else {
                 let mut secret_bytes = [0u8; 32];
                 rand::thread_rng().fill_bytes(&mut secret_bytes);
-                std::fs::create_dir_all(keys_dir).map_err(HidraError::Io)?;
-                std::fs::write(&key_path, &secret_bytes)
-                    .map_err(HidraError::Io)?;
-                let secret = StaticSecret::from(secret_bytes);
-                let public = PublicKey::from(&secret);
-                Ok(Self {
-                    secret_bytes,
-                    public_bytes: *public.as_bytes(),
-                })
+                // Owner-only from the moment it exists. It used to be
+                // written with fs::write, which left the mailbox's private
+                // key readable by every account on the machine.
+                write_private_file(&key_path, &secret_bytes)?;
+                secret_bytes
+            };
+            let secret = StaticSecret::from(secret_bytes);
+            let public = PublicKey::from(&secret);
+
+            // The ML-KEM key is kept as its 64-byte seed, which regenerates
+            // it. A mailbox from before this gets one on first load; its
+            // X25519 key and address stay exactly what they were.
+            let kem_path = keys_dir.join("mail_mlkem.seed");
+            let kem_seed: [u8; 64] = if kem_path.exists() {
+                let mut bytes = std::fs::read(&kem_path).map_err(HidraError::Io)?;
+                if bytes.len() != 64 {
+                    bytes.zeroize();
+                    return Err(HidraError::Crypto(
+                        "invalid mail ML-KEM seed file".into(),
+                    ));
+                }
+                let mut seed = [0u8; 64];
+                seed.copy_from_slice(&bytes);
+                bytes.zeroize();
+                crate::crypto::keys::warn_if_group_or_world_readable(&kem_path);
+                seed
+            } else {
+                let mut seed = [0u8; 64];
+                rand::thread_rng().fill_bytes(&mut seed);
+                write_private_file(&kem_path, &seed)?;
+                tracing::info!("generated the mailbox's ML-KEM-1024 key");
+                seed
+            };
+            let kem_dk = DecapsulationKey::from_seed(ml_kem::Seed::from(kem_seed));
+            let kem_public_bytes = kem_dk.encapsulation_key().to_bytes().to_vec();
+
+            let pq_seed = load_or_create_pq_identity_seed(keys_dir)?;
+
+            Ok(Self {
+                secret_bytes,
+                public_bytes: *public.as_bytes(),
+                kem_dk,
+                kem_public_bytes,
+                pq_seed,
+            })
+        }
+
+        /// Open a body sealed to this mailbox, whichever way it was sealed.
+        pub fn open(&self, eph_pubkey: &[u8], sealed_data: &[u8]) -> Result<Vec<u8>> {
+            if sealed_data.starts_with(V2_MARKER) {
+                open_message_v2(
+                    &self.secret_bytes,
+                    &self.kem_dk,
+                    &self.kem_public_bytes,
+                    eph_pubkey,
+                    sealed_data,
+                )
+            } else {
+                open_message(&self.secret_bytes, eph_pubkey, sealed_data)
             }
         }
 
-        pub fn secret_bytes(&self) -> &[u8; 32] {
-            &self.secret_bytes
+        /// The node's identity with its post-quantum half, for signing
+        /// envelopes.
+        pub fn hybrid_signing_key(
+            &self,
+            identity: &ed25519_dalek::SigningKey,
+        ) -> HybridSigningKey {
+            HybridSigningKey::from_parts(identity.clone(), &self.pq_seed)
         }
     }
 
     impl Drop for MailKeys {
         fn drop(&mut self) {
             self.secret_bytes.zeroize();
+            self.pq_seed.zeroize();
         }
+    }
+
+    /// Seal a body under X25519 *and* ML-KEM-1024.
+    ///
+    /// The symmetric key is derived from both shared secrets and the whole
+    /// transcript (the ephemeral X25519 key, the KEM ciphertext and the
+    /// recipient's KEM key), each part length-prefixed, so neither half can
+    /// be replayed against a different exchange. The body on the wire is
+    /// `"HM2" ‖ kem_ct ‖ nonce ‖ ciphertext`; the X25519 ephemeral travels in
+    /// the envelope field it always did, so the envelope schema is unchanged.
+    pub fn seal_message_v2(
+        recipient_pubkey: &[u8; 32],
+        recipient_kem_pubkey: &[u8],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let recipient = PublicKey::from(*recipient_pubkey);
+        let mut eph_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut eph_bytes);
+        let eph_secret = StaticSecret::from(eph_bytes);
+        eph_bytes.zeroize();
+        let eph_public = PublicKey::from(&eph_secret);
+        let x_shared = eph_secret.diffie_hellman(&recipient);
+        if !x_shared.was_contributory() {
+            return Err(HidraError::Crypto(
+                "recipient X25519 key is a low-order point".into(),
+            ));
+        }
+
+        let ek = EncapsulationKey::new_from_slice(recipient_kem_pubkey).map_err(|_| {
+            HidraError::Crypto("recipient ML-KEM key rejected".into())
+        })?;
+        let (kem_ct, mut kem_shared) = ek.encapsulate();
+
+        let mut sym_key = derive_v2_key(
+            x_shared.as_bytes(),
+            &kem_shared,
+            eph_public.as_bytes(),
+            &kem_ct,
+            recipient_kem_pubkey,
+        );
+        kem_shared.as_mut_slice().zeroize();
+
+        let cipher = ChaCha20Poly1305::new((&sym_key).into());
+        sym_key.zeroize();
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ct = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| HidraError::Crypto(format!("seal: {e}")))?;
+
+        let mut sealed = Vec::with_capacity(3 + KEM_CT_LEN + NONCE_LEN + ct.len());
+        sealed.extend_from_slice(V2_MARKER);
+        sealed.extend_from_slice(&kem_ct);
+        sealed.extend_from_slice(&nonce_bytes);
+        sealed.extend_from_slice(&ct);
+        Ok((eph_public.as_bytes().to_vec(), sealed))
+    }
+
+    pub fn open_message_v2(
+        secret: &[u8; 32],
+        kem_dk: &DecapsulationKey,
+        own_kem_pubkey: &[u8],
+        eph_pubkey: &[u8],
+        sealed_data: &[u8],
+    ) -> Result<Vec<u8>> {
+        if eph_pubkey.len() != 32 {
+            return Err(HidraError::Crypto("invalid ephemeral pubkey".into()));
+        }
+        let min = 3 + KEM_CT_LEN + NONCE_LEN + 16;
+        if sealed_data.len() < min || !sealed_data.starts_with(V2_MARKER) {
+            return Err(HidraError::Crypto("sealed data too short".into()));
+        }
+        let kem_ct_bytes = &sealed_data[3..3 + KEM_CT_LEN];
+        let nonce_bytes = &sealed_data[3 + KEM_CT_LEN..3 + KEM_CT_LEN + NONCE_LEN];
+        let body = &sealed_data[3 + KEM_CT_LEN + NONCE_LEN..];
+
+        let mut eph_arr = [0u8; 32];
+        eph_arr.copy_from_slice(eph_pubkey);
+        let eph_public = PublicKey::from(eph_arr);
+        let secret_key = StaticSecret::from(*secret);
+        let x_shared = secret_key.diffie_hellman(&eph_public);
+        if !x_shared.was_contributory() {
+            return Err(HidraError::Crypto(
+                "sender X25519 key is a low-order point".into(),
+            ));
+        }
+
+        let kem_ct = Ciphertext::try_from(kem_ct_bytes)
+            .map_err(|_| HidraError::Crypto("ML-KEM ciphertext has the wrong length".into()))?;
+        // Implicit rejection: a tampered ciphertext yields an unrelated key,
+        // and the AEAD tag below is what refuses it.
+        let mut kem_shared = kem_dk.decapsulate(&kem_ct);
+
+        let mut sym_key = derive_v2_key(
+            x_shared.as_bytes(),
+            &kem_shared,
+            eph_pubkey,
+            kem_ct_bytes,
+            own_kem_pubkey,
+        );
+        kem_shared.as_mut_slice().zeroize();
+
+        let cipher = ChaCha20Poly1305::new((&sym_key).into());
+        sym_key.zeroize();
+        cipher
+            .decrypt(Nonce::from_slice(nonce_bytes), body)
+            .map_err(|e| HidraError::Crypto(format!("open: {e}")))
+    }
+
+    fn derive_v2_key(
+        x25519_shared: &[u8],
+        kem_shared: &[u8],
+        eph_public: &[u8],
+        kem_ct: &[u8],
+        recipient_kem_pubkey: &[u8],
+    ) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new_derive_key("hidramail-seal-v2");
+        for part in [x25519_shared, kem_shared, eph_public, kem_ct, recipient_kem_pubkey] {
+            hasher.update(&(part.len() as u64).to_le_bytes());
+            hasher.update(part);
+        }
+        *hasher.finalize().as_bytes()
     }
 
     pub fn seal_message(
@@ -164,6 +375,11 @@ pub mod crypto {
 
         let secret_key = StaticSecret::from(*secret);
         let shared = secret_key.diffie_hellman(&eph_public);
+        if !shared.was_contributory() {
+            return Err(HidraError::Crypto(
+                "sender X25519 key is a low-order point".into(),
+            ));
+        }
         let sym_key =
             blake3::derive_key("hidramail-seal-v1", shared.as_bytes());
 
@@ -172,14 +388,6 @@ pub mod crypto {
         cipher
             .decrypt(nonce, &sealed_data[12..])
             .map_err(|e| HidraError::Crypto(format!("open: {e}")))
-    }
-
-    pub fn sign_data(
-        signing_key: &ed25519_dalek::SigningKey,
-        data: &[u8],
-    ) -> Vec<u8> {
-        use ed25519_dalek::Signer;
-        signing_key.sign(data).to_bytes().to_vec()
     }
 
     pub fn verify_sig(
@@ -238,18 +446,18 @@ pub mod storage {
             std::fs::write(path, json).map_err(HidraError::Io)
         }
 
-        pub fn list_inbox(&self, secret: &[u8; 32]) -> Vec<MailSummary> {
-            self.list_folder(&self.inbox_dir, secret)
+        pub fn list_inbox(&self, keys: &crypto::MailKeys) -> Vec<MailSummary> {
+            self.list_folder(&self.inbox_dir, keys)
         }
 
-        pub fn list_sent(&self, secret: &[u8; 32]) -> Vec<MailSummary> {
-            self.list_folder(&self.sent_dir, secret)
+        pub fn list_sent(&self, keys: &crypto::MailKeys) -> Vec<MailSummary> {
+            self.list_folder(&self.sent_dir, keys)
         }
 
         fn list_folder(
             &self,
             dir: &Path,
-            secret: &[u8; 32],
+            keys: &crypto::MailKeys,
         ) -> Vec<MailSummary> {
             let mut out = Vec::new();
             let entries = match std::fs::read_dir(dir) {
@@ -269,7 +477,7 @@ pub mod storage {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
-                let subject = decrypt_subject(&env, secret);
+                let subject = decrypt_subject(&env, keys);
                 let read_marker = p.with_extension("read");
                 out.push(MailSummary {
                     id: env.id,
@@ -287,7 +495,7 @@ pub mod storage {
         pub fn read_mail(
             &self,
             id: &str,
-            secret: &[u8; 32],
+            keys: &crypto::MailKeys,
         ) -> Result<(MailEnvelope, MailContent)> {
             let inbox_path = self.inbox_dir.join(format!("{id}.json"));
             let path = if inbox_path.exists() {
@@ -311,11 +519,7 @@ pub mod storage {
                     HidraError::Protocol(format!("deserialize: {e}"))
                 })?;
 
-            let plaintext = crypto::open_message(
-                secret,
-                &env.ephemeral_pubkey,
-                &env.sealed_body,
-            )?;
+            let plaintext = keys.open(&env.ephemeral_pubkey, &env.sealed_body)?;
             let content: MailContent = serde_json::from_slice(&plaintext)
                 .map_err(|e| {
                     HidraError::Protocol(format!("content: {e}"))
@@ -342,12 +546,8 @@ pub mod storage {
         }
     }
 
-    fn decrypt_subject(env: &MailEnvelope, secret: &[u8; 32]) -> String {
-        match crypto::open_message(
-            secret,
-            &env.ephemeral_pubkey,
-            &env.sealed_body,
-        ) {
+    fn decrypt_subject(env: &MailEnvelope, keys: &crypto::MailKeys) -> String {
+        match keys.open(&env.ephemeral_pubkey, &env.sealed_body) {
             Ok(pt) => match serde_json::from_slice::<MailContent>(&pt) {
                 Ok(c) => c.subject,
                 Err(_) => "[error]".into(),
@@ -581,23 +781,27 @@ pub mod server {
             }
             ("GET", "/api/identity") => {
                 let body = format!(
-                    r#"{{"address":"{}","pubkey":"{}"}}"#,
+                    r#"{{"address":"{}","pubkey":"{}","kem_pubkey":"{}","post_quantum":true}}"#,
                     state.mail_addr,
                     hex_encode(&state.mail_keys.public_bytes),
+                    hex_encode(&state.mail_keys.kem_public_bytes),
                 );
                 json_ok(&body)
             }
             ("GET", "/api/pubkey") => {
+                // Both keys. A sender that knows only `pubkey` seals the old
+                // way; one that reads `kem_pubkey` seals under both.
                 let body = format!(
-                    r#"{{"pubkey":"{}"}}"#,
+                    r#"{{"pubkey":"{}","kem_pubkey":"{}"}}"#,
                     hex_encode(&state.mail_keys.public_bytes),
+                    hex_encode(&state.mail_keys.kem_public_bytes),
                 );
                 json_ok(&body)
             }
             ("GET", "/api/inbox") => {
                 let list = state
                     .store
-                    .list_inbox(state.mail_keys.secret_bytes());
+                    .list_inbox(&state.mail_keys);
                 let body = serde_json::to_string(&list)
                     .unwrap_or_else(|_| "[]".into());
                 json_ok(&body)
@@ -605,7 +809,7 @@ pub mod server {
             ("GET", "/api/sent") => {
                 let list = state
                     .store
-                    .list_sent(state.mail_keys.secret_bytes());
+                    .list_sent(&state.mail_keys);
                 let body = serde_json::to_string(&list)
                     .unwrap_or_else(|_| "[]".into());
                 json_ok(&body)
@@ -649,7 +853,7 @@ pub mod server {
         id: &str,
         state: &Arc<ServerState>,
     ) -> String {
-        match state.store.read_mail(id, state.mail_keys.secret_bytes())
+        match state.store.read_mail(id, &state.mail_keys)
         {
             Ok((env, content)) => {
                 let verified = crypto::verify_sig(
@@ -657,8 +861,12 @@ pub mod server {
                     &env.signing_data(),
                     &env.signature,
                 );
+                // True only when the sender signed with both halves and both
+                // verify; false for a legacy envelope, so the panel can say
+                // which kind it is looking at rather than guess.
+                let pq_verified = envelope_pq_verified(&env);
                 let body = format!(
-                    r#"{{"id":"{}","from_addr":"{}","to_addr":"{}","subject":"{}","body":"{}","timestamp":{},"verified":{}}}"#,
+                    r#"{{"id":"{}","from_addr":"{}","to_addr":"{}","subject":"{}","body":"{}","timestamp":{},"verified":{},"pq_verified":{}}}"#,
                     escape_json(&env.id),
                     escape_json(&env.from_addr),
                     escape_json(&env.to_addr),
@@ -666,6 +874,7 @@ pub mod server {
                     escape_json(&content.body),
                     env.timestamp,
                     verified,
+                    pq_verified,
                 );
                 json_ok(&body)
             }
@@ -694,7 +903,7 @@ pub mod server {
             }
         };
 
-        let recipient_pubkey =
+        let recipient =
             match fetch_recipient_pubkey(&target_addr).await {
                 Ok(k) => k,
                 Err(e) => {
@@ -716,17 +925,28 @@ pub mod server {
             }
         };
 
-        let (eph_pubkey, sealed_body) =
-            match crypto::seal_message(&recipient_pubkey, &content_json)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    return json_err(
-                        500,
-                        &format!("encrypt: {e}"),
-                    );
-                }
-            };
+        let sealed = match &recipient.kem_pubkey {
+            Some(kem) => crypto::seal_message_v2(&recipient.pubkey, kem, &content_json),
+            None => {
+                // An older mailbox. The body is still encrypted, but under
+                // X25519 alone, which a recording and a quantum computer
+                // would open one day. Said, not hidden.
+                warn!(
+                    "recipient mailbox advertises no post-quantum key; \
+                     sealing this message with X25519 only"
+                );
+                crypto::seal_message(&recipient.pubkey, &content_json)
+            }
+        };
+        let (eph_pubkey, sealed_body) = match sealed {
+            Ok(v) => v,
+            Err(e) => {
+                return json_err(
+                    500,
+                    &format!("encrypt: {e}"),
+                );
+            }
+        };
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -748,17 +968,19 @@ pub mod server {
             sealed_body,
             sender_verifying_key: vk,
             signature: Vec::new(),
+            sender_pq_verifying_key: Vec::new(),
+            pq_signature: Vec::new(),
         };
-        envelope.signature =
-            crypto::sign_data(&state.signing_key, &envelope.signing_data());
+        if let Err(e) = sign_envelope(&mut envelope, state) {
+            return json_err(500, &format!("sign: {e}"));
+        }
 
         match deliver_to_remote(&target_addr, &envelope).await {
             Ok(()) => {
                 let sender_copy = make_sender_copy(
                     &envelope,
                     &content_json,
-                    &state.mail_keys.public_bytes,
-                    &state.signing_key,
+                    state,
                 );
                 let _ = state.store.store_sent(&sender_copy);
                 info!(
@@ -791,6 +1013,18 @@ pub mod server {
         ) {
             return json_err(403, "invalid signature");
         }
+        // A sender that offers the post-quantum half is held to it: a
+        // present-but-wrong ML-DSA signature is a forgery attempt or a
+        // broken sender, and neither is stored. One that offers none is a
+        // sender from before hybrid signatures, accepted as such.
+        if !envelope.pq_signature.is_empty() || !envelope.sender_pq_verifying_key.is_empty()
+        {
+            if !envelope_pq_verified(&envelope) {
+                return json_err(403, "invalid post-quantum signature");
+            }
+        } else {
+            debug!("mail arrived with an Ed25519-only signature (legacy sender)");
+        }
 
         match state.store.store_incoming(&envelope) {
             Ok(()) => {
@@ -808,17 +1042,28 @@ pub mod server {
         }
     }
 
+    /// What a recipient's mailbox advertises: always the X25519 key, and the
+    /// ML-KEM key when the mailbox is new enough to have one.
+    struct RecipientKeys {
+        pubkey: [u8; 32],
+        kem_pubkey: Option<Vec<u8>>,
+    }
+
     async fn fetch_recipient_pubkey(
         addr: &str,
-    ) -> crate::error::Result<[u8; 32]> {
+    ) -> crate::error::Result<RecipientKeys> {
         let mut stream = TcpStream::connect(addr).await?;
         let req = format!(
             "GET /api/pubkey HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
         );
         stream.write_all(req.as_bytes()).await?;
-        let mut resp = vec![0u8; 4096];
-        let n = stream.read(&mut resp).await?;
-        let text = String::from_utf8_lossy(&resp[..n]);
+        // The whole reply, not the first 4 KiB: the ML-KEM key alone is
+        // 3136 hex characters. Capped, because the far end is a stranger.
+        let mut resp = Vec::new();
+        tokio::io::AsyncReadExt::take(&mut stream, 64 * 1024)
+            .read_to_end(&mut resp)
+            .await?;
+        let text = String::from_utf8_lossy(&resp);
         let body = text
             .split("\r\n\r\n")
             .nth(1)
@@ -832,6 +1077,8 @@ pub mod server {
         #[derive(serde::Deserialize)]
         struct PkResp {
             pubkey: String,
+            #[serde(default)]
+            kem_pubkey: Option<String>,
         }
         let parsed: PkResp = serde_json::from_str(body).map_err(
             |e| {
@@ -841,6 +1088,19 @@ pub mod server {
             },
         )?;
 
+        let kem_pubkey = match parsed.kem_pubkey.as_deref() {
+            Some(hex) if !hex.is_empty() => {
+                let kem = hex_decode(hex)?;
+                if kem.len() != 1568 {
+                    return Err(crate::error::HidraError::Crypto(
+                        "invalid kem_pubkey length".into(),
+                    ));
+                }
+                Some(kem)
+            }
+            _ => None,
+        };
+
         let bytes = hex_decode(&parsed.pubkey)?;
         if bytes.len() != 32 {
             return Err(crate::error::HidraError::Crypto(
@@ -849,7 +1109,7 @@ pub mod server {
         }
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
-        Ok(key)
+        Ok(RecipientKeys { pubkey: key, kem_pubkey })
     }
 
     fn hex_decode(
@@ -905,14 +1165,17 @@ pub mod server {
     fn make_sender_copy(
         original: &MailEnvelope,
         content_json: &[u8],
-        sender_pubkey: &[u8; 32],
-        signing_key: &ed25519_dalek::SigningKey,
+        state: &ServerState,
     ) -> MailEnvelope {
-        let (eph, sealed) =
-            match crypto::seal_message(sender_pubkey, content_json) {
-                Ok(v) => v,
-                Err(_) => return original.clone(),
-            };
+        // Our own copy is sealed to our own keys, both of them.
+        let (eph, sealed) = match crypto::seal_message_v2(
+            &state.mail_keys.public_bytes,
+            &state.mail_keys.kem_public_bytes,
+            content_json,
+        ) {
+            Ok(v) => v,
+            Err(_) => return original.clone(),
+        };
         let mut copy = MailEnvelope {
             id: original.id.clone(),
             from_addr: original.from_addr.clone(),
@@ -922,10 +1185,43 @@ pub mod server {
             sealed_body: sealed,
             sender_verifying_key: original.sender_verifying_key.clone(),
             signature: Vec::new(),
+            sender_pq_verifying_key: Vec::new(),
+            pq_signature: Vec::new(),
         };
-        copy.signature =
-            crypto::sign_data(signing_key, &copy.signing_data());
+        if sign_envelope(&mut copy, state).is_err() {
+            return original.clone();
+        }
         copy
+    }
+
+    /// Sign with the node identity, both halves: Ed25519 into the field
+    /// every reader knows, ML-DSA-87 beside it.
+    fn sign_envelope(envelope: &mut MailEnvelope, state: &ServerState) -> crate::error::Result<()> {
+        let key = state.mail_keys.hybrid_signing_key(&state.signing_key);
+        let sig = key.sign(&envelope.signing_data())?;
+        envelope.signature = sig.ed25519;
+        envelope.pq_signature = sig.mldsa;
+        // The ML-DSA half only; the Ed25519 half is sender_verifying_key.
+        envelope.sender_pq_verifying_key = key.verifying_key().to_bytes()[32..].to_vec();
+        Ok(())
+    }
+
+    /// Both halves present and both verifying.
+    pub fn envelope_pq_verified(env: &MailEnvelope) -> bool {
+        use crate::crypto::hybrid_sig::{HybridSignature, HybridVerifyingKey};
+        if env.pq_signature.is_empty() || env.sender_pq_verifying_key.is_empty() {
+            return false;
+        }
+        let Ok(vk) =
+            HybridVerifyingKey::from_parts(&env.sender_verifying_key, &env.sender_pq_verifying_key)
+        else {
+            return false;
+        };
+        let sig = HybridSignature {
+            ed25519: env.signature.clone(),
+            mldsa: env.pq_signature.clone(),
+        };
+        vk.verify(&env.signing_data(), &sig).is_ok()
     }
 
     fn escape_json(s: &str) -> String {

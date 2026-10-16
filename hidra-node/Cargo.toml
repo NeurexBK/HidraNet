@@ -36,6 +36,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # chosen-ciphertext attacker the decapsulation key, and RUSTSEC-2023-0079
 # (KyberSlash), whose division timings depend on the secret.
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
+# FIPS 204 ML-DSA, for the post-quantum half of hybrid signatures. Ed25519
+# alone falls to a quantum computer the day one exists; a signature that
+# needs both to verify does not.
+ml-dsa = { version = "0.1", features = ["rand_core", "zeroize"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
 subtle = "2"

@@ -19,6 +19,8 @@ ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }
+ml-kem = { workspace = true }
+zeroize = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

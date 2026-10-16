@@ -2,7 +2,7 @@ use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::SigningKey;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use zeroize::Zeroize;
 
@@ -216,6 +216,63 @@ impl NodeKeys {
     }
 }
 
+/// The ML-DSA-87 half of this node's identity, as a 32-byte seed.
+///
+/// Kept beside `identity.secret` as `identity_mldsa.secret`, sealed under
+/// `HIDRA_KEY_PASSPHRASE` like the rest. A node that predates it gets one
+/// generated on first load, so an existing identity grows its post-quantum
+/// half without anyone doing anything — the Ed25519 key, and so the node id
+/// and every address derived from it, stays exactly what it was.
+///
+/// Together with the Ed25519 key it forms a
+/// [`HybridSigningKey`](crate::crypto::hybrid_sig::HybridSigningKey).
+pub fn load_or_create_pq_identity_seed(keys_dir: &Path) -> Result<[u8; 32]> {
+    use crate::crypto::hybrid_sig::{HybridSigningKey, PqSeed};
+
+    let secret_path = keys_dir.join("identity_mldsa.secret");
+    let public_path = keys_dir.join("identity_mldsa.public");
+
+    if secret_path.exists() {
+        let read = keystore::read_secret(&secret_path)?;
+        let b64 = String::from_utf8_lossy(&read.plaintext).to_string();
+        let mut bytes = BASE64.decode(b64.trim()).map_err(|e| {
+            HidraError::KeyManagement(format!("invalid ML-DSA seed encoding: {e}"))
+        })?;
+        if bytes.len() != 32 {
+            bytes.zeroize();
+            return Err(HidraError::KeyManagement(
+                "ML-DSA seed must be exactly 32 bytes".into(),
+            ));
+        }
+        let mut seed: PqSeed = [0u8; 32];
+        seed.copy_from_slice(&bytes);
+        bytes.zeroize();
+        warn_if_group_or_world_readable(&secret_path);
+        if read.needs_sealing {
+            tracing::info!("sealing the ML-DSA identity seed under HIDRA_KEY_PASSPHRASE");
+            keystore::write_secret(&secret_path, b64.trim().as_bytes())?;
+        }
+        return Ok(seed);
+    }
+
+    std::fs::create_dir_all(keys_dir)?;
+    restrict_dir(keys_dir)?;
+    let mut seed: PqSeed = [0u8; 32];
+    OsRng.fill_bytes(&mut seed);
+    keystore::write_secret(&secret_path, BASE64.encode(seed).as_bytes())?;
+    // The public half, for anyone who wants to publish or pin it. The
+    // Ed25519 key it pairs with is whatever identity.secret holds; the file
+    // carries only the ML-DSA half, which is the new part.
+    let placeholder = SigningKey::generate(&mut OsRng);
+    let pq_public = HybridSigningKey::from_parts(placeholder, &seed)
+        .verifying_key()
+        .to_bytes()[32..]
+        .to_vec();
+    std::fs::write(&public_path, BASE64.encode(pq_public))?;
+    tracing::info!("generated the ML-DSA half of the node identity");
+    Ok(seed)
+}
+
 /// The identity of a `.hidra` hidden service.
 ///
 /// The address *is* the public key, so whoever holds `service.secret` is the
@@ -348,6 +405,17 @@ mod tests {
     fn key_generation_produces_valid_node_id() {
         let keys = NodeKeys::generate();
         assert_eq!(keys.node_id.len(), 32); // 16 bytes = 32 hex chars
+    }
+
+    #[test]
+    fn the_pq_identity_seed_is_created_once_and_then_reloaded() {
+        let dir = std::env::temp_dir().join(format!("hidra_pq_{}", uuid::Uuid::new_v4()));
+        let first = load_or_create_pq_identity_seed(&dir).unwrap();
+        let second = load_or_create_pq_identity_seed(&dir).unwrap();
+        assert_eq!(first, second, "a reload must not mint a new identity");
+        assert!(dir.join("identity_mldsa.secret").exists());
+        assert!(dir.join("identity_mldsa.public").exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

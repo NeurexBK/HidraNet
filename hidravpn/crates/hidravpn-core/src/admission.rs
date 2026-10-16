@@ -41,6 +41,11 @@ pub struct AdmissionRequest {
     /// A name for the lease, for the operator's `status`; optional.
     #[serde(default)]
     pub name: String,
+    /// A fresh ML-KEM-1024 public key, base64. A node that understands it
+    /// answers with `kem_ciphertext` in the invite, and both sides derive
+    /// the tunnel's pre-shared key from it. See `psk`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kem_public_key: Option<String>,
 }
 
 /// What a node answers when it does not admit.
@@ -77,9 +82,11 @@ pub async fn request_admission(
         .parse()
         .context("the node's endpoint is not ip:port")?;
     let port = record.admission_port.unwrap_or(DEFAULT_ADMISSION_PORT);
+    let offer = crate::psk::Offer::new();
     let body = serde_json::to_string(&AdmissionRequest {
         public_key: client_public_key.to_string(),
         name: name.to_string(),
+        kem_public_key: Some(offer.public_key.clone()),
     })?;
     let (status, answer) = http_call(
         SocketAddr::new(endpoint.ip(), port),
@@ -113,6 +120,21 @@ pub async fn request_admission(
     invite.node_name = record.node_name.clone();
     invite.operator = record.operator.clone();
     invite.role = record.role.clone();
+    // The pre-shared key is never taken from the answer in the clear: an
+    // open admission goes over plain HTTP, so a key written in it would be
+    // no secret. It comes from the KEM ciphertext, or there is none.
+    invite.preshared_key = None;
+    match invite.kem_ciphertext.take() {
+        Some(ct) => {
+            invite.preshared_key =
+                Some(offer.finish(&ct, &record.node_public_key, client_public_key)?);
+        }
+        None => tracing::info!(
+            "{} admitted this machine without a post-quantum pre-shared key (an older node); \
+             the tunnel to it is X25519 alone",
+            record.node_name
+        ),
+    }
     Ok(invite)
 }
 
@@ -260,6 +282,31 @@ mod tests {
         assert!(read_request(big.as_bytes()).await.is_err());
         let long = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(MAX_HEADERS));
         assert!(read_request(long.as_bytes()).await.is_err());
+    }
+
+    /// The request offers a KEM key, and an older node that does not know
+    /// the field still reads the request (it is extra, not required).
+    #[test]
+    fn the_request_offers_a_kem_key_an_older_node_can_ignore() {
+        let offer = crate::psk::Offer::new();
+        let body = serde_json::to_string(&AdmissionRequest {
+            public_key: "k".into(),
+            name: "n".into(),
+            kem_public_key: Some(offer.public_key.clone()),
+        })
+        .unwrap();
+        assert!(body.contains("kem_public_key"));
+        #[derive(Deserialize)]
+        struct OldNodesView {
+            public_key: String,
+            #[serde(default)]
+            name: String,
+        }
+        let old: OldNodesView = serde_json::from_str(&body).unwrap();
+        assert_eq!((old.public_key.as_str(), old.name.as_str()), ("k", "n"));
+        // And a request without the field still parses here.
+        let req: AdmissionRequest = serde_json::from_str(r#"{"public_key":"k"}"#).unwrap();
+        assert!(req.kem_public_key.is_none());
     }
 
     #[test]

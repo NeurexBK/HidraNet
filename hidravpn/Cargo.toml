@@ -30,6 +30,10 @@ ed25519-dalek = "3"
 sha2 = "0.10"
 hkdf = "0.12"
 getrandom = "0.3"
+# FIPS 203 ML-KEM, for the pre-shared key agreed during admission: the one
+# thing that keeps a recorded WireGuard session closed to a quantum computer.
+ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
+zeroize = "1"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

@@ -35,6 +35,9 @@ use crate::config::NodeConfig;
 pub struct Admit {
     pub public_key: String,
     pub name: String,
+    /// The client's ML-KEM public key, when it sent one; the main loop
+    /// answers it with a ciphertext and sets the agreed pre-shared key.
+    pub kem_public_key: Option<String>,
     /// The invite, or the HTTP status and reason for refusing.
     pub reply: oneshot::Sender<std::result::Result<Invite, (u16, String)>>,
 }
@@ -214,6 +217,15 @@ async fn admit(
             &refusal("public_key is not a WireGuard public key (32 bytes, base64)"),
         );
     }
+    // Likewise a KEM key that is not one, before it costs anyone a slot.
+    if let Some(ek) = &req.kem_public_key {
+        if hidravpn_core::psk::answer(ek, "probe", "probe").is_err() {
+            return http_response(
+                400,
+                &refusal("kem_public_key is not an ML-KEM-1024 public key (1568 bytes, base64)"),
+            );
+        }
+    }
     if !limiter.lock().await.allow(ip, Instant::now()) {
         return http_response(
             429,
@@ -229,6 +241,7 @@ async fn admit(
         .send(Admit {
             public_key: req.public_key,
             name,
+            kem_public_key: req.kem_public_key,
             reply,
         })
         .await

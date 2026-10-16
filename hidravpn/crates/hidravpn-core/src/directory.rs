@@ -345,6 +345,8 @@ mod tests {
             keepalive: 25,
             operator: r.operator.clone(),
             role: r.role.clone(),
+            preshared_key: None,
+            kem_ciphertext: None,
         }
     }
 

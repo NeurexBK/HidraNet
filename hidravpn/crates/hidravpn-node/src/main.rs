@@ -226,7 +226,7 @@ mod node {
                 leases.save()?;
                 // Into the running device too, if there is one.
                 match crate::wg::open_existing(&cfg.interface) {
-                    Ok(dev) => dev.add_peer(&lease.public_key, lease.ip)?,
+                    Ok(dev) => dev.add_peer(&lease.public_key, lease.ip, lease.preshared_key.as_deref())?,
                     Err(e) => warn!("the node is not running ({e}); the client is admitted the next time it starts"),
                 }
                 println!("{}", invite_for(&cfg, &lease)?.to_json());
@@ -308,6 +308,8 @@ mod node {
             keepalive: 25,
             operator: cfg.operator.clone(),
             role: Some(cfg.role.clone()),
+            preshared_key: lease.preshared_key.clone(),
+            kem_ciphertext: None,
         })
     }
 
@@ -333,10 +335,11 @@ mod node {
             cfg.role
         );
 
+        let node_public_key = cfg.public_key()?;
         let mut leases = Leases::load()?;
         let mut n = 0;
         for l in leases.iter() {
-            dev.add_peer(&l.public_key, l.ip)?;
+            dev.add_peer(&l.public_key, l.ip, l.preshared_key.as_deref())?;
             n += 1;
         }
         info!("{n} admitted client(s) loaded");
@@ -384,12 +387,28 @@ mod node {
                     let answer = if leases.len() as u32 >= cfg.max_clients && leases.find(&req.public_key).is_none() {
                         Err((503, "this node is full; try another".to_string()))
                     } else {
-                        match leases.admit_open(&req.name, &req.public_key, &net) {
-                            Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip)) {
-                                Ok(()) => { info!("admitted a client through the admission service ({} leases)", leases.len()); invite_for(&cfg, &lease).map_err(|e| (500, format!("{e:#}"))) }
-                                Err(e) => Err((500, format!("could not admit: {e:#}"))),
+                        // The post-quantum pre-shared key, agreed with the
+                        // client's KEM key when it sent one. The ciphertext
+                        // goes back in the invite; the key itself never does.
+                        let agreed = match req.kem_public_key.as_deref() {
+                            Some(ek) => match hidravpn_core::psk::answer(ek, &node_public_key, &req.public_key) {
+                                Ok((ct, psk)) => Ok(Some((ct, psk))),
+                                Err(e) => Err((400, format!("kem_public_key: {e:#}"))),
                             },
-                            Err(e) => Err((400, e.to_string())),
+                            None => Ok(None),
+                        };
+                        match agreed {
+                            Err(e) => Err(e),
+                            Ok(agreed) => match leases.admit_open(&req.name, &req.public_key, &net, agreed.as_ref().map(|(_, psk)| psk.clone())) {
+                                Ok(lease) => match leases.save().and_then(|_| dev.add_peer(&lease.public_key, lease.ip, lease.preshared_key.as_deref())) {
+                                    Ok(()) => {
+                                        info!("admitted a client through the admission service ({} leases{})", leases.len(), if agreed.is_some() { ", post-quantum key agreed" } else { ", older client, no post-quantum key" });
+                                        invite_for(&cfg, &lease).map(|mut inv| { inv.preshared_key = None; inv.kem_ciphertext = agreed.map(|(ct, _)| ct); inv }).map_err(|e| (500, format!("{e:#}")))
+                                    }
+                                    Err(e) => Err((500, format!("could not admit: {e:#}"))),
+                                },
+                                Err(e) => Err((400, e.to_string())),
+                            },
                         }
                     };
                     let _ = req.reply.send(answer);

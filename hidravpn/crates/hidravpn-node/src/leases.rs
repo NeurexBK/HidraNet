@@ -33,6 +33,11 @@ pub struct Lease {
     /// what makes a restart not count as idleness.
     #[serde(default)]
     pub last_seen: u64,
+    /// WireGuard pre-shared key, base64: agreed through ML-KEM at open
+    /// admission, or drawn at random for a manual `admit`. A lease from
+    /// before this has none, and its tunnel is X25519 alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preshared_key: Option<String>,
 }
 
 fn manual() -> String {
@@ -73,10 +78,22 @@ impl Leases {
     }
 
     pub fn save(&self) -> Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let p = path();
         std::fs::create_dir_all(p.parent().unwrap())?;
         let tmp = p.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        // The file holds pre-shared keys now, so it is created owner-only
+        // at open(2) rather than with the umask and tightened afterwards.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(&serde_json::to_vec_pretty(self)?)?;
+        f.sync_all()?;
+        drop(f);
         std::fs::rename(&tmp, &p)?;
         Ok(())
     }
@@ -100,18 +117,36 @@ impl Leases {
 
     /// Admits a key through the admission service, or returns the lease it
     /// already has.
-    pub fn admit_open(&mut self, name: &str, public_key: &str, net: &TunnelNet) -> Result<Lease> {
+    ///
+    /// `preshared_key` is the one agreed through ML-KEM for this request.
+    /// With one, the lease takes it — a client that asks again has made a
+    /// fresh agreement and its old key is gone with its old pocket. Without
+    /// one (an older client), a new lease gets no key, since a random one
+    /// could not reach the client over plain HTTP; an existing lease keeps
+    /// whatever it had.
+    pub fn admit_open(
+        &mut self,
+        name: &str,
+        public_key: &str,
+        net: &TunnelNet,
+        preshared_key: Option<String>,
+    ) -> Result<Lease> {
         let had = self.find(public_key).is_some();
         let mut lease = self.admit(name, public_key, net)?;
         if !had {
             lease.source = "open".into();
-            if let Some(l) = self
-                .leases
-                .iter_mut()
-                .find(|l| l.public_key == lease.public_key)
-            {
-                l.source = "open".into();
-            }
+            lease.preshared_key = None;
+        }
+        if preshared_key.is_some() {
+            lease.preshared_key = preshared_key;
+        }
+        if let Some(l) = self
+            .leases
+            .iter_mut()
+            .find(|l| l.public_key == lease.public_key)
+        {
+            l.source = lease.source.clone();
+            l.preshared_key = lease.preshared_key.clone();
         }
         Ok(lease)
     }
@@ -182,6 +217,10 @@ impl Leases {
             admitted_at: now_unix(),
             source: manual(),
             last_seen: 0,
+            // A manual invite travels to the client by a channel the
+            // operator chooses, so it can carry a secret. Drawn here;
+            // admit_open replaces or clears it.
+            preshared_key: Some(hidravpn_core::psk::random()?),
         };
         self.leases.push(lease.clone());
         Ok(lease)
@@ -221,6 +260,58 @@ mod tests {
         }
     }
 
+    fn some_key() -> String {
+        hidravpn_core::ClientKey::generate()
+            .unwrap()
+            .public_base64()
+    }
+
+    /// A manual invite travels by a channel the operator picks, so it can
+    /// carry a pre-shared key, and a client admitted by hand gets one.
+    #[test]
+    fn a_manual_lease_draws_a_pre_shared_key() {
+        let mut leases = Leases::default();
+        let lease = leases.admit("laptop", &some_key(), &net()).unwrap();
+        let psk = lease
+            .preshared_key
+            .clone()
+            .expect("a manual lease has a key");
+        hidravpn_core::psk::decode(&psk).unwrap();
+        // Asking again returns the same lease, same key.
+        let again = leases.admit("laptop", &lease.public_key, &net()).unwrap();
+        assert_eq!(again.preshared_key, lease.preshared_key);
+    }
+
+    /// Open admission takes the key agreed through ML-KEM; without one, a
+    /// new lease gets none (plain HTTP cannot carry a secret) and an
+    /// existing lease keeps what it had.
+    #[test]
+    fn open_admission_takes_the_agreed_key_or_none() {
+        let mut leases = Leases::default();
+        let key = some_key();
+        let old_client = leases.admit_open("old", &key, &net(), None).unwrap();
+        assert_eq!(old_client.source, "open");
+        assert!(
+            old_client.preshared_key.is_none(),
+            "no key reaches an older client"
+        );
+
+        let agreed = hidravpn_core::psk::random().unwrap();
+        let new_client = leases
+            .admit_open("old", &key, &net(), Some(agreed.clone()))
+            .unwrap();
+        assert_eq!(new_client.preshared_key.as_deref(), Some(agreed.as_str()));
+        assert_eq!(
+            leases.find(&key).unwrap().preshared_key.as_deref(),
+            Some(agreed.as_str()),
+            "the stored lease carries it too, for the next restart"
+        );
+
+        // An older client asking again does not strip the key.
+        let kept = leases.admit_open("old", &key, &net(), None).unwrap();
+        assert_eq!(kept.preshared_key.as_deref(), Some(agreed.as_str()));
+    }
+
     #[test]
     fn addresses_are_handed_out_in_order_and_kept() {
         let mut l = Leases::default();
@@ -256,9 +347,9 @@ mod tests {
         let open_active = Key::generate_private().get_public().to_base64();
         let open_new = Key::generate_private().get_public().to_base64();
         let manual_quiet = Key::generate_private().get_public().to_base64();
-        l.admit_open("q", &open_quiet, &net()).unwrap();
-        l.admit_open("a", &open_active, &net()).unwrap();
-        l.admit_open("n", &open_new, &net()).unwrap();
+        l.admit_open("q", &open_quiet, &net(), None).unwrap();
+        l.admit_open("a", &open_active, &net(), None).unwrap();
+        l.admit_open("n", &open_new, &net(), None).unwrap();
         l.admit("m", &manual_quiet, &net()).unwrap();
         let t0 = now_unix();
         // Pretend the first three were admitted long ago, except the new one.
@@ -319,8 +410,8 @@ mod tests {
         let never = Key::generate_private().get_public().to_base64();
         let came = Key::generate_private().get_public().to_base64();
         let by_hand = Key::generate_private().get_public().to_base64();
-        l.admit_open("never", &never, &net()).unwrap();
-        l.admit_open("came", &came, &net()).unwrap();
+        l.admit_open("never", &never, &net(), None).unwrap();
+        l.admit_open("came", &came, &net(), None).unwrap();
         l.admit("hand", &by_hand, &net()).unwrap();
         let t0 = now_unix();
         for lease in l.leases.iter_mut() {
