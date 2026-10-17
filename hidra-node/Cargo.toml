@@ -48,6 +48,9 @@ sha2 = "0.10"
 # (NFKC, see hidrachat-crypto.js normalizeNick), so that two names that read
 # the same cannot both be in a room.
 unicode-normalization = "0.1"
+# HidraRelay checks the forum's signatures (ECDSA P-256 over SHA-256, as
+# Web Crypto makes them) before it keeps a post, a claim or a hide.
+p256 = { version = "0.13", features = ["ecdsa"] }
 aes-gcm = "0.10"
 subtle = "2"
 

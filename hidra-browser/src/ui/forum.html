@@ -212,6 +212,12 @@ svg{display:block}
       <input type="password" id="pass-in" maxlength="128" placeholder="At least 16 characters. It cannot be reset." autocomplete="current-password">
       <button class="btn btn-g" id="pass-gen" type="button" style="margin-top:8px">Generate a password</button>
       <div id="acct-state"></div>
+      <div id="acct-key" class="hidden" style="margin-top:10px">
+        <label>Your account's public key</label>
+        <div class="muted" style="font-size:.78em">Give this to the forum's operator to be made moderator. It is public; it reveals nothing.</div>
+        <div id="acct-key-val" style="font-family:monospace;font-size:.72em;word-break:break-all;margin:6px 0"></div>
+        <button class="btn btn-g" id="acct-key-copy" type="button">Copy public key</button>
+      </div>
     </div>
     <div class="b-foot"><button class="btn btn-g hidden" id="acct-out">Sign out</button><button class="btn btn-p" id="nick-save">Sign in or register</button></div>
   </div>
@@ -859,6 +865,8 @@ function openNick(first){
   $('pass-in').value='';
   $('nick-x').style.display=first?'none':'';
   $('acct-out').classList.toggle('hidden',!state.me);
+  $('acct-key').classList.toggle('hidden',!state.me);
+  $('acct-key-val').textContent=state.me?state.me.pub:'';
   $('acct-state').innerHTML=state.me?('<span class="ok">Signed in as '+esc(state.me.nick)+' ('+esc('#'+state.me.fingerprint.slice(0,6))+').</span> '+registryStatus()):'';
   openM('m-nick'); setTimeout(function(){ (state.me?$('pass-in'):$('nick-in')).focus(); },50);
 }
@@ -881,6 +889,7 @@ function openNick(first){
   $('nick-save').onclick=async function(){ if(await signIn($('nick-in').value,$('pass-in').value)){ $('pass-in').value=''; closeM('m-nick'); toast('Welcome, '+state.me.nick+'.'+(state.registryConflict?' The registry lists this name under another key.':'')); } };
   $('pass-in').onkeydown=function(e){ if(e.key==='Enter') $('nick-save').onclick(); };
   $('acct-out').onclick=function(){ signOut(); closeM('m-nick'); toast('Signed out.'); };
+  $('acct-key-copy').onclick=function(){ if(state.me&&navigator.clipboard) navigator.clipboard.writeText(state.me.pub).then(function(){ toast('Public key copied.'); }); };
   $('pass-gen').onclick=function(){ var p=$('pass-in'); p.type='text'; p.value=hidraRoom.genPassword(); toast('Write this password down. It cannot be recovered.'); };
   $('btn-new').onclick=function(){ if(!ensureNick())return; $('n-title').value='';$('n-body').value=''; if(state.cat!=='all')$('n-cat').value=state.cat; openM('m-new'); setTimeout(function(){$('n-title').focus();},50); };
   $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Give it a title.');return;} if(!bo){toast('Write the message.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };

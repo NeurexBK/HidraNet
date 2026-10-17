@@ -2,12 +2,14 @@
 
 ## forum-registrar.js
 
-The forum keeps its accounts on a public MQTT relay, and the relay enforces
+The forum keeps its accounts on an MQTT relay. A public relay enforces
 nothing: anyone can overwrite the claim on a username. The registrar is the
 one party whose word on names the forum page takes over the relay's. It
 watches the claims, records the first key seen for each name, and publishes
 the whole list signed under `hforum/registry`. The page ships the public
 half of the registrar's key and trusts nothing else for names in that list.
+With `hidra-relay` (below) the relay itself refuses what the page would,
+and the registrar stays the authority the pages and the relay follow.
 
 It needs Node 22 or newer and nothing else: it loads the same MQTT bundle
 the browser ships.
@@ -104,3 +106,84 @@ If you know the relay is clean (a new forum, or one you have watched), pass
   relay's copy was wiped, fall back to first-seen until the next list.
 - The registrar's own machine talks to the relay directly: the relay sees
   that machine's address. It is the operator's, not any user's.
+
+## hidra-relay
+
+The project's own relay for the chat and the forum, in place of the public
+MQTT brokers the pages ship with. It is a Rust binary in `hidra-node`
+(`src/apps/hidrarelay.rs`, `src/bin/hidra-relay.rs`): MQTT 3.1.1 over
+WebSocket, the subset the pages use, and nothing else.
+
+What it does that a public broker does not:
+
+- Carries only the two trees the pages use, `hidra/` (rooms, ciphertext
+  only, topics of a fixed shape) and `hforum/`. Everything else is dropped.
+- Keeps retained messages on disk (`--data`), so the forum survives a
+  restart, under caps on count and size.
+- Limits every client: handshake and CONNECT within ten seconds of being
+  accepted, payloads of 64 KiB (1 MiB for the registry), 32 subscriptions
+  and 256 SUBSCRIBE packets in a connection's life, 10 packets a second
+  with a burst of 60 (a subscription costs five per filter, since it is a
+  pass over everything kept), a keep-alive of at most ten minutes, and an
+  outbound queue of 512 frames or 8 MiB; a client that exceeds them, or
+  stops reading, is disconnected. 4096 clients in all. A message is held
+  once however many clients it goes to. What is kept is capped at 64 MiB,
+  which is also the most a new page is ever asked to load.
+- With the registrar's key (`--registrar-key`), enforces the forum's rules
+  before keeping anything: a claim only on a free name or from the key
+  that holds it; a post only signed, only under a name its key claimed,
+  with an id of its own, and replaced or deleted only by that key; a hide
+  only from the moderator; the registry only from the registrar and only
+  with a higher sequence number; nothing on these topics is ever wiped by
+  an empty message; nothing retained in the chat tree, and nothing
+  live-only in the forum tree. Each kind has a cap (20 000 names, 100 000
+  posts, 20 000 hides, 20 000 reports) past which new ones are refused.
+  The page's own checks stay and agree with these; signatures are verified
+  off the relay's lock, so a flood of bad ones slows only its sender.
+- Logs counts and reasons. No topic, payload, name, key or address is
+  written.
+
+What it sees is what any relay sees: the address of each client, when it
+connects, how much it sends and to which topic. Room traffic is ciphertext
+to it; the forum is public anyway.
+
+### Running it
+
+Build and install:
+
+```
+cd hidra-node && cargo build --release --bin hidra-relay
+install -m 755 target/release/hidra-relay /usr/local/bin/
+```
+
+Run it on loopback and put TLS in front of it. `deploy/hidra-relay/`
+holds a systemd unit and a Caddyfile; fill in the host name and the
+registrar's public key (the `REGISTRY_PUBKEY` in `forum.html`).
+
+```
+hidra-relay --listen 127.0.0.1:1884 --data /var/lib/hidra-relay \
+            --registrar-key <REGISTRY_PUBKEY>
+```
+
+Flags: `--listen` (default `127.0.0.1:1884`), `--data` (omit to keep
+retained messages in memory only), `--registrar-key` (required, unless
+`--no-forum-rules` asks for a plain relay that keeps whatever is
+published, which is for testing the pages' own checks), `--moderator-key`
+(normally not needed: the relay takes the moderator from the registrar's
+list, so `set-admin` at the registrar names the moderator for the pages
+and the relay alike; the flag overrides it), `--log-level`.
+
+Point the pages at it: `MQTT_BROKERS` and the `connect-src` of the content
+security policy in `hidra-browser/src/ui/hidrachat.html` and
+`forum.html`, and the copy of the chat page in `hidra-node/assets/`. Run
+the registrar against the same URL (`--broker wss://<host>/mqtt`).
+
+### Checking it
+
+```
+cd hidra-node && cargo test hidrarelay
+```
+
+covers the packet parser, the limits, the store across a restart, delivery
+through real WebSocket clients, and every forum rule against signatures
+made by the browser's own module (`src/apps/hidrarelay/forum_vectors.json`).
