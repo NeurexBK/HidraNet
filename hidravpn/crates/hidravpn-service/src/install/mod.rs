@@ -44,10 +44,34 @@ fn place_binary() -> Result<PathBuf> {
     }
     // Copying a running binary over itself fails; skip when already in place.
     if src != dst {
-        std::fs::copy(&src, &dst)
+        copy_when_free(&src, &dst)
             .with_context(|| format!("copying the service to {}", dst.display()))?;
     }
     Ok(dst)
+}
+
+/// Copies `src` over `dst`, waiting up to ten seconds for `dst` to be let go
+/// of. A stop returns before the old process has exited (`schtasks /End`
+/// does not wait), and until it has, Windows refuses the copy as a sharing
+/// violation and Linux as ETXTBSY.
+fn copy_when_free(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match std::fs::copy(src, dst) {
+            Err(e) if still_in_use(&e) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// The file is open in a process that has not exited yet.
+fn still_in_use(e: &std::io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) on Windows;
+    // ETXTBSY (26) on Linux.
+    let busy: &[i32] = if cfg!(windows) { &[32, 33] } else { &[26] };
+    e.raw_os_error().is_some_and(|c| busy.contains(&c))
 }
 
 /// What `install` does besides registering the service.
@@ -135,14 +159,31 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
             }
         }
         stop_for_update();
-        let bin = place_binary()?;
-        if let Some(client) = &opts.client {
-            let dst = installed_client();
-            if client != &dst {
-                std::fs::copy(client, &dst)
-                    .with_context(|| format!("copying the client to {}", dst.display()))?;
+        // Stopped, the old service is started again if the new one cannot
+        // be put in place: a failed update never leaves the machine with no
+        // service at all.
+        let placed = (|| -> Result<PathBuf> {
+            let bin = place_binary()?;
+            if let Some(client) = &opts.client {
+                let dst = installed_client();
+                if client != &dst {
+                    copy_when_free(client, &dst)
+                        .with_context(|| format!("copying the client to {}", dst.display()))?;
+                }
             }
-        }
+            Ok(bin)
+        })();
+        let bin = match placed {
+            Ok(bin) => bin,
+            Err(e) => {
+                if installed_binary().is_file() && start().is_ok() {
+                    return Err(e.context(
+                        "nothing was updated; the service already installed is running again",
+                    ));
+                }
+                return Err(e);
+            }
+        };
         #[cfg(target_os = "linux")]
         linux::install(&bin, opts.user.as_deref())?;
         #[cfg(windows)]
@@ -247,4 +288,36 @@ pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_binary_still_held_by_a_stopping_process_is_waited_for_not_given_up_on() {
+        let busy = if cfg!(windows) { 32 } else { 26 };
+        assert!(still_in_use(&std::io::Error::from_raw_os_error(busy)));
+        // Anything else is an answer at once: no ten seconds spent on a
+        // missing file or a refusal.
+        assert!(!still_in_use(&std::io::Error::from_raw_os_error(2)));
+        assert!(!still_in_use(&std::io::Error::from_raw_os_error(5)));
+        assert!(!still_in_use(&std::io::Error::other("not an OS error")));
+    }
+
+    #[test]
+    fn a_free_destination_is_copied_at_once() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dst) = (dir.join("new"), dir.join("installed"));
+        std::fs::write(&src, b"new build").unwrap();
+        std::fs::write(&dst, b"old build").unwrap();
+        let t = std::time::Instant::now();
+        copy_when_free(&src, &dst).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new build");
+        // A missing source fails at once too.
+        assert!(copy_when_free(&dir.join("missing"), &dst).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
