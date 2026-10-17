@@ -81,7 +81,9 @@ If you know the relay is clean (a new forum, or one you have watched), pass
 - On connecting it collects the retained claims for five seconds, then
   publishes the list, and again on every change (coalesced to one list per
   fifteen seconds) and on the interval. A list wiped from or replaced on
-  the relay is republished, at most once a minute.
+  the relay is republished, at most once a minute. After a reconnection,
+  a relay that hands over no list (one that restarted without its data,
+  or a new relay) is given the list straight away.
 - `registry-state.json` beside the key holds what has been recorded and the
   sequence number. The sequence only grows; the page refuses a list with a
   sequence below the one it holds, so an old list cannot be replayed. Back
@@ -121,25 +123,45 @@ What it does that a public broker does not:
 - Keeps retained messages on disk (`--data`), so the forum survives a
   restart, under caps on count and size.
 - Limits every client: handshake and CONNECT within ten seconds of being
-  accepted, payloads of 64 KiB (1 MiB for the registry), 32 subscriptions
-  and 256 SUBSCRIBE packets in a connection's life, 10 packets a second
-  with a burst of 60 (a subscription costs five per filter, since it is a
-  pass over everything kept), a keep-alive of at most ten minutes, and an
-  outbound queue of 512 frames or 8 MiB; a client that exceeds them, or
+  accepted, payloads of 128 KiB (640 KiB for the registry), 12
+  subscriptions and 256 SUBSCRIBE packets in a connection's life, 10
+  packets a second with a burst of 60 (a subscription costs five per
+  filter, since it is a pass over everything kept; a WebSocket frame with
+  no packet in it costs one), a keep-alive of at most ten minutes, and an
+  outbound queue of 256 frames or 1 MiB; a client that exceeds them, or
   stops reading, is disconnected. 4096 clients in all. A message is held
-  once however many clients it goes to. What is kept is capped at 64 MiB,
-  which is also the most a new page is ever asked to load.
+  once however many clients it goes to, and a new subscriber's backlog is
+  sent between the packets it keeps sending, so a slow load never stops
+  its pings from being answered. What is kept is capped at 50 000
+  messages and 32 MiB, which is also the most a new page is ever asked to
+  load; the top 4 MiB are for moderation and the registrar's list only,
+  the 4 MiB below that also for names, and one signing key may hold at
+  most 4 MiB, so a store filled with posts still takes a hide, a list and
+  a registration. With `--data`, a write is queued for the disk before
+  memory changes; when the disk cannot keep up the publish is refused and
+  the log says so, so memory and disk never disagree; a disk that keeps
+  failing stops the relay from taking retained publishes at all. On
+  SIGTERM or Ctrl-C the relay stops accepting, writes out what it had
+  acknowledged, and exits. A refused list is logged at warn level, since
+  the registrar is the operator's own.
 - With the registrar's key (`--registrar-key`), enforces the forum's rules
   before keeping anything: a claim only on a free name or from the key
-  that holds it; a post only signed, only under a name its key claimed,
-  with an id of its own, and replaced or deleted only by that key; a hide
-  only from the moderator; the registry only from the registrar and only
-  with a higher sequence number; nothing on these topics is ever wiped by
-  an empty message; nothing retained in the chat tree, and nothing
-  live-only in the forum tree. Each kind has a cap (20 000 names, 100 000
-  posts, 20 000 hides, 20 000 reports) past which new ones are refused.
-  The page's own checks stay and agree with these; signatures are verified
-  off the relay's lock, so a flood of bad ones slows only its sender.
+  that holds it, where the registrar's list is the authority on names (a
+  relay that starts empty knows every registered name as soon as the list
+  arrives); a post only signed, only under a name its key holds, with an
+  id of its own, and replaced or deleted only by that key; a hide only
+  from the moderator, whom the relay takes from the list (`set-admin`);
+  the registry only from the registrar and only with a higher sequence
+  number (a list left by another key, say after a key change, does not
+  hold it back); no name, post, hide, moderation claim or list is ever
+  wiped by an empty message (a report, which is unsigned, can be withdrawn
+  by anyone, as on the page); the same bytes published again go nowhere;
+  nothing retained in the chat tree, and nothing live-only in the forum
+  tree. Each kind has a cap (10 000 names, 30 000 posts, 5 000 hides,
+  5 000 reports) past which new ones are refused. The page's own checks
+  stay and agree with these; signatures are verified off the relay's
+  lock, and under it the relay reads what it remembered beside each
+  message instead of parsing it, so a flood slows only its sender.
 - Logs counts and reasons. No topic, payload, name, key or address is
   written.
 
@@ -168,10 +190,9 @@ hidra-relay --listen 127.0.0.1:1884 --data /var/lib/hidra-relay \
 Flags: `--listen` (default `127.0.0.1:1884`), `--data` (omit to keep
 retained messages in memory only), `--registrar-key` (required, unless
 `--no-forum-rules` asks for a plain relay that keeps whatever is
-published, which is for testing the pages' own checks), `--moderator-key`
-(normally not needed: the relay takes the moderator from the registrar's
-list, so `set-admin` at the registrar names the moderator for the pages
-and the relay alike; the flag overrides it), `--log-level`.
+published, which is for testing the pages' own checks), `--log-level`.
+There is no flag for the moderator: `set-admin` at the registrar names
+the moderator for the pages and the relay alike.
 
 Point the pages at it: `MQTT_BROKERS` and the `connect-src` of the content
 security policy in `hidra-browser/src/ui/hidrachat.html` and

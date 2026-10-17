@@ -4,7 +4,7 @@
 //! could only ever believe the first claim it happened to see. A relay the
 //! project runs can decide: it keeps a claim on a name only if the name is
 //! free or the same key is claiming it again, keeps a post only if it is
-//! signed and under a name its key claimed, lets a post be replaced or
+//! signed and under a name its key holds, lets a post be replaced or
 //! deleted only by the key that signed it, keeps a hide only from the
 //! moderator, and keeps the registrar's list only from the registrar. The
 //! page's own checks stay, and agree with these; they are the same
@@ -12,26 +12,36 @@
 //! and forum.html), verified here with the same curve and hash Web Crypto
 //! uses, over the same bytes `JSON.stringify` produces.
 //!
+//! On names, the registrar's list is the authority, as it is for the pages:
+//! a name the list gives to a key is that key's here too, whether or not a
+//! claim for it is kept. So a relay that starts empty (the move from the
+//! public brokers, or a lost data directory) still knows every registered
+//! name as soon as the registrar has published once.
+//!
 //! The work is in two halves. `prepare` parses and verifies signatures and
 //! needs no state, so the relay runs it outside its lock; `admit` compares
-//! the established facts with what is kept, under the lock, and is cheap.
+//! the established facts with what is kept, under the lock, through the
+//! metadata the relay remembers beside each payload, and parses nothing
+//! but a newly kept registry list, once.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use base64::Engine as _;
 use p256::ecdsa::signature::Verifier;
 use serde_json::Value;
 
-use super::{Policy, Prepared, REGISTRY_TOPIC, Retained};
+use super::{Meta, Policy, Prepared, REGISTRY_TOPIC, Retained};
 
 /// Caps on what the forum keeps, per kind. Past them, new entries of that
 /// kind are refused and the log says so. Names are free to make, so these
 /// bound the damage of a flood; the registrar's own caps (3000 names,
-/// bursts refused) are what keeps a real forum far below them.
-pub const MAX_CLAIMS: usize = 20_000;
-pub const MAX_POSTS: usize = 100_000;
-pub const MAX_HIDES: usize = 20_000;
-pub const MAX_REPORTS: usize = 20_000;
+/// bursts refused) are what keeps a real forum far below them. They add
+/// up to the relay's cap on retained messages.
+pub const MAX_CLAIMS: usize = 10_000;
+pub const MAX_POSTS: usize = 30_000;
+pub const MAX_HIDES: usize = 5_000;
+pub const MAX_REPORTS: usize = 5_000;
 
 /// The largest integer JavaScript represents exactly. A timestamp or a
 /// sequence number above it would be read as a different number by the
@@ -43,12 +53,22 @@ pub struct ForumPolicy {
     /// The registrar's public key, as the page carries it. Without it the
     /// relay keeps no registry list at all.
     registrar: Option<String>,
-    /// The moderator's public key, when the operator names one on the
-    /// command line; otherwise the registrar's list names the moderator.
+    /// A moderator named directly, overriding the registrar's list. Not
+    /// offered on the command line: the pages learn the moderator from the
+    /// list, so naming one here that the list does not carry would leave
+    /// them believing the wrong account. Kept for tests.
     moderator: Option<String>,
-    /// The admin named by the kept list, remembered by the identity of the
-    /// kept bytes so the list is verified once, not on every hide.
-    registry_admin: Mutex<Option<(usize, usize, Option<String>)>>,
+    /// What the kept list says, remembered by the identity of the kept
+    /// bytes so the list is parsed and verified once, not on every post.
+    registry: Mutex<Option<(usize, usize, Option<RegistryFacts>)>>,
+}
+
+/// The parts of the registrar's list the rules use.
+#[derive(Clone, Debug, Default)]
+struct RegistryFacts {
+    admin: Option<String>,
+    /// Normalised name to the key that holds it.
+    names: HashMap<String, String>,
 }
 
 /// What `prepare` established about a publish: everything that does not
@@ -58,6 +78,7 @@ pub enum Fact {
     Chat,
     Report,
     Claim {
+        norm: String,
         pk: String,
     },
     Post {
@@ -185,12 +206,6 @@ fn parse(payload: &[u8]) -> Option<Value> {
     v.is_object().then_some(v)
 }
 
-/// The key a retained post, claim or tombstone carries, if it is one of ours.
-fn retained_pk(retained: &Retained, topic: &str) -> Option<String> {
-    let v = parse(retained.get(topic)?)?;
-    Some(s(&v, "pk")?.to_string())
-}
-
 /// The fields the registrar signs, in the order the pages and the tool
 /// use (hidrachat-crypto.js registryFields): `hides` only when present,
 /// `admin` as the empty string when absent or null.
@@ -199,11 +214,25 @@ fn registry_fields(v: &Value) -> Option<(Value, &str)> {
     let t = ts(v, "ts")?;
     let names = v.get("names")?;
     let sig = s(v, "sig")?;
-    if v.get("v").and_then(Value::as_i64) != Some(1)
-        || !names.is_array()
-        || !(0..=MAX_SAFE_INTEGER).contains(&seq)
-    {
+    if v.get("v").and_then(Value::as_i64) != Some(1) || !(0..=MAX_SAFE_INTEGER).contains(&seq) {
         return None;
+    }
+    // Each entry is [norm, name, pk, ts] with a timestamp JavaScript prints
+    // as serde_json does; anything else could re-serialise differently
+    // here and fail a signature the pages accept, or the other way round.
+    let entries = names.as_array()?;
+    for e in entries {
+        let e = e.as_array()?;
+        if e.len() != 4
+            || !e[0].is_string()
+            || !e[1].is_string()
+            || e[2].as_str().is_none_or(|pk| canonical_pub(pk).is_none())
+            || !e[3]
+                .as_i64()
+                .is_some_and(|t| (0..=MAX_SAFE_INTEGER).contains(&t))
+        {
+            return None;
+        }
     }
     let admin = match v.get("admin") {
         None | Some(Value::Null) => Value::String(String::new()),
@@ -233,59 +262,78 @@ impl ForumPolicy {
         Self {
             registrar,
             moderator,
-            registry_admin: Mutex::new(None),
+            registry: Mutex::new(None),
         }
     }
 
-    /// The admin the kept list names, if the list verifies against the
-    /// configured key. The relay only ever kept one that did; the re-check
-    /// covers a data directory first filled with the rules off. Verified
-    /// once per list: the result is remembered by the kept bytes' identity
-    /// and forgotten when a newer list is admitted.
-    fn registry_admin(&self, retained: &Retained) -> Option<String> {
+    /// What the kept list says, if it verifies against the configured key.
+    /// The relay only ever kept one that did; the re-check covers a data
+    /// directory first filled with the rules off. Parsed once per list:
+    /// the result is remembered by the kept bytes' identity and forgotten
+    /// when a newer list is admitted.
+    fn registry_facts(&self, retained: &Retained) -> Option<RegistryFacts> {
         let key = self.registrar.as_ref()?;
         let bytes = retained.get(REGISTRY_TOPIC)?;
         let ident = (bytes.as_ptr() as usize, bytes.len());
-        let mut cache = self
-            .registry_admin
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if let Some((p, l, admin)) = &*cache {
+        let mut cache = self.registry.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((p, l, facts)) = &*cache {
             if (*p, *l) == ident {
-                return admin.clone();
+                return facts.clone();
             }
         }
-        let admin = parse(bytes).and_then(|v| {
+        let facts = parse(bytes).and_then(|v| {
             let (fields, sig) = registry_fields(&v)?;
             if !verify_fields(key, &fields, sig) {
                 return None;
             }
-            let a = s(&v, "admin")?;
-            (!a.is_empty()).then(|| a.to_string())
+            let admin = s(&v, "admin").filter(|a| !a.is_empty()).map(str::to_string);
+            let mut names = HashMap::new();
+            for e in v.get("names")?.as_array()? {
+                // [norm, name, pk, ts], as the registrar builds it.
+                if let (Some(norm), Some(pk)) = (
+                    e.get(0).and_then(Value::as_str),
+                    e.get(2).and_then(Value::as_str),
+                ) {
+                    names.insert(norm.to_string(), pk.to_string());
+                }
+            }
+            Some(RegistryFacts { admin, names })
         });
-        *cache = Some((ident.0, ident.1, admin.clone()));
-        admin
+        *cache = Some((ident.0, ident.1, facts.clone()));
+        facts
     }
 
-    /// The moderator as configured: the flag, or the admin in the
+    /// The key a name belongs to: the registrar's word first, else the
+    /// claim the relay keeps.
+    fn name_owner(&self, norm: &str, retained: &Retained) -> Option<String> {
+        if let Some(pk) = self
+            .registry_facts(retained)
+            .and_then(|f| f.names.get(norm).cloned())
+        {
+            return Some(pk);
+        }
+        retained
+            .meta(&format!("hforum/u/{norm}"))
+            .and_then(|m| m.pk.as_deref().map(str::to_string))
+    }
+
+    /// The moderator as configured: the override, or the admin in the
     /// registrar's list (the registrar's `set-admin`), so the operator
     /// names the moderator once.
     fn named_moderator(&self, retained: &Retained) -> Option<String> {
         if let Some(m) = &self.moderator {
             return Some(m.clone());
         }
-        self.registry_admin(retained)
+        self.registry_facts(retained).and_then(|f| f.admin)
     }
 
     /// Who the operator named, else who made the first claim on
     /// `hforum/admin` that the relay kept.
     fn moderator_key(&self, retained: &Retained) -> Option<String> {
         self.named_moderator(retained).or_else(|| {
-            let v = parse(retained.get("hforum/admin")?)?;
-            if v.get("v")?.as_i64()? != 2 {
-                return None;
-            }
-            Some(s(&v, "pk")?.to_string())
+            retained
+                .meta("hforum/admin")
+                .and_then(|m| m.pk.as_deref().map(str::to_string))
         })
     }
 
@@ -364,7 +412,10 @@ impl ForumPolicy {
         if !verify_fields(pk, &serde_json::json!(["claim", norm, name, pk, t]), sig) {
             return Err("claim: bad signature");
         }
-        Ok(Fact::Claim { pk: pk.to_string() })
+        Ok(Fact::Claim {
+            norm: norm.to_string(),
+            pk: pk.to_string(),
+        })
     }
 
     fn post(&self, kind: u8, id: &str, tid: Option<&str>, payload: &[u8]) -> Check {
@@ -475,37 +526,43 @@ impl ForumPolicy {
         })
     }
 
-    /// The stateful half: the fact against what is kept.
+    /// The stateful half: the fact against what is kept, through the
+    /// metadata beside each payload.
     fn weigh(&self, fact: &Fact, topic: &str, retained: &Retained) -> Option<&'static str> {
-        let existing = retained.get(topic);
+        let existing = retained.meta(topic);
         let is_new = existing.is_none();
-        let existing_pk = existing.and_then(parse).and_then(|e| {
-            s(&e, "pk")
-                .map(str::to_string)
-                .map(|pk| (pk, e.get("del").is_some()))
-        });
+        let existing_pk = existing.and_then(|m| m.pk.as_deref());
         match fact {
             Fact::Chat => None,
             Fact::Report => (is_new && retained.count("hforum/rep") >= MAX_REPORTS)
                 .then_some("report: cap reached"),
-            Fact::Claim { pk } => match existing_pk {
-                Some((owner, _)) if owner != *pk => Some("claim: name taken"),
-                Some(_) => None,
-                None if retained.count("hforum/u") >= MAX_CLAIMS => Some("claim: cap reached"),
-                None => None,
-            },
+            Fact::Claim { norm, pk } => {
+                // The registrar's word on a name comes first.
+                if let Some(owner) = self
+                    .registry_facts(retained)
+                    .and_then(|f| f.names.get(norm).cloned())
+                {
+                    return (owner != *pk)
+                        .then_some("claim: the registry gives this name to another key");
+                }
+                match existing_pk {
+                    Some(owner) if owner != pk => Some("claim: name taken"),
+                    Some(_) => None,
+                    None if retained.count("hforum/u") >= MAX_CLAIMS => Some("claim: cap reached"),
+                    None => None,
+                }
+            }
             Fact::Tombstone { pk } => match existing_pk {
-                Some((owner, _)) if owner == *pk => None,
+                Some(owner) if owner == pk => None,
                 Some(_) => Some("tombstone: not the author"),
                 None => Some("tombstone: nothing to delete"),
             },
             Fact::Post { id, pk, nick_norm } => {
-                match &existing_pk {
-                    Some((_, true)) => return Some("post: deleted"),
-                    Some((owner, _)) if owner != pk => {
-                        return Some("post: id belongs to another key");
-                    }
-                    _ => {}
+                if existing.is_some_and(|m| m.tombstone) {
+                    return Some("post: deleted");
+                }
+                if existing_pk.is_some_and(|owner| owner != pk) {
+                    return Some("post: id belongs to another key");
                 }
                 // The page keeps replies by id alone: the same id under
                 // another topic would shadow the first on a fresh load.
@@ -516,9 +573,9 @@ impl ForumPolicy {
                     return Some("post: cap reached");
                 }
                 // The page signs in before it posts, so a post's nickname is
-                // a name its key has claimed. One signed with another key is
-                // an impersonation; the page would flag it, the relay drops it.
-                match retained_pk(retained, &format!("hforum/u/{nick_norm}")) {
+                // a name its key holds. One signed with another key is an
+                // impersonation; the page would flag it, the relay drops it.
+                match self.name_owner(nick_norm, retained) {
                     Some(owner) if owner == *pk => None,
                     Some(_) => Some("post: nickname belongs to another key"),
                     None => Some("post: nickname not claimed"),
@@ -535,28 +592,27 @@ impl ForumPolicy {
             Fact::Admin { pk } => {
                 if let Some(m) = self.named_moderator(retained) {
                     (m != *pk).then_some("admin: not the moderator the operator named")
-                } else if let Some((owner, _)) = existing_pk {
-                    (owner != *pk).then_some("admin: already claimed")
+                } else if let Some(owner) = existing_pk {
+                    (owner != pk).then_some("admin: already claimed")
                 } else {
                     None
                 }
             }
             Fact::Registry { seq } => {
-                if let Some(existing) = existing.and_then(parse) {
-                    if existing
-                        .get("seq")
-                        .and_then(Value::as_i64)
-                        .is_some_and(|e| e >= *seq)
-                    {
-                        return Some("registry: not newer than the one kept");
-                    }
+                // Only a kept list that verifies under the current key holds
+                // the sequence forward; one left by another key (a rotated
+                // key, a data directory from before) does not lock out the
+                // registrar.
+                if self.registry_facts(retained).is_some()
+                    && existing
+                        .and_then(|m| m.seq)
+                        .is_some_and(|kept| kept >= *seq)
+                {
+                    return Some("registry: not newer than the one kept");
                 }
-                // A newer list is about to be kept: whatever admin was
-                // remembered from the old one is forgotten.
-                *self
-                    .registry_admin
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = None;
+                // A newer list is about to be kept: what was remembered
+                // from the old one is forgotten.
+                *self.registry.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 None
             }
         }
@@ -572,6 +628,23 @@ impl Policy for ForumPolicy {
     ) -> std::result::Result<Prepared, &'static str> {
         self.check(topic, payload, retain)
             .map(|f| Box::new(f) as Prepared)
+    }
+
+    /// Beside each kept forum payload: the key that signed it, whether it
+    /// is a tombstone, and a list's sequence number. Computed off the lock,
+    /// so `admit` never parses a kept payload.
+    fn meta(&self, topic: &str, payload: &[u8]) -> Meta {
+        if !topic.starts_with("hforum/") || topic.starts_with("hforum/rep/") {
+            return Meta::default();
+        }
+        let Some(v) = parse(payload) else {
+            return Meta::default();
+        };
+        Meta {
+            pk: s(&v, "pk").map(Into::into),
+            tombstone: v.get("del").is_some(),
+            seq: v.get("seq").and_then(Value::as_i64),
+        }
     }
 
     fn admit(
@@ -609,6 +682,12 @@ mod tests {
             registrar.then(|| v["R"].as_str().unwrap().to_string()),
             moderator.map(str::to_string),
         )
+    }
+
+    /// Keeps a payload as the relay would: with the policy's metadata.
+    fn keep(r: &mut Retained, pol: &ForumPolicy, topic: &str, payload: Arc<[u8]>) {
+        let meta = pol.meta(topic, &payload);
+        r.insert(topic, payload, meta);
     }
 
     /// Both halves, as the relay runs them for a retained publish.
@@ -674,7 +753,12 @@ mod tests {
             ),
             None
         );
-        retained.insert("hforum/u/alice", bytes(&v["claim_A_alice"]));
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/u/alice",
+            bytes(&v["claim_A_alice"]),
+        );
         assert_eq!(
             refuse(
                 &pol,
@@ -741,6 +825,87 @@ mod tests {
     }
 
     #[test]
+    fn the_registrars_list_decides_names_even_on_an_empty_store() {
+        let v = vectors();
+        let pol = policy(true, None);
+        let mut retained = Retained::default();
+        // Nothing kept but the list, which gives alice and bob to A.
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/registry",
+            bytes(&v["registry_2"]),
+        );
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/u/alice",
+                &bytes(&v["claim_B_alice"]),
+                &retained
+            ),
+            Some("claim: the registry gives this name to another key"),
+            "B cannot take alice on an empty store"
+        );
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/u/alice",
+                &bytes(&v["claim_A_alice"]),
+                &retained
+            ),
+            None
+        );
+        // A posts as Alice with no claim kept: the list vouches for the name.
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/t/tabcdefghij",
+                &bytes(&v["post_A"]),
+                &retained
+            ),
+            None
+        );
+        // B, signing as Bob, is not bob's key according to the list.
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/t/tabcdefghij",
+                &bytes(&v["post_B_same_id"]),
+                &retained
+            ),
+            Some("post: nickname belongs to another key")
+        );
+        // A claim the relay kept before the list arrived yields to the list.
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/u/alice",
+            bytes(&v["claim_B_alice"]),
+        );
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/t/tabcdefghij",
+                &bytes(&v["post_A"]),
+                &retained
+            ),
+            None,
+            "the list, not the kept claim, says whose name alice is"
+        );
+        // Without a registrar key there is no list to follow.
+        let open = policy(false, None);
+        assert_eq!(
+            refuse(
+                &open,
+                "hforum/t/tabcdefghij",
+                &bytes(&v["post_A"]),
+                &retained
+            ),
+            Some("post: nickname belongs to another key")
+        );
+    }
+
+    #[test]
     fn names_are_trimmed_as_javascript_trims_them() {
         let pol = policy(false, None);
         let retained = Retained::default();
@@ -789,12 +954,22 @@ mod tests {
             refuse(&pol, topic, &bytes(&v["post_A"]), &retained),
             Some("post: nickname not claimed")
         );
-        retained.insert("hforum/u/alice", bytes(&v["claim_A_alice"]));
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/u/alice",
+            bytes(&v["claim_A_alice"]),
+        );
         assert_eq!(
             refuse(&pol, topic, &bytes(&v["post_B_same_id"]), &retained),
             Some("post: nickname not claimed")
         );
-        retained.insert("hforum/u/bob", bytes(&v["claim_A_bob"]));
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/u/bob",
+            bytes(&v["claim_A_bob"]),
+        );
         assert_eq!(
             refuse(&pol, topic, &bytes(&v["post_B_same_id"]), &retained),
             Some("post: nickname belongs to another key"),
@@ -824,7 +999,7 @@ mod tests {
             Some("post: bad id")
         );
         assert_eq!(refuse(&pol, topic, &bytes(&v["post_A"]), &retained), None);
-        retained.insert(topic, bytes(&v["post_A"]));
+        keep(&mut retained, &pol, topic, bytes(&v["post_A"]));
         assert_eq!(
             refuse(&pol, topic, &bytes(&v["post_B_same_id"]), &retained),
             Some("post: id belongs to another key")
@@ -840,7 +1015,7 @@ mod tests {
             Some("post: bad signature")
         );
         assert_eq!(refuse(&pol, topic, &bytes(&v["tomb_A"]), &retained), None);
-        retained.insert(topic, bytes(&v["tomb_A"]));
+        keep(&mut retained, &pol, topic, bytes(&v["tomb_A"]));
         assert_eq!(
             refuse(&pol, topic, &bytes(&v["post_A"]), &retained),
             Some("post: deleted"),
@@ -874,11 +1049,16 @@ mod tests {
             ),
             Some("post: bad id")
         );
-        retained.insert("hforum/r/tabcdefghij/rabcdefghij", bytes(&v["reply_A"]));
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/r/tabcdefghij/rabcdefghij",
+            bytes(&v["reply_A"]),
+        );
         let (sk, pk) = local_key(9);
         let claim = serde_json::json!({ "v": 2, "name": "eve", "pk": pk, "ts": 1,
             "sig": local_sign(&sk, &serde_json::json!(["claim", "eve", "eve", pk, 1])) });
-        retained.insert("hforum/u/eve", bytes(&claim));
+        keep(&mut retained, &pol, "hforum/u/eve", bytes(&claim));
         let fields = serde_json::json!(["r", "rabcdefghij", "tzzzzzzzzzz", "x", "eve", 2]);
         let shadow = serde_json::json!({ "id": "rabcdefghij", "topicId": "tzzzzzzzzzz", "body": "x",
             "nick": "eve", "ts": 2, "pk": pk, "sig": local_sign(&sk, &fields) });
@@ -916,7 +1096,7 @@ mod tests {
             refuse(&pol, "hforum/admin", &bytes(&v["admin_A"]), &retained),
             None
         );
-        retained.insert("hforum/admin", bytes(&v["admin_A"]));
+        keep(&mut retained, &pol, "hforum/admin", bytes(&v["admin_A"]));
         assert_eq!(
             refuse(&pol, "hforum/admin", &bytes(&v["admin_B"]), &retained),
             Some("admin: already claimed")
@@ -943,7 +1123,7 @@ mod tests {
             ),
             Some("hide: not the moderator")
         );
-        // With a moderator named by the operator, the relay's own word wins.
+        // With a moderator named directly, that word wins.
         let named = policy(false, Some(v["B"].as_str().unwrap()));
         assert_eq!(
             refuse(
@@ -981,11 +1161,16 @@ mod tests {
             ),
             None
         );
-        // With no flag, the registrar's list names the moderator (its
-        // set-admin): registry_2 carries A as admin.
+        // The registrar's list names the moderator (its set-admin):
+        // registry_2 carries A as admin.
         let by_list = policy(true, None);
         let mut retained = Retained::default();
-        retained.insert("hforum/registry", bytes(&v["registry_2"]));
+        keep(
+            &mut retained,
+            &by_list,
+            "hforum/registry",
+            bytes(&v["registry_2"]),
+        );
         assert_eq!(
             refuse(
                 &by_list,
@@ -1017,7 +1202,7 @@ mod tests {
         // replaced list is re-read.
         let mut forged = v["registry_2"].clone();
         forged["admin"] = v["B"].clone();
-        retained.insert("hforum/registry", bytes(&forged));
+        keep(&mut retained, &by_list, "hforum/registry", bytes(&forged));
         assert_eq!(
             refuse(
                 &by_list,
@@ -1047,7 +1232,12 @@ mod tests {
             refuse(&pol, "hforum/registry", &bytes(&v["registry_1"]), &retained),
             None
         );
-        retained.insert("hforum/registry", bytes(&v["registry_1"]));
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/registry",
+            bytes(&v["registry_1"]),
+        );
         assert_eq!(
             refuse(&pol, "hforum/registry", &bytes(&v["registry_1"]), &retained),
             Some("registry: not newer than the one kept")
@@ -1066,6 +1256,30 @@ mod tests {
         assert_eq!(
             refuse(&pol, "hforum/registry", b"", &retained),
             Some("registry: not deleted")
+        );
+        // A list left by another key does not hold the sequence: the
+        // registrar whose key the relay has starts over without being
+        // locked out.
+        let mut retained = Retained::default();
+        let foreign = serde_json::json!({ "v": 1, "seq": 500, "ts": 1, "names": [], "admin": null, "sig": "x" });
+        keep(&mut retained, &pol, "hforum/registry", bytes(&foreign));
+        assert_eq!(
+            refuse(&pol, "hforum/registry", &bytes(&v["registry_1"]), &retained),
+            None,
+            "sequence 1 is kept over a sequence 500 nobody can verify"
+        );
+        // An entry with a timestamp JavaScript would print differently is
+        // refused as malformed rather than accepted and re-serialised.
+        let mut odd = v["registry_2"].clone();
+        odd["names"][0][3] = Value::from(18_446_744_073_709_552_000.0_f64);
+        assert_eq!(
+            refuse(&pol, "hforum/registry", &bytes(&odd), &Retained::default()),
+            Some("registry: malformed")
+        );
+        odd["names"][0] = serde_json::json!(["alice", "Alice", "not a key", 1]);
+        assert_eq!(
+            refuse(&pol, "hforum/registry", &bytes(&odd), &Retained::default()),
+            Some("registry: malformed")
         );
     }
 
@@ -1120,7 +1334,12 @@ mod tests {
         let pol = policy(false, None);
         let mut retained = Retained::default();
         for i in 0..MAX_REPORTS {
-            retained.insert(&format!("hforum/rep/tabcdefghij/u{i}"), b"1"[..].into());
+            keep(
+                &mut retained,
+                &pol,
+                &format!("hforum/rep/tabcdefghij/u{i}"),
+                b"1"[..].into(),
+            );
         }
         assert_eq!(
             refuse(&pol, "hforum/rep/tabcdefghij/u0", b"1", &retained),
@@ -1137,6 +1356,27 @@ mod tests {
         assert_eq!(
             refuse(&pol, "hforum/rep/tabcdefghij/more", b"1", &retained),
             None
+        );
+    }
+
+    #[test]
+    fn metadata_is_what_admit_reads() {
+        let v = vectors();
+        let pol = policy(true, None);
+        let m = pol.meta("hforum/t/tabcdefghij", &bytes(&v["post_A"]));
+        assert_eq!(m.pk.as_deref(), v["A"].as_str());
+        assert!(!m.tombstone);
+        let m = pol.meta("hforum/t/tabcdefghij", &bytes(&v["tomb_A"]));
+        assert!(m.tombstone);
+        let m = pol.meta("hforum/registry", &bytes(&v["registry_2"]));
+        assert_eq!(m.seq, Some(2));
+        assert_eq!(
+            pol.meta("hforum/rep/tabcdefghij/e27a", b"1"),
+            Meta::default()
+        );
+        assert_eq!(
+            pol.meta("hforum/t/tabcdefghij", b"not json"),
+            Meta::default()
         );
     }
 
@@ -1165,7 +1405,7 @@ mod tests {
             refuse(&pol, "hforum/u/zoe", &bytes(&claim), &retained),
             None
         );
-        retained.insert("hforum/u/zoe", bytes(&claim));
+        keep(&mut retained, &pol, "hforum/u/zoe", bytes(&claim));
         let post = |title: &str, body: &str| {
             let id = "tlimitsabcd";
             let fields = serde_json::json!(["t", id, "General", title, body, "zoe", 2]);

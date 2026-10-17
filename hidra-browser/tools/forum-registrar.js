@@ -115,7 +115,7 @@ class Registrar {
     try { o = JSON.parse(payload); } catch (e) { return; }
     if (!o || o.v !== 2 || typeof o.name !== 'string' || typeof o.pk !== 'string' || typeof o.sig !== 'string') return;
     const name = o.name.slice(0, 24), pk = o.pk.slice(0, 200), ts = Number(o.ts);
-    if (!Number.isFinite(ts) || !Number.isInteger(ts) || ts < 0) return;   // a non-finite time would poison the signed list
+    if (!Number.isSafeInteger(ts) || ts < 0) return;   // a time JavaScript cannot hold exactly would poison the signed list
     if (room.normalizeName(name) !== norm || !room.canonicalPub(pk)) return;
     if (!(await room.verifyFields(pk, ['claim', norm, name, pk, ts], o.sig.slice(0, 200)))) return;
     const known = this.state.names[norm];
@@ -198,7 +198,7 @@ class Registrar {
     if (reg.seq > this.state.seq) {
       let added = 0;
       for (const e of reg.names) {
-        if (!this.state.names[e[0]]) { this.state.names[e[0]] = { name: e[1], pk: e[2], ts: e[3], seen: this.now() }; added++; }
+        if (!this.state.names[e[0]] && Number.isSafeInteger(e[3]) && e[3] >= 0) { this.state.names[e[0]] = { name: e[1], pk: e[2], ts: e[3], seen: this.now() }; added++; }
       }
       if (reg.admin && !this.state.admin) this.state.admin = reg.admin;
       if (!this.state.hides) this.state.hides = {};
@@ -307,6 +307,10 @@ async function run(dir, opts) {
   const coalesceMs = opts.coalesceMs || COALESCE_MS;
   let first = true, settling = false, settleTimer = null, coalesceTimer = null, periodic = null;
   let chain = Promise.resolve();
+  // Whether the relay handed over a list since this connection was made. A
+  // relay that comes back empty (a restart without its data, or a new
+  // relay) hands over none, and must be given the list again at once.
+  let sawList = false;
 
   async function publish(why) {
     const r = await reg.build();
@@ -330,6 +334,7 @@ async function run(dir, opts) {
 
   client.on('connect', () => {
     log('connected to the relay');
+    sawList = false;
     client.subscribe(['hforum/u/+', 'hforum/admin', 'hforum/mod/+', TOPIC], { qos: 1 });
     if (first) {
       // The retained claims arrive in a burst right after subscribing; they
@@ -350,8 +355,16 @@ async function run(dir, opts) {
           periodic = setInterval(() => { chain = chain.then(() => publish('periodic')); }, (opts.interval || 1800) * 1000);
         });
       }, settleMs);
-    } else if (reg.dirty) {
-      schedulePublish('changes');
+    } else {
+      // Reconnected: once the relay's retained burst has passed, a relay
+      // that holds no list gets ours, and changes made meanwhile go out.
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        chain = chain.then(async () => {
+          if (!sawList) await publish('reconnect: the relay holds no list');
+          else if (reg.dirty) await publish('changes');
+        });
+      }, settleMs);
     }
   });
   client.on('close', () => {
@@ -362,7 +375,7 @@ async function run(dir, opts) {
   client.on('message', (topic, payload) => {
     const s = payload.toString();
     chain = chain.then(async () => {
-      if (topic === TOPIC) await reg.onRegistry(s);
+      if (topic === TOPIC) { sawList = true; await reg.onRegistry(s); }
       else if (topic === 'hforum/admin') await reg.onAdmin(s);
       else if (topic.startsWith('hforum/u/')) await reg.onClaim(topic.slice(9), s);
       else if (topic.startsWith('hforum/mod/')) await reg.onHide(topic.slice(11), s);

@@ -197,7 +197,7 @@ svg{display:block}
       <label>Title</label>
       <input type="text" id="n-title" maxlength="140" placeholder="What do you want to talk about?">
       <label>Message</label>
-      <textarea id="n-body" placeholder="Write here. Supports **bold**, *italic*, `code`, [link](url) and ![image](url)."></textarea>
+      <textarea id="n-body" maxlength="20000" placeholder="Write here. Supports **bold**, *italic*, `code`, [link](url) and ![image](url)."></textarea>
     </div>
     <div class="b-foot"><button class="btn btn-p" id="btn-post">Post topic</button><span class="stat">Signed by your account · only your username is shown</span></div>
   </div>
@@ -696,6 +696,7 @@ function lastActivity(t){ var m=t.ts, rs=repliesOf(t.id); if(rs.length) m=Math.m
 function publishRetained(topic,obj){ return new Promise(function(r){ client.publish(topic, JSON.stringify(obj), {qos:1,retain:true}, function(){r();}); }); }
 async function postTopic(cat,title,body){
   if(!client||!client.connected){ toast('No connection to the network.'); return; }
+  if(title.length>140||body.length>MAX_TEXT){ toast('Too long: a title is up to 140 characters, a message up to 20 000.'); return; }
   var id=rid('t'), ts=Date.now();
   var o={ id:id, cat:cat, title:title, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
   o.sig=await hidraRoom.signFields(state.me,['t',id,cat,title,body,state.me.nick,ts]);
@@ -704,6 +705,7 @@ async function postTopic(cat,title,body){
 }
 async function postReply(tid,body){
   if(!client||!client.connected){ toast('No connection.'); return; }
+  if(body.length>MAX_TEXT){ toast('Too long: a reply is up to 20 000 characters.'); return; }
   var id=rid('r'), ts=Date.now();
   var r={ id:id, topicId:tid, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
   r.sig=await hidraRoom.signFields(state.me,['r',id,tid,body,state.me.nick,ts]);
@@ -844,7 +846,7 @@ function renderTopicView(id){
   h+='<div class="reply-count">'+rs.length+' repl'+(rs.length===1?'y':'ies')+'</div>';
   h+=pr.map(function(r){ return postHTML(r,false,'r',id); }).join('');
   if(pages>1) h+='<div class="pager"><button '+(state.rpage<=0?'disabled':'')+' id="rp-prev">Previous</button><span>'+(state.rpage+1)+' of '+pages+'</span><button '+(state.rpage>=pages-1?'disabled':'')+' id="rp-next">Next</button></div>';
-  h+='<div class="reply-box"><textarea id="reply-in" placeholder="Write a reply…"></textarea><div class="row"><button class="btn btn-p" id="btn-reply">Reply</button><span class="mdhint">Supports **bold** · *italic* · `code` · [link](url) · ![image](url)</span></div></div>';
+  h+='<div class="reply-box"><textarea id="reply-in" maxlength="20000" placeholder="Write a reply…"></textarea><div class="row"><button class="btn btn-p" id="btn-reply">Reply</button><span class="mdhint">Supports **bold** · *italic* · `code` · [link](url) · ![image](url)</span></div></div>';
   $('view').innerHTML=h;
   if($('rp-prev'))$('rp-prev').onclick=function(){ if(state.rpage>0){state.rpage--;renderTopicView(id);} };
   if($('rp-next'))$('rp-next').onclick=function(){ if(state.rpage<pages-1){state.rpage++;renderTopicView(id);} };

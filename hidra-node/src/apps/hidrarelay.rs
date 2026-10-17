@@ -37,7 +37,7 @@
 
 pub mod forum;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,18 +61,27 @@ use crate::safelog::sensitive;
 /// publish and at subscribe.
 pub const ALLOWED_PREFIXES: &[&str] = &["hidra/", "hforum/"];
 /// The largest message on an ordinary topic. A chat message is a few
-/// kilobytes; a forum post is bounded by the page at 20 000 characters.
-pub const MAX_PAYLOAD: usize = 64 * 1024;
+/// kilobytes; a forum post is bounded by the page at 20 000 characters,
+/// which JSON escaping can make six bytes each.
+pub const MAX_PAYLOAD: usize = 128 * 1024;
 /// The registrar's list may be larger; it is bounded on its side at 512 KB.
-pub const MAX_REGISTRY_PAYLOAD: usize = 1024 * 1024;
+pub const MAX_REGISTRY_PAYLOAD: usize = 640 * 1024;
 pub const REGISTRY_TOPIC: &str = "hforum/registry";
 pub const MAX_TOPIC_BYTES: usize = 256;
 pub const MAX_CLIENTS: usize = 4096;
-pub const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 32;
+/// The forum page holds seven filters, the chat two.
+pub const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 12;
 /// What is kept in all. A new subscriber to the forum receives all of it,
 /// so this is also the most a page is ever asked to load.
-pub const MAX_RETAINED_MESSAGES: usize = 200_000;
-pub const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_RETAINED_MESSAGES: usize = 50_000;
+pub const MAX_RETAINED_BYTES: usize = 32 * 1024 * 1024;
+/// Two reserves at the top of the store: the last one only moderation and
+/// the registrar's list may fill, the one below it also names. So a store
+/// full of posts still takes a hide, a list and a registration.
+pub const RETAINED_RESERVE_BYTES: usize = 4 * 1024 * 1024;
+pub const MODERATION_CLASSES: &[&str] = &["hforum/registry", "hforum/mod", "hforum/admin"];
+/// The most one signing key may hold in the store.
+pub const MAX_BYTES_PER_AUTHOR: usize = 4 * 1024 * 1024;
 /// Packets per second a client may sustain after CONNECT, and the burst
 /// it may make. A chat sends a message or a presence beacon every few
 /// seconds; the forum, a few messages a minute. Every packet counts, and a
@@ -82,8 +91,8 @@ pub const RATE_BURST: f64 = 60.0;
 /// Frames, and bytes, queued for a client that is not reading. Past either
 /// the client is dropped: a slow reader must not hold memory for everyone
 /// else.
-pub const OUTBOUND_QUEUE: usize = 512;
-pub const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+pub const OUTBOUND_QUEUE: usize = 256;
+pub const MAX_QUEUE_BYTES: usize = 1024 * 1024;
 /// What a filter in a SUBSCRIBE costs in tokens: a new subscription is a
 /// pass over everything kept, so it is dearer than a publish. And how many
 /// SUBSCRIBE packets one connection may send in its life; the pages send
@@ -96,14 +105,21 @@ pub const WRITE_SECS: u64 = 15;
 /// A connection that has not completed the handshake and sent CONNECT
 /// within this long of being accepted is closed.
 pub const CONNECT_SECS: u64 = 10;
+/// Before CONNECT a connection may have this much unparsed input at most;
+/// a CONNECT is a few dozen bytes.
+pub const PRE_CONNECT_BYTES: usize = 4096;
 /// Keep-alive used when the client asks for none, and the most a client
-/// may ask for: an idle connection is closed at one and a half times it.
+/// may ask for (a CONNECT asking for more is refused): an idle connection
+/// is closed at one and a half times it.
 pub const DEFAULT_KEEPALIVE_SECS: u64 = 300;
 pub const MAX_KEEPALIVE_SECS: u64 = 600;
 pub const MAX_PACKET: usize = MAX_REGISTRY_PAYLOAD + MAX_TOPIC_BYTES + 16;
 /// Writes waiting for the store's thread, and how many it commits at once.
 pub const STORE_QUEUE: usize = 4096;
 pub const STORE_BATCH: usize = 256;
+/// Attempts at a failed batch, a second apart, before the store is given
+/// up on.
+pub const STORE_RETRIES: u32 = 5;
 
 // ── MQTT 3.1.1 packets ─────────────────────────────────────────────────
 
@@ -454,6 +470,19 @@ impl Bucket {
 /// taken; opaque to the relay, read back by the same policy in `admit`.
 pub type Prepared = Box<dyn std::any::Any + Send + Sync>;
 
+/// What the relay remembers beside a retained payload, computed by the
+/// policy off the lock when the payload arrives (and once per row when the
+/// store is loaded), so that `admit` reads fields instead of parsing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Meta {
+    /// The key that signed it, as the pages encode keys.
+    pub pk: Option<Arc<str>>,
+    /// A deletion marker rather than content.
+    pub tombstone: bool,
+    /// A list's sequence number.
+    pub seq: Option<i64>,
+}
+
 /// What the relay does with a publish beyond the generic limits. The
 /// default lets everything through; the forum policy refuses a claim on a
 /// taken name or a post whose signature does not hold.
@@ -470,6 +499,11 @@ pub trait Policy: Send + Sync {
         _retain: bool,
     ) -> std::result::Result<Prepared, &'static str> {
         Ok(Box::new(()))
+    }
+
+    /// What to remember beside a retained payload. Off the lock.
+    fn meta(&self, _topic: &str, _payload: &[u8]) -> Meta {
+        Meta::default()
     }
 
     /// `Some(reason)` refuses the publish, under the lock, against what is
@@ -491,16 +525,23 @@ impl Policy for OpenPolicy {}
 
 // ── What is retained ───────────────────────────────────────────────────
 
+struct Entry {
+    payload: Arc<[u8]>,
+    meta: Meta,
+}
+
 /// The last retained message per topic, with the bookkeeping the limits
-/// and the policies need: bytes in all, a count per kind of topic, and
-/// which topic holds each post id. Payloads are shared, so a subscriber's
-/// snapshot of the store costs a pointer per message, not a copy.
+/// and the policies need: bytes in all and per signing key, a count per
+/// kind of topic, which topic holds each post id, and the policy's
+/// metadata. Topics and payloads are shared, so a subscriber's snapshot
+/// of the store costs a pointer per message, not a copy.
 #[derive(Default)]
 pub struct Retained {
-    map: HashMap<String, Arc<[u8]>>,
+    map: HashMap<Arc<str>, Entry>,
     bytes: usize,
     counts: HashMap<String, usize>,
-    ids: HashMap<String, String>,
+    ids: HashMap<String, Arc<str>>,
+    by_author: HashMap<Arc<str>, usize>,
 }
 
 /// The kind of a topic for counting: its first two segments
@@ -521,9 +562,28 @@ fn post_id(topic: &str) -> Option<&str> {
     (!id.contains('/')).then_some(id)
 }
 
+/// The share of the store a kind of topic may fill. Moderation and the
+/// registrar's list may use all of it; names everything but the last
+/// reserve; posts and the rest everything but two reserves. So a store
+/// filled with posts still takes a hide, a list, and a new name.
+fn byte_limit_for(topic: &str) -> usize {
+    let c = class(topic);
+    if MODERATION_CLASSES.contains(&c) {
+        MAX_RETAINED_BYTES
+    } else if c == "hforum/u" {
+        MAX_RETAINED_BYTES - RETAINED_RESERVE_BYTES
+    } else {
+        MAX_RETAINED_BYTES - 2 * RETAINED_RESERVE_BYTES
+    }
+}
+
 impl Retained {
     pub fn get(&self, topic: &str) -> Option<&[u8]> {
-        self.map.get(topic).map(|p| &p[..])
+        self.map.get(topic).map(|e| &e.payload[..])
+    }
+
+    pub fn meta(&self, topic: &str) -> Option<&Meta> {
+        self.map.get(topic).map(|e| &e.meta)
     }
 
     pub fn len(&self) -> usize {
@@ -543,31 +603,69 @@ impl Retained {
         self.counts.get(class).copied().unwrap_or(0)
     }
 
+    /// Bytes kept under payloads this key signed.
+    pub fn author_bytes(&self, pk: &str) -> usize {
+        self.by_author.get(pk).copied().unwrap_or(0)
+    }
+
     /// The topic that holds a post id, if any.
     pub fn topic_of_id(&self, id: &str) -> Option<&str> {
-        self.ids.get(id).map(String::as_str)
+        self.ids.get(id).map(|t| &t[..])
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<[u8]>)> {
-        self.map.iter().map(|(t, p)| (t.as_str(), p))
+    /// The topics that match any of `filters` and none of `already`, each
+    /// once: what a subscriber is owed on new subscriptions, in one pass.
+    pub fn topics_matching(&self, filters: &[String], already: &[String]) -> Vec<Arc<str>> {
+        self.map
+            .keys()
+            .filter(|t| {
+                filters.iter().any(|f| matches(f, t)) && !already.iter().any(|f| matches(f, t))
+            })
+            .cloned()
+            .collect()
     }
 
-    /// Whether a payload of this size fits under the caps, counting what
-    /// the topic already holds as replaced.
-    pub fn fits(&self, topic: &str, len: usize) -> bool {
-        let old = self.map.get(topic).map(|p| p.len()).unwrap_or(0);
-        (self.map.contains_key(topic) || self.map.len() < MAX_RETAINED_MESSAGES)
-            && self.bytes - old + len <= MAX_RETAINED_BYTES
-    }
-
-    pub fn insert(&mut self, topic: &str, payload: Arc<[u8]>) {
-        self.remove(topic);
-        self.bytes += payload.len();
-        *self.counts.entry(class(topic).to_string()).or_insert(0) += 1;
-        if let Some(id) = post_id(topic) {
-            self.ids.insert(id.to_string(), topic.to_string());
+    /// Why a payload of this size, so signed, would not fit: the store's
+    /// caps, the share its kind may fill, or its author's budget. Counts
+    /// what the topic already holds as replaced.
+    pub fn refuse_room(&self, topic: &str, len: usize, meta: &Meta) -> Option<&'static str> {
+        let old = self.map.get(topic);
+        let old_len = old.map(|e| e.payload.len()).unwrap_or(0);
+        if old.is_none() && self.map.len() >= MAX_RETAINED_MESSAGES {
+            return Some("store full: messages");
         }
-        self.map.insert(topic.to_string(), payload);
+        if self.bytes - old_len + len > byte_limit_for(topic) {
+            return Some("store full: bytes");
+        }
+        if let Some(pk) = &meta.pk {
+            let same_author = old.is_some_and(|e| e.meta.pk.as_deref() == Some(pk));
+            let held = self.author_bytes(pk) - if same_author { old_len } else { 0 };
+            if held + len > MAX_BYTES_PER_AUTHOR {
+                return Some("store full: this key's share");
+            }
+        }
+        None
+    }
+
+    /// Whether the topic already holds exactly these bytes.
+    pub fn holds(&self, topic: &str, payload: &[u8]) -> bool {
+        self.map
+            .get(topic)
+            .is_some_and(|e| &e.payload[..] == payload)
+    }
+
+    pub fn insert(&mut self, topic: &str, payload: Arc<[u8]>, meta: Meta) {
+        self.remove(topic);
+        let topic: Arc<str> = topic.into();
+        self.bytes += payload.len();
+        *self.counts.entry(class(&topic).to_string()).or_insert(0) += 1;
+        if let Some(id) = post_id(&topic) {
+            self.ids.insert(id.to_string(), Arc::clone(&topic));
+        }
+        if let Some(pk) = &meta.pk {
+            *self.by_author.entry(Arc::clone(pk)).or_insert(0) += payload.len();
+        }
+        self.map.insert(topic, Entry { payload, meta });
     }
 
     /// Returns whether there was anything to remove.
@@ -575,13 +673,24 @@ impl Retained {
         let Some(old) = self.map.remove(topic) else {
             return false;
         };
-        self.bytes -= old.len();
+        self.bytes -= old.payload.len();
         if let Some(n) = self.counts.get_mut(class(topic)) {
             *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.counts.remove(class(topic));
+            }
         }
         if let Some(id) = post_id(topic) {
-            if self.ids.get(id).is_some_and(|t| t == topic) {
+            if self.ids.get(id).is_some_and(|t| &t[..] == topic) {
                 self.ids.remove(id);
+            }
+        }
+        if let Some(pk) = &old.meta.pk {
+            if let Some(n) = self.by_author.get_mut(pk) {
+                *n = n.saturating_sub(old.payload.len());
+                if *n == 0 {
+                    self.by_author.remove(pk);
+                }
             }
         }
         true
@@ -590,18 +699,36 @@ impl Retained {
 
 // ── Retained store on disk ─────────────────────────────────────────────
 
+#[derive(Clone)]
 enum StoreOp {
     Put(String, Arc<[u8]>),
     Delete(String),
 }
 
+impl Drop for Store {
+    /// Lets the writer drain what was queued before the process goes on
+    /// to exit.
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Retained messages in SQLite, written by one thread in batches so the
-/// async side never blocks on disk. The queue to that thread is bounded:
-/// when the disk cannot keep up, a write is dropped and counted rather
-/// than kept in memory without end.
+/// async side never blocks on disk. The queue to that thread is bounded,
+/// and a write is queued before the relay changes what it holds in
+/// memory: when the disk cannot keep up the publish is refused, so memory
+/// and disk never disagree.
 pub struct Store {
-    tx: std::sync::mpsc::SyncSender<StoreOp>,
-    dropped: AtomicU64,
+    tx: Option<std::sync::mpsc::SyncSender<StoreOp>>,
+    refused: AtomicU64,
+    /// Set by the writer thread when a batch could not be written even
+    /// after retries: from then on every retained publish is refused, so
+    /// memory never gets ahead of a disk that is not taking writes.
+    broken: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 fn write_batch(
@@ -630,7 +757,7 @@ fn write_batch(
 }
 
 impl Store {
-    pub fn open(path: &std::path::Path) -> Result<(Self, Retained)> {
+    pub fn open(path: &std::path::Path, policy: &dyn Policy) -> Result<(Self, Retained)> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -656,14 +783,20 @@ impl Store {
                     Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })
                 .map_err(|e| HidraError::Protocol(format!("relay store read: {e}")))?;
-            for row in rows.flatten() {
-                loaded.insert(&row.0, row.1.into());
+            for (topic, payload) in rows.flatten() {
+                let meta = policy.meta(&topic, &payload);
+                loaded.insert(&topic, payload.into(), meta);
             }
         }
         let (tx, rx) = std::sync::mpsc::sync_channel::<StoreOp>(STORE_QUEUE);
-        std::thread::Builder::new()
+        let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let broken_for_thread = Arc::clone(&broken);
+        let thread = std::thread::Builder::new()
             .name("hidra-relay-store".into())
             .spawn(move || {
+                // Runs until every sender is gone and the queue is drained,
+                // so a shutdown that drops the Store flushes what was
+                // acknowledged.
                 while let Ok(first) = rx.recv() {
                     let mut batch = vec![first];
                     while batch.len() < STORE_BATCH {
@@ -672,40 +805,71 @@ impl Store {
                             Err(_) => break,
                         }
                     }
+                    let n = batch.len();
                     let now = chrono::Utc::now().timestamp_millis();
-                    if let Err(e) = write_batch(&mut conn, batch, now) {
-                        warn!(error = %e, "relay store write failed");
+                    // A failed batch is retried, with a pause; a disk that
+                    // keeps refusing marks the store broken and the relay
+                    // stops taking retained publishes rather than keeping
+                    // in memory what it cannot keep on disk.
+                    let mut attempts = 0;
+                    let pending = batch;
+                    loop {
+                        let again: Vec<StoreOp> = pending.iter().map(StoreOp::clone).collect();
+                        match write_batch(&mut conn, again, now) {
+                            Ok(()) => break,
+                            Err(e) => {
+                                attempts += 1;
+                                if attempts >= STORE_RETRIES {
+                                    broken_for_thread.store(true, Ordering::Relaxed);
+                                    warn!(error = %e, writes = n, "relay store write failed repeatedly; retained publishes are refused from now on");
+                                    return;
+                                }
+                                warn!(error = %e, attempt = attempts, "relay store write failed; retrying");
+                                std::thread::sleep(Duration::from_secs(1));
+                            }
+                        }
                     }
                 }
             })
             .map_err(|e| HidraError::Protocol(format!("relay store thread: {e}")))?;
         Ok((
             Self {
-                tx,
-                dropped: AtomicU64::new(0),
+                tx: Some(tx),
+                refused: AtomicU64::new(0),
+                broken,
+                thread: Some(thread),
             },
             loaded,
         ))
     }
 
-    fn send(&self, op: StoreOp) {
-        if self.tx.try_send(op).is_err() {
-            let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            if n == 1 || n % 1000 == 0 {
-                warn!(
-                    dropped = n,
-                    "relay store cannot keep up; retained writes were not persisted"
-                );
+    /// Queues the write; `false` when the store is behind or broken, in
+    /// which case nothing was queued and the caller must not change memory
+    /// either.
+    fn send(&self, op: StoreOp) -> bool {
+        if !self.broken.load(Ordering::Relaxed) {
+            if let Some(tx) = &self.tx {
+                if tx.try_send(op).is_ok() {
+                    return true;
+                }
             }
         }
+        let n = self.refused.fetch_add(1, Ordering::Relaxed) + 1;
+        if n == 1 || n % 1000 == 0 {
+            warn!(
+                refused = n,
+                "relay store cannot take writes; retained publishes are being refused"
+            );
+        }
+        false
     }
 
-    fn put(&self, topic: &str, payload: &Arc<[u8]>) {
-        self.send(StoreOp::Put(topic.to_string(), Arc::clone(payload)));
+    fn put(&self, topic: &str, payload: &Arc<[u8]>) -> bool {
+        self.send(StoreOp::Put(topic.to_string(), Arc::clone(payload)))
     }
 
-    fn delete(&self, topic: &str) {
-        self.send(StoreOp::Delete(topic.to_string()));
+    fn delete(&self, topic: &str) -> bool {
+        self.send(StoreOp::Delete(topic.to_string()))
     }
 }
 
@@ -718,7 +882,9 @@ type Frame = Arc<[u8]>;
 
 /// Everything written to one client: a bounded queue to its writer task,
 /// bounded in frames and in bytes. A client that stops reading fills it
-/// and is dropped, instead of holding the broker's lock or memory.
+/// and is dropped, instead of holding the broker's lock or memory. Bytes
+/// are reserved before a frame is handed over and given back when the
+/// hand-over fails, so the count never runs below what is queued.
 #[derive(Clone)]
 struct Outbox {
     tx: mpsc::Sender<Frame>,
@@ -726,39 +892,58 @@ struct Outbox {
 }
 
 impl Outbox {
+    fn reserve_bytes(&self, len: usize) -> bool {
+        if self.queued.fetch_add(len, Ordering::Relaxed) + len > MAX_QUEUE_BYTES {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
     /// For the fan-out under the lock: never waits. Hands the frame back
     /// when there is no room, so the caller can decide what that means.
     fn try_push(&self, frame: Frame) -> std::result::Result<(), Frame> {
         let len = frame.len();
-        if self.queued.load(Ordering::Relaxed) + len > MAX_QUEUE_BYTES {
+        if !self.reserve_bytes(len) {
             return Err(frame);
         }
-        match self.tx.try_send(frame) {
-            Ok(()) => {
-                self.queued.fetch_add(len, Ordering::Relaxed);
-                Ok(())
+        self.tx.try_send(frame).map_err(|e| {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+            e.into_inner()
+        })
+    }
+
+    /// Waits for room for a frame of `len` bytes, but not for ever, and
+    /// returns the right to send it. Safe to drop half-way: nothing is
+    /// reserved until it returns.
+    async fn reserve(&self, len: usize) -> Option<mpsc::Permit<'_, Frame>> {
+        let until = Instant::now() + Duration::from_secs(WRITE_SECS);
+        loop {
+            match tokio::time::timeout_at(until.into(), self.tx.reserve()).await {
+                Ok(Ok(permit)) => {
+                    if self.reserve_bytes(len) {
+                        return Some(permit);
+                    }
+                    drop(permit);
+                }
+                _ => return None,
             }
-            Err(e) => Err(e.into_inner()),
+            if Instant::now() >= until {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
     /// For the connection's own replies: waits for room, but not for ever.
     /// `false` means the client is not reading and is to be let go.
     async fn push(&self, frame: Frame) -> bool {
-        let len = frame.len();
-        let until = Instant::now() + Duration::from_secs(WRITE_SECS);
-        while self.queued.load(Ordering::Relaxed) + len > MAX_QUEUE_BYTES {
-            if Instant::now() >= until {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        match tokio::time::timeout_at(until.into(), self.tx.send(frame)).await {
-            Ok(Ok(())) => {
-                self.queued.fetch_add(len, Ordering::Relaxed);
+        match self.reserve(frame.len()).await {
+            Some(permit) => {
+                permit.send(frame);
                 true
             }
-            _ => false,
+            None => false,
         }
     }
 }
@@ -781,6 +966,9 @@ struct ClientEntry {
 struct Shared {
     retained: Retained,
     clients: HashMap<u64, ClientEntry>,
+    /// Which clients hold each distinct filter, so a publish visits each
+    /// filter once rather than every client's list.
+    by_filter: HashMap<String, HashSet<u64>>,
     store: Option<Store>,
     /// Counters for the periodic log line.
     published: u64,
@@ -789,8 +977,32 @@ struct Shared {
 }
 
 impl Shared {
+    fn add_filter(&mut self, id: u64, filter: &str) {
+        self.by_filter
+            .entry(filter.to_string())
+            .or_default()
+            .insert(id);
+    }
+
+    fn remove_filter(&mut self, id: u64, filter: &str) {
+        if let Some(set) = self.by_filter.get_mut(filter) {
+            set.remove(&id);
+            if set.is_empty() {
+                self.by_filter.remove(filter);
+            }
+        }
+    }
+
+    fn remove_client(&mut self, id: u64) -> Option<ClientEntry> {
+        let c = self.clients.remove(&id)?;
+        for f in &c.filters {
+            self.remove_filter(id, f);
+        }
+        Some(c)
+    }
+
     fn drop_client(&mut self, id: u64) {
-        if let Some(c) = self.clients.remove(&id) {
+        if let Some(c) = self.remove_client(id) {
             c.close.notify_one();
             self.dropped_slow += 1;
         }
@@ -816,7 +1028,7 @@ impl Relay {
     pub async fn bind(cfg: RelayConfig) -> Result<Self> {
         let (store, retained) = match &cfg.data_dir {
             Some(dir) => {
-                let (s, r) = Store::open(&dir.join("retained.sqlite"))?;
+                let (s, r) = Store::open(&dir.join("retained.sqlite"), &*cfg.policy)?;
                 (Some(s), r)
             }
             None => (None, Retained::default()),
@@ -832,6 +1044,7 @@ impl Relay {
             shared: Arc::new(Mutex::new(Shared {
                 retained,
                 clients: HashMap::new(),
+                by_filter: HashMap::new(),
                 store,
                 published: 0,
                 refused: 0,
@@ -847,7 +1060,22 @@ impl Relay {
         Ok(self.listener.local_addr()?)
     }
 
+    /// Serves until the process is told to stop (SIGTERM or Ctrl-C), then
+    /// lets the store write out what was acknowledged and returns.
     pub async fn serve(self) -> Result<()> {
+        let shared = Arc::clone(&self.shared);
+        tokio::select! {
+            r = self.accept_loop() => r,
+            _ = shutdown_signal() => {
+                info!("HidraRelay stopping");
+                let store = shared.lock().await.store.take();
+                drop(store);
+                Ok(())
+            }
+        }
+    }
+
+    async fn accept_loop(self) -> Result<()> {
         let shared_for_log = Arc::clone(&self.shared);
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(600));
@@ -893,6 +1121,29 @@ impl Relay {
     }
 }
 
+/// SIGTERM (what systemd sends) or Ctrl-C.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(t) => t,
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                    return;
+                }
+            };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// Accepts the WebSocket handshake. The pages ask for the `mqtt`
 /// subprotocol and a browser closes the socket if the server does not
 /// answer with it; anything else is a plain WebSocket and is served too.
@@ -919,6 +1170,44 @@ fn accept_handshake(
 
 fn protocol(msg: impl Into<String>) -> HidraError {
     HidraError::Protocol(msg.into())
+}
+
+/// Something owed to a client, sent with back-pressure in order: a frame
+/// ready to go, or a retained message named by topic, looked up when its
+/// turn comes so that a slow reader pins no payload that was replaced.
+enum Pending {
+    Frame(Frame),
+    Retained(Arc<str>),
+}
+
+/// Moves what was held while the client loaded into its queue, under the
+/// lock so nothing newer overtakes it. What the queue cannot take at once
+/// comes back to be sent with back-pressure; the client stays `loading`
+/// until a pass finds nothing held.
+async fn release_deferred(
+    shared: &Arc<Mutex<Shared>>,
+    id: u64,
+) -> std::result::Result<(Vec<Frame>, bool), ()> {
+    let mut s = shared.lock().await;
+    let Some(c) = s.clients.get_mut(&id) else {
+        return Err(());
+    };
+    let held = std::mem::take(&mut c.deferred);
+    c.deferred_bytes = 0;
+    let mut rest = Vec::new();
+    let mut it = held.into_iter();
+    for frame in it.by_ref() {
+        if let Err(frame) = c.outbox.try_push(frame) {
+            rest.push(frame);
+            break;
+        }
+    }
+    rest.extend(it);
+    let done = rest.is_empty();
+    if done {
+        c.loading = false;
+    }
+    Ok((rest, !done))
 }
 
 async fn handle(
@@ -955,8 +1244,9 @@ async fn handle(
     };
     let mut writer = tokio::spawn(async move {
         while let Some(bytes) = rx.recv().await {
+            let sent = sink.send(Message::Binary(bytes.to_vec())).await;
             queued.fetch_sub(bytes.len(), Ordering::Relaxed);
-            if sink.send(Message::Binary(bytes.to_vec())).await.is_err() {
+            if sent.is_err() {
                 break;
             }
         }
@@ -969,8 +1259,42 @@ async fn handle(
     let mut bucket = Bucket::new(Instant::now());
     let mut idle = Duration::from_secs(CONNECT_SECS);
     let mut subscribes: u32 = 0;
+    // Owed to this client, in order, sent with back-pressure between
+    // frames read, so a slow load never stops the connection from
+    // answering a ping.
+    let mut pending: VecDeque<Pending> = VecDeque::new();
+    let mut loading = false;
 
     let outcome: Result<()> = 'conn: loop {
+        // The retained message at the head of the queue becomes a frame now,
+        // or is dropped if it is gone meanwhile.
+        while let Some(Pending::Retained(topic)) = pending.front() {
+            let frame = shared
+                .lock()
+                .await
+                .retained
+                .get(topic)
+                .map(|p| Frame::from(mqtt::publish(topic, p, true)));
+            pending.pop_front();
+            if let Some(frame) = frame {
+                pending.push_front(Pending::Frame(frame));
+                break;
+            }
+        }
+        if pending.is_empty() && loading {
+            match release_deferred(&shared, id).await {
+                Err(()) => break 'conn Err(protocol("dropped: not reading")),
+                Ok((rest, still)) => {
+                    loading = still;
+                    pending.extend(rest.into_iter().map(Pending::Frame));
+                    continue;
+                }
+            }
+        }
+        let head_len = match pending.front() {
+            Some(Pending::Frame(f)) => Some(f.len()),
+            _ => None,
+        };
         let next = async {
             if connected {
                 tokio::time::timeout(idle, source.next()).await
@@ -980,6 +1304,13 @@ async fn handle(
         };
         let frame = tokio::select! {
             _ = close.notified() => break 'conn Err(protocol("dropped: not reading")),
+            permit = outbox.reserve(head_len.unwrap_or(0)), if head_len.is_some() => {
+                let Some(permit) = permit else { break 'conn Ok(()) };
+                if let Some(Pending::Frame(f)) = pending.pop_front() {
+                    permit.send(f);
+                }
+                continue;
+            }
             r = next => match r {
                 Err(_) => break 'conn Ok(()), // silent past the keep-alive
                 Ok(None) | Ok(Some(Err(_))) => break 'conn Ok(()),
@@ -989,11 +1320,22 @@ async fn handle(
         match frame {
             Message::Binary(b) => buf.extend_from_slice(&b),
             Message::Text(t) => buf.extend_from_slice(t.as_bytes()),
-            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                // A frame that carries no packet still costs a token.
+                if !bucket.take(Instant::now()) {
+                    break 'conn Err(protocol("rate exceeded"));
+                }
+                continue;
+            }
             Message::Close(_) => break 'conn Ok(()),
-            Message::Frame(_) => continue,
         }
-        if buf.len() > MAX_PACKET + 16 {
+        if buf.len()
+            > if connected {
+                MAX_PACKET + 16
+            } else {
+                PRE_CONNECT_BYTES
+            }
+        {
             break 'conn Err(protocol("packet over the limit"));
         }
         // Packets are parsed from an offset and the buffer trimmed once per
@@ -1029,10 +1371,19 @@ async fn handle(
                         .await;
                     break 'conn Ok(());
                 }
+                if u64::from(k) > MAX_KEEPALIVE_SECS {
+                    // MQTT 3.1.1 has no way to tell a client the server's
+                    // limit, so rather than cut it off later for honouring a
+                    // keep-alive the relay silently shortened, it is refused.
+                    outbox
+                        .push(mqtt::connack(mqtt::CONNACK_NOT_AUTHORISED).into())
+                        .await;
+                    break 'conn Ok(());
+                }
                 let keepalive = if k == 0 {
                     DEFAULT_KEEPALIVE_SECS
                 } else {
-                    u64::from(k).min(MAX_KEEPALIVE_SECS)
+                    u64::from(k)
                 };
                 idle = Duration::from_secs(keepalive).mul_f32(1.5);
                 shared.lock().await.clients.insert(
@@ -1084,88 +1435,69 @@ async fn handle(
                         }
                     }
                     let mut codes = Vec::with_capacity(filters.len());
-                    let mut snapshot: Vec<(String, Arc<[u8]>)> = Vec::new();
-                    {
+                    let owed: Vec<Arc<str>> = {
                         let mut s = shared.lock().await;
-                        let Shared {
-                            clients, retained, ..
-                        } = &mut *s;
-                        let Some(c) = clients.get_mut(&id) else {
+                        let Some(c) = s.clients.get(&id) else {
                             break 'conn Err(protocol("dropped: not reading"));
                         };
+                        let held_before = c.filters.clone();
+                        let mut held = held_before.clone();
+                        let mut fresh: Vec<String> = Vec::new();
                         for (f, _q) in &filters {
                             if !allowed_filter(f) {
                                 codes.push(mqtt::SUBACK_FAILURE);
-                            } else if c.filters.contains(f) {
+                            } else if held.contains(f) {
                                 // Held already: granted again, nothing more
                                 // to send. This is also what makes the same
                                 // filter repeated in one packet cost one pass.
                                 codes.push(0);
-                            } else if c.filters.len() >= MAX_SUBSCRIPTIONS_PER_CLIENT {
+                            } else if held.len() >= MAX_SUBSCRIPTIONS_PER_CLIENT {
                                 codes.push(mqtt::SUBACK_FAILURE);
                             } else {
-                                c.filters.push(f.clone());
+                                held.push(f.clone());
+                                fresh.push(f.clone());
                                 codes.push(0);
-                                for (t, p) in retained.iter() {
-                                    if matches(f, t) {
-                                        snapshot.push((t.to_string(), Arc::clone(p)));
-                                    }
-                                }
                             }
                         }
-                        if !snapshot.is_empty() {
-                            c.loading = true;
+                        for f in &fresh {
+                            s.add_filter(id, f);
                         }
-                    }
+                        // One pass over the store for the whole packet; a
+                        // topic already covered by an older filter was sent
+                        // when that filter was taken.
+                        let owed = s.retained.topics_matching(&fresh, &held_before);
+                        let Some(c) = s.clients.get_mut(&id) else {
+                            break 'conn Err(protocol("dropped: not reading"));
+                        };
+                        c.filters = held;
+                        if !owed.is_empty() {
+                            c.loading = true;
+                            loading = true;
+                        }
+                        owed
+                    };
                     if !outbox.push(mqtt::suback(packet_id, &codes).into()).await {
                         break 'conn Ok(());
                     }
-                    for (t, p) in snapshot {
-                        if !outbox.push(mqtt::publish(&t, &p, true).into()).await {
-                            break 'conn Ok(());
-                        }
-                    }
-                    // What arrived live meanwhile was held back; it goes out
-                    // now, under the lock so nothing newer overtakes it, and
-                    // whatever the queue cannot take at once is sent with
-                    // back-pressure before the next look.
-                    loop {
-                        let pending = {
-                            let mut s = shared.lock().await;
-                            let Some(c) = s.clients.get_mut(&id) else {
-                                break 'conn Err(protocol("dropped: not reading"));
-                            };
-                            let held = std::mem::take(&mut c.deferred);
-                            c.deferred_bytes = 0;
-                            let mut rest = Vec::new();
-                            let mut it = held.into_iter();
-                            for frame in it.by_ref() {
-                                if let Err(frame) = c.outbox.try_push(frame) {
-                                    rest.push(frame);
-                                    break;
-                                }
-                            }
-                            rest.extend(it);
-                            if rest.is_empty() {
-                                c.loading = false;
-                            }
-                            rest
-                        };
-                        if pending.is_empty() {
-                            break;
-                        }
-                        for frame in pending {
-                            if !outbox.push(frame).await {
-                                break 'conn Ok(());
-                            }
-                        }
-                    }
+                    pending.extend(owed.into_iter().map(Pending::Retained));
                 }
                 mqtt::Packet::Unsubscribe { packet_id, filters } => {
+                    if filters.len() > MAX_SUBSCRIPTIONS_PER_CLIENT {
+                        break 'conn Err(protocol("too many filters in one UNSUBSCRIBE"));
+                    }
                     {
                         let mut s = shared.lock().await;
                         if let Some(c) = s.clients.get_mut(&id) {
+                            let gone: Vec<String> = c
+                                .filters
+                                .iter()
+                                .filter(|f| filters.contains(f))
+                                .cloned()
+                                .collect();
                             c.filters.retain(|f| !filters.contains(f));
+                            for f in gone {
+                                s.remove_filter(id, &f);
+                            }
                         }
                     }
                     if !outbox.push(mqtt::unsuback(packet_id).into()).await {
@@ -1192,6 +1524,11 @@ async fn handle(
                         // here, on this connection's task, with no lock held.
                         match policy.prepare(&topic, &payload, retain) {
                             Ok(prepared) => {
+                                let meta = if retain && !payload.is_empty() {
+                                    policy.meta(&topic, &payload)
+                                } else {
+                                    Meta::default()
+                                };
                                 publish(
                                     &shared,
                                     &*policy,
@@ -1199,12 +1536,17 @@ async fn handle(
                                     payload.into(),
                                     retain,
                                     &prepared,
+                                    meta,
                                 )
                                 .await;
                             }
                             Err(reason) => {
                                 shared.lock().await.refused += 1;
-                                debug!(reason, "publish refused by policy");
+                                if topic == REGISTRY_TOPIC {
+                                    warn!(reason, "registry publish refused");
+                                } else {
+                                    debug!(reason, "publish refused by policy");
+                                }
                             }
                         }
                     } else {
@@ -1220,10 +1562,18 @@ async fn handle(
                 }
             }
         }
+        if off == 0 && !bucket.take(Instant::now()) {
+            // A frame that completed no packet still costs a token.
+            break 'conn Err(protocol("rate exceeded"));
+        }
         buf.drain(..off);
+        if buf.is_empty() && buf.capacity() > 64 * 1024 {
+            // A large packet leaves a large buffer behind; give it back.
+            buf = Vec::new();
+        }
     };
 
-    shared.lock().await.clients.remove(&id);
+    shared.lock().await.remove_client(id);
     // The writer ends once every sender is gone; the client entry above
     // held one. Then it gets two seconds to flush, and is stopped.
     drop(outbox);
@@ -1239,57 +1589,74 @@ async fn publish(
     payload: Arc<[u8]>,
     retain: bool,
     prepared: &Prepared,
+    meta: Meta,
 ) {
     let mut s = shared.lock().await;
-    if retain && !payload.is_empty() && !s.retained.fits(topic, payload.len()) {
-        s.refused += 1;
-        debug!("publish refused: retained store full");
-        return;
+    if retain && !payload.is_empty() {
+        // The same bytes again change nothing and would only cost a disk
+        // write and a frame to every subscriber; the pages never do this.
+        if s.retained.holds(topic, &payload) {
+            s.refused += 1;
+            debug!("publish refused: unchanged");
+            return;
+        }
+        if let Some(reason) = s.retained.refuse_room(topic, payload.len(), &meta) {
+            s.refused += 1;
+            debug!(reason, "publish refused");
+            return;
+        }
     }
     if let Some(reason) = policy.admit(prepared, topic, retain, &s.retained) {
         s.refused += 1;
-        debug!(reason, "publish refused by policy");
+        if topic == REGISTRY_TOPIC {
+            // The registrar is the operator's own; a list refused is worth
+            // the operator's attention.
+            warn!(reason, "registry publish refused");
+        } else {
+            debug!(reason, "publish refused by policy");
+        }
         return;
     }
-    let Shared {
-        retained,
-        clients,
-        store,
-        published,
-        ..
-    } = &mut *s;
     if retain {
+        // Disk first, memory second, so they never disagree: a store that
+        // cannot take the write refuses the publish.
+        let queued = match &s.store {
+            Some(st) if payload.is_empty() => st.delete(topic),
+            Some(st) => st.put(topic, &payload),
+            None => true,
+        };
+        if !queued {
+            s.refused += 1;
+            return;
+        }
         if payload.is_empty() {
-            if retained.remove(topic) {
-                if let Some(st) = store {
-                    st.delete(topic);
-                }
-            }
+            s.retained.remove(topic);
         } else {
-            retained.insert(topic, Arc::clone(&payload));
-            if let Some(st) = store {
-                st.put(topic, &payload);
-            }
+            s.retained.insert(topic, Arc::clone(&payload), meta);
         }
     }
-    *published += 1;
+    s.published += 1;
     let frame: Frame = mqtt::publish(topic, &payload, false).into();
+    let recipients: HashSet<u64> = s
+        .by_filter
+        .iter()
+        .filter(|(f, _)| matches(f, topic))
+        .flat_map(|(_, ids)| ids.iter().copied())
+        .collect();
     let mut slow = Vec::new();
-    for (cid, c) in clients.iter_mut() {
-        if !c.filters.iter().any(|f| matches(f, topic)) {
+    for cid in recipients {
+        let Some(c) = s.clients.get_mut(&cid) else {
             continue;
-        }
+        };
         if c.loading {
-            if c.deferred.len() < OUTBOUND_QUEUE
-                && c.deferred_bytes + frame.len() <= MAX_QUEUE_BYTES
-            {
+            if c.deferred_bytes + frame.len() <= MAX_QUEUE_BYTES {
                 c.deferred_bytes += frame.len();
                 c.deferred.push(Arc::clone(&frame));
             } else {
-                slow.push(*cid);
+                slow.push(cid);
             }
         } else if c.outbox.try_push(Arc::clone(&frame)).is_err() {
-            slow.push(*cid);
+            slow.push(cid);
         }
     }
     for cid in slow {
@@ -1508,15 +1875,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hidra-relay-store-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         {
-            let (store, loaded) = Store::open(&dir.join("retained.sqlite")).unwrap();
+            let (store, loaded) = Store::open(&dir.join("retained.sqlite"), &OpenPolicy).unwrap();
             assert!(loaded.is_empty());
-            store.put("hforum/t/abc", &b"one"[..].into());
-            store.put("hforum/t/def", &b"two"[..].into());
-            store.delete("hforum/t/def");
-            store.put("hforum/t/abc", &b"three"[..].into());
+            assert!(store.put("hforum/t/abc", &b"one"[..].into()));
+            assert!(store.put("hforum/t/def", &b"two"[..].into()));
+            assert!(store.delete("hforum/t/def"));
+            assert!(store.put("hforum/t/abc", &b"three"[..].into()));
             std::thread::sleep(Duration::from_millis(300));
         }
-        let (_store, loaded) = Store::open(&dir.join("retained.sqlite")).unwrap();
+        let (_store, loaded) = Store::open(&dir.join("retained.sqlite"), &OpenPolicy).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded.get("hforum/t/abc"), Some(&b"three"[..]));
         assert_eq!(loaded.bytes(), 5);
@@ -1893,10 +2260,18 @@ mod tests {
     #[test]
     fn the_retained_bookkeeping_follows_inserts_and_removals() {
         let mut r = Retained::default();
-        r.insert("hforum/t/tabcdefghij", b"post"[..].into());
-        r.insert("hforum/r/tabcdefghij/rabcdefghij", b"reply"[..].into());
-        r.insert("hforum/rep/tabcdefghij/e27a", b"1"[..].into());
-        r.insert("hidra/presence/v1", b"x"[..].into());
+        r.insert("hforum/t/tabcdefghij", b"post"[..].into(), Meta::default());
+        r.insert(
+            "hforum/r/tabcdefghij/rabcdefghij",
+            b"reply"[..].into(),
+            Meta::default(),
+        );
+        r.insert(
+            "hforum/rep/tabcdefghij/e27a",
+            b"1"[..].into(),
+            Meta::default(),
+        );
+        r.insert("hidra/presence/v1", b"x"[..].into(), Meta::default());
         assert_eq!(r.len(), 4);
         assert_eq!(r.bytes(), 11);
         assert_eq!(r.count("hforum/t"), 1);
@@ -1908,7 +2283,11 @@ mod tests {
             Some("hforum/r/tabcdefghij/rabcdefghij")
         );
         assert_eq!(r.topic_of_id("tabcdefghij"), Some("hforum/t/tabcdefghij"));
-        r.insert("hforum/t/tabcdefghij", b"replaced"[..].into());
+        r.insert(
+            "hforum/t/tabcdefghij",
+            b"replaced"[..].into(),
+            Meta::default(),
+        );
         assert_eq!(r.len(), 4);
         assert_eq!(r.bytes(), 15);
         assert_eq!(r.count("hforum/t"), 1);
@@ -1917,7 +2296,153 @@ mod tests {
         assert_eq!(r.topic_of_id("rabcdefghij"), None);
         assert_eq!(r.count("hforum/r"), 0);
         assert_eq!(r.bytes(), 10);
-        assert!(r.fits("hforum/t/tabcdefghij", MAX_RETAINED_BYTES - 2));
-        assert!(!r.fits("hforum/t/tnew", MAX_RETAINED_BYTES - 2));
+        // Room: posts may fill the store up to two reserves below the cap,
+        // names up to one, moderation all of it.
+        let post_room = MAX_RETAINED_BYTES - 2 * RETAINED_RESERVE_BYTES;
+        assert_eq!(
+            r.refuse_room("hforum/t/tabcdefghij", post_room - 2, &Meta::default()),
+            None
+        );
+        assert_eq!(
+            r.refuse_room("hforum/t/tnew", post_room - 2, &Meta::default()),
+            Some("store full: bytes")
+        );
+        assert_eq!(
+            r.refuse_room("hforum/u/zoe", post_room + 1, &Meta::default()),
+            None
+        );
+        assert_eq!(
+            r.refuse_room("hforum/u/zoe", MAX_RETAINED_BYTES, &Meta::default()),
+            Some("store full: bytes")
+        );
+        assert_eq!(
+            r.refuse_room(
+                "hforum/mod/tabcdefghij",
+                MAX_RETAINED_BYTES - 10,
+                &Meta::default()
+            ),
+            None
+        );
+        // A key's own share.
+        let a = Meta {
+            pk: Some("A".into()),
+            ..Meta::default()
+        };
+        let b = Meta {
+            pk: Some("B".into()),
+            ..Meta::default()
+        };
+        r.insert(
+            "hforum/t/tbigoneabcd",
+            vec![0u8; MAX_BYTES_PER_AUTHOR - 100].into(),
+            a.clone(),
+        );
+        assert_eq!(r.author_bytes("A"), MAX_BYTES_PER_AUTHOR - 100);
+        assert_eq!(
+            r.refuse_room("hforum/t/tbigtwoabcd", 101, &a),
+            Some("store full: this key's share")
+        );
+        assert_eq!(r.refuse_room("hforum/t/tbigtwoabcd", 101, &b), None);
+        assert_eq!(
+            r.refuse_room("hforum/t/tbigoneabcd", MAX_BYTES_PER_AUTHOR, &a),
+            None,
+            "replacing one's own payload counts the old one as gone"
+        );
+        r.remove("hforum/t/tbigoneabcd");
+        assert_eq!(r.author_bytes("A"), 0);
+        // One pass for many filters, each topic once, nothing already covered.
+        let owed = r.topics_matching(&["hforum/#".into(), "hforum/t/+".into()], &[]);
+        assert_eq!(owed.len(), 2, "the post and the report, each once");
+        let owed = r.topics_matching(&["hforum/#".into()], &["hforum/t/+".into()]);
+        assert_eq!(owed.len(), 1, "the post was sent when hforum/t/+ was taken");
+    }
+
+    #[tokio::test]
+    async fn the_same_retained_bytes_again_go_nowhere_and_a_long_keepalive_is_refused() {
+        let addr = start().await;
+        let mut a = client(addr, "a").await;
+        let mut b = client(addr, "b").await;
+        b.send(Message::Binary(subscribe_packet(1, "hforum/t/+")))
+            .await
+            .unwrap();
+        next_packet(&mut b).await; // SUBACK, as raw bytes it would not parse; skip
+        for i in 1..=2u16 {
+            a.send(Message::Binary(publish_packet(
+                "hforum/t/tsame",
+                b"same",
+                1,
+                true,
+                i,
+            )))
+            .await
+            .unwrap();
+            next_packet(&mut a).await;
+        }
+        a.send(Message::Binary(publish_packet(
+            "hforum/t/tsame",
+            b"other",
+            1,
+            true,
+            3,
+        )))
+        .await
+        .unwrap();
+        next_packet(&mut a).await;
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            if let mqtt::Packet::Publish { payload, .. } = next_packet(&mut b).await {
+                got.push(payload);
+            }
+        }
+        assert_eq!(
+            got,
+            vec![b"same".to_vec(), b"other".to_vec()],
+            "the repeat was not delivered"
+        );
+        // A keep-alive above the cap is refused at CONNECT.
+        let mut req = format!("ws://{addr}/mqtt").into_client_request().unwrap();
+        req.headers_mut().insert(
+            "sec-websocket-protocol",
+            http::HeaderValue::from_static("mqtt"),
+        );
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws.send(Message::Binary(connect_packet("k", 65535)))
+            .await
+            .unwrap();
+        let ack = ws.next().await.unwrap().unwrap().into_data();
+        assert_eq!(ack, mqtt::connack(mqtt::CONNACK_NOT_AUTHORISED));
+    }
+
+    #[tokio::test]
+    async fn an_unsubscribe_with_too_many_filters_ends_the_connection() {
+        let addr = start().await;
+        let mut c = client(addr, "c").await;
+        let many: Vec<String> = (0..MAX_SUBSCRIPTIONS_PER_CLIENT + 1)
+            .map(|i| format!("hforum/t/{i}"))
+            .collect();
+        let mut body = 7u16.to_be_bytes().to_vec();
+        for f in &many {
+            body.extend_from_slice(&(f.len() as u16).to_be_bytes());
+            body.extend_from_slice(f.as_bytes());
+        }
+        let mut out = vec![
+            0xa2,
+            0x80 | (body.len() % 128) as u8,
+            (body.len() / 128) as u8,
+        ];
+        out.extend(body);
+        c.send(Message::Binary(out)).await.unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match c.next().await {
+                    None | Some(Err(_)) => break true,
+                    Some(Ok(Message::Close(_))) => break true,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(closed);
     }
 }

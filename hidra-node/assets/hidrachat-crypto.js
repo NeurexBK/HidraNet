@@ -650,7 +650,7 @@
       if (!Array.isArray(e) || e.length !== 4) return null;
       if (typeof e[0] !== 'string' || !validName(e[0]) || e[0] !== normalizeName(e[0])) return null;
       if (typeof e[1] !== 'string' || normalizeName(e[1]) !== e[0]) return null;
-      if (typeof e[2] !== 'string' || !canonicalPub(e[2]) || !Number.isFinite(e[3])) return null;
+      if (typeof e[2] !== 'string' || !canonicalPub(e[2]) || !Number.isSafeInteger(e[3]) || e[3] < 0) return null;
       if (e[0] <= last) return null;             // sorted, no duplicates
       last = e[0];
     }

@@ -31,7 +31,7 @@ struct Cli {
     data: Option<PathBuf>,
 
     /// Log level: error, warn, info, debug.
-    #[arg(long, default_value = "info")]
+    #[arg(long, default_value = "info", value_parser = ["error", "warn", "info", "debug"])]
     log_level: String,
 
     /// The forum registrar's public key (the base64 the pages carry as
@@ -39,12 +39,6 @@ struct Cli {
     /// registry list only from this key.
     #[arg(long)]
     registrar_key: Option<String>,
-
-    /// The forum moderator's public key. Normally not needed: the relay
-    /// takes the moderator from the registrar's list (its set-admin). Given,
-    /// it overrides the list.
-    #[arg(long)]
-    moderator_key: Option<String>,
 
     /// Run with no forum rules at all: a plain relay for the two topic
     /// trees, which keeps whatever is published. For tests of the pages'
@@ -57,24 +51,20 @@ struct Cli {
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     hidra_node::logging::init_logging(&cli.log_level, "pretty");
-    for key in [&cli.registrar_key, &cli.moderator_key]
-        .into_iter()
-        .flatten()
-    {
+    if let Some(key) = &cli.registrar_key {
         if hidrarelay::forum::canonical_pub(key).is_none() {
-            return Err("a key must be the 88-character base64 the forum page shows".into());
+            return Err("the key must be the 88-character base64 the forum page shows".into());
         }
     }
+    // The moderator is not a flag: the relay takes it from the registrar's
+    // list (its set-admin), which is also where the pages learn it.
     let policy: Arc<dyn hidrarelay::Policy> = if cli.no_forum_rules {
-        if cli.registrar_key.is_some() || cli.moderator_key.is_some() {
-            return Err("--no-forum-rules takes no keys".into());
+        if cli.registrar_key.is_some() {
+            return Err("--no-forum-rules takes no key".into());
         }
         Arc::new(hidrarelay::OpenPolicy)
     } else if cli.registrar_key.is_some() {
-        Arc::new(hidrarelay::forum::ForumPolicy::new(
-            cli.registrar_key,
-            cli.moderator_key,
-        ))
+        Arc::new(hidrarelay::forum::ForumPolicy::new(cli.registrar_key, None))
     } else {
         return Err(
             "pass --registrar-key <the REGISTRY_PUBKEY of forum.html>, or --no-forum-rules for a relay with no forum rules"
