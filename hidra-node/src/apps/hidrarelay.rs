@@ -1519,7 +1519,8 @@ async fn handle(
                     } else {
                         MAX_PAYLOAD
                     };
-                    if allowed_topic(&topic) && payload.len() <= limit {
+                    let oversized = payload.len() > MAX_PAYLOAD;
+                    let delivered = if allowed_topic(&topic) && payload.len() <= limit {
                         // The policy's parsing and signature checks run
                         // here, on this connection's task, with no lock held.
                         match policy.prepare(&topic, &payload, retain) {
@@ -1538,7 +1539,7 @@ async fn handle(
                                     &prepared,
                                     meta,
                                 )
-                                .await;
+                                .await
                             }
                             Err(reason) => {
                                 shared.lock().await.refused += 1;
@@ -1547,17 +1548,26 @@ async fn handle(
                                 } else {
                                     debug!(reason, "publish refused by policy");
                                 }
+                                false
                             }
                         }
                     } else {
                         shared.lock().await.refused += 1;
-                    }
+                        false
+                    };
                     // Acknowledged either way: a refused publish is simply
                     // not delivered, and the client goes on.
                     if let Some(pid) = packet_id {
                         if !outbox.push(mqtt::puback(pid).into()).await {
                             break 'conn Ok(());
                         }
+                    }
+                    if oversized && !delivered {
+                        // Only the registrar's list is this large, and the
+                        // registrar's is never refused. A refused one has
+                        // left a buffer this size in the WebSocket layer,
+                        // which only ending the connection gives back.
+                        break 'conn Err(protocol("oversized publish refused"));
                     }
                 }
             }
@@ -1582,6 +1592,8 @@ async fn handle(
     outcome
 }
 
+/// Keeps and delivers a publish the policy prepared; `false` when it was
+/// refused after all.
 async fn publish(
     shared: &Arc<Mutex<Shared>>,
     policy: &dyn Policy,
@@ -1590,7 +1602,7 @@ async fn publish(
     retain: bool,
     prepared: &Prepared,
     meta: Meta,
-) {
+) -> bool {
     let mut s = shared.lock().await;
     if retain && !payload.is_empty() {
         // The same bytes again change nothing and would only cost a disk
@@ -1598,12 +1610,12 @@ async fn publish(
         if s.retained.holds(topic, &payload) {
             s.refused += 1;
             debug!("publish refused: unchanged");
-            return;
+            return false;
         }
         if let Some(reason) = s.retained.refuse_room(topic, payload.len(), &meta) {
             s.refused += 1;
             debug!(reason, "publish refused");
-            return;
+            return false;
         }
     }
     if let Some(reason) = policy.admit(prepared, topic, retain, &s.retained) {
@@ -1615,7 +1627,7 @@ async fn publish(
         } else {
             debug!(reason, "publish refused by policy");
         }
-        return;
+        return false;
     }
     if retain {
         // Disk first, memory second, so they never disagree: a store that
@@ -1627,7 +1639,7 @@ async fn publish(
         };
         if !queued {
             s.refused += 1;
-            return;
+            return false;
         }
         if payload.is_empty() {
             s.retained.remove(topic);
@@ -1662,6 +1674,7 @@ async fn publish(
     for cid in slow {
         s.drop_client(cid);
     }
+    true
 }
 
 /// Runs the relay until the process ends.
@@ -2062,7 +2075,8 @@ mod tests {
             next_packet(&mut a).await,
             mqtt::Packet::Unsupported(4)
         ));
-        // One over the size limit too.
+        // One over the size limit is acknowledged, dropped, and ends the
+        // connection: the buffer it left behind goes with it.
         a.send(Message::Binary(publish_packet(
             "hidra/x",
             &vec![0u8; MAX_PAYLOAD + 1],
@@ -2076,7 +2090,21 @@ mod tests {
             next_packet(&mut a).await,
             mqtt::Packet::Unsupported(4)
         ));
-        // A good one still arrives, and it is the first thing b sees.
+        let closed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match a.next().await {
+                    None | Some(Err(_)) => break true,
+                    Some(Ok(Message::Close(_))) => break true,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(closed);
+        // A good one, from a fresh connection, still arrives, and it is the
+        // first thing b sees.
+        let mut a = client(addr, "a2").await;
         a.send(Message::Binary(publish_packet(
             "hidra/x", b"yes", 0, false, 0,
         )))
@@ -2411,6 +2439,64 @@ mod tests {
             .unwrap();
         let ack = ws.next().await.unwrap().unwrap().into_data();
         assert_eq!(ack, mqtt::connack(mqtt::CONNACK_NOT_AUTHORISED));
+    }
+
+    #[tokio::test]
+    async fn a_large_publish_that_is_refused_ends_the_connection() {
+        let addr = start().await;
+        let mut c = client(addr, "c").await;
+        // Larger than any ordinary message: only the registry topic takes
+        // it, and under OpenPolicy it is refused only for being outside the
+        // trees. Under ForumPolicy a bad list is refused the same way.
+        let big = vec![b'x'; MAX_PAYLOAD + 1];
+        c.send(Message::Binary(publish_packet(
+            "hforum/not-registry",
+            &big,
+            1,
+            true,
+            1,
+        )))
+        .await
+        .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match c.next().await {
+                    None | Some(Err(_)) => break true,
+                    Some(Ok(Message::Close(_))) => break true,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(closed, "a refused oversized publish ends the connection");
+        // The registry topic takes it (OpenPolicy keeps anything) and the
+        // connection lives on.
+        let mut d = client(addr, "d").await;
+        d.send(Message::Binary(publish_packet(
+            REGISTRY_TOPIC,
+            &big,
+            1,
+            true,
+            1,
+        )))
+        .await
+        .unwrap();
+        let ack = tokio::time::timeout(Duration::from_secs(3), d.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_data();
+        assert_eq!(ack, mqtt::puback(1));
+        d.send(Message::Binary(vec![0xc0, 0x00])).await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(3), d.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_data();
+        assert_eq!(reply, mqtt::pingresp());
     }
 
     #[tokio::test]

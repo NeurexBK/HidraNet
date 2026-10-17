@@ -129,7 +129,9 @@ What it does that a public broker does not:
   filter, since it is a pass over everything kept; a WebSocket frame with
   no packet in it costs one), a keep-alive of at most ten minutes, and an
   outbound queue of 256 frames or 1 MiB; a client that exceeds them, or
-  stops reading, is disconnected. 4096 clients in all. A message is held
+  stops reading, is disconnected, as is one whose publish above 128 KiB
+  was refused (only the registrar's list is that large, and the
+  registrar's never is). 4096 clients in all. A message is held
   once however many clients it goes to, and a new subscriber's backlog is
   sent between the packets it keeps sending, so a slow load never stops
   its pings from being answered. What is kept is capped at 50 000
