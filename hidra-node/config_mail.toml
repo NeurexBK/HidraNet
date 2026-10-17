@@ -29,6 +29,10 @@ port = 9050
 enabled = true
 local_port = 8080
 app = "hidramail"
+# The mailbox name. The address is <mail_name>@<this service's .hidra address>;
+# the host part is derived from the service key, which is how a recipient
+# checks that whoever signed a message owns the address it claims to come
+# from. Lower-case letters, digits, '.', '_' and '-' only.
 mail_name = "alice"
 
 [[relays]]

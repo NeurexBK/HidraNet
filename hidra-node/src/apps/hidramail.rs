@@ -1,6 +1,20 @@
-pub mod protocol {
-    use serde::{Serialize, Deserialize};
+//! HidraMail: the node's mail server.
+//!
+//! One mailbox per node. The owner reads it over loopback; other nodes hand
+//! messages in through `/api/deliver`, which is the one endpoint that answers
+//! requests from off this machine. A message is sealed to the recipient's
+//! X25519 key and signed with the sender's Ed25519 key, and the sender's
+//! address is derived from that signing key, so a signature that verifies
+//! also proves who sent it.
+//!
+//! Delivery goes through the node's own SOCKS5 proxy to the recipient's
+//! `.hidra` address, so neither side learns the other's IP. A plain TCP
+//! address can still be given for testing, but only on loopback.
 
+pub mod protocol {
+    use serde::{Deserialize, Serialize};
+
+    /// The signed, sealed unit that travels between nodes.
     #[derive(Serialize, Deserialize, Clone)]
     pub struct MailEnvelope {
         pub id: String,
@@ -34,17 +48,126 @@ pub mod protocol {
         pub to: String,
         pub subject: String,
         pub body: String,
+        /// A loopback `host:port` for local testing. Any other address is
+        /// refused: delivery between machines goes through the circuit.
         pub direct_addr: Option<String>,
     }
 
+    /// Longest mail address accepted, in bytes. A name of up to 64
+    /// characters, `@`, forty hex digits and `.hidra`.
+    pub const MAX_ADDRESS_LEN: usize = 64 + 1 + 40 + 6;
+
+    /// Domain separation for the envelope signature.
+    const SIG_DOMAIN: &[u8] = b"hidramail-sig-v2";
+
+    /// The mail address of a node whose signing key is `vk`: the mailbox name
+    /// at the `.hidra` address that key produces. Deriving the host from the
+    /// key is what lets a recipient check that the key which signed a message
+    /// owns the address it claims to come from.
+    pub fn mail_address(name: &str, vk: &ed25519_dalek::VerifyingKey) -> String {
+        let (host, _) = crate::crypto::keys::derive_hidra_address(vk);
+        format!("{name}@{host}")
+    }
+
+    /// A configured mailbox name as the address grammar allows it: lower
+    /// case, ASCII letters, digits, `.`, `_` and `-`, at most 64 of them,
+    /// and `mail` when nothing is left.
+    pub fn mailbox_name(configured: &str) -> String {
+        let mut name: String = configured
+            .chars()
+            .map(|c| c.to_ascii_lowercase())
+            .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+            .take(64)
+            .collect();
+        if name.is_empty() {
+            name = "mail".to_string();
+        }
+        name
+    }
+
+    /// The part after `@`, when the address is well formed.
+    pub fn address_host(addr: &str) -> Option<&str> {
+        if !valid_address(addr) {
+            return None;
+        }
+        addr.split_once('@').map(|(_, host)| host)
+    }
+
+    /// `name@<40 hex digits>.hidra`, with a name of ASCII letters, digits,
+    /// `.`, `_` or `-`. Nothing else is a mail address this server handles,
+    /// and nothing else is allowed into a log, a file name or a reply.
+    pub fn valid_address(addr: &str) -> bool {
+        if addr.is_empty() || addr.len() > MAX_ADDRESS_LEN {
+            return false;
+        }
+        let Some((name, host)) = addr.split_once('@') else {
+            return false;
+        };
+        let name_ok = !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-');
+        name_ok && valid_hidra_host(host)
+    }
+
+    /// `<40 lowercase hex digits>.hidra`: the form a hidden-service address
+    /// takes, and the only host a `.hidra` lookup can resolve.
+    pub fn valid_hidra_host(host: &str) -> bool {
+        let Some(hex) = host.strip_suffix(".hidra") else {
+            return false;
+        };
+        hex.len() == 40 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    /// A message id is a lowercase hyphenated UUID and nothing else. The id
+    /// becomes a file name on the recipient's disk, and it arrives from
+    /// whoever is sending, so the check is strict rather than merely
+    /// excluding path separators.
+    pub fn valid_mail_id(id: &str) -> bool {
+        if id.len() != 36 {
+            return false;
+        }
+        id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
+        })
+    }
+
+    /// True when `vk` is the key the host part of `from_addr` was derived
+    /// from. The name part is the sender's to choose; the host is not.
+    pub fn sender_owns_address(from_addr: &str, vk_bytes: &[u8]) -> bool {
+        let Some(host) = address_host(from_addr) else {
+            return false;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(vk_bytes) else {
+            return false;
+        };
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&arr) else {
+            return false;
+        };
+        let (derived, _) = crate::crypto::keys::derive_hidra_address(&vk);
+        derived == host
+    }
+
     impl MailEnvelope {
+        /// The bytes the signature covers: every field a recipient acts on,
+        /// each with its length in front, so no field can borrow bytes from
+        /// its neighbour and still verify.
         pub fn signing_data(&self) -> Vec<u8> {
             let mut data = Vec::new();
-            data.extend_from_slice(self.id.as_bytes());
-            data.extend_from_slice(self.from_addr.as_bytes());
-            data.extend_from_slice(self.to_addr.as_bytes());
-            data.extend_from_slice(&self.timestamp.to_le_bytes());
-            data.extend_from_slice(&self.sealed_body);
+            data.extend_from_slice(SIG_DOMAIN);
+            for field in [
+                self.id.as_bytes(),
+                self.from_addr.as_bytes(),
+                self.to_addr.as_bytes(),
+                &self.timestamp.to_le_bytes(),
+                &self.ephemeral_pubkey,
+                &self.sealed_body,
+            ] {
+                data.extend_from_slice(&(field.len() as u32).to_le_bytes());
+                data.extend_from_slice(field);
+            }
             data
         }
     }
@@ -55,11 +178,13 @@ pub mod crypto {
         aead::{Aead, KeyInit},
         ChaCha20Poly1305, Nonce,
     };
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use rand::RngCore;
     use x25519_dalek::{PublicKey, StaticSecret};
     use zeroize::Zeroize;
 
+    use crate::crypto::keystore;
     use crate::error::{HidraError, Result};
     use std::path::Path;
 
@@ -69,36 +194,45 @@ pub mod crypto {
     }
 
     impl MailKeys {
+        /// Load the mailbox key, or make one. The file is created readable by
+        /// this user only and, with `HIDRA_KEY_PASSPHRASE` set, sealed like the
+        /// node's other keys. An older key written as raw bytes with the
+        /// default permissions is read once and rewritten the new way.
         pub fn load_or_generate(keys_dir: &Path) -> Result<Self> {
             let key_path = keys_dir.join("mail_x25519.key");
-            if key_path.exists() {
-                let bytes = std::fs::read(&key_path).map_err(HidraError::Io)?;
-                if bytes.len() != 32 {
-                    return Err(HidraError::Crypto(
-                        "invalid mail key file".into(),
-                    ));
+            let secret_bytes = if key_path.exists() {
+                let raw = std::fs::read(&key_path).map_err(HidraError::Io)?;
+                if raw.len() == 32 {
+                    // Legacy: raw bytes, written with fs::write.
+                    let mut secret = [0u8; 32];
+                    secret.copy_from_slice(&raw);
+                    keystore::write_secret(&key_path, BASE64.encode(secret).as_bytes())?;
+                    secret
+                } else {
+                    let read = keystore::read_secret(&key_path)?;
+                    let decoded = BASE64.decode(&read.plaintext).map_err(|_| {
+                        HidraError::Crypto("invalid mail key file".into())
+                    })?;
+                    let secret: [u8; 32] = decoded
+                        .try_into()
+                        .map_err(|_| HidraError::Crypto("invalid mail key file".into()))?;
+                    if read.needs_sealing {
+                        keystore::write_secret(&key_path, BASE64.encode(secret).as_bytes())?;
+                    }
+                    secret
                 }
-                let mut secret_bytes = [0u8; 32];
-                secret_bytes.copy_from_slice(&bytes);
-                let secret = StaticSecret::from(secret_bytes);
-                let public = PublicKey::from(&secret);
-                Ok(Self {
-                    secret_bytes,
-                    public_bytes: *public.as_bytes(),
-                })
             } else {
-                let mut secret_bytes = [0u8; 32];
-                rand::thread_rng().fill_bytes(&mut secret_bytes);
-                std::fs::create_dir_all(keys_dir).map_err(HidraError::Io)?;
-                std::fs::write(&key_path, &secret_bytes)
-                    .map_err(HidraError::Io)?;
-                let secret = StaticSecret::from(secret_bytes);
-                let public = PublicKey::from(&secret);
-                Ok(Self {
-                    secret_bytes,
-                    public_bytes: *public.as_bytes(),
-                })
-            }
+                let mut secret = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut secret);
+                keystore::write_secret(&key_path, BASE64.encode(secret).as_bytes())?;
+                secret
+            };
+            let secret = StaticSecret::from(secret_bytes);
+            let public = PublicKey::from(&secret);
+            Ok(Self {
+                secret_bytes,
+                public_bytes: *public.as_bytes(),
+            })
         }
 
         pub fn secret_bytes(&self) -> &[u8; 32] {
@@ -206,13 +340,28 @@ pub mod crypto {
 pub mod storage {
     use std::path::{Path, PathBuf};
 
-    use crate::error::{HidraError, Result};
     use super::crypto;
-    use super::protocol::{MailContent, MailEnvelope, MailSummary};
+    use super::protocol::{valid_mail_id, MailContent, MailEnvelope, MailSummary};
+    use crate::error::{HidraError, Result};
+
+    /// Most messages the inbox holds before new ones are refused.
+    pub const MAX_INBOX_MESSAGES: usize = 5000;
+    /// Most bytes the inbox holds before new ones are refused.
+    pub const MAX_INBOX_BYTES: u64 = 256 * 1024 * 1024;
 
     pub struct MailStore {
         inbox_dir: PathBuf,
         sent_dir: PathBuf,
+    }
+
+    /// Every file name under the store is `<id>.json` or `<id>.read` for an
+    /// id that passed `valid_mail_id`. The id comes from the network, so this
+    /// is the one place a path is ever built from it.
+    fn mail_path(dir: &Path, id: &str, ext: &str) -> Result<PathBuf> {
+        if !valid_mail_id(id) {
+            return Err(HidraError::Protocol("invalid mail id".into()));
+        }
+        Ok(dir.join(format!("{id}.{ext}")))
     }
 
     impl MailStore {
@@ -221,21 +370,55 @@ pub mod storage {
             let sent_dir = base_dir.join("sent");
             std::fs::create_dir_all(&inbox_dir).map_err(HidraError::Io)?;
             std::fs::create_dir_all(&sent_dir).map_err(HidraError::Io)?;
+            crate::crypto::keys::restrict_dir(base_dir)?;
+            crate::crypto::keys::restrict_dir(&inbox_dir)?;
+            crate::crypto::keys::restrict_dir(&sent_dir)?;
             Ok(Self { inbox_dir, sent_dir })
         }
 
+        /// File a message that arrived from another node. Fails with
+        /// `AlreadyExists` when a message with this id is already filed, so
+        /// a repeated delivery cannot overwrite the first.
         pub fn store_incoming(&self, env: &MailEnvelope) -> Result<()> {
-            let path = self.inbox_dir.join(format!("{}.json", env.id));
+            let path = mail_path(&self.inbox_dir, &env.id, "json")?;
+            let json = serde_json::to_string(env)
+                .map_err(|e| HidraError::Protocol(format!("serialize: {e}")))?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(HidraError::Io)?;
+            std::io::Write::write_all(&mut file, json.as_bytes()).map_err(HidraError::Io)
+        }
+
+        pub fn store_sent(&self, env: &MailEnvelope) -> Result<()> {
+            let path = mail_path(&self.sent_dir, &env.id, "json")?;
             let json = serde_json::to_string(env)
                 .map_err(|e| HidraError::Protocol(format!("serialize: {e}")))?;
             std::fs::write(path, json).map_err(HidraError::Io)
         }
 
-        pub fn store_sent(&self, env: &MailEnvelope) -> Result<()> {
-            let path = self.sent_dir.join(format!("{}.json", env.id));
-            let json = serde_json::to_string(env)
-                .map_err(|e| HidraError::Protocol(format!("serialize: {e}")))?;
-            std::fs::write(path, json).map_err(HidraError::Io)
+        /// How many messages the inbox holds, and how many bytes.
+        pub fn inbox_usage(&self) -> (usize, u64) {
+            let mut count = 0usize;
+            let mut bytes = 0u64;
+            if let Ok(entries) = std::fs::read_dir(&self.inbox_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    count += 1;
+                    bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+            (count, bytes)
+        }
+
+        /// True when the inbox cannot take a message of `incoming_bytes`.
+        pub fn inbox_full(&self, incoming_bytes: u64) -> bool {
+            let (count, bytes) = self.inbox_usage();
+            count >= MAX_INBOX_MESSAGES || bytes.saturating_add(incoming_bytes) > MAX_INBOX_BYTES
         }
 
         pub fn list_inbox(&self, secret: &[u8; 32]) -> Vec<MailSummary> {
@@ -269,6 +452,9 @@ pub mod storage {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
+                if !valid_mail_id(&env.id) {
+                    continue;
+                }
                 let subject = decrypt_subject(&env, secret);
                 let read_marker = p.with_extension("read");
                 out.push(MailSummary {
@@ -289,19 +475,17 @@ pub mod storage {
             id: &str,
             secret: &[u8; 32],
         ) -> Result<(MailEnvelope, MailContent)> {
-            let inbox_path = self.inbox_dir.join(format!("{id}.json"));
+            let inbox_path = mail_path(&self.inbox_dir, id, "json")?;
             let path = if inbox_path.exists() {
-                let marker = self.inbox_dir.join(format!("{id}.read"));
+                let marker = mail_path(&self.inbox_dir, id, "read")?;
                 let _ = std::fs::write(marker, "");
                 inbox_path
             } else {
-                let sent_path = self.sent_dir.join(format!("{id}.json"));
+                let sent_path = mail_path(&self.sent_dir, id, "json")?;
                 if sent_path.exists() {
                     sent_path
                 } else {
-                    return Err(HidraError::Protocol(format!(
-                        "mail not found: {id}"
-                    )));
+                    return Err(HidraError::Protocol("mail not found".into()));
                 }
             };
 
@@ -325,18 +509,16 @@ pub mod storage {
         }
 
         pub fn delete_mail(&self, id: &str) -> Result<()> {
-            let inbox = self.inbox_dir.join(format!("{id}.json"));
-            let sent = self.sent_dir.join(format!("{id}.json"));
-            let marker = self.inbox_dir.join(format!("{id}.read"));
+            let inbox = mail_path(&self.inbox_dir, id, "json")?;
+            let sent = mail_path(&self.sent_dir, id, "json")?;
+            let marker = mail_path(&self.inbox_dir, id, "read")?;
             if inbox.exists() {
                 std::fs::remove_file(&inbox).map_err(HidraError::Io)?;
                 let _ = std::fs::remove_file(&marker);
             } else if sent.exists() {
                 std::fs::remove_file(&sent).map_err(HidraError::Io)?;
             } else {
-                return Err(HidraError::Protocol(format!(
-                    "mail not found: {id}"
-                )));
+                return Err(HidraError::Protocol("mail not found".into()));
             }
             Ok(())
         }
@@ -359,10 +541,12 @@ pub mod storage {
 
 pub mod server {
     use crate::safelog::sensitive;
+    use std::collections::VecDeque;
     use std::net::SocketAddr;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tracing::{debug, info, warn};
@@ -370,15 +554,88 @@ pub mod server {
     use super::crypto;
     use super::frontend;
     use super::protocol::{
-        MailContent, MailEnvelope, SendRequest,
+        self, MailContent, MailEnvelope, SendRequest,
     };
     use super::storage::MailStore;
+    use crate::error::{HidraError, Result};
+
+    /// Largest request this server reads, headers and body together. A
+    /// message is a subject and a body of text; nothing legitimate is near
+    /// this.
+    pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
+    /// Largest envelope `/api/deliver` accepts.
+    pub const MAX_DELIVERY_BYTES: usize = 48 * 1024;
+    /// Largest subject-plus-body a message may carry before sealing.
+    pub const MAX_CONTENT_BYTES: usize = 32 * 1024;
+    /// How many deliveries are accepted per minute, over all senders. Every
+    /// remote request arrives over loopback from the circuit, so there is no
+    /// peer address to count per sender; what this bounds is how fast anyone
+    /// can fill the disk.
+    pub const DELIVERIES_PER_MINUTE: usize = 60;
+    /// How long a connection may take to send its request.
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+    /// How long the sender waits on the recipient, per round trip.
+    const REMOTE_TIMEOUT: Duration = Duration::from_secs(60);
+    /// Connections served at once.
+    const MAX_CONNECTIONS: usize = 64;
+    /// A timestamp further ahead than this is a clock no one has.
+    const MAX_CLOCK_SKEW_MS: u64 = 60 * 60 * 1000;
 
     pub struct ServerState {
         pub mail_addr: String,
         pub mail_keys: crypto::MailKeys,
         pub signing_key: ed25519_dalek::SigningKey,
         pub store: MailStore,
+        /// The node's SOCKS5 proxy, through which `.hidra` recipients are
+        /// reached. Without one, only loopback test delivery works.
+        pub socks_proxy: Option<SocketAddr>,
+        deliveries: Mutex<VecDeque<Instant>>,
+    }
+
+    impl ServerState {
+        /// The mailbox `name` at the address the signing key produces. A
+        /// name the address grammar does not allow is bent into one it does,
+        /// since a mailbox whose own address fails validation could never
+        /// receive anything.
+        pub fn new(
+            mail_name: &str,
+            mail_keys: crypto::MailKeys,
+            signing_key: ed25519_dalek::SigningKey,
+            store: MailStore,
+            socks_proxy: Option<SocketAddr>,
+        ) -> Self {
+            let name = protocol::mailbox_name(mail_name);
+            let mail_addr = protocol::mail_address(&name, &signing_key.verifying_key());
+            Self {
+                mail_addr,
+                mail_keys,
+                signing_key,
+                store,
+                socks_proxy,
+                deliveries: Mutex::new(VecDeque::new()),
+            }
+        }
+
+        /// Count a delivery against the per-minute budget. False when the
+        /// budget is spent.
+        fn allow_delivery(&self) -> bool {
+            let now = Instant::now();
+            let mut recent = match self.deliveries.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            while recent
+                .front()
+                .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60))
+            {
+                recent.pop_front();
+            }
+            if recent.len() >= DELIVERIES_PER_MINUTE {
+                return false;
+            }
+            recent.push_back(now);
+            true
+        }
     }
 
     pub struct MailServer {
@@ -397,43 +654,52 @@ pub mod server {
             }
         }
 
-        pub async fn run(self) -> crate::error::Result<()> {
+        pub async fn run(self) -> Result<()> {
             let listener = TcpListener::bind(self.addr).await?;
             info!(
                 addr = %self.addr,
                 mail = %self.state.mail_addr,
                 "HidraMail server listening"
             );
-
-            loop {
-                let (stream, peer) = match listener.accept().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!(error = %e, "accept error");
-                        continue;
-                    }
-                };
-                let st = Arc::clone(&self.state);
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, peer, st).await
-                    {
-                        debug!(
-                            peer = %peer,
-                            error = %e,
-                            "connection ended"
-                        );
-                    }
-                });
-            }
+            serve(listener, self.state).await
         }
     }
 
-    async fn handle_connection(
-        mut stream: TcpStream,
-        peer: SocketAddr,
-        state: Arc<ServerState>,
-    ) -> crate::error::Result<()> {
-        let mut buf = vec![0u8; 65536];
+    /// Accept connections on `listener` forever.
+    pub async fn serve(listener: TcpListener, state: Arc<ServerState>) -> Result<()> {
+        let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "accept error");
+                    continue;
+                }
+            };
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                // Full. Say so and move on; holding the socket open would be
+                // one more way to keep the others waiting.
+                let mut stream = stream;
+                let _ = stream.write_all(json_err(503, "server busy").as_bytes()).await;
+                continue;
+            };
+            let st = Arc::clone(&state);
+            tokio::spawn(async move {
+                let _slot = slot;
+                if let Err(e) = handle_connection(stream, peer, st).await {
+                    debug!(
+                        peer = %sensitive(&peer),
+                        error = %e,
+                        "connection ended"
+                    );
+                }
+            });
+        }
+    }
+
+    /// Read one HTTP request, bounded in size and in time.
+    async fn read_request(stream: &mut TcpStream) -> Result<Option<Vec<u8>>> {
+        let mut buf = vec![0u8; MAX_REQUEST_BYTES];
         let mut total = 0usize;
         loop {
             let n = stream.read(&mut buf[total..]).await?;
@@ -445,42 +711,55 @@ pub mod server {
             if let Some(hdr_end) = find_header_end(raw) {
                 let headers = String::from_utf8_lossy(&raw[..hdr_end]);
                 let content_len = parse_content_length(&headers);
+                if content_len > MAX_REQUEST_BYTES - hdr_end {
+                    return Err(HidraError::Protocol("request too large".into()));
+                }
                 let body_received = total - hdr_end;
                 if body_received >= content_len {
                     break;
                 }
-            }
-            if total >= buf.len() {
-                break;
+            } else if total >= buf.len() {
+                return Err(HidraError::Protocol("request too large".into()));
             }
         }
         if total == 0 {
-            return Ok(());
+            return Ok(None);
         }
-        let raw = String::from_utf8_lossy(&buf[..total]).to_string();
-        debug!(peer = %sensitive(&peer), bytes = total, "request received");
+        buf.truncate(total);
+        Ok(Some(buf))
+    }
+
+    async fn handle_connection(
+        mut stream: TcpStream,
+        peer: SocketAddr,
+        state: Arc<ServerState>,
+    ) -> Result<()> {
+        let raw = match tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await {
+            Ok(Ok(Some(raw))) => raw,
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(e)) => {
+                let _ = stream.write_all(json_err(413, "request too large").as_bytes()).await;
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = stream.write_all(json_err(408, "request timed out").as_bytes()).await;
+                return Err(HidraError::Protocol("request timed out".into()));
+            }
+        };
+        let raw = String::from_utf8_lossy(&raw).to_string();
+        debug!(peer = %sensitive(&peer), bytes = raw.len(), "request received");
         handle_http(&mut stream, &raw, &state).await
     }
 
     fn find_header_end(data: &[u8]) -> Option<usize> {
-        for i in 0..data.len().saturating_sub(3) {
-            if data[i] == b'\r'
-                && data[i + 1] == b'\n'
-                && data[i + 2] == b'\r'
-                && data[i + 3] == b'\n'
-            {
-                return Some(i + 4);
-            }
-        }
-        None
+        data.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
     }
 
     fn parse_content_length(headers: &str) -> usize {
         for line in headers.lines() {
-            let lower = line.to_lowercase();
-            if lower.starts_with("content-length:") {
-                if let Some(val) = line.split_once(':') {
-                    return val.1.trim().parse().unwrap_or(0);
+            if let Some((key, val)) = line.split_once(':') {
+                if key.trim().eq_ignore_ascii_case("content-length") {
+                    return val.trim().parse().unwrap_or(0);
                 }
             }
         }
@@ -496,47 +775,60 @@ pub mod server {
     }
 
     fn extract_body(raw: &str) -> &str {
-        raw.split("\r\n\r\n").nth(1).unwrap_or("")
+        raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
     }
 
     fn hex_encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    fn json_ok(body: &str) -> String {
+    fn reason(status: u16) -> &'static str {
+        match status {
+            200 => "OK",
+            204 => "No Content",
+            400 => "Bad Request",
+            403 => "Forbidden",
+            404 => "Not Found",
+            408 => "Request Timeout",
+            409 => "Conflict",
+            413 => "Payload Too Large",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            507 => "Insufficient Storage",
+            _ => "Error",
+        }
+    }
+
+    fn response(status: u16, ctype: &str, body: &str) -> String {
         format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+            "HTTP/1.1 {status} {}\r\nContent-Type: {ctype}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{}Connection: close\r\n\r\n{body}",
+            reason(status),
+            body.len(),
+            crate::local_guard::response_headers(None),
         )
+    }
+
+    /// A JSON reply. The value is serialised by serde, so a quote in a
+    /// message or an error never breaks the document around it.
+    fn json_response(status: u16, value: serde_json::Value) -> String {
+        response(status, "application/json", &value.to_string())
+    }
+
+    fn json_ok(value: serde_json::Value) -> String {
+        json_response(200, value)
     }
 
     fn json_err(status: u16, msg: &str) -> String {
-        let body = format!(r#"{{"error":"{msg}"}}"#);
-        format!(
-            "HTTP/1.1 {status} Error\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-    }
-
-    fn html_response(body: &str) -> String {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-    }
-
-    fn static_response(ctype: &str, body: &str) -> String {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
+        json_response(status, json!({ "error": msg }))
     }
 
     async fn handle_http(
         stream: &mut TcpStream,
         raw: &str,
         state: &Arc<ServerState>,
-    ) -> crate::error::Result<()> {
+    ) -> Result<()> {
         let (method, path) = match parse_request_line(raw) {
             Some(v) => v,
             None => {
@@ -546,19 +838,21 @@ pub mod server {
             }
         };
 
-        // Without this, a page on any site the user visited could
-        // POST /api/send as a simple request — no preflight, so the
-        // browser sends it and only hides the reply — and mail went
-        // out in the owner's name. The read endpoints were already
-        // unreadable cross-origin (json_ok sends no CORS header at
-        // all); the write side was not protected by anything.
+        // Without this, a page on any site the user visited could POST
+        // /api/send as a simple request — no preflight, so the browser sends
+        // it and only hides the reply — and mail went out in the owner's
+        // name. The read endpoints were already unreadable cross-origin
+        // (no CORS header is sent); the write side was not protected by
+        // anything.
         //
-        // /api/deliver is how another node hands this one a message,
-        // so it is screened separately: it carries no authority of
-        // the owner's and has to answer requests from off-machine.
+        // Two endpoints answer requests from off this machine, because they
+        // are how another node hands this one a message: /api/pubkey, which
+        // the sender needs to seal it, and /api/deliver, which takes it.
+        // Neither carries any authority of the owner's.
         let from_this_machine =
             matches!(crate::local_guard::screen(raw), crate::local_guard::Access::Allow(_));
-        if !from_this_machine && path != "/api/deliver" {
+        let public = matches!((method, path), ("GET", "/api/pubkey") | ("POST", "/api/deliver"));
+        if !from_this_machine && !public {
             let r = json_err(403, "request did not come from this machine");
             stream.write_all(r.as_bytes()).await?;
             return Ok(());
@@ -568,51 +862,35 @@ pub mod server {
             ("GET", "/" | "/index.html") => {
                 let html = frontend::INDEX_HTML
                     .replace("{{MAIL_ADDR}}", &state.mail_addr);
-                html_response(&html)
+                response(200, "text/html", &html)
             }
             ("GET", "/style.css") => {
-                static_response("text/css", frontend::STYLE_CSS)
+                response(200, "text/css", frontend::STYLE_CSS)
             }
             ("GET", "/app.js") => {
-                static_response(
-                    "application/javascript",
-                    frontend::APP_JS,
-                )
+                response(200, "application/javascript", frontend::APP_JS)
             }
-            ("GET", "/api/identity") => {
-                let body = format!(
-                    r#"{{"address":"{}","pubkey":"{}"}}"#,
-                    state.mail_addr,
-                    hex_encode(&state.mail_keys.public_bytes),
-                );
-                json_ok(&body)
-            }
-            ("GET", "/api/pubkey") => {
-                let body = format!(
-                    r#"{{"pubkey":"{}"}}"#,
-                    hex_encode(&state.mail_keys.public_bytes),
-                );
-                json_ok(&body)
-            }
+            ("GET", "/api/identity") => json_ok(json!({
+                "address": state.mail_addr,
+                "pubkey": hex_encode(&state.mail_keys.public_bytes),
+            })),
+            ("GET", "/api/pubkey") => json_ok(json!({
+                "pubkey": hex_encode(&state.mail_keys.public_bytes),
+            })),
             ("GET", "/api/inbox") => {
                 let list = state
                     .store
                     .list_inbox(state.mail_keys.secret_bytes());
-                let body = serde_json::to_string(&list)
-                    .unwrap_or_else(|_| "[]".into());
-                json_ok(&body)
+                json_ok(serde_json::to_value(list).unwrap_or_else(|_| json!([])))
             }
             ("GET", "/api/sent") => {
                 let list = state
                     .store
                     .list_sent(state.mail_keys.secret_bytes());
-                let body = serde_json::to_string(&list)
-                    .unwrap_or_else(|_| "[]".into());
-                json_ok(&body)
+                json_ok(serde_json::to_value(list).unwrap_or_else(|_| json!([])))
             }
             ("GET", p) if p.starts_with("/api/mail/") => {
-                let id = &p[10..];
-                api_read_mail(id, state)
+                api_read_mail(&p[10..], state)
             }
             ("POST", "/api/send") => {
                 let body = extract_body(raw);
@@ -624,19 +902,24 @@ pub mod server {
             }
             ("DELETE", p) if p.starts_with("/api/mail/") => {
                 let id = &p[10..];
-                match state.store.delete_mail(id) {
-                    Ok(()) => json_ok(r#"{"ok":true}"#),
-                    Err(e) => json_err(404, &format!("{e}")),
+                if !protocol::valid_mail_id(id) {
+                    json_err(400, "invalid mail id")
+                } else {
+                    match state.store.delete_mail(id) {
+                        Ok(()) => json_ok(json!({ "ok": true })),
+                        Err(_) => json_err(404, "mail not found"),
+                    }
                 }
             }
             ("OPTIONS", _) => {
-                // No Access-Control-Allow-Origin: this mailbox is not
-                // for other origins to reach, and the wildcard that
-                // used to be here invited them to try.
-                "HTTP/1.1 204 No Content\r\n\
-                 Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\n\
-                 Connection: close\r\n\r\n"
-                    .to_string()
+                // No Access-Control-Allow-Origin: this mailbox is not for
+                // other origins to reach.
+                format!(
+                    "HTTP/1.1 204 No Content\r\n\
+                     Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS\r\n\
+                     {}Connection: close\r\n\r\n",
+                    crate::local_guard::response_headers(None)
+                )
             }
             _ => json_err(404, "not found"),
         };
@@ -649,28 +932,82 @@ pub mod server {
         id: &str,
         state: &Arc<ServerState>,
     ) -> String {
+        if !protocol::valid_mail_id(id) {
+            return json_err(400, "invalid mail id");
+        }
         match state.store.read_mail(id, state.mail_keys.secret_bytes())
         {
             Ok((env, content)) => {
+                // Verified means two things: the signature is good, and the
+                // key that made it owns the address in From. The second is
+                // what stops anyone from writing another person's address
+                // into a message they signed themselves.
                 let verified = crypto::verify_sig(
                     &env.sender_verifying_key,
                     &env.signing_data(),
                     &env.signature,
+                ) && protocol::sender_owns_address(
+                    &env.from_addr,
+                    &env.sender_verifying_key,
                 );
-                let body = format!(
-                    r#"{{"id":"{}","from_addr":"{}","to_addr":"{}","subject":"{}","body":"{}","timestamp":{},"verified":{}}}"#,
-                    escape_json(&env.id),
-                    escape_json(&env.from_addr),
-                    escape_json(&env.to_addr),
-                    escape_json(&content.subject),
-                    escape_json(&content.body),
-                    env.timestamp,
-                    verified,
-                );
-                json_ok(&body)
+                json_ok(json!({
+                    "id": env.id,
+                    "from_addr": env.from_addr,
+                    "to_addr": env.to_addr,
+                    "subject": content.subject,
+                    "body": content.body,
+                    "timestamp": env.timestamp,
+                    "verified": verified,
+                }))
             }
-            Err(e) => json_err(404, &format!("{e}")),
+            Err(HidraError::Protocol(_)) => json_err(404, "mail not found"),
+            Err(_) => json_err(500, "could not read mail"),
         }
+    }
+
+    /// Where a message goes out.
+    enum Route {
+        /// A loopback address, for testing on one machine.
+        Direct(SocketAddr),
+        /// A `.hidra` host, reached through the node's SOCKS5 proxy.
+        Hidden { proxy: SocketAddr, host: String },
+    }
+
+    impl Route {
+        fn host_header(&self) -> String {
+            match self {
+                Route::Direct(addr) => addr.to_string(),
+                Route::Hidden { host, .. } => host.clone(),
+            }
+        }
+
+        async fn connect(&self) -> Result<TcpStream> {
+            match self {
+                Route::Direct(addr) => Ok(TcpStream::connect(addr).await?),
+                Route::Hidden { proxy, host } => socks5_connect(*proxy, host, 80).await,
+            }
+        }
+    }
+
+    fn choose_route(req: &SendRequest, state: &ServerState) -> std::result::Result<Route, String> {
+        if let Some(a) = &req.direct_addr {
+            let addr: SocketAddr = a
+                .parse()
+                .map_err(|_| "direct_addr must be host:port".to_string())?;
+            // A direct connection shows each side the other's IP. On
+            // loopback that is nothing; anywhere else it is the one thing
+            // this network exists to hide.
+            if !addr.ip().is_loopback() {
+                return Err("direct_addr is for loopback testing only; other recipients are reached by their .hidra address".into());
+            }
+            return Ok(Route::Direct(addr));
+        }
+        let host = protocol::address_host(&req.to)
+            .ok_or_else(|| "recipient must be name@<address>.hidra".to_string())?;
+        let proxy = state
+            .socks_proxy
+            .ok_or_else(|| "this node has no SOCKS5 proxy to reach .hidra addresses through".to_string())?;
+        Ok(Route::Hidden { proxy, host: host.to_string() })
     }
 
     async fn api_send_mail(
@@ -679,31 +1016,26 @@ pub mod server {
     ) -> String {
         let req: SendRequest = match serde_json::from_str(body) {
             Ok(r) => r,
+            Err(_) => return json_err(400, "could not parse the send request"),
+        };
+        if !protocol::valid_address(&req.to) {
+            return json_err(400, "recipient must be name@<address>.hidra");
+        }
+        if req.subject.len() + req.body.len() > MAX_CONTENT_BYTES {
+            return json_err(413, "message too large");
+        }
+
+        let route = match choose_route(&req, state) {
+            Ok(r) => r,
+            Err(msg) => return json_err(400, &msg),
+        };
+
+        let recipient_pubkey = match fetch_recipient_pubkey(&route).await {
+            Ok(k) => k,
             Err(e) => {
-                return json_err(400, &format!("parse: {e}"));
+                return json_err(502, &format!("could not fetch the recipient's key: {e}"));
             }
         };
-
-        let target_addr = match &req.direct_addr {
-            Some(a) => a.clone(),
-            None => {
-                return json_err(
-                    400,
-                    "direct_addr required (SOCKS5 delivery not yet implemented)",
-                );
-            }
-        };
-
-        let recipient_pubkey =
-            match fetch_recipient_pubkey(&target_addr).await {
-                Ok(k) => k,
-                Err(e) => {
-                    return json_err(
-                        502,
-                        &format!("fetch pubkey: {e}"),
-                    );
-                }
-            };
 
         let content = MailContent {
             subject: req.subject,
@@ -711,27 +1043,14 @@ pub mod server {
         };
         let content_json = match serde_json::to_vec(&content) {
             Ok(j) => j,
-            Err(e) => {
-                return json_err(500, &format!("serialize: {e}"));
-            }
+            Err(_) => return json_err(500, "could not serialize the message"),
         };
 
         let (eph_pubkey, sealed_body) =
-            match crypto::seal_message(&recipient_pubkey, &content_json)
-            {
+            match crypto::seal_message(&recipient_pubkey, &content_json) {
                 Ok(v) => v,
-                Err(e) => {
-                    return json_err(
-                        500,
-                        &format!("encrypt: {e}"),
-                    );
-                }
+                Err(_) => return json_err(500, "could not encrypt the message"),
             };
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
 
         let vk = state
             .signing_key
@@ -743,7 +1062,7 @@ pub mod server {
             id: uuid::Uuid::new_v4().to_string(),
             from_addr: state.mail_addr.clone(),
             to_addr: req.to.clone(),
-            timestamp: now,
+            timestamp: now_ms(),
             ephemeral_pubkey: eph_pubkey,
             sealed_body,
             sender_verifying_key: vk,
@@ -752,7 +1071,7 @@ pub mod server {
         envelope.signature =
             crypto::sign_data(&state.signing_key, &envelope.signing_data());
 
-        match deliver_to_remote(&target_addr, &envelope).await {
+        match deliver_to_remote(&route, &envelope).await {
             Ok(()) => {
                 let sender_copy = make_sender_copy(
                     &envelope,
@@ -766,30 +1085,67 @@ pub mod server {
                     id = %sensitive(&envelope.id),
                     "mail sent"
                 );
-                json_ok(r#"{"ok":true}"#)
+                json_ok(json!({ "ok": true, "id": envelope.id }))
             }
-            Err(e) => json_err(502, &format!("delivery: {e}")),
+            Err(e) => json_err(502, &format!("delivery failed: {e}")),
         }
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     fn api_deliver(
         body: &str,
         state: &Arc<ServerState>,
     ) -> String {
+        if body.len() > MAX_DELIVERY_BYTES {
+            return json_err(413, "message too large");
+        }
         let envelope: MailEnvelope = match serde_json::from_str(body) {
             Ok(e) => e,
-            Err(e) => {
-                return json_err(400, &format!("parse: {e}"));
-            }
+            Err(_) => return json_err(400, "could not parse the envelope"),
         };
+        if !state.allow_delivery() {
+            return json_err(429, "too many deliveries, try again later");
+        }
+        if !protocol::valid_mail_id(&envelope.id) {
+            return json_err(400, "invalid mail id");
+        }
+        if !protocol::valid_address(&envelope.from_addr)
+            || !protocol::valid_address(&envelope.to_addr)
+        {
+            return json_err(400, "invalid address");
+        }
+        if envelope.to_addr != state.mail_addr {
+            return json_err(404, "no such mailbox here");
+        }
+        if envelope.ephemeral_pubkey.len() != 32 || envelope.sealed_body.len() < 13 {
+            return json_err(400, "malformed envelope");
+        }
+        if envelope.timestamp > now_ms().saturating_add(MAX_CLOCK_SKEW_MS) {
+            return json_err(400, "timestamp is in the future");
+        }
 
-        let sig_data = envelope.signing_data();
         if !crypto::verify_sig(
             &envelope.sender_verifying_key,
-            &sig_data,
+            &envelope.signing_data(),
             &envelope.signature,
         ) {
             return json_err(403, "invalid signature");
+        }
+        // The signature proves the key; this proves the key owns the From
+        // address. Without it a valid signature from anyone's key could sit
+        // under anyone's address.
+        if !protocol::sender_owns_address(&envelope.from_addr, &envelope.sender_verifying_key) {
+            return json_err(403, "sender key does not own the From address");
+        }
+
+        if state.store.inbox_full(body.len() as u64) {
+            return json_err(507, "mailbox full");
         }
 
         match state.store.store_incoming(&envelope) {
@@ -799,105 +1155,149 @@ pub mod server {
                     id = %sensitive(&envelope.id),
                     "mail received"
                 );
-                json_ok(&format!(
-                    r#"{{"ok":true,"id":"{}"}}"#,
-                    envelope.id
-                ))
+                json_ok(json!({ "ok": true, "id": envelope.id }))
             }
-            Err(e) => json_err(500, &format!("store: {e}")),
+            Err(HidraError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                json_err(409, "a message with this id is already here")
+            }
+            Err(_) => json_err(500, "could not store the message"),
         }
     }
 
-    async fn fetch_recipient_pubkey(
-        addr: &str,
-    ) -> crate::error::Result<[u8; 32]> {
-        let mut stream = TcpStream::connect(addr).await?;
+    /// Connect to `host:port` through the SOCKS5 proxy at `proxy`, with the
+    /// name left for the proxy to resolve: a `.hidra` name is looked up in
+    /// the DHT and reached over a circuit, and never touches DNS.
+    async fn socks5_connect(proxy: SocketAddr, host: &str, port: u16) -> Result<TcpStream> {
+        if host.len() > 255 {
+            return Err(HidraError::Protocol("host name too long for SOCKS5".into()));
+        }
+        let mut stream = TcpStream::connect(proxy).await?;
+        // Greeting: version 5, one method, no authentication.
+        stream.write_all(&[0x05, 0x01, 0x00]).await?;
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply).await?;
+        if reply != [0x05, 0x00] {
+            return Err(HidraError::Protocol("SOCKS5 proxy refused the connection".into()));
+        }
+        // CONNECT, domain name.
+        let mut req = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+        req.extend_from_slice(host.as_bytes());
+        req.extend_from_slice(&port.to_be_bytes());
+        stream.write_all(&req).await?;
+        let mut head = [0u8; 4];
+        stream.read_exact(&mut head).await?;
+        if head[0] != 0x05 || head[1] != 0x00 {
+            return Err(HidraError::Protocol(format!(
+                "SOCKS5 proxy could not reach the recipient (code {})",
+                head[1]
+            )));
+        }
+        // Bound address, which we do not use but must consume.
+        let addr_len = match head[3] {
+            0x01 => 4,
+            0x04 => 16,
+            0x03 => {
+                let mut n = [0u8; 1];
+                stream.read_exact(&mut n).await?;
+                n[0] as usize
+            }
+            _ => return Err(HidraError::Protocol("SOCKS5 reply malformed".into())),
+        };
+        let mut rest = vec![0u8; addr_len + 2];
+        stream.read_exact(&mut rest).await?;
+        Ok(stream)
+    }
+
+    /// Send one request and read the whole reply, bounded in size and time.
+    /// Returns the status code and the body.
+    async fn http_exchange(route: &Route, request: &str) -> Result<(u16, String)> {
+        let exchange = async {
+            let mut stream = route.connect().await?;
+            stream.write_all(request.as_bytes()).await?;
+            let mut resp = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).await?;
+                if n == 0 {
+                    break;
+                }
+                resp.extend_from_slice(&chunk[..n]);
+                if resp.len() > MAX_REQUEST_BYTES {
+                    return Err(HidraError::Protocol("reply too large".into()));
+                }
+            }
+            let text = String::from_utf8_lossy(&resp).to_string();
+            let status = text
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .ok_or_else(|| HidraError::Protocol("no HTTP status in reply".into()))?;
+            let body = extract_body(&text).trim().to_string();
+            Ok((status, body))
+        };
+        tokio::time::timeout(REMOTE_TIMEOUT, exchange)
+            .await
+            .map_err(|_| HidraError::Protocol("the recipient did not answer in time".into()))?
+    }
+
+    async fn fetch_recipient_pubkey(route: &Route) -> Result<[u8; 32]> {
         let req = format!(
-            "GET /api/pubkey HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            "GET /api/pubkey HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            route.host_header()
         );
-        stream.write_all(req.as_bytes()).await?;
-        let mut resp = vec![0u8; 4096];
-        let n = stream.read(&mut resp).await?;
-        let text = String::from_utf8_lossy(&resp[..n]);
-        let body = text
-            .split("\r\n\r\n")
-            .nth(1)
-            .ok_or_else(|| {
-                crate::error::HidraError::Protocol(
-                    "no response body".into(),
-                )
-            })?
-            .trim();
+        let (status, body) = http_exchange(route, &req).await?;
+        if status != 200 {
+            return Err(HidraError::Protocol(format!(
+                "recipient answered {status} to the key request"
+            )));
+        }
 
         #[derive(serde::Deserialize)]
         struct PkResp {
             pubkey: String,
         }
-        let parsed: PkResp = serde_json::from_str(body).map_err(
-            |e| {
-                crate::error::HidraError::Protocol(format!(
-                    "parse pubkey response: {e}"
-                ))
-            },
-        )?;
+        let parsed: PkResp = serde_json::from_str(&body)
+            .map_err(|_| HidraError::Protocol("could not parse the recipient's key".into()))?;
 
         let bytes = hex_decode(&parsed.pubkey)?;
-        if bytes.len() != 32 {
-            return Err(crate::error::HidraError::Crypto(
-                "invalid pubkey length".into(),
-            ));
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes);
+        let key: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| HidraError::Crypto("invalid pubkey length".into()))?;
         Ok(key)
     }
 
-    fn hex_decode(
-        hex: &str,
-    ) -> crate::error::Result<Vec<u8>> {
+    fn hex_decode(hex: &str) -> Result<Vec<u8>> {
         if hex.len() % 2 != 0 {
-            return Err(crate::error::HidraError::Protocol(
-                "odd hex length".into(),
-            ));
+            return Err(HidraError::Protocol("odd hex length".into()));
         }
-        let mut bytes = Vec::with_capacity(hex.len() / 2);
-        for i in (0..hex.len()).step_by(2) {
-            let byte =
-                u8::from_str_radix(&hex[i..i + 2], 16).map_err(
-                    |_| {
-                        crate::error::HidraError::Protocol(
-                            "invalid hex".into(),
-                        )
-                    },
-                )?;
-            bytes.push(byte);
-        }
-        Ok(bytes)
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| {
+                u8::from_str_radix(&hex[i..i + 2], 16)
+                    .map_err(|_| HidraError::Protocol("invalid hex".into()))
+            })
+            .collect()
     }
 
-    async fn deliver_to_remote(
-        addr: &str,
-        envelope: &MailEnvelope,
-    ) -> crate::error::Result<()> {
-        let json = serde_json::to_string(envelope).map_err(|e| {
-            crate::error::HidraError::Protocol(format!(
-                "serialize: {e}"
-            ))
-        })?;
+    async fn deliver_to_remote(route: &Route, envelope: &MailEnvelope) -> Result<()> {
+        let json = serde_json::to_string(envelope)
+            .map_err(|e| HidraError::Protocol(format!("serialize: {e}")))?;
         let req = format!(
-            "POST /api/deliver HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+            "POST /api/deliver HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+            route.host_header(),
             json.len()
         );
-        let mut stream = TcpStream::connect(addr).await?;
-        stream.write_all(req.as_bytes()).await?;
-        let mut resp = vec![0u8; 4096];
-        let n = stream.read(&mut resp).await?;
-        let text = String::from_utf8_lossy(&resp[..n]);
-        if text.contains("200") {
+        let (status, body) = http_exchange(route, &req).await?;
+        if status == 200 {
             Ok(())
         } else {
-            Err(crate::error::HidraError::Protocol(format!(
-                "delivery failed: {text}"
+            let detail = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            Err(HidraError::Protocol(format!(
+                "recipient answered {status} {detail}"
             )))
         }
     }
@@ -926,14 +1326,6 @@ pub mod server {
         copy.signature =
             crypto::sign_data(signing_key, &copy.signing_data());
         copy
-    }
-
-    fn escape_json(s: &str) -> String {
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t")
     }
 }
 
@@ -1386,7 +1778,7 @@ content.innerHTML =
     '<h2>New message</h2>' +
     '<div class="form-group">' +
         '<label>To:</label>' +
-        '<input type="text" id="composeTo" placeholder="recipient@hash.hidra">' +
+        '<input type="text" id="composeTo" placeholder="name@address.hidra">' +
     '</div>' +
     '<div class="form-group">' +
         '<label>Subject:</label>' +
@@ -1397,8 +1789,8 @@ content.innerHTML =
         '<textarea id="composeBody" rows="12" placeholder="Write your message..."></textarea>' +
     '</div>' +
     '<div class="form-group">' +
-        '<label>Direct address (local testing):</label>' +
-        '<input type="text" id="composeDirectAddr" placeholder="127.0.0.1:8081 (required for now)">' +
+        '<label>Direct address (optional, loopback only, for testing on this machine):</label>' +
+        '<input type="text" id="composeDirectAddr" placeholder="127.0.0.1:8081">' +
     '</div>' +
     '<button onclick="doSend()">Send</button>' +
     '<div id="sendStatus"></div>' +
@@ -1417,17 +1809,13 @@ if (!to || !subject || !body) {
     status.style.color = '#ff4757';
     return;
 }
-if (!directAddr) {
-    status.textContent = 'Direct address required (SOCKS5 delivery coming).';
-    status.style.color = '#ff4757';
-    return;
-}
 
-status.textContent = 'Sending…';
+status.textContent = 'Sending through the network…';
 status.style.color = '#8892a4';
 
 try {
-    var payload = { to: to, subject: subject, body: body, direct_addr: directAddr };
+    var payload = { to: to, subject: subject, body: body };
+    if (directAddr) payload.direct_addr = directAddr;
     var res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1481,7 +1869,7 @@ try {
         return;
     }
     var date = new Date(mail.timestamp).toLocaleString('en-US');
-    var vIcon = mail.verified ? '✓ Signature verified' : '✗ Invalid signature';
+    var vIcon = mail.verified ? '✓ Sender verified' : '✗ Sender not verified';
     var vClass = mail.verified ? 'verified' : 'unverified';
     content.innerHTML =
         '<div class="mail-read">' +
@@ -1518,4 +1906,571 @@ return div.innerHTML;
     init();
 })();
 "##;
+}
+
+#[cfg(test)]
+mod tests {
+    //! The server as another node sees it, over a real loopback socket, and
+    //! the pieces it is made of. Every case here is a thing that was wrong
+    //! or missing: a forged From that read as verified, a message id that
+    //! became a path, an inbox with no ceiling, a key file anyone could read.
+
+    use super::crypto::{self, MailKeys};
+    use super::protocol::*;
+    use super::server::{self, ServerState};
+    use super::storage::MailStore;
+    use ed25519_dalek::SigningKey;
+    use std::net::SocketAddr;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let path = std::env::temp_dir().join(format!(
+                "hidramail-test-{}-{}-{n}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A node: its keys, its mailbox and the socket it answers on.
+    struct Node {
+        addr: SocketAddr,
+        state: Arc<ServerState>,
+        _dir: TempDir,
+    }
+
+    async fn start_node(name: &str, socks_proxy: Option<SocketAddr>) -> Node {
+        let dir = TempDir::new();
+        let mail_keys = MailKeys::load_or_generate(dir.path()).unwrap();
+        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let store = MailStore::new(&dir.path().join("mail_store")).unwrap();
+        let state = Arc::new(ServerState::new(name, mail_keys, signing_key, store, socks_proxy));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            let _ = server::serve(listener, st).await;
+        });
+        Node { addr, state, _dir: dir }
+    }
+
+    /// One raw HTTP exchange. Returns the status and the parsed JSON body.
+    async fn http(addr: SocketAddr, raw: &str) -> (u16, serde_json::Value) {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(raw.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).to_string();
+        let status: u16 = text
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        let json = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn get(path: &str, host: &str) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+    }
+
+    fn post(path: &str, host: &str, body: &str) -> String {
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn local_host(addr: SocketAddr) -> String {
+        addr.to_string()
+    }
+
+    /// An envelope from `sender` to `to`, sealed to `to_pubkey`, with every
+    /// field the way a well-behaved node sends it.
+    fn envelope(sender: &SigningKey, from: &str, to: &str, to_pubkey: &[u8; 32], subject: &str) -> MailEnvelope {
+        let content = serde_json::to_vec(&MailContent {
+            subject: subject.into(),
+            body: "hello there".into(),
+        })
+        .unwrap();
+        let (eph, sealed) = crypto::seal_message(to_pubkey, &content).unwrap();
+        let mut env = MailEnvelope {
+            id: uuid::Uuid::new_v4().to_string(),
+            from_addr: from.into(),
+            to_addr: to.into(),
+            timestamp: 1_700_000_000_000,
+            ephemeral_pubkey: eph,
+            sealed_body: sealed,
+            sender_verifying_key: sender.verifying_key().as_bytes().to_vec(),
+            signature: Vec::new(),
+        };
+        env.signature = crypto::sign_data(sender, &env.signing_data());
+        env
+    }
+
+    fn deliver_body(env: &MailEnvelope) -> String {
+        serde_json::to_string(env).unwrap()
+    }
+
+    // ───────── pieces ─────────
+
+    #[test]
+    fn seal_and_open_round_trip_and_reject_tampering() {
+        let dir = TempDir::new();
+        let keys = MailKeys::load_or_generate(dir.path()).unwrap();
+        let (eph, mut sealed) = crypto::seal_message(&keys.public_bytes, b"secret").unwrap();
+        assert_eq!(crypto::open_message(keys.secret_bytes(), &eph, &sealed).unwrap(), b"secret");
+
+        let last = sealed.len() - 1;
+        sealed[last] ^= 1;
+        assert!(crypto::open_message(keys.secret_bytes(), &eph, &sealed).is_err());
+
+        let other = MailKeys::load_or_generate(TempDir::new().path()).unwrap();
+        sealed[last] ^= 1;
+        assert!(crypto::open_message(other.secret_bytes(), &eph, &sealed).is_err());
+    }
+
+    #[test]
+    fn the_mail_key_is_written_for_this_user_only_and_reloads() {
+        let dir = TempDir::new();
+        let first = MailKeys::load_or_generate(dir.path()).unwrap();
+        let again = MailKeys::load_or_generate(dir.path()).unwrap();
+        assert_eq!(first.public_bytes, again.public_bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("mail_x25519.key"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "mail key is readable by others");
+        }
+    }
+
+    #[test]
+    fn a_legacy_raw_key_is_read_once_and_rewritten() {
+        let dir = TempDir::new();
+        let raw = [7u8; 32];
+        std::fs::write(dir.path().join("mail_x25519.key"), raw).unwrap();
+        let keys = MailKeys::load_or_generate(dir.path()).unwrap();
+        assert_eq!(keys.secret_bytes(), &raw);
+        let on_disk = std::fs::read(dir.path().join("mail_x25519.key")).unwrap();
+        assert_ne!(on_disk.len(), 32, "legacy raw key was left as it was");
+        let again = MailKeys::load_or_generate(dir.path()).unwrap();
+        assert_eq!(again.secret_bytes(), &raw);
+    }
+
+    #[test]
+    fn mail_ids_are_uuids_and_nothing_else() {
+        assert!(valid_mail_id(&uuid::Uuid::new_v4().to_string()));
+        for bad in [
+            "",
+            "../../../../tmp/evil",
+            "/etc/passwd",
+            "123e4567-e89b-12d3-a456-42661417400",   // short
+            "123e4567-e89b-12d3-a456-4266141740000", // long
+            "123E4567-E89B-12D3-A456-426614174000",  // upper case
+            "123e4567/e89b-12d3-a456-426614174000",
+            "..e4567-e89b-12d3-a456-426614174000.",
+        ] {
+            assert!(!valid_mail_id(bad), "{bad:?} accepted as a mail id");
+        }
+    }
+
+    #[test]
+    fn addresses_are_a_name_at_a_hidra_host() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let addr = mail_address("alice", &key.verifying_key());
+        assert!(valid_address(&addr), "{addr}");
+        assert!(address_host(&addr).unwrap().ends_with(".hidra"));
+        for bad in [
+            "alice",
+            "alice@standalone.hidra",
+            "alice@example.com",
+            "@0123456789abcdef0123456789abcdef01234567.hidra",
+            "Alice@0123456789abcdef0123456789abcdef01234567.hidra",
+            "a@b@0123456789abcdef0123456789abcdef01234567.hidra",
+            "alice@0123456789ABCDEF0123456789abcdef01234567.hidra",
+            "ali\nce@0123456789abcdef0123456789abcdef01234567.hidra",
+        ] {
+            assert!(!valid_address(bad), "{bad:?} accepted as an address");
+        }
+    }
+
+    #[test]
+    fn a_configured_name_is_bent_into_the_address_grammar() {
+        assert_eq!(mailbox_name("alice"), "alice");
+        assert_eq!(mailbox_name("Alice Smith"), "alicesmith");
+        assert_eq!(mailbox_name("a@b/c"), "abc");
+        assert_eq!(mailbox_name(""), "mail");
+        assert_eq!(mailbox_name("Al!ce#"), "alce");
+        assert_eq!(mailbox_name(&"x".repeat(100)).len(), 64);
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        assert!(valid_address(&mail_address(&mailbox_name("Alice Smith"), &key.verifying_key())));
+    }
+
+    #[test]
+    fn only_the_key_an_address_was_made_from_owns_it() {
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let eve = SigningKey::generate(&mut rand::rngs::OsRng);
+        let addr = mail_address("alice", &alice.verifying_key());
+        assert!(sender_owns_address(&addr, alice.verifying_key().as_bytes()));
+        assert!(!sender_owns_address(&addr, eve.verifying_key().as_bytes()));
+        // Any name at the right host belongs to the key; the name is a label.
+        let other_name = mail_address("bob", &alice.verifying_key());
+        assert!(sender_owns_address(&other_name, alice.verifying_key().as_bytes()));
+        assert!(!sender_owns_address(&addr, &[0u8; 31]));
+    }
+
+    #[test]
+    fn signing_data_keeps_fields_apart() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let to = mail_address("bob", &key.verifying_key());
+        let from = mail_address("alice", &key.verifying_key());
+        let a = envelope(&key, &from, &to, &[1u8; 32], "x");
+        let mut b = a.clone();
+        // Move the last byte of the ephemeral key into the sealed body:
+        // the plain concatenation signed the same bytes for both.
+        let moved = b.ephemeral_pubkey.pop().unwrap();
+        b.sealed_body.insert(0, moved);
+        assert_ne!(a.signing_data(), b.signing_data());
+    }
+
+    #[test]
+    fn the_store_refuses_bad_ids_and_duplicates() {
+        let dir = TempDir::new();
+        let store = MailStore::new(dir.path()).unwrap();
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let to = mail_address("bob", &key.verifying_key());
+        let mut env = envelope(&key, &mail_address("a", &key.verifying_key()), &to, &[1u8; 32], "x");
+
+        store.store_incoming(&env).unwrap();
+        let again = store.store_incoming(&env);
+        assert!(again.is_err(), "a second message with the same id overwrote the first");
+
+        env.id = "../../escaped".into();
+        assert!(store.store_incoming(&env).is_err());
+        assert!(!dir.path().join("escaped.json").exists());
+        assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
+
+        assert!(store.read_mail("../x", &[0u8; 32]).is_err());
+        assert!(store.delete_mail("../x").is_err());
+        assert_eq!(store.inbox_usage().0, 1);
+    }
+
+    // ───────── the server, from outside ─────────
+
+    #[tokio::test]
+    async fn a_genuine_message_is_delivered_and_reads_as_verified() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let from = mail_address("alice", &alice.verifying_key());
+        let env = envelope(&alice, &from, &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "hi");
+
+        // From off this machine, as the circuit would deliver it.
+        let (status, body) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+        assert_eq!(status, 200, "{body}");
+
+        let (status, inbox) = http(bob.addr, &get("/api/inbox", &local_host(bob.addr))).await;
+        assert_eq!(status, 200);
+        assert_eq!(inbox.as_array().unwrap().len(), 1);
+        assert_eq!(inbox[0]["subject"], "hi");
+        assert_eq!(inbox[0]["from_addr"], from);
+
+        let (status, mail) = http(bob.addr, &get(&format!("/api/mail/{}", env.id), &local_host(bob.addr))).await;
+        assert_eq!(status, 200);
+        assert_eq!(mail["body"], "hello there");
+        assert_eq!(mail["verified"], true);
+    }
+
+    #[tokio::test]
+    async fn a_forged_from_is_refused_and_never_reads_as_verified() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let eve = SigningKey::generate(&mut rand::rngs::OsRng);
+        let alices_addr = mail_address("alice", &alice.verifying_key());
+        // Eve writes Alice's address in From and signs with her own key.
+        let env = envelope(&eve, &alices_addr, &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "urgent");
+        let (status, body) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(bob.state.store.inbox_usage().0, 0);
+
+        // Filed anyway, by some older server: the reader still does not call it verified.
+        bob.state.store.store_incoming(&env).unwrap();
+        let (_, mail) = http(bob.addr, &get(&format!("/api/mail/{}", env.id), &local_host(bob.addr))).await;
+        assert_eq!(mail["verified"], false);
+    }
+
+    #[tokio::test]
+    async fn a_bad_signature_is_refused() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut env = envelope(&alice, &mail_address("alice", &alice.verifying_key()), &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "x");
+        env.timestamp += 1;
+        let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+        assert_eq!(status, 403);
+    }
+
+    #[tokio::test]
+    async fn a_message_id_cannot_become_a_path() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let mut env = envelope(&alice, &mail_address("alice", &alice.verifying_key()), &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "x");
+        for id in ["../../../../tmp/hidramail-escaped", "/tmp/hidramail-escaped", "plain"] {
+            env.id = id.into();
+            env.signature = crypto::sign_data(&alice, &env.signing_data());
+            let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+            assert_eq!(status, 400, "id {id:?} was accepted");
+        }
+        assert!(!std::path::Path::new("/tmp/hidramail-escaped.json").exists());
+        assert_eq!(bob.state.store.inbox_usage().0, 0);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_delivery_does_not_overwrite_the_first() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let env = envelope(&alice, &mail_address("alice", &alice.verifying_key()), &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "first");
+        let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+        assert_eq!(status, 200);
+        let mut second = envelope(&alice, &mail_address("alice", &alice.verifying_key()), &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "second");
+        second.id = env.id.clone();
+        second.signature = crypto::sign_data(&alice, &second.signing_data());
+        let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&second))).await;
+        assert_eq!(status, 409);
+        let (_, mail) = http(bob.addr, &get(&format!("/api/mail/{}", env.id), &local_host(bob.addr))).await;
+        assert_eq!(mail["subject"], "first");
+    }
+
+    #[tokio::test]
+    async fn mail_for_another_mailbox_is_not_filed_here() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let carol = SigningKey::generate(&mut rand::rngs::OsRng);
+        let env = envelope(&alice, &mail_address("alice", &alice.verifying_key()), &mail_address("carol", &carol.verifying_key()), &bob.state.mail_keys.public_bytes, "x");
+        let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn only_the_two_delivery_endpoints_answer_off_machine() {
+        let bob = start_node("bob", None).await;
+        let (status, _) = http(bob.addr, &get("/api/pubkey", "remote.example")).await;
+        assert_eq!(status, 200);
+        for path in ["/api/inbox", "/api/sent", "/api/identity", "/"] {
+            let (status, _) = http(bob.addr, &get(path, "remote.example")).await;
+            assert_eq!(status, 403, "{path} answered a remote Host");
+        }
+        let (status, _) = http(bob.addr, &post("/api/send", "remote.example", "{}")).await;
+        assert_eq!(status, 403);
+        // And a cross-origin page on this machine is still refused.
+        let raw = format!(
+            "GET /api/inbox HTTP/1.1\r\nHost: {}\r\nOrigin: https://evil.example\r\nConnection: close\r\n\r\n",
+            local_host(bob.addr)
+        );
+        let (status, _) = http(bob.addr, &raw).await;
+        assert_eq!(status, 403);
+    }
+
+    #[tokio::test]
+    async fn oversized_requests_are_refused_before_they_are_read() {
+        let bob = start_node("bob", None).await;
+        let raw = format!(
+            "POST /api/deliver HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            server::MAX_REQUEST_BYTES * 4
+        );
+        let (status, _) = http(bob.addr, &raw).await;
+        assert_eq!(status, 413);
+
+        // Within the request bound but over the envelope bound.
+        let big = format!("{{\"pad\":\"{}\"}}", "a".repeat(server::MAX_DELIVERY_BYTES + 100));
+        let (status, _) = http(bob.addr, &post("/api/deliver", "x", &big)).await;
+        assert_eq!(status, 413);
+    }
+
+    #[tokio::test]
+    async fn deliveries_are_rate_limited() {
+        let bob = start_node("bob", None).await;
+        let alice = SigningKey::generate(&mut rand::rngs::OsRng);
+        let from = mail_address("alice", &alice.verifying_key());
+        let mut last = 0;
+        for _ in 0..=server::DELIVERIES_PER_MINUTE {
+            let env = envelope(&alice, &from, &bob.state.mail_addr, &bob.state.mail_keys.public_bytes, "x");
+            let (status, _) = http(bob.addr, &post("/api/deliver", "remote.example", &deliver_body(&env))).await;
+            last = status;
+        }
+        assert_eq!(last, 429);
+        assert_eq!(bob.state.store.inbox_usage().0, server::DELIVERIES_PER_MINUTE);
+    }
+
+    #[tokio::test]
+    async fn the_inbox_has_a_ceiling() {
+        let dir = TempDir::new();
+        let store = MailStore::new(dir.path()).unwrap();
+        assert!(!store.inbox_full(1));
+        assert!(store.inbox_full(super::storage::MAX_INBOX_BYTES + 1));
+    }
+
+    // ───────── sending ─────────
+
+    #[tokio::test]
+    async fn sending_to_a_loopback_test_address_delivers_a_verified_message() {
+        let alice = start_node("alice", None).await;
+        let bob = start_node("bob", None).await;
+        let req = serde_json::json!({
+            "to": bob.state.mail_addr,
+            "subject": "lunch",
+            "body": "noon?",
+            "direct_addr": bob.addr.to_string(),
+        });
+        let (status, body) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 200, "{body}");
+
+        let (_, inbox) = http(bob.addr, &get("/api/inbox", &local_host(bob.addr))).await;
+        assert_eq!(inbox.as_array().unwrap().len(), 1);
+        let id = inbox[0]["id"].as_str().unwrap();
+        let (_, mail) = http(bob.addr, &get(&format!("/api/mail/{id}"), &local_host(bob.addr))).await;
+        assert_eq!(mail["from_addr"], alice.state.mail_addr);
+        assert_eq!(mail["body"], "noon?");
+        assert_eq!(mail["verified"], true);
+
+        // The sender keeps a copy it can read.
+        let (_, sent) = http(alice.addr, &get("/api/sent", &local_host(alice.addr))).await;
+        assert_eq!(sent.as_array().unwrap().len(), 1);
+        assert_eq!(sent[0]["subject"], "lunch");
+    }
+
+    #[tokio::test]
+    async fn a_direct_address_off_loopback_is_refused() {
+        let alice = start_node("alice", None).await;
+        let bob_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let req = serde_json::json!({
+            "to": mail_address("bob", &bob_key.verifying_key()),
+            "subject": "s",
+            "body": "b",
+            "direct_addr": "203.0.113.9:8080",
+        });
+        let (status, body) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 400);
+        assert!(body["error"].as_str().unwrap().contains("loopback"));
+    }
+
+    #[tokio::test]
+    async fn without_a_proxy_a_hidra_recipient_cannot_be_reached_directly() {
+        let alice = start_node("alice", None).await;
+        let bob_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let req = serde_json::json!({
+            "to": mail_address("bob", &bob_key.verifying_key()),
+            "subject": "s",
+            "body": "b",
+        });
+        let (status, body) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 400);
+        assert!(body["error"].as_str().unwrap().contains("SOCKS5"));
+    }
+
+    /// A SOCKS5 proxy that accepts one CONNECT to `expect_host` and pipes it
+    /// to `target`, standing in for the node's proxy and its circuit.
+    async fn fake_socks5(expect_host: String, target: SocketAddr) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut client, _) = listener.accept().await.unwrap();
+                let expect = expect_host.clone();
+                tokio::spawn(async move {
+                    let mut greet = [0u8; 3];
+                    client.read_exact(&mut greet).await.unwrap();
+                    assert_eq!(greet, [5, 1, 0]);
+                    client.write_all(&[5, 0]).await.unwrap();
+                    let mut head = [0u8; 5];
+                    client.read_exact(&mut head).await.unwrap();
+                    assert_eq!(&head[..4], &[5, 1, 0, 3], "not a CONNECT by name");
+                    let mut name = vec![0u8; head[4] as usize];
+                    client.read_exact(&mut name).await.unwrap();
+                    let mut port = [0u8; 2];
+                    client.read_exact(&mut port).await.unwrap();
+                    assert_eq!(String::from_utf8(name).unwrap(), expect);
+                    assert_eq!(u16::from_be_bytes(port), 80);
+                    let mut upstream = TcpStream::connect(target).await.unwrap();
+                    client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_hidra_recipient_is_reached_through_the_socks5_proxy() {
+        let bob = start_node("bob", None).await;
+        let bob_host = address_host(&bob.state.mail_addr).unwrap().to_string();
+        let proxy = fake_socks5(bob_host, bob.addr).await;
+        let alice = start_node("alice", Some(proxy)).await;
+
+        let req = serde_json::json!({
+            "to": bob.state.mail_addr,
+            "subject": "over the circuit",
+            "body": "no addresses exchanged",
+        });
+        let (status, body) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 200, "{body}");
+
+        let (_, inbox) = http(bob.addr, &get("/api/inbox", &local_host(bob.addr))).await;
+        assert_eq!(inbox.as_array().unwrap().len(), 1);
+        assert_eq!(inbox[0]["subject"], "over the circuit");
+        let id = inbox[0]["id"].as_str().unwrap();
+        let (_, mail) = http(bob.addr, &get(&format!("/api/mail/{id}"), &local_host(bob.addr))).await;
+        assert_eq!(mail["verified"], true);
+    }
+
+    #[tokio::test]
+    async fn a_recipient_that_is_not_a_hidra_address_is_refused_before_any_connection() {
+        let alice = start_node("alice", None).await;
+        let req = serde_json::json!({ "to": "bob@example.com", "subject": "s", "body": "b" });
+        let (status, _) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn an_overlong_message_is_refused_before_sending() {
+        let alice = start_node("alice", None).await;
+        let bob_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let req = serde_json::json!({
+            "to": mail_address("bob", &bob_key.verifying_key()),
+            "subject": "s",
+            "body": "b".repeat(server::MAX_CONTENT_BYTES + 1),
+            "direct_addr": "127.0.0.1:1",
+        });
+        let (status, _) = http(alice.addr, &post("/api/send", &local_host(alice.addr), &req.to_string())).await;
+        assert_eq!(status, 413);
+    }
 }

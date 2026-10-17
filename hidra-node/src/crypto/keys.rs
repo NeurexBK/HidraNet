@@ -298,7 +298,7 @@ impl ServiceKeys {
     }
 }
 
-fn derive_hidra_address(
+pub fn derive_hidra_address(
     verifying_key: &ed25519_dalek::VerifyingKey,
 ) -> (String, [u8; 20]) {
     let hash = blake3::hash(verifying_key.as_bytes());

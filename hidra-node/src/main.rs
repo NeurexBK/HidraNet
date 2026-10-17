@@ -348,15 +348,18 @@ async fn run_apps_standalone(
         .mail_name
         .as_deref()
         .unwrap_or("local");
-    let mail_addr_str = format!("{mail_name}@standalone.hidra");
     let mail_dir = keys_dir.join("mail_store");
     let store = apps::hidramail::storage::MailStore::new(&mail_dir)?;
-    let state = apps::hidramail::server::ServerState {
-        mail_addr: mail_addr_str.clone(),
+    // The address is derived from the signing key, so a recipient can check
+    // that the key which signed a message owns the address it came from.
+    let state = apps::hidramail::server::ServerState::new(
+        mail_name,
         mail_keys,
         signing_key,
         store,
-    };
+        Some(socks_proxy_addr(app_cfg)?),
+    );
+    let mail_addr_str = state.mail_addr.clone();
     let mail_server = apps::hidramail::server::MailServer::new(mail_addr, state);
 
     let room_name = "hidrachat-local".to_string();
@@ -479,6 +482,14 @@ async fn run_chat_standalone(
     Ok(())
 }
 
+/// Where HidraMail reaches the node's own SOCKS5 proxy to deliver to a
+/// `.hidra` address.
+fn socks_proxy_addr(
+    app_cfg: &config::AppConfig,
+) -> std::result::Result<SocketAddr, Box<dyn std::error::Error>> {
+    Ok(format!("{}:{}", app_cfg.proxy.listen_addr, app_cfg.proxy.port).parse()?)
+}
+
 async fn run_mail_standalone(
     app_cfg: &config::AppConfig,
     signing_key: SigningKey,
@@ -495,17 +506,18 @@ async fn run_mail_standalone(
         .mail_name
         .as_deref()
         .unwrap_or("local");
-    let mail_addr = format!("{mail_name}@standalone.hidra");
 
     let mail_dir = keys_dir.join("mail_store");
     let store = apps::hidramail::storage::MailStore::new(&mail_dir)?;
 
-    let state = apps::hidramail::server::ServerState {
-        mail_addr: mail_addr.clone(),
+    let state = apps::hidramail::server::ServerState::new(
+        mail_name,
         mail_keys,
         signing_key,
         store,
-    };
+        Some(socks_proxy_addr(app_cfg)?),
+    );
+    let mail_addr = state.mail_addr.clone();
     let server = apps::hidramail::server::MailServer::new(mail_sock, state);
 
     info!("╔══════════════════════════════════════════════════════════════╗");
@@ -651,16 +663,21 @@ async fn run_server_mode(
             .mail_name
             .as_deref()
             .unwrap_or("anon");
-        let mail_addr = format!("{mail_name}@{hidra_address}");
         let mail_dir = keys_dir.join("mail_store");
         let store = apps::hidramail::storage::MailStore::new(&mail_dir)?;
-        let mail_signing = SigningKey::from_bytes(&_signing_key.to_bytes());
-        let state = apps::hidramail::server::ServerState {
-            mail_addr: mail_addr.clone(),
+        // Mail is signed with the service key, the one this .hidra address
+        // is derived from: that is what lets a recipient check the sender
+        // owns the address in From, and what lets the sender's own address
+        // be looked up in the DHT to answer.
+        let mail_signing = SigningKey::from_bytes(&service_keys.signing_key.to_bytes());
+        let state = apps::hidramail::server::ServerState::new(
+            mail_name,
             mail_keys,
-            signing_key: mail_signing,
+            mail_signing,
             store,
-        };
+            Some(socks_proxy_addr(app_cfg)?),
+        );
+        let mail_addr = state.mail_addr.clone();
         let mail_server = apps::hidramail::server::MailServer::new(mail_sock, state);
         tokio::spawn(async move {
             if let Err(e) = mail_server.run().await {
@@ -670,7 +687,7 @@ async fn run_server_mode(
         info!("╔══════════════════════════════════════════════════════════════╗");
         info!("║  HidraMail is available at: http://{}", hidra_address);
         info!("║  Address: {}", mail_addr);
-        info!("║  Porta local: {}", local_port);
+        info!("║  Local port: {}", local_port);
         info!("╚══════════════════════════════════════════════════════════════╝");
     } else if app_name == Some("sevennine") {
         let sevennine_port = local_port;
