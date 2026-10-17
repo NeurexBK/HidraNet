@@ -29,6 +29,7 @@
 <title>Hidra Forum</title>
 <script src="vendor/mqtt.min.js"></script>
 <script src="hidra-store.js"></script>
+<script src="hidrachat-crypto.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--border2:#252b40;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c;--warn:#f5a623}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -164,6 +165,7 @@ svg{display:block}
       <div class="side-t">Network</div>
       <div class="stat-mini">Topics <b id="s-topics">0</b></div>
       <div class="stat-mini">Replies <b id="s-replies">0</b></div>
+      <div class="stat-mini">Account <b id="s-account">none</b></div>
       <div class="stat-mini">Your role <b id="s-role">reader</b></div>
     </aside>
 
@@ -194,20 +196,23 @@ svg{display:block}
       <label>Message</label>
       <textarea id="n-body" placeholder="Write here. Supports **bold**, *italic*, `code`, [link](url) and ![image](url)."></textarea>
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="btn-post">Post topic</button><span class="stat">Anonymous · only your nickname is shown</span></div>
+    <div class="b-foot"><button class="btn btn-p" id="btn-post">Post topic</button><span class="stat">Signed by your account · only your username is shown</span></div>
   </div>
 </div>
 
-<!-- Nickname -->
+<!-- Account -->
 <div class="modal hidden" id="m-nick">
   <div class="box sm">
-    <div class="b-head"><h3>Your nickname</h3><button class="iconbtn" id="nick-x" onclick="closeM('m-nick')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="b-head"><h3>Your account</h3><button class="iconbtn" id="nick-x" onclick="closeM('m-nick')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
-      <div class="muted">No sign-up, no email, no password. Pick a nickname — a secret token is generated and kept only in this browser, to prove the posts are yours.</div>
-      <label>Nickname</label>
-      <input type="text" id="nick-in" maxlength="24" placeholder="e.g. Anonymous Reader">
+      <div class="muted">A username and a password, nothing else: no email, no sign-up server. Together they make a signing key, so the same pair signs in from any device, and a name registered once belongs to that key. Type your username and password to sign in; a username nobody holds is registered to you.</div>
+      <label>Username</label>
+      <input type="text" id="nick-in" maxlength="24" placeholder="3 to 24 characters: letters, digits, dot, dash, underscore" autocomplete="username" spellcheck="false">
+      <label>Password</label>
+      <input type="password" id="pass-in" maxlength="128" placeholder="At least 10 characters. It cannot be reset." autocomplete="current-password">
+      <div id="acct-state"></div>
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="nick-save">Save</button></div>
+    <div class="b-foot"><button class="btn btn-g hidden" id="acct-out">Sign out</button><button class="btn btn-p" id="nick-save">Sign in or register</button></div>
   </div>
 </div>
 
@@ -216,12 +221,12 @@ svg{display:block}
   <div class="box sm">
     <div class="b-head"><h3>Moderation</h3><button class="iconbtn" onclick="closeM('m-mod')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="b-body">
-      <div class="muted">A moderator can hide topics and replies for everyone. The password is set by the first person to register one — keep it, because anyone holding it can moderate.</div>
+      <div class="muted">A moderator can hide topics and replies for everyone. Moderation belongs to the first account that claims it. If a moderator password was set by an older version, enter it here to carry moderation over to your account.</div>
       <label>Moderator password</label>
-      <input type="password" id="mod-pass" placeholder="Moderator password">
+      <input type="password" id="mod-pass" placeholder="Moderator password from an older version, if any">
       <div id="mod-state"></div>
     </div>
-    <div class="b-foot"><button class="btn btn-p" id="mod-enter">Sign in as moderator</button></div>
+    <div class="b-foot"><button class="btn btn-p" id="mod-enter">Claim moderation</button></div>
   </div>
 </div>
 
@@ -229,7 +234,46 @@ svg{display:block}
 
 <script>
 'use strict';
+// The forum lives on a public MQTT relay as retained messages, and the relay
+// checks nothing: whoever can reach it can publish anything to any topic,
+// including an empty payload that wipes a retained message for everyone. So
+// the page checks everything itself, and these are the rules it enforces:
+//
+//   accounts   a username and a password make a signing key
+//              (hidrachat-crypto.js). A name is claimed by publishing the
+//              key under hforum/u/<name>; the first claim this page sees for
+//              a name is kept in the vault, and a later claim with another
+//              key is ignored. Registration refuses a name already claimed.
+//   posts      every topic and reply is signed by its author's key. A post
+//              whose signature fails is dropped. A post is shown with a tick
+//              when its key holds the name it was posted under, and with a
+//              warning when it does not.
+//   deletion   the author publishes a signed tombstone. An empty payload,
+//              which anyone can send, removes nothing this page already has.
+//   moderation belongs to a key, claimed once under hforum/admin and kept
+//              in the vault the same way. Hiding is a signed act of that key.
+//   legacy     posts, hides and the moderator password from before accounts
+//              are kept as they were, marked unsigned, and the old password
+//              can carry moderation over to an account once.
+//
+//   registry   the relay keeps claims for nobody, so a registrar run by the
+//              project (tools/forum-registrar.js) records the first key seen
+//              for every name and publishes the list signed under
+//              hforum/registry. With REGISTRY_PUBKEY set below, a name in
+//              that list belongs to the key the list says, whatever the
+//              relay holds; names not in it fall back to first-seen. The
+//              list's sequence number only grows, so an old one cannot be
+//              replayed over a new one, and a wipe removes nothing from the
+//              copy in the vault.
+//
+// What this cannot give without the registrar: a relay that keeps claims
+// honestly for people who arrive later. Someone who overwrites a claim is
+// believed by a page that had never seen the name. Pages that had seen it
+// keep the first key and warn its owner.
 var $=function(id){return document.getElementById(id)};
+// The registrar's public key, printed by `forum-registrar.js keygen`. Empty
+// means no registrar: names are first-seen only.
+var REGISTRY_PUBKEY='';
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var CATS=['Technology','Privacy','Dark Web','Off-Topic'];
 var CAT_COLOR={'Technology':'#4f8cff','Privacy':'#00d4aa','Dark Web':'#a29bfe','Off-Topic':'#f5a623'};
@@ -238,12 +282,25 @@ var CAT_COLOR={'Technology':'#4f8cff','Privacy':'#00d4aa','Dark Web':'#a29bfe','
 // without this those topics would match no filter and quietly disappear
 // from every list but "All".
 var CAT_LEGACY={'Tecnologia':'Technology','Privacidade':'Privacy'};
-function normCat(c){ return CAT_LEGACY[c]||c; }
+function normCat(c){ c=String(c||''); return Object.prototype.hasOwnProperty.call(CAT_LEGACY,c)?CAT_LEGACY[c]:c; }
 var PER_PAGE=20, RPER_PAGE=20;
 var subtle=crypto.subtle, te=new TextEncoder();
-var client=null;
-var state={ topics:{}, replies:{}, reports:{}, hidden:{}, adminHash:null,
-            me:null, mod:false, cat:'all', page:0, sel:null, rpage:0, search:'' };
+var client=null, relayFails=0, relayTimer=null, readyTimer=null;
+// An id this page made, or one made by an earlier version: a letter and ten
+// base32 characters. Anything else off the wire is not a post.
+var ID_RE=/^[tr][a-z2-7]{10}$/;
+var TAG_RE=/^[a-z0-9]{1,32}$/;
+var SETTLE_MS=1500;        // retained claims arrive right after subscribing
+var MAX_TEXT=20000;
+
+var state={ topics:{}, replies:{}, reports:{}, hidden:{}, claims:{}, legacyAdminHash:null,
+            me:null, mod:false, cat:'all', page:0, sel:null, rpage:0, search:'', ready:false,
+            claimWarning:false, registrySeq:-1, registryNames:{} };
+// What the vault keeps for this app: who you are, and the first key seen
+// for every name and for moderation.
+var vaultData={ v:2, nick:'', name:'', seed:null, claims:{}, adminPk:null, registry:null };
+// One object for the claims, read by the page and written by the relay.
+state.claims=vaultData.claims;
 
 // ───────── icons (SVG, no emoji) ─────────
 function svg(p,sz){ sz=sz||15; return '<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>'; }
@@ -251,7 +308,9 @@ var IC={
   comment:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   flag:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   eye:'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>',
-  trash:'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
+  trash:'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  check:'<polyline points="20 6 9 17 4 12"/>',
+  warn:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'
 };
 
 // ───────── util ─────────
@@ -261,7 +320,7 @@ async function sha(s){ var h=new Uint8Array(await subtle.digest('SHA-256',te.enc
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
 function hue(tag){ var n=0; for(var i=0;i<tag.length;i++) n=(n*31+tag.charCodeAt(i))&0xffff; return n%360; }
 function avColor(tag){ return 'linear-gradient(135deg,hsl('+hue(tag)+',55%,52%),hsl('+((hue(tag)+40)%360)+',55%,42%))'; }
-function catColor(c){ return CAT_COLOR[c]||'#8891ad'; }
+function catColor(c){ return Object.prototype.hasOwnProperty.call(CAT_COLOR,c)?CAT_COLOR[c]:'#8891ad'; }
 function fmtDate(t){ var d=new Date(t),n=Date.now(),diff=(n-t)/1000; if(diff<60)return 'now'; if(diff<3600)return Math.floor(diff/60)+' min'; if(diff<86400)return Math.floor(diff/3600)+' h'; if(diff<604800)return Math.floor(diff/86400)+' d'; return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear(); }
 function md(s){ s=esc(s);
   s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
@@ -272,132 +331,392 @@ function md(s){ s=esc(s);
   s=s.replace(/(^|[^"=>(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   s=s.replace(/\n/g,'<br>'); return s; }
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
+function str(v,max){ return typeof v==='string'?v.slice(0,max||MAX_TEXT):''; }
+function num(v){ return typeof v==='number'&&isFinite(v)?v:0; }
+function fpShort(pk){ return pk?('#'+pk.slice(0,6)):''; }
 
 // ───────── identity ─────────
-// The identity lives in the browser's vault (hidra-store.js), under the
+// The account lives in the browser's vault (hidra-store.js), under the
 // system keychain where there is one. Not readable means not writable: a new
-// token saved over the old one would make every past post someone else's.
-var meLocked=false;
+// account saved over the old one would make every past post someone else's.
+var meLocked=false, persistTimer=null;
+function persist(){
+  if(meLocked) return;
+  clearTimeout(persistTimer);
+  persistTimer=setTimeout(function(){ hidraStore.save('hforum_me', JSON.stringify(vaultData)); },200);
+}
 async function loadMe(){
   var raw=null;
   try{ raw=await hidraStore.load('hforum_me'); }
-  catch(e){ meLocked=true; toast('Your forum identity could not be unlocked: '+e.message); return; }
-  try{ state.me=JSON.parse(raw||'null'); }catch(e){}
+  catch(e){ meLocked=true; toast('Your forum account could not be unlocked: '+e.message); return; }
+  var parsed=null;
+  try{ parsed=JSON.parse(raw||'null'); }catch(e){}
+  if(!parsed||typeof parsed!=='object') return;
+  if(parsed.v===2){
+    vaultData.nick=str(parsed.nick,24); vaultData.name=str(parsed.name,24);
+    vaultData.seed=typeof parsed.seed==='string'?parsed.seed:null;
+    if(parsed.claims&&typeof parsed.claims==='object'){
+      for(var k in parsed.claims){ var c=parsed.claims[k]; if(Object.prototype.hasOwnProperty.call(parsed.claims,k)&&c&&typeof c.pk==='string'&&hidraRoom.validName(k)) vaultData.claims[k]={ name:str(c.name,24), pk:str(c.pk,200), ts:num(c.ts) }; }
+    }
+    vaultData.adminPk=typeof parsed.adminPk==='string'?parsed.adminPk:null;
+    if(REGISTRY_PUBKEY&&parsed.registry){
+      var reg=await hidraRoom.verifyRegistry(REGISTRY_PUBKEY,parsed.registry);
+      if(reg) applyRegistry(reg,false);
+    }
+    if(vaultData.seed){
+      try{
+        var id=await hidraRoom.identityFromSeed(hidraRoom.fromB64(vaultData.seed));
+        state.me={ nick:vaultData.nick, name:vaultData.name, pub:id.pub, fingerprint:id.fingerprint, privateKey:id.privateKey };
+      }catch(e){ vaultData.seed=null; }
+    }
+  }else if(parsed.nick){
+    // An identity from before accounts: a nickname and a random token that
+    // signed nothing. The nickname is offered again; the account is new.
+    vaultData.nick=str(parsed.nick,24);
+  }
 }
-async function setNick(nick){
-  nick=(nick||'').trim().slice(0,24); if(!nick) return false;
-  if(meLocked){ toast('Your forum identity could not be unlocked. Unlock your system keychain and reload.'); return false; }
-  // changing nickname = a new anonymous identity (new token); re-saving the same nickname keeps the token
-  var token = (state.me&&state.me.nick===nick&&state.me.token) || b32(crypto.getRandomValues(new Uint8Array(16)));
-  var tokenHash=(await sha('hforum-tok:'+token)).slice(0,12);
-  state.me={ nick:nick, token:token, tokenHash:tokenHash };
-  hidraStore.save('hforum_me', JSON.stringify(state.me));
-  $('me-nick').textContent=nick; $('me-tag').textContent='#'+tokenHash.slice(0,6);
+
+function showMe(){
+  if(state.me){ $('me-nick').textContent=state.me.nick; $('me-tag').textContent='#'+state.me.fingerprint.slice(0,6); }
+  else{ $('me-nick').textContent='sign in'; $('me-tag').textContent=''; }
+  $('s-account').textContent=state.me?state.me.nick:'none';
+}
+
+// Sign in, or register when the name is free. One button, because the
+// relay decides which it is: a claim already there with this key is a sign
+// in, no claim is a registration, another key is a refusal.
+async function signIn(name,pass){
+  if(meLocked){ toast('Your forum account could not be unlocked. Unlock your system keychain and reload.'); return false; }
+  if(!client||!client.connected||!state.ready){ $('acct-state').innerHTML='<span class="err">Not connected to the network yet. Try again in a moment.</span>'; return false; }
+  var norm=hidraRoom.normalizeName(name);
+  if(!hidraRoom.validName(norm)){ $('acct-state').innerHTML='<span class="err">A username is 3 to 24 characters: letters, digits, dot, dash or underscore.</span>'; return false; }
+  if(typeof pass!=='string'||pass.length<10){ $('acct-state').innerHTML='<span class="err">A password is at least 10 characters. Pick a long one: the key made from it is public, and there is no way to reset it.</span>'; return false; }
+  $('acct-state').innerHTML='<span class="muted">Deriving your key…</span>';
+  $('nick-save').disabled=true;
+  var id;
+  try{
+    await new Promise(function(r){setTimeout(r,30)});
+    id=await hidraRoom.deriveIdentity(norm,pass);
+  }catch(e){ $('nick-save').disabled=false; $('acct-state').innerHTML='<span class="err">'+esc(e.message)+'</span>'; return false; }
+  $('nick-save').disabled=false;
+  var claim=state.claims[norm];
+  if(claim&&claim.pk!==id.pub){
+    $('acct-state').innerHTML='<span class="err">This username is taken, or the password is wrong.</span>';
+    return false;
+  }
+  var shown=name.trim().slice(0,24);
+  if(!claim){
+    var ts=Date.now();
+    var c={ v:2, name:shown, pk:id.pub, ts:ts };
+    c.sig=await hidraRoom.signFields({privateKey:id.privateKey},['claim',norm,shown,id.pub,ts]);
+    await publishRetained('hforum/u/'+norm, c);
+    vaultData.claims[norm]={ name:shown, pk:id.pub, ts:ts };
+    $('acct-state').innerHTML='<span class="ok">Registered. The name '+esc(shown)+' now belongs to this key.</span>';
+  }else{
+    shown=claim.name||shown;
+    $('acct-state').innerHTML='<span class="ok">Signed in.</span>';
+  }
+  state.me={ nick:shown, name:norm, pub:id.pub, fingerprint:id.fingerprint, privateKey:id.privateKey };
+  vaultData.nick=shown; vaultData.name=norm; vaultData.seed=hidraRoom.toB64(id.seed);
+  persist();
+  state.registryConflict=!!(state.registryNames[norm]&&vaultData.claims[norm].pk!==id.pub);
+  state.mod=!!(vaultData.adminPk&&vaultData.adminPk===id.pub);
+  showMe(); refreshRole(); renderAll();
   return true;
+}
+
+function signOut(){
+  state.me=null; state.mod=false;
+  vaultData.seed=null; vaultData.name='';
+  persist(); showMe(); refreshRole(); renderAll();
 }
 
 // ───────── mqtt ─────────
 function connect(){
   $('ctxt').textContent='connecting…';
-  client=mqtt.connect(MQTT_BROKERS[0],{clientId:'hforum_'+rid(''),clean:true,reconnectPeriod:4000,keepalive:30});
-  client.on('connect',function(){
+  var url=MQTT_BROKERS[Math.floor(relayFails/2)%MQTT_BROKERS.length];
+  var c;
+  try{ c=mqtt.connect(url,{clientId:'hforum_'+rid(''),clean:true,reconnectPeriod:0,connectTimeout:9000,keepalive:30}); }
+  catch(e){ relayFails++; scheduleReconnect(); return; }
+  client=c;
+  c.on('connect',function(){
+    if(c!==client) return;
+    relayFails=0;
     $('cdot').className='dot on'; $('ctxt').textContent='connected';
-    client.subscribe('hforum/t/+',{qos:1});
-    client.subscribe('hforum/r/+/+',{qos:1});
-    client.subscribe('hforum/rep/+/+',{qos:0});
-    client.subscribe('hforum/mod/+',{qos:1});
-    client.subscribe('hforum/admin',{qos:1});
+    c.subscribe('hforum/u/+',{qos:1});
+    c.subscribe('hforum/t/+',{qos:1});
+    c.subscribe('hforum/r/+/+',{qos:1});
+    c.subscribe('hforum/rep/+/+',{qos:0});
+    c.subscribe('hforum/mod/+',{qos:1});
+    c.subscribe('hforum/admin',{qos:1});
+    if(REGISTRY_PUBKEY) c.subscribe('hforum/registry',{qos:1});
+    clearTimeout(readyTimer);
+    readyTimer=setTimeout(function(){ state.ready=true; renderAll(); },SETTLE_MS);
   });
-  client.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='reconnecting…'; });
-  client.on('close',function(){ $('cdot').className='dot'; $('ctxt').textContent='offline'; });
-  client.on('message',onMessage);
+  c.on('close',function(){
+    if(c!==client) return;
+    $('cdot').className='dot'; $('ctxt').textContent='offline';
+    relayFails++; scheduleReconnect();
+  });
+  c.on('error',function(){});
+  c.on('message',function(topic,payload){ enqueue(topic,payload.toString()); });
+}
+function scheduleReconnect(){
+  clearTimeout(relayTimer);
+  var delay=Math.min(2000*Math.pow(1.5,Math.min(relayFails,8)),20000);
+  $('ctxt').textContent='reconnecting…';
+  relayTimer=setTimeout(function(){ var old=client; client=null; try{ if(old) old.end(true); }catch(e){} connect(); },delay);
 }
 var renderPending=false;
 function scheduleRender(){ if(renderPending)return; renderPending=true; setTimeout(function(){ renderPending=false; renderAll(); },120); }
 
-function onMessage(topic,payload){
-  var s=payload.toString();
-  try{
-    if(topic==='hforum/admin'){ state.adminHash=s||null; refreshRole(); return; }
-    if(topic.indexOf('hforum/t/')===0){
-      var tid=topic.slice(9);
-      if(!s){ delete state.topics[tid]; } else { var o=JSON.parse(s); o._t=topic; o.cat=normCat(o.cat); state.topics[tid]=o; }
-      scheduleRender(); return;
-    }
-    if(topic.indexOf('hforum/r/')===0){
-      var parts=topic.split('/'); var rrid=parts[3];
-      if(!s){ delete state.replies[rrid]; } else { var r=JSON.parse(s); r._t=topic; state.replies[rrid]=r; }
-      scheduleRender(); return;
-    }
-    if(topic.indexOf('hforum/rep/')===0){
-      var pp=topic.split('/'); var item=pp[2], by=pp[3];
-      if(!state.reports[item]) state.reports[item]={};
-      if(s) state.reports[item][by]=1; else delete state.reports[item][by];
-      scheduleRender(); return;
-    }
-    if(topic.indexOf('hforum/mod/')===0){
-      var mid=topic.slice(11);
-      if(s) state.hidden[mid]=1; else delete state.hidden[mid];
-      scheduleRender(); return;
-    }
-  }catch(e){}
+// Messages are checked one at a time, in the order they arrived, so that a
+// tombstone cannot overtake the post it refers to.
+var queue=Promise.resolve();
+function enqueue(topic,s){ queue=queue.then(function(){ return onMessage(topic,s); }).catch(function(){}); }
+
+function parse(s){ try{ var o=JSON.parse(s); return (o&&typeof o==='object')?o:null; }catch(e){ return null; } }
+
+async function onMessage(topic,s){
+  var parts=topic.split('/');
+  if(parts[0]!=='hforum') return;
+
+  if(topic==='hforum/admin'){ await onAdmin(s); return; }
+  if(topic==='hforum/registry'){ await onRegistry(s); return; }
+
+  if(parts[1]==='u'&&parts.length===3){ await onClaim(parts[2],s); return; }
+
+  if(parts[1]==='t'&&parts.length===3){
+    var tid=parts[2]; if(!ID_RE.test(tid)) return;
+    await onPost('t',tid,null,s); scheduleRender(); return;
+  }
+  if(parts[1]==='r'&&parts.length===4){
+    var ptid=parts[2], rrid=parts[3]; if(!ID_RE.test(ptid)||!ID_RE.test(rrid)) return;
+    await onPost('r',rrid,ptid,s); scheduleRender(); return;
+  }
+  if(parts[1]==='rep'&&parts.length===4){
+    var item=parts[2], by=parts[3]; if(!ID_RE.test(item)||!TAG_RE.test(by)) return;
+    if(!state.reports[item]) state.reports[item]={};
+    if(s) state.reports[item][by]=1; else delete state.reports[item][by];
+    scheduleRender(); return;
+  }
+  if(parts[1]==='mod'&&parts.length===3){
+    var mid=parts[2]; if(!ID_RE.test(mid)) return;
+    await onHide(mid,s); scheduleRender(); return;
+  }
 }
 
-function repliesOf(tid){ var a=[]; for(var k in state.replies){ if(state.replies[k].topicId===tid) a.push(state.replies[k]); } a.sort(function(x,y){return x.ts-y.ts;}); return a; }
+// The registrar's list. Believed over the relay for every name in it.
+async function onRegistry(s){
+  if(!REGISTRY_PUBKEY||!s) return;         // a wipe takes nothing away
+  var o=parse(s); if(!o) return;
+  var reg=await hidraRoom.verifyRegistry(REGISTRY_PUBKEY,o);
+  if(!reg||reg.seq<=state.registrySeq) return;   // not ours, or older than what we hold
+  vaultData.registry=reg; persist();
+  applyRegistry(reg,true);
+}
+function applyRegistry(reg,announce){
+  state.registrySeq=reg.seq;
+  state.registryNames={};
+  for(var i=0;i<reg.names.length;i++){
+    var e=reg.names[i];
+    state.registryNames[e[0]]=1;
+    vaultData.claims[e[0]]={ name:e[1], pk:e[2], ts:e[3] };
+  }
+  if(reg.admin){ vaultData.adminPk=reg.admin; if(state.me) state.mod=(state.me.pub===reg.admin); }
+  if(state.me&&state.registryNames[state.me.name]&&vaultData.claims[state.me.name].pk!==state.me.pub){
+    state.registryConflict=true;
+    if(announce) toast('The registry assigned your username to another key. Sign out and register another name.');
+  }else state.registryConflict=false;
+  refreshRole(); showMe(); scheduleRender();
+}
+// Where a signed-in account stands with the registry.
+function registryStatus(){
+  if(!REGISTRY_PUBKEY||!state.me) return '';
+  if(state.registryConflict) return '<span class="err">The registry lists this name under another key. Posts under it show as not verified; register another name.</span>';
+  if(state.registryNames[state.me.name]) return '<span class="ok">Confirmed by the registry.</span>';
+  return '<span class="muted">Waiting for the registry to record this name. Until then, readers who never saw it may believe another claim.</span>';
+}
+
+async function onClaim(norm,s){
+  if(!s||!hidraRoom.validName(norm)||norm!==hidraRoom.normalizeName(norm)) return;
+  var o=parse(s); if(!o||o.v!==2) return;
+  var name=str(o.name,24), pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
+  if(!name||!pk||!sig||hidraRoom.normalizeName(name)!==norm) return;
+  if(!(await hidraRoom.verifyFields(pk,['claim',norm,name,pk,ts],sig))) return;
+  var known=vaultData.claims[norm];
+  if(known){
+    if(state.registryNames[norm]) return;  // the registry decided this one
+    if(known.pk!==pk&&state.me&&state.me.name===norm&&!state.claimWarning){
+      state.claimWarning=true;
+      toast('Another key is now published under your username. Readers who never saw you before will believe it.');
+    }
+    return;                              // first seen stays
+  }
+  vaultData.claims[norm]={ name:name, pk:pk, ts:ts };
+  persist(); scheduleRender();
+}
+
+async function onAdmin(s){
+  if(!s) return;                          // a wipe takes nothing away
+  if(/^[0-9a-f]{64}$/.test(s)){ state.legacyAdminHash=s; refreshRole(); return; }
+  var o=parse(s); if(!o||o.v!==2) return;
+  var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
+  if(!pk||!sig) return;
+  if(!(await hidraRoom.verifyFields(pk,['admin',pk,ts],sig))) return;
+  if(vaultData.adminPk){
+    if(vaultData.registry&&vaultData.registry.admin) return;  // the registry decided
+    if(vaultData.adminPk!==pk&&state.mod&&!state.claimWarning){ state.claimWarning=true; toast('Another key is now published as moderator. Readers who never saw this forum before will believe it.'); }
+    return;
+  }
+  vaultData.adminPk=pk; persist();
+  if(state.me&&state.me.pub===pk) state.mod=true;
+  refreshRole(); scheduleRender();
+}
+
+async function onPost(kind,id,tid,s){
+  var store=kind==='t'?state.topics:state.replies;
+  var have=store[id];
+  if(!s){
+    // An empty payload is what the old page sent to delete, and what anyone
+    // can send to wipe. It is honoured only for a post that has no key to
+    // check a tombstone against.
+    if(have&&!have.pk) removePost(kind,id);
+    return;
+  }
+  var o=parse(s); if(!o) return;
+  if(o.del){
+    var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
+    if(!have||!have.pk||have.pk!==pk) return;
+    if(!(await hidraRoom.verifyFields(pk,['del',id,ts],sig))) return;
+    removePost(kind,id);
+    return;
+  }
+  if(str(o.id,20)!==id) return;
+  var post;
+  if(kind==='t'){
+    post={ id:id, cat:normCat(str(o.cat,40)), title:str(o.title,140), body:str(o.body), nick:str(o.nick,24), tag:str(o.tag,32), ts:num(o.ts) };
+  }else{
+    if(str(o.topicId,20)!==tid) return;
+    post={ id:id, topicId:tid, body:str(o.body), nick:str(o.nick,24), tag:str(o.tag,32), ts:num(o.ts) };
+  }
+  if(typeof o.pk==='string'||typeof o.sig==='string'){
+    var ppk=str(o.pk,200), psig=str(o.sig,200);
+    var fields=kind==='t'?['t',id,post.cat,post.title,post.body,post.nick,post.ts]:['r',id,tid,post.body,post.nick,post.ts];
+    if(!ppk||!psig||!(await hidraRoom.verifyFields(ppk,fields,psig))) return;
+    post.pk=ppk;
+  }
+  // A signed post is never replaced by an unsigned one under the same id,
+  // and a post is never replaced by another key's.
+  if(have&&have.pk&&have.pk!==post.pk) return;
+  store[id]=post;
+}
+
+function removePost(kind,id){
+  if(kind==='t'){ delete state.topics[id]; if(state.sel===id){ state.sel=null; $('view').innerHTML=centerMsg(); } }
+  else delete state.replies[id];
+}
+
+async function onHide(id,s){
+  if(!s){ if(state.hidden[id]==='legacy') delete state.hidden[id]; return; }
+  if(s==='1'){ if(!state.hidden[id]) state.hidden[id]='legacy'; return; }
+  var o=parse(s); if(!o) return;
+  var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
+  if(!pk||!sig||!vaultData.adminPk||vaultData.adminPk!==pk) return;
+  if(!(await hidraRoom.verifyFields(pk,['hide',id,ts],sig))) return;
+  state.hidden[id]='mod';
+}
+
+// Hidden for everyone by the moderator key, or by the old unsigned flag
+// when the post itself is from before signatures.
+function isHidden(p){ var h=state.hidden[p.id]; return h==='mod'||(h==='legacy'&&!p.pk); }
+
+function repliesOf(tid){ var a=[]; for(var k in state.replies){ var r=state.replies[k]; if(r.topicId===tid&&!isHidden(r)) a.push(r); } a.sort(function(x,y){return x.ts-y.ts;}); return a; }
 function lastActivity(t){ var m=t.ts, rs=repliesOf(t.id); if(rs.length) m=Math.max(m, rs[rs.length-1].ts); return m; }
 
 // ───────── publishing ─────────
 function publishRetained(topic,obj){ return new Promise(function(r){ client.publish(topic, JSON.stringify(obj), {qos:1,retain:true}, function(){r();}); }); }
 async function postTopic(cat,title,body){
   if(!client||!client.connected){ toast('No connection to the network.'); return; }
-  var id=rid('t'); var o={ id:id, cat:cat, title:title, body:body, nick:state.me.nick, tag:state.me.tokenHash, ts:Date.now() };
-  state.topics[id]=o; o._t='hforum/t/'+id; await publishRetained('hforum/t/'+id, o);
+  var id=rid('t'), ts=Date.now();
+  var o={ id:id, cat:cat, title:title, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
+  o.sig=await hidraRoom.signFields(state.me,['t',id,cat,title,body,state.me.nick,ts]);
+  state.topics[id]=o; await publishRetained('hforum/t/'+id, o);
   state.sel=id; state.cat=cat; renderAll(); openTopic(id); toast('Topic posted.');
 }
 async function postReply(tid,body){
   if(!client||!client.connected){ toast('No connection.'); return; }
-  var id=rid('r'); var r={ id:id, topicId:tid, body:body, nick:state.me.nick, tag:state.me.tokenHash, ts:Date.now() };
-  state.replies[id]=r; r._t='hforum/r/'+tid+'/'+id; await publishRetained('hforum/r/'+tid+'/'+id, r);
+  var id=rid('r'), ts=Date.now();
+  var r={ id:id, topicId:tid, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
+  r.sig=await hidraRoom.signFields(state.me,['r',id,tid,body,state.me.nick,ts]);
+  state.replies[id]=r; await publishRetained('hforum/r/'+tid+'/'+id, r);
   renderAll(); openTopic(tid); setTimeout(function(){ var v=$('view'); v.scrollTop=v.scrollHeight; },60);
 }
-async function report(itemTopic,itemId){
-  var t='hforum/rep/'+itemId+'/'+state.me.tokenHash;
-  client.publish(t,'1',{qos:0,retain:true});
-  if(!state.reports[itemId])state.reports[itemId]={}; state.reports[itemId][state.me.tokenHash]=1;
+function report(itemId){
+  if(!ensureNick()) return;
+  if(!client||!client.connected){ toast('No connection.'); return; }
+  client.publish('hforum/rep/'+itemId+'/'+state.me.fingerprint,'1',{qos:0,retain:true});
+  if(!state.reports[itemId])state.reports[itemId]={}; state.reports[itemId][state.me.fingerprint]=1;
   toast('Report sent to the moderators.'); renderAll();
 }
 async function delOwn(kind,id,tid){
-  // really deletes the retained message (only the author, who holds the token, sees this button)
+  var p=kind==='t'?state.topics[id]:state.replies[id];
+  if(!p||!state.me||p.pk!==state.me.pub){ toast('Only the author can delete this.'); return; }
+  if(!client||!client.connected){ toast('No connection.'); return; }
   var topic = kind==='t' ? 'hforum/t/'+id : 'hforum/r/'+tid+'/'+id;
-  client.publish(topic,'',{qos:1,retain:true});
-  if(kind==='t'){ delete state.topics[id]; state.sel=null; $('view').innerHTML=centerMsg(); }
-  else delete state.replies[id];
+  var ts=Date.now();
+  var tomb={ del:1, id:id, ts:ts, pk:state.me.pub };
+  tomb.sig=await hidraRoom.signFields(state.me,['del',id,ts]);
+  await publishRetained(topic,tomb);
+  removePost(kind,id);
   renderAll(); toast('Deleted.');
 }
 async function modHide(id){
-  if(!state.mod){ toast('Moderators only.'); return; }
-  client.publish('hforum/mod/'+id,'1',{qos:1,retain:true}); state.hidden[id]=1; renderAll(); toast('Hidden for everyone.');
+  if(!state.mod||!state.me){ toast('Moderators only.'); return; }
+  if(!client||!client.connected){ toast('No connection.'); return; }
+  var ts=Date.now();
+  var h={ id:id, ts:ts, pk:state.me.pub };
+  h.sig=await hidraRoom.signFields(state.me,['hide',id,ts]);
+  await publishRetained('hforum/mod/'+id,h);
+  state.hidden[id]='mod'; renderAll(); toast('Hidden for everyone.');
 }
 
 // ───────── moderation ─────────
 function refreshRole(){ $('s-role').textContent=state.mod?'moderator':'reader'; $('s-role').style.color=state.mod?'var(--accent)':''; }
+async function claimModeration(){
+  var ts=Date.now();
+  var c={ v:2, pk:state.me.pub, ts:ts };
+  c.sig=await hidraRoom.signFields(state.me,['admin',state.me.pub,ts]);
+  await publishRetained('hforum/admin',c);
+  vaultData.adminPk=state.me.pub; persist();
+  state.mod=true; refreshRole(); renderAll();
+}
 async function enterMod(pass){
-  if(!pass){ return; }
-  var h=await sha('hforum-admin:'+pass);
-  if(!state.adminHash){ // nobody has claimed it yet -> you become the owner
-    await new Promise(function(r){ client.publish('hforum/admin',h,{qos:1,retain:true},function(){r();}); });
-    state.adminHash=h; state.mod=true; sessionStorage.setItem('hforum_mod',h);
-    $('mod-state').innerHTML='<span class="ok">You registered the moderator password for this forum.</span>'; refreshRole(); renderAll(); return;
+  if(!state.me){ $('mod-state').innerHTML='<span class="err">Sign in first.</span>'; return; }
+  if(!client||!client.connected||!state.ready){ $('mod-state').innerHTML='<span class="err">Not connected to the network yet.</span>'; return; }
+  if(vaultData.adminPk){
+    if(vaultData.adminPk===state.me.pub){ state.mod=true; refreshRole(); renderAll(); $('mod-state').innerHTML='<span class="ok">Your account holds moderation.</span>'; }
+    else $('mod-state').innerHTML='<span class="err">Moderation is held by another account ('+esc(fpShort(vaultData.adminPk))+').</span>';
+    return;
   }
-  if(h===state.adminHash){ state.mod=true; sessionStorage.setItem('hforum_mod',h); $('mod-state').innerHTML='<span class="ok">Signed in as moderator.</span>'; refreshRole(); renderAll(); }
-  else { $('mod-state').innerHTML='<span class="err">Wrong password.</span>'; }
+  if(state.legacyAdminHash){
+    // A password set by the old page: whoever still has it carries
+    // moderation over to their account, once.
+    if(!pass){ $('mod-state').innerHTML='<span class="err">Enter the moderator password set earlier to carry it over to your account.</span>'; return; }
+    if((await sha('hforum-admin:'+pass))!==state.legacyAdminHash){ $('mod-state').innerHTML='<span class="err">Wrong password.</span>'; return; }
+    await claimModeration();
+    $('mod-state').innerHTML='<span class="ok">Moderation now belongs to your account.</span>';
+    return;
+  }
+  await claimModeration();
+  $('mod-state').innerHTML='<span class="ok">You claimed moderation for this forum. It belongs to your account now.</span>';
 }
 
 // ───────── render ─────────
 function centerMsg(){ return '<div class="center-msg"><svg class="big" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'+IC.comment+'</svg><div>Select a topic.</div></div>'; }
 function renderAll(){ renderCats(); renderList(); renderStats(); if(state.sel&&state.topics[state.sel]) renderTopicView(state.sel); }
-function visibleTopics(){ var a=[]; for(var k in state.topics){ var t=state.topics[k]; if(state.hidden[t.id])continue; a.push(t); } return a; }
-function renderStats(){ $('s-topics').textContent=visibleTopics().length; var rc=0; for(var k in state.replies){ if(!state.hidden[state.replies[k].id]) rc++; } $('s-replies').textContent=rc; }
+function visibleTopics(){ var a=[]; for(var k in state.topics){ var t=state.topics[k]; if(isHidden(t))continue; a.push(t); } return a; }
+function renderStats(){ $('s-topics').textContent=visibleTopics().length; var rc=0; for(var k in state.replies){ if(!isHidden(state.replies[k])) rc++; } $('s-replies').textContent=rc; }
 function renderCats(){
   var counts={}; visibleTopics().forEach(function(t){ counts[t.cat]=(counts[t.cat]||0)+1; });
   var html='<div class="cat'+(state.cat==='all'?' active':'')+'" data-c="all"><span class="cdot all"></span> All <span class="ct">'+visibleTopics().length+'</span></div>';
@@ -417,11 +736,11 @@ function renderList(){
   if(state.page>=pages)state.page=pages-1;
   var arr=all.slice(state.page*PER_PAGE,(state.page+1)*PER_PAGE);
   var el=$('list');
-  if(!all.length){ el.innerHTML='<div class="empty">No topics in this area yet.<br>Create the first one with the "New topic" button.</div>'; $('pager').innerHTML=''; return; }
+  if(!all.length){ el.innerHTML='<div class="empty">'+(state.ready?'No topics in this area yet.<br>Create the first one with the "New topic" button.':'Loading the network…')+'</div>'; $('pager').innerHTML=''; return; }
   el.innerHTML=arr.map(function(t){
-    var rs=repliesOf(t.id).filter(function(r){return !state.hidden[r.id];});
+    var rs=repliesOf(t.id);
     var flagged=state.reports[t.id]&&Object.keys(state.reports[t.id]).length;
-    return '<div class="topic-item'+(t.id===state.sel?' sel':'')+'" data-id="'+t.id+'">'+
+    return '<div class="topic-item'+(t.id===state.sel?' sel':'')+'" data-id="'+esc(t.id)+'">'+
       '<span class="ti-cat"><span class="cdot" style="background:'+catColor(t.cat)+'"></span>'+esc(t.cat)+'</span>'+(flagged?'<span class="flag">'+svg(IC.flag,11)+'Reported</span>':'')+
       '<div class="ti-title">'+esc(t.title)+'</div>'+
       '<div class="ti-meta"><span class="who-n">'+esc(t.nick)+'</span><span>·</span><span>'+fmtDate(lastActivity(t))+'</span><span class="rc">'+svg(IC.comment,13)+rs.length+'</span></div></div>';
@@ -431,23 +750,34 @@ function renderList(){
   if($('pg-prev'))$('pg-prev').onclick=function(){ if(state.page>0){state.page--;renderList();} };
   if($('pg-next'))$('pg-next').onclick=function(){ if(state.page<pages-1){state.page++;renderList();} };
 }
-function openTopic(id){ state.sel=id; state.rpage=0; renderList(); renderTopicView(id); }
+function openTopic(id){ if(!state.topics[id]) return; state.sel=id; state.rpage=0; renderList(); renderTopicView(id); }
+
+// Who signed a post, against who holds the name it was posted under.
+function authorBadge(p){
+  if(!p.pk) return '<span class="p-tag" title="Posted before accounts existed; nothing signs it">#'+esc((p.tag||'').slice(0,6))+' · unsigned</span>';
+  var claim=state.claims[hidraRoom.normalizeName(p.nick)];
+  var fp='#'+esc(p.tag||'').slice(0,6);
+  if(claim&&claim.pk===p.pk) return '<span class="p-tag ok" title="Signed by the key that holds this name">'+svg(IC.check,11)+' '+fp+'</span>';
+  if(claim) return '<span class="p-tag err" title="Signed by a key that does not hold this name">'+svg(IC.warn,11)+' name not verified · '+fp+'</span>';
+  return '<span class="p-tag" title="Signed; the name has no registration this page knows of">'+fp+'</span>';
+}
+
 function postHTML(p,isOp,kind,tid){
-  var mine=state.me&&p.tag===state.me.tokenHash;
+  var mine=state.me&&p.pk&&p.pk===state.me.pub;
   var foot='';
-  foot+='<a onclick="report(\''+(p._t||'')+'\',\''+p.id+'\')">'+svg(IC.flag,14)+'Report</a>';
-  if(state.mod) foot+='<a class="del" onclick="modHide(\''+p.id+'\')">'+svg(IC.eye,14)+'Hide</a>';
-  if(mine) foot+='<a class="del" onclick="delOwn(\''+kind+'\',\''+p.id+'\',\''+(tid||'')+'\')">'+svg(IC.trash,14)+'Delete</a>';
+  foot+='<a data-act="report" data-id="'+esc(p.id)+'">'+svg(IC.flag,14)+'Report</a>';
+  if(state.mod) foot+='<a class="del" data-act="hide" data-id="'+esc(p.id)+'">'+svg(IC.eye,14)+'Hide</a>';
+  if(mine) foot+='<a class="del" data-act="del" data-kind="'+esc(kind)+'" data-id="'+esc(p.id)+'" data-tid="'+esc(tid||'')+'">'+svg(IC.trash,14)+'Delete</a>';
   return '<div class="post'+(isOp?' op':'')+'">'+
     '<div class="p-head"><div class="p-av" style="background:'+avColor(p.tag||'')+'">'+esc((p.nick||'?').slice(0,1).toUpperCase())+'</div>'+
-    '<div><div class="p-nick">'+esc(p.nick||'anonymous')+(isOp?'<span class="op-badge">author</span>':'')+'</div><div class="p-tag">#'+esc((p.tag||'').slice(0,6))+'</div></div>'+
+    '<div><div class="p-nick">'+esc(p.nick||'anonymous')+(isOp?'<span class="op-badge">author</span>':'')+'</div>'+authorBadge(p)+'</div>'+
     '<div class="p-date">'+fmtDate(p.ts)+'</div></div>'+
     '<div class="p-body">'+md(p.body||'')+'</div>'+
     '<div class="p-foot">'+foot+'</div></div>';
 }
 function renderTopicView(id){
   var t=state.topics[id]; if(!t){ $('view').innerHTML=centerMsg(); return; }
-  var rs=repliesOf(id).filter(function(r){return !state.hidden[r.id];});
+  var rs=repliesOf(id);
   var pages=Math.max(1,Math.ceil(rs.length/RPER_PAGE)); if(state.rpage>=pages)state.rpage=pages-1;
   var pr=rs.slice(state.rpage*RPER_PAGE,(state.rpage+1)*RPER_PAGE);
   var h='<div class="v-cat"><span class="cdot" style="background:'+catColor(t.cat)+'"></span>'+esc(t.cat)+'</div><div class="v-title">'+esc(t.title)+'</div>';
@@ -462,28 +792,58 @@ function renderTopicView(id){
   $('btn-reply').onclick=function(){ var b=$('reply-in').value.trim(); if(!b){toast('Write something.');return;} if(!ensureNick())return; postReply(id,b); };
 }
 
-// ───────── modais ─────────
-window.report=report; window.modHide=modHide; window.delOwn=delOwn;
+// The actions under a post. One listener on the view, reading data
+// attributes, so that nothing from a post is ever written into an event
+// handler.
+$('view').addEventListener('click',function(ev){
+  var a=ev.target.closest('a[data-act]'); if(!a) return;
+  var id=a.getAttribute('data-id'); if(!ID_RE.test(id)) return;
+  var act=a.getAttribute('data-act');
+  if(act==='report') report(id);
+  else if(act==='hide') modHide(id);
+  else if(act==='del') delOwn(a.getAttribute('data-kind')==='t'?'t':'r', id, a.getAttribute('data-tid')||'');
+});
+
+// ───────── modals ─────────
 window.closeM=function(idm){ $(idm).classList.add('hidden'); };
 function openM(idm){ $(idm).classList.remove('hidden'); }
-function ensureNick(){ if(!state.me){ openNick(false); return false; } return true; }
-function openNick(first){ $('nick-in').value=state.me?state.me.nick:''; $('nick-x').style.display=first?'none':''; openM('m-nick'); setTimeout(function(){$('nick-in').focus();},50); }
+function ensureNick(){
+  if(!state.me){ openNick(false); return false; }
+  if(state.registryConflict){ toast('The registry lists your username under another key. Register another name to post.'); openNick(false); return false; }
+  return true;
+}
+function openNick(first){
+  $('nick-in').value=state.me?state.me.nick:(vaultData.nick||'');
+  $('pass-in').value='';
+  $('nick-x').style.display=first?'none':'';
+  $('acct-out').classList.toggle('hidden',!state.me);
+  $('acct-state').innerHTML=state.me?('<span class="ok">Signed in as '+esc(state.me.nick)+' ('+esc('#'+state.me.fingerprint.slice(0,6))+').</span> '+registryStatus()):'';
+  openM('m-nick'); setTimeout(function(){ (state.me?$('pass-in'):$('nick-in')).focus(); },50);
+}
 
 // init
 (async function init(){
   await loadMe();
   $('n-cat').innerHTML=CATS.map(function(c){return '<option>'+esc(c)+'</option>';}).join('');
-  if(state.me){ $('me-nick').textContent=state.me.nick; $('me-tag').textContent='#'+state.me.tokenHash.slice(0,6); }
+  showMe();
   $('me-who').onclick=function(){ openNick(false); };
-  $('btn-mod').onclick=function(){ $('mod-state').innerHTML=state.mod?'<span class="ok">You are already a moderator in this session.</span>':'<span class="muted">'+(state.adminHash?'A moderator is already registered. Enter the password.':'Nobody has registered a password yet — the first one becomes the owner password.')+'</span>'; openM('m-mod'); };
+  $('btn-mod').onclick=function(){
+    var msg;
+    if(state.mod) msg='<span class="ok">Your account holds moderation.</span>';
+    else if(vaultData.adminPk) msg='<span class="muted">Moderation is held by the account '+esc(fpShort(vaultData.adminPk))+'. Sign in with it to moderate.</span>';
+    else if(state.legacyAdminHash) msg='<span class="muted">A moderator password was set by an older version. Enter it to carry moderation over to your account.</span>';
+    else msg='<span class="muted">Nobody holds moderation yet. The first account to claim it keeps it.</span>';
+    $('mod-state').innerHTML=msg; $('mod-pass').value=''; openM('m-mod');
+  };
   $('mod-enter').onclick=function(){ enterMod($('mod-pass').value); };
-  $('nick-save').onclick=async function(){ if(await setNick($('nick-in').value)){ closeM('m-nick'); renderAll(); toast('Nickname saved.'); } };
+  $('nick-save').onclick=async function(){ if(await signIn($('nick-in').value,$('pass-in').value)){ $('pass-in').value=''; closeM('m-nick'); toast('Welcome, '+state.me.nick+'.'+(state.registryConflict?' The registry lists this name under another key.':'')); } };
+  $('pass-in').onkeydown=function(e){ if(e.key==='Enter') $('nick-save').onclick(); };
+  $('acct-out').onclick=function(){ signOut(); closeM('m-nick'); toast('Signed out.'); };
   $('btn-new').onclick=function(){ if(!ensureNick())return; $('n-title').value='';$('n-body').value=''; if(state.cat!=='all')$('n-cat').value=state.cat; openM('m-new'); setTimeout(function(){$('n-title').focus();},50); };
   $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Give it a title.');return;} if(!bo){toast('Write the message.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };
   $('search').oninput=function(){ state.search=this.value; state.page=0; renderList(); };
   renderAll(); refreshRole();
   connect();
-  if(!state.me) openNick(true);
 })();
 </script>
 </body>
