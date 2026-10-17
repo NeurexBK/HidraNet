@@ -209,7 +209,8 @@ svg{display:block}
       <label>Username</label>
       <input type="text" id="nick-in" maxlength="24" placeholder="3 to 24 characters: letters, digits, dot, dash, underscore" autocomplete="username" spellcheck="false">
       <label>Password</label>
-      <input type="password" id="pass-in" maxlength="128" placeholder="At least 10 characters. It cannot be reset." autocomplete="current-password">
+      <input type="password" id="pass-in" maxlength="128" placeholder="At least 16 characters. It cannot be reset." autocomplete="current-password">
+      <button class="btn btn-g" id="pass-gen" type="button" style="margin-top:8px">Generate a password</button>
       <div id="acct-state"></div>
     </div>
     <div class="b-foot"><button class="btn btn-g hidden" id="acct-out">Sign out</button><button class="btn btn-p" id="nick-save">Sign in or register</button></div>
@@ -273,7 +274,7 @@ svg{display:block}
 var $=function(id){return document.getElementById(id)};
 // The registrar's public key, printed by `forum-registrar.js keygen`. Empty
 // means no registrar: names are first-seen only.
-var REGISTRY_PUBKEY='';
+var REGISTRY_PUBKEY='BAs/uLDGkptJU32QBOx6bnS2VEFg4pP7LE9oIZc2bSoVdcET2PR0s/4fSqu5aems4VCgFoq+2fNAuE9FHqUB+W8=';
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var CATS=['Technology','Privacy','Dark Web','Off-Topic'];
 var CAT_COLOR={'Technology':'#4f8cff','Privacy':'#00d4aa','Dark Web':'#a29bfe','Off-Topic':'#f5a623'};
@@ -298,7 +299,7 @@ var state={ topics:{}, replies:{}, reports:{}, hidden:{}, claims:{}, legacyAdmin
             claimWarning:false, registrySeq:-1, registryNames:{} };
 // What the vault keeps for this app: who you are, and the first key seen
 // for every name and for moderation.
-var vaultData={ v:2, nick:'', name:'', seed:null, claims:{}, adminPk:null, registry:null };
+var vaultData={ v:2, nick:'', name:'', seed:null, claims:{}, adminPk:null, registry:null, deleted:{} };
 // One object for the claims, read by the page and written by the relay.
 state.claims=vaultData.claims;
 
@@ -317,7 +318,10 @@ var IC={
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
 function rid(p){ return p+b32(crypto.getRandomValues(new Uint8Array(6))); }
 async function sha(s){ var h=new Uint8Array(await subtle.digest('SHA-256',te.encode(s))); var o='';for(var i=0;i<h.length;i++)o+=h[i].toString(16).padStart(2,'0'); return o; }
-function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+// Quotes are escaped as well as angle brackets: md() below writes escaped
+// text into href, src and alt attributes, where a bare quote would end the
+// attribute and start another.
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function hue(tag){ var n=0; for(var i=0;i<tag.length;i++) n=(n*31+tag.charCodeAt(i))&0xffff; return n%360; }
 function avColor(tag){ return 'linear-gradient(135deg,hsl('+hue(tag)+',55%,52%),hsl('+((hue(tag)+40)%360)+',55%,42%))'; }
 function catColor(c){ return Object.prototype.hasOwnProperty.call(CAT_COLOR,c)?CAT_COLOR[c]:'#8891ad'; }
@@ -359,6 +363,9 @@ async function loadMe(){
       for(var k in parsed.claims){ var c=parsed.claims[k]; if(Object.prototype.hasOwnProperty.call(parsed.claims,k)&&c&&typeof c.pk==='string'&&hidraRoom.validName(k)) vaultData.claims[k]={ name:str(c.name,24), pk:str(c.pk,200), ts:num(c.ts) }; }
     }
     vaultData.adminPk=typeof parsed.adminPk==='string'?parsed.adminPk:null;
+    if(parsed.deleted&&typeof parsed.deleted==='object'){
+      for(var d in parsed.deleted){ if(Object.prototype.hasOwnProperty.call(parsed.deleted,d)&&ID_RE.test(d)&&typeof parsed.deleted[d]==='string') vaultData.deleted[d]=parsed.deleted[d]; }
+    }
     if(REGISTRY_PUBKEY&&parsed.registry){
       var reg=await hidraRoom.verifyRegistry(REGISTRY_PUBKEY,parsed.registry);
       if(reg) applyRegistry(reg,false);
@@ -390,7 +397,7 @@ async function signIn(name,pass){
   if(!client||!client.connected||!state.ready){ $('acct-state').innerHTML='<span class="err">Not connected to the network yet. Try again in a moment.</span>'; return false; }
   var norm=hidraRoom.normalizeName(name);
   if(!hidraRoom.validName(norm)){ $('acct-state').innerHTML='<span class="err">A username is 3 to 24 characters: letters, digits, dot, dash or underscore.</span>'; return false; }
-  if(typeof pass!=='string'||pass.length<10){ $('acct-state').innerHTML='<span class="err">A password is at least 10 characters. Pick a long one: the key made from it is public, and there is no way to reset it.</span>'; return false; }
+  if(typeof pass!=='string'||pass.length<hidraRoom.MIN_ACCOUNT_PASSWORD){ $('acct-state').innerHTML='<span class="err">A password is at least '+hidraRoom.MIN_ACCOUNT_PASSWORD+' characters. The key made from it is public, so it can be guessed at leisure; use the generated one, or a long phrase. There is no way to reset it.</span>'; return false; }
   $('acct-state').innerHTML='<span class="muted">Deriving your key…</span>';
   $('nick-save').disabled=true;
   var id;
@@ -450,8 +457,7 @@ function connect(){
     c.subscribe('hforum/mod/+',{qos:1});
     c.subscribe('hforum/admin',{qos:1});
     if(REGISTRY_PUBKEY) c.subscribe('hforum/registry',{qos:1});
-    clearTimeout(readyTimer);
-    readyTimer=setTimeout(function(){ state.ready=true; renderAll(); },SETTLE_MS);
+    armReady();
   });
   c.on('close',function(){
     if(c!==client) return;
@@ -467,13 +473,25 @@ function scheduleReconnect(){
   $('ctxt').textContent='reconnecting…';
   relayTimer=setTimeout(function(){ var old=client; client=null; try{ if(old) old.end(true); }catch(e){} connect(); },delay);
 }
+// The relay hands over its retained messages in a burst after subscribing.
+// The page is ready when that burst has been quiet for SETTLE_MS, so that a
+// sign-in does not run against a list of names that is still arriving.
+// ...and ready at the latest READY_MAX_MS after connecting, so that a relay
+// that never goes quiet cannot keep the page from working.
+var READY_MAX_MS=10000, readyDeadline=0;
+function armReady(){
+  if(state.ready) return;
+  if(!readyDeadline) readyDeadline=Date.now()+READY_MAX_MS;
+  clearTimeout(readyTimer);
+  readyTimer=setTimeout(function(){ state.ready=true; renderAll(); },Math.max(0,Math.min(SETTLE_MS,readyDeadline-Date.now())));
+}
 var renderPending=false;
 function scheduleRender(){ if(renderPending)return; renderPending=true; setTimeout(function(){ renderPending=false; renderAll(); },120); }
 
 // Messages are checked one at a time, in the order they arrived, so that a
 // tombstone cannot overtake the post it refers to.
 var queue=Promise.resolve();
-function enqueue(topic,s){ queue=queue.then(function(){ return onMessage(topic,s); }).catch(function(){}); }
+function enqueue(topic,s){ armReady(); queue=queue.then(function(){ return onMessage(topic,s); }).catch(function(){}); }
 
 function parse(s){ try{ var o=JSON.parse(s); return (o&&typeof o==='object')?o:null; }catch(e){ return null; } }
 
@@ -487,11 +505,11 @@ async function onMessage(topic,s){
   if(parts[1]==='u'&&parts.length===3){ await onClaim(parts[2],s); return; }
 
   if(parts[1]==='t'&&parts.length===3){
-    var tid=parts[2]; if(!ID_RE.test(tid)) return;
+    var tid=parts[2]; if(!ID_RE.test(tid)||tid[0]!=='t') return;
     await onPost('t',tid,null,s); scheduleRender(); return;
   }
   if(parts[1]==='r'&&parts.length===4){
-    var ptid=parts[2], rrid=parts[3]; if(!ID_RE.test(ptid)||!ID_RE.test(rrid)) return;
+    var ptid=parts[2], rrid=parts[3]; if(!ID_RE.test(ptid)||ptid[0]!=='t'||!ID_RE.test(rrid)||rrid[0]!=='r') return;
     await onPost('r',rrid,ptid,s); scheduleRender(); return;
   }
   if(parts[1]==='rep'&&parts.length===4){
@@ -523,7 +541,11 @@ function applyRegistry(reg,announce){
     state.registryNames[e[0]]=1;
     vaultData.claims[e[0]]={ name:e[1], pk:e[2], ts:e[3] };
   }
-  if(reg.admin){ vaultData.adminPk=reg.admin; if(state.me) state.mod=(state.me.pub===reg.admin); }
+  if(reg.admin){
+    vaultData.adminPk=reg.admin; if(state.me) state.mod=(state.me.pub===reg.admin);
+    var hides=reg.hides||[];
+    for(var h=0;h<hides.length;h++){ if(ID_RE.test(hides[h])) markHiddenBy(hides[h],reg.admin); }
+  }
   if(state.me&&state.registryNames[state.me.name]&&vaultData.claims[state.me.name].pk!==state.me.pub){
     state.registryConflict=true;
     if(announce) toast('The registry assigned your username to another key. Sign out and register another name.');
@@ -589,10 +611,14 @@ async function onPost(kind,id,tid,s){
     var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
     if(!have||!have.pk||have.pk!==pk) return;
     if(!(await hidraRoom.verifyFields(pk,['del',id,ts],sig))) return;
+    // Remembered, so that the original bytes, which anyone may have kept,
+    // do not bring the post back when republished.
+    vaultData.deleted[id]=pk; persist();
     removePost(kind,id);
     return;
   }
   if(str(o.id,20)!==id) return;
+  if(vaultData.deleted[id]) return;         // its author deleted it
   var post;
   if(kind==='t'){
     post={ id:id, cat:normCat(str(o.cat,40)), title:str(o.title,140), body:str(o.body), nick:str(o.nick,24), tag:str(o.tag,32), ts:num(o.ts) };
@@ -605,6 +631,7 @@ async function onPost(kind,id,tid,s){
     var fields=kind==='t'?['t',id,post.cat,post.title,post.body,post.nick,post.ts]:['r',id,tid,post.body,post.nick,post.ts];
     if(!ppk||!psig||!(await hidraRoom.verifyFields(ppk,fields,psig))) return;
     post.pk=ppk;
+    post.tag=await hidraRoom.fingerprint(ppk);   // shown beside the name; the wire value is not signed
   }
   // A signed post is never replaced by an unsigned one under the same id,
   // and a post is never replaced by another key's.
@@ -622,14 +649,28 @@ async function onHide(id,s){
   if(s==='1'){ if(!state.hidden[id]) state.hidden[id]='legacy'; return; }
   var o=parse(s); if(!o) return;
   var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
-  if(!pk||!sig||!vaultData.adminPk||vaultData.adminPk!==pk) return;
-  if(!(await hidraRoom.verifyFields(pk,['hide',id,ts],sig))) return;
-  state.hidden[id]='mod';
+  if(!pk||!sig||!(await hidraRoom.verifyFields(pk,['hide',id,ts],sig))) return;
+  // Every key that signed a hide for this id is kept: a hide by some other
+  // key, published over the moderator's, does not replace it.
+  var slot=state.hidden[id];
+  if(!slot||slot==='legacy') slot=state.hidden[id]={keys:{}};
+  if(Object.keys(slot.keys).length<16) slot.keys[pk]=1;
 }
 
-// Hidden for everyone by the moderator key, or by the old unsigned flag
-// when the post itself is from before signatures.
-function isHidden(p){ var h=state.hidden[p.id]; return h==='mod'||(h==='legacy'&&!p.pk); }
+// Hidden for everyone when signed by the moderator key, judged at the time of
+// showing (the moderator key may become known after the hide arrived), or by
+// the old unsigned flag when the post itself is from before signatures.
+function isHidden(p){
+  var h=state.hidden[p.id];
+  if(!h) return false;
+  if(h==='legacy') return !p.pk;
+  return !!(vaultData.adminPk&&h.keys&&h.keys[vaultData.adminPk]);
+}
+function markHiddenBy(id,pk){
+  var slot=state.hidden[id];
+  if(!slot||slot==='legacy') slot=state.hidden[id]={keys:{}};
+  slot.keys[pk]=1;
+}
 
 function repliesOf(tid){ var a=[]; for(var k in state.replies){ var r=state.replies[k]; if(r.topicId===tid&&!isHidden(r)) a.push(r); } a.sort(function(x,y){return x.ts-y.ts;}); return a; }
 function lastActivity(t){ var m=t.ts, rs=repliesOf(t.id); if(rs.length) m=Math.max(m, rs[rs.length-1].ts); return m; }
@@ -657,7 +698,7 @@ function report(itemId){
   if(!client||!client.connected){ toast('No connection.'); return; }
   client.publish('hforum/rep/'+itemId+'/'+state.me.fingerprint,'1',{qos:0,retain:true});
   if(!state.reports[itemId])state.reports[itemId]={}; state.reports[itemId][state.me.fingerprint]=1;
-  toast('Report sent to the moderators.'); renderAll();
+  toast('Reported. Reports are public and carry your account fingerprint.'); renderAll();
 }
 async function delOwn(kind,id,tid){
   var p=kind==='t'?state.topics[id]:state.replies[id];
@@ -668,6 +709,7 @@ async function delOwn(kind,id,tid){
   var tomb={ del:1, id:id, ts:ts, pk:state.me.pub };
   tomb.sig=await hidraRoom.signFields(state.me,['del',id,ts]);
   await publishRetained(topic,tomb);
+  vaultData.deleted[id]=state.me.pub; persist();
   removePost(kind,id);
   renderAll(); toast('Deleted.');
 }
@@ -678,7 +720,7 @@ async function modHide(id){
   var h={ id:id, ts:ts, pk:state.me.pub };
   h.sig=await hidraRoom.signFields(state.me,['hide',id,ts]);
   await publishRetained('hforum/mod/'+id,h);
-  state.hidden[id]='mod'; renderAll(); toast('Hidden for everyone.');
+  markHiddenBy(id,state.me.pub); renderAll(); toast('Hidden for everyone.');
 }
 
 // ───────── moderation ─────────
@@ -765,7 +807,7 @@ function authorBadge(p){
 function postHTML(p,isOp,kind,tid){
   var mine=state.me&&p.pk&&p.pk===state.me.pub;
   var foot='';
-  foot+='<a data-act="report" data-id="'+esc(p.id)+'">'+svg(IC.flag,14)+'Report</a>';
+  foot+='<a data-act="report" data-id="'+esc(p.id)+'" title="Reports are public and carry your account fingerprint">'+svg(IC.flag,14)+'Report</a>';
   if(state.mod) foot+='<a class="del" data-act="hide" data-id="'+esc(p.id)+'">'+svg(IC.eye,14)+'Hide</a>';
   if(mine) foot+='<a class="del" data-act="del" data-kind="'+esc(kind)+'" data-id="'+esc(p.id)+'" data-tid="'+esc(tid||'')+'">'+svg(IC.trash,14)+'Delete</a>';
   return '<div class="post'+(isOp?' op':'')+'">'+
@@ -839,6 +881,7 @@ function openNick(first){
   $('nick-save').onclick=async function(){ if(await signIn($('nick-in').value,$('pass-in').value)){ $('pass-in').value=''; closeM('m-nick'); toast('Welcome, '+state.me.nick+'.'+(state.registryConflict?' The registry lists this name under another key.':'')); } };
   $('pass-in').onkeydown=function(e){ if(e.key==='Enter') $('nick-save').onclick(); };
   $('acct-out').onclick=function(){ signOut(); closeM('m-nick'); toast('Signed out.'); };
+  $('pass-gen').onclick=function(){ var p=$('pass-in'); p.type='text'; p.value=hidraRoom.genPassword(); toast('Write this password down. It cannot be recovered.'); };
   $('btn-new').onclick=function(){ if(!ensureNick())return; $('n-title').value='';$('n-body').value=''; if(state.cat!=='all')$('n-cat').value=state.cat; openM('m-new'); setTimeout(function(){$('n-title').focus();},50); };
   $('btn-post').onclick=function(){ var ti=$('n-title').value.trim(), bo=$('n-body').value.trim(), ca=$('n-cat').value; if(!ti){toast('Give it a title.');return;} if(!bo){toast('Write the message.');return;} if(!ensureNick())return; closeM('m-new'); postTopic(ca,ti,bo); };
   $('search').oninput=function(){ state.search=this.value; state.page=0; renderList(); };

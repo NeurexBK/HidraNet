@@ -92,7 +92,8 @@ async function test(name, fn) {
     for (const bad of ['', 'ab', 'alice bob', 'álice', '.alice', 'a'.repeat(25), 'al/ice', "x');alert(1)"]) {
       assert.strictEqual(room.validName(bad), false, bad);
     }
-    await assert.rejects(() => room.deriveIdentity('alice', 'short', FAST), /at least 10/);
+    await assert.rejects(() => room.deriveIdentity('alice', 'fifteen chars!!', FAST), /at least 16/);
+    assert.strictEqual(room.MIN_ACCOUNT_PASSWORD, 16);
     await assert.rejects(() => room.deriveIdentity('al ice', 'long enough password', FAST), /username/);
   });
 
