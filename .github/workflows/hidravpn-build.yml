@@ -45,6 +45,20 @@ jobs:
       - name: tests
         run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
 
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        working-directory: hidravpn
+        # Deny warnings too. Accepted advisories are listed in
+        # .cargo/audit.toml with the reasoning, as hidra-node does.
+        run: cargo audit --deny warnings
+
   build-windows:
     name: build Windows executables
     runs-on: ubuntu-latest

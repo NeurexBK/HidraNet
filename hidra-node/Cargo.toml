@@ -41,7 +41,6 @@ ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 # needs both to verify does not.
 ml-dsa = { version = "0.1", features = ["rand_core", "zeroize"] }
 argon2 = "0.5"
-aes-gcm = "0.10"
 subtle = "2"
 
 # Used by security::hardening::disable_core_dumps (prctl PR_SET_DUMPABLE).

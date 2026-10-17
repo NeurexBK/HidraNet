@@ -1,0 +1,14 @@
+# Advisories accepted rather than fixed, each with its reason, so an
+# exception cannot exist without someone having written down why. CI runs
+# `cargo audit --deny warnings`, so "unmaintained" fails the build too.
+
+[advisories]
+ignore = [
+    # paste 1.0.15 is unmaintained (RUSTSEC-2024-0436).
+    #
+    # A proc-macro that runs at compile time only, pulled in through
+    # tun-rs -> netconfig-rs -> netlink-packet-core. It emits no code into
+    # the binary beyond what the macro expands to, touches no input at
+    # runtime, and goes away when tun-rs's dependency chain moves off it.
+    "RUSTSEC-2024-0436",
+]

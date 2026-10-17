@@ -1,3 +1,16 @@
+//! Defence-in-depth helpers.
+//!
+//! What the binary uses: `hardening` (the panic hook and the core-dump
+//! switch, at startup). The other three modules — a token-bucket rate
+//! limiter, a proof-of-work puzzle and fixed-size cell padding with chaff —
+//! are complete and tested but NOT wired into any listener or circuit. They
+//! are kept as the starting point for the day padding and admission control
+//! are designed properly; nothing in SECURITY.md claims them, and the
+//! anonymity panel in the browser does not either. Two further modules that
+//! used to live here, a second hybrid KEM and an AES-GCM vault, duplicated
+//! `crypto::handshake` and `crypto::keystore` and were removed; the history
+//! has them.
+
 // ── Layer I: Rate Limiting & DDoS Protection ────────────────────────────
 pub mod rate_limiter {
     use std::collections::HashMap;
@@ -161,10 +174,10 @@ pub mod rate_limiter {
         }
 
         pub fn release_connection(&self, ip: IpAddr) {
-            if let Ok(mut peers) = self.peers.lock() {
-                if let Some(state) = peers.get_mut(&ip) {
-                    state.connection_count = state.connection_count.saturating_sub(1);
-                }
+            if let Ok(mut peers) = self.peers.lock()
+                && let Some(state) = peers.get_mut(&ip)
+            {
+                state.connection_count = state.connection_count.saturating_sub(1);
             }
         }
 
@@ -175,7 +188,7 @@ pub mod rate_limiter {
                     let idle = now.duration_since(state.first_seen);
                     state.connection_count > 0
                         || idle < self.config.cleanup_interval
-                        || state.backoff_until.map_or(false, |u| now < u)
+                        || state.backoff_until.is_some_and(|u| now < u)
                 });
             }
         }
@@ -354,334 +367,6 @@ pub mod traffic {
         use rand::Rng;
         let delay_ms = rand::thread_rng().gen_range(min_ms..=max_ms);
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-    }
-}
-
-// ── Layer II: Post-Quantum Hybrid Handshake (ML-KEM-1024 + X25519) ──────
-//
-// The post-quantum half is FIPS 203 ML-KEM-1024. It used to be pqc_kyber
-// 0.7.1, which is unmaintained and has no fixed release: its AVX2 backend
-// skips the Fujisaki-Okamoto implicit rejection step (RUSTSEC-2026-0290),
-// so an attacker who can feed it chosen ciphertexts recovers the
-// decapsulation key outright, and its division timings leak the secret
-// (RUSTSEC-2023-0079, KyberSlash). Both are fatal to the one property this
-// layer exists to provide, on exactly the x86-64 machines the browser runs
-// on.
-//
-// Hybrid, not ML-KEM alone: a break of either primitive still leaves the
-// other standing, because the session key is a hash of both secrets and
-// neither half can be reconstructed from the other.
-pub mod post_quantum {
-    use ml_kem::ml_kem_1024::{Ciphertext, DecapsulationKey, EncapsulationKey};
-    use ml_kem::{Decapsulate, Encapsulate, Kem, KeyExport, MlKem1024, TryKeyInit};
-    use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
-    use zeroize::{Zeroize, ZeroizeOnDrop};
-
-    use crate::error::{HidraError, Result};
-
-    /// Domain separator for the combiner. Bumped from v1 with the move off
-    /// Kyber round-3: a v1 and a v2 peer derive different keys and simply
-    /// fail to talk, which is the outcome we want — there is no downgrade
-    /// to the broken construction.
-    const COMBINER_DOMAIN: &[u8] = b"HidraNet-Hybrid-KEM-v2-MLKEM1024-X25519";
-
-    #[derive(Zeroize, ZeroizeOnDrop)]
-    pub struct HybridSharedSecret {
-        combined: [u8; 32],
-    }
-
-    impl HybridSharedSecret {
-        pub fn as_bytes(&self) -> &[u8; 32] {
-            &self.combined
-        }
-    }
-
-    pub struct HybridKeyPair {
-        pub x25519_secret: StaticSecret,
-        pub x25519_public: X25519Public,
-        /// ML-KEM-1024 encapsulation key, as it goes on the wire.
-        pub kyber_public: Vec<u8>,
-        /// Decapsulation key. Kept as the library's own type rather than
-        /// loose bytes so it is never accidentally serialized, logged or
-        /// copied, and so it zeroizes itself on drop.
-        decapsulation_key: DecapsulationKey,
-    }
-
-    impl HybridKeyPair {
-        pub fn generate() -> Result<Self> {
-            let mut rng = rand::thread_rng();
-            let x25519_secret = StaticSecret::random_from_rng(&mut rng);
-            let x25519_public = X25519Public::from(&x25519_secret);
-
-            let (decapsulation_key, encapsulation_key) = MlKem1024::generate_keypair();
-
-            Ok(Self {
-                x25519_secret,
-                x25519_public,
-                kyber_public: encapsulation_key.to_bytes().to_vec(),
-                decapsulation_key,
-            })
-        }
-    }
-
-    pub struct HybridEncapsulation {
-        pub x25519_ephemeral_public: [u8; 32],
-        pub kyber_ciphertext: Vec<u8>,
-    }
-
-    pub fn hybrid_encapsulate(
-        peer_x25519_public: &X25519Public,
-        peer_kyber_public: &[u8],
-    ) -> Result<(HybridSharedSecret, HybridEncapsulation)> {
-        let mut rng = rand::thread_rng();
-
-        let ephemeral_secret = StaticSecret::random_from_rng(&mut rng);
-        let ephemeral_public = X25519Public::from(&ephemeral_secret);
-        let x25519_shared = ephemeral_secret.diffie_hellman(peer_x25519_public);
-
-        // A peer who sends a low-order point forces the shared secret to
-        // all zeroes, which would let it fix half the combiner input.
-        if !x25519_shared.was_contributory() {
-            return Err(HidraError::Crypto(
-                "X25519 peer key is a low-order point".into(),
-            ));
-        }
-
-        // Rejects a malformed or non-canonical encapsulation key rather
-        // than encapsulating to it.
-        let encapsulation_key = EncapsulationKey::new_from_slice(peer_kyber_public)
-            .map_err(|_| HidraError::Crypto("ML-KEM encapsulation key rejected".into()))?;
-
-        let (kyber_ct, mut kyber_shared) = encapsulation_key.encapsulate();
-
-        let combined = combine_secrets(
-            x25519_shared.as_bytes(),
-            &kyber_shared,
-            ephemeral_public.as_bytes(),
-            &kyber_ct,
-            peer_kyber_public,
-        );
-        kyber_shared.as_mut_slice().zeroize();
-
-        Ok((
-            HybridSharedSecret { combined },
-            HybridEncapsulation {
-                x25519_ephemeral_public: *ephemeral_public.as_bytes(),
-                kyber_ciphertext: kyber_ct.to_vec(),
-            },
-        ))
-    }
-
-    pub fn hybrid_decapsulate(
-        own_keys: &HybridKeyPair,
-        encapsulation: &HybridEncapsulation,
-    ) -> Result<HybridSharedSecret> {
-        let peer_ephemeral = X25519Public::from(encapsulation.x25519_ephemeral_public);
-        let x25519_shared = own_keys.x25519_secret.diffie_hellman(&peer_ephemeral);
-
-        if !x25519_shared.was_contributory() {
-            return Err(HidraError::Crypto(
-                "X25519 peer key is a low-order point".into(),
-            ));
-        }
-
-        let ciphertext = Ciphertext::try_from(encapsulation.kyber_ciphertext.as_slice())
-            .map_err(|_| {
-                HidraError::Crypto("ML-KEM ciphertext has the wrong length".into())
-            })?;
-
-        // ML-KEM decapsulation never reports failure: a bad ciphertext
-        // yields an unrelated key by implicit rejection, which is what
-        // denies a chosen-ciphertext attacker the oracle it needs. The
-        // mismatch surfaces later, when the AEAD tag does not verify.
-        let mut kyber_shared = own_keys.decapsulation_key.decapsulate(&ciphertext);
-
-        let combined = combine_secrets(
-            x25519_shared.as_bytes(),
-            &kyber_shared,
-            &encapsulation.x25519_ephemeral_public,
-            &encapsulation.kyber_ciphertext,
-            &own_keys.kyber_public,
-        );
-        kyber_shared.as_mut_slice().zeroize();
-
-        Ok(HybridSharedSecret { combined })
-    }
-
-    /// Both secrets plus the full transcript. Hashing the ciphertexts and
-    /// the encapsulation key in as well — not just the two secrets — is
-    /// what keeps the combined key bound to this exchange: a peer cannot
-    /// replay one half against a different transcript and land on the same
-    /// session key. Lengths are prefixed so no two different transcripts
-    /// can serialize to the same byte string.
-    fn combine_secrets(
-        x25519: &[u8; 32],
-        mlkem: &[u8],
-        x25519_ephemeral_public: &[u8; 32],
-        mlkem_ciphertext: &[u8],
-        mlkem_encapsulation_key: &[u8],
-    ) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(COMBINER_DOMAIN);
-        for part in [
-            x25519.as_slice(),
-            mlkem,
-            x25519_ephemeral_public.as_slice(),
-            mlkem_ciphertext,
-            mlkem_encapsulation_key,
-        ] {
-            hasher.update(&(part.len() as u64).to_le_bytes());
-            hasher.update(part);
-        }
-        *hasher.finalize().as_bytes()
-    }
-}
-
-// ── Layer III: Encrypted Local Storage Vault ─────────────────────────────
-pub mod vault {
-    use aes_gcm::{
-        aead::{Aead, KeyInit},
-        Aes256Gcm, Nonce,
-    };
-    use argon2::Argon2;
-    use zeroize::Zeroize;
-
-    use crate::error::{HidraError, Result};
-
-    const SALT_LEN: usize = 32;
-    const NONCE_LEN: usize = 12;
-    const KEY_LEN: usize = 32;
-    const VAULT_MAGIC: &[u8; 4] = b"HVLT";
-    const VAULT_VERSION: u8 = 1;
-
-    pub struct VaultConfig {
-        pub argon2_m_cost: u32,
-        pub argon2_t_cost: u32,
-        pub argon2_p_cost: u32,
-    }
-
-    impl Default for VaultConfig {
-        fn default() -> Self {
-            Self {
-                argon2_m_cost: 65536,
-                argon2_t_cost: 3,
-                argon2_p_cost: 4,
-            }
-        }
-    }
-
-    fn derive_key(
-        passphrase: &[u8],
-        salt: &[u8],
-        config: &VaultConfig,
-    ) -> Result<[u8; KEY_LEN]> {
-        let params = argon2::Params::new(
-            config.argon2_m_cost,
-            config.argon2_t_cost,
-            config.argon2_p_cost,
-            Some(KEY_LEN),
-        )
-        .map_err(|e| HidraError::Crypto(format!("Argon2 params error: {e}")))?;
-
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-        let mut key = [0u8; KEY_LEN];
-        argon2
-            .hash_password_into(passphrase, salt, &mut key)
-            .map_err(|e| HidraError::Crypto(format!("Argon2id KDF failed: {e}")))?;
-        Ok(key)
-    }
-
-    pub fn vault_encrypt(
-        passphrase: &[u8],
-        plaintext: &[u8],
-        config: &VaultConfig,
-    ) -> Result<Vec<u8>> {
-        let mut salt = [0u8; SALT_LEN];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
-
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
-
-        let mut key = derive_key(passphrase, &salt, config)?;
-
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|_| HidraError::Crypto("AES-256-GCM key init failed".into()))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext)
-            .map_err(|_| HidraError::Crypto("AES-256-GCM encryption failed".into()))?;
-
-        key.zeroize();
-
-        // Format: MAGIC(4) | VERSION(1) | SALT(32) | NONCE(12) | CIPHERTEXT(var)
-        let mut out = Vec::with_capacity(4 + 1 + SALT_LEN + NONCE_LEN + ciphertext.len());
-        out.extend_from_slice(VAULT_MAGIC);
-        out.push(VAULT_VERSION);
-        out.extend_from_slice(&salt);
-        out.extend_from_slice(&nonce_bytes);
-        out.extend_from_slice(&ciphertext);
-
-        Ok(out)
-    }
-
-    pub fn vault_decrypt(
-        passphrase: &[u8],
-        sealed: &[u8],
-        config: &VaultConfig,
-    ) -> Result<Vec<u8>> {
-        let header_len = 4 + 1 + SALT_LEN + NONCE_LEN;
-        if sealed.len() < header_len + 16 {
-            return Err(HidraError::Crypto("vault data too short".into()));
-        }
-
-        if &sealed[..4] != VAULT_MAGIC {
-            return Err(HidraError::Crypto("invalid vault magic".into()));
-        }
-        if sealed[4] != VAULT_VERSION {
-            return Err(HidraError::Crypto(format!(
-                "unsupported vault version: {}",
-                sealed[4]
-            )));
-        }
-
-        let salt = &sealed[5..5 + SALT_LEN];
-        let nonce_bytes = &sealed[5 + SALT_LEN..5 + SALT_LEN + NONCE_LEN];
-        let ciphertext = &sealed[header_len..];
-
-        let mut key = derive_key(passphrase, salt, config)?;
-
-        let cipher = Aes256Gcm::new_from_slice(&key)
-            .map_err(|_| HidraError::Crypto("AES-256-GCM key init failed".into()))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| {
-                HidraError::Crypto(
-                    "AES-256-GCM decryption failed — wrong passphrase or tampered data".into(),
-                )
-            })?;
-
-        key.zeroize();
-        Ok(plaintext)
-    }
-
-    pub fn vault_store(
-        path: &std::path::Path,
-        passphrase: &[u8],
-        data: &[u8],
-    ) -> Result<()> {
-        let config = VaultConfig::default();
-        let sealed = vault_encrypt(passphrase, data, &config)?;
-        // Owner-only from the moment it exists, like every other secret.
-        crate::crypto::keys::write_private_file(path, &sealed)
-    }
-
-    pub fn vault_load(path: &std::path::Path, passphrase: &[u8]) -> Result<Vec<u8>> {
-        let sealed = std::fs::read(path)?;
-        let config = VaultConfig::default();
-        vault_decrypt(passphrase, &sealed, &config)
     }
 }
 

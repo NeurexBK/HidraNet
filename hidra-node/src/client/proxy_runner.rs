@@ -115,6 +115,7 @@ async fn discover_relays(
                     name: format!("{}", n.id),
                     addr: n.relay_addr.unwrap_or(n.dht_addr),
                     noise_pubkey_b64: String::new(),
+                    identity_pubkey_b64: String::new(),
                 })
                 .collect();
             info!(count = entries.len(), "discovered relays via DHT");
@@ -135,6 +136,7 @@ async fn discover_relays(
                         name: format!("{}", n.id),
                         addr,
                         noise_pubkey_b64: String::new(),
+                    identity_pubkey_b64: String::new(),
                     });
                 }
             }

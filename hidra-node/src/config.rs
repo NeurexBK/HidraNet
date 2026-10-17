@@ -105,6 +105,11 @@ pub struct RelayInfo {
     pub name: String,
     pub addr: String,
     pub noise_pubkey: String,
+    /// Base64 of the relay's hybrid identity (Ed25519 ‖ ML-DSA-87). When
+    /// set, the relay must prove it in the handshake. Optional, so an
+    /// existing config file still loads.
+    #[serde(default)]
+    pub identity_pubkey: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

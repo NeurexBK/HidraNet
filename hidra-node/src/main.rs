@@ -276,8 +276,14 @@ async fn spawn_local_relays(
         // Known here and nowhere else, so the client pins it from here.
         let relay_pubkey_b64 = base64::engine::general_purpose::STANDARD
             .encode(x25519_dalek::PublicKey::from(&relay_secret).as_bytes());
+        // Likewise a hybrid identity, proved in every handshake.
+        let relay_identity = crypto::hybrid_sig::HybridSigningKey::generate();
+        let relay_identity_b64 = base64::engine::general_purpose::STANDARD
+            .encode(relay_identity.verifying_key().to_bytes());
 
-        let listener = network::listener::NodeListener::bind(addr, relay_secret).await?;
+        let listener = network::listener::NodeListener::bind(addr, relay_secret)
+            .await?
+            .with_identity(relay_identity);
         let relay_num = i + 1;
 
         info!(relay = relay_num, addr = %addr, "local relay node started");
@@ -292,6 +298,7 @@ async fn spawn_local_relays(
             name: format!("local-relay-{relay_num}"),
             addr,
             noise_pubkey_b64: relay_pubkey_b64,
+            identity_pubkey_b64: relay_identity_b64,
         });
     }
 
@@ -578,10 +585,14 @@ async fn run_server_mode(
             // The config lists this local relay without a key; the key was
             // generated a moment ago, so fill it in rather than leave the
             // hop unpinned.
-            Some(r) if r.noise_pubkey_b64.is_empty() => {
-                r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+            Some(r) => {
+                if r.noise_pubkey_b64.is_empty() {
+                    r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+                }
+                if r.identity_pubkey_b64.is_empty() {
+                    r.identity_pubkey_b64 = lr.identity_pubkey_b64.clone();
+                }
             }
-            Some(_) => {}
             None => config_relays.push(lr.clone()),
         }
     }
@@ -831,10 +842,14 @@ async fn run_proxy_mode(
             // The config lists this local relay without a key; the key was
             // generated a moment ago, so fill it in rather than leave the
             // hop unpinned.
-            Some(r) if r.noise_pubkey_b64.is_empty() => {
-                r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+            Some(r) => {
+                if r.noise_pubkey_b64.is_empty() {
+                    r.noise_pubkey_b64 = lr.noise_pubkey_b64.clone();
+                }
+                if r.identity_pubkey_b64.is_empty() {
+                    r.identity_pubkey_b64 = lr.identity_pubkey_b64.clone();
+                }
             }
-            Some(_) => {}
             None => config_relays.push(lr.clone()),
         }
     }
@@ -938,6 +953,7 @@ async fn run_send_mode(
                 name: format!("{}", r.id),
                 addr: r.relay_addr.unwrap_or(r.dht_addr),
                 noise_pubkey_b64: String::new(),
+                identity_pubkey_b64: String::new(),
             })
             .collect();
 
@@ -987,6 +1003,8 @@ async fn run_relay_mode(
     let addr: SocketAddr = listen_addr.parse()?;
 
     let relay_addr = Some(addr);
+    // The DHT takes the signing key below; the listener needs it as well.
+    let relay_signing_key = signing_key.clone();
 
     let dht_node = if app_cfg.dht.enabled {
         let dht_addr: SocketAddr =
@@ -1017,7 +1035,14 @@ async fn run_relay_mode(
         None
     };
 
-    let listener = network::listener::NodeListener::bind(addr, network_secret).await?;
+    // The node's identity with its post-quantum half, proved to every client.
+    let relay_identity = crypto::hybrid_sig::HybridSigningKey::from_parts(
+        relay_signing_key,
+        &crypto::keys::load_or_create_pq_identity_seed(Path::new(&app_cfg.paths.keys_dir))?,
+    );
+    let listener = network::listener::NodeListener::bind(addr, network_secret)
+        .await?
+        .with_identity(relay_identity);
     info!(addr = %addr, "listening for inbound connections");
 
     tokio::select! {
@@ -1111,142 +1136,6 @@ mod tests {
         assert!(security::traffic::is_chaff(&chaff));
         assert_eq!(chaff.len(), security::traffic::PADDED_CELL_SIZE);
         assert!(security::traffic::unpad_message(&chaff).is_err());
-    }
-
-    #[test]
-    fn test_vault_encrypt_decrypt_roundtrip() {
-        let passphrase = b"super-secret-passphrase-42";
-        let data = b"private key material here";
-        let config = security::vault::VaultConfig::default();
-
-        let sealed = security::vault::vault_encrypt(passphrase, data, &config)
-            .expect("encrypt should succeed");
-        let recovered = security::vault::vault_decrypt(passphrase, &sealed, &config)
-            .expect("decrypt should succeed");
-        assert_eq!(recovered, data);
-    }
-
-    #[test]
-    fn test_vault_wrong_passphrase_fails() {
-        let data = b"private key material";
-        let config = security::vault::VaultConfig::default();
-
-        let sealed = security::vault::vault_encrypt(b"correct", data, &config)
-            .expect("encrypt should succeed");
-        let result = security::vault::vault_decrypt(b"wrong", &sealed, &config);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_vault_tampered_data_fails() {
-        let passphrase = b"my-passphrase";
-        let data = b"secret";
-        let config = security::vault::VaultConfig::default();
-
-        let mut sealed = security::vault::vault_encrypt(passphrase, data, &config)
-            .expect("encrypt should succeed");
-        let last = sealed.len() - 1;
-        sealed[last] ^= 0xFF;
-        assert!(security::vault::vault_decrypt(passphrase, &sealed, &config).is_err());
-    }
-
-    #[test]
-    fn test_post_quantum_hybrid_roundtrip() {
-        let keys = security::post_quantum::HybridKeyPair::generate()
-            .expect("keygen should succeed");
-        let peer_x25519_public = keys.x25519_public;
-
-        let (shared_enc, encapsulation) = security::post_quantum::hybrid_encapsulate(
-            &peer_x25519_public,
-            &keys.kyber_public,
-        )
-        .expect("encapsulate should succeed");
-
-        let shared_dec = security::post_quantum::hybrid_decapsulate(&keys, &encapsulation)
-            .expect("decapsulate should succeed");
-
-        assert_eq!(shared_enc.as_bytes(), shared_dec.as_bytes());
-    }
-
-    /// ML-KEM answers a tampered ciphertext with an unrelated key instead of
-    /// an error (Fujisaki-Okamoto implicit rejection). That is the property
-    /// pqc_kyber's AVX2 backend dropped, and losing it is what let a
-    /// chosen-ciphertext attacker walk the decapsulation key out one query at
-    /// a time. Assert the derived key diverges rather than matching.
-    #[test]
-    fn test_post_quantum_tampered_ciphertext_does_not_recover_key() {
-        let keys = security::post_quantum::HybridKeyPair::generate()
-            .expect("keygen should succeed");
-
-        let (shared_enc, mut encapsulation) = security::post_quantum::hybrid_encapsulate(
-            &keys.x25519_public,
-            &keys.kyber_public,
-        )
-        .expect("encapsulate should succeed");
-
-        encapsulation.kyber_ciphertext[0] ^= 0x01;
-
-        let shared_dec = security::post_quantum::hybrid_decapsulate(&keys, &encapsulation)
-            .expect("implicit rejection returns a key, it does not fail");
-
-        assert_ne!(shared_enc.as_bytes(), shared_dec.as_bytes());
-    }
-
-    /// The combiner hashes the transcript, not just the two secrets, so the
-    /// same ML-KEM ciphertext replayed under a different X25519 ephemeral
-    /// cannot land on the session key it was captured from.
-    #[test]
-    fn test_post_quantum_transcript_is_bound_to_session_key() {
-        let keys = security::post_quantum::HybridKeyPair::generate()
-            .expect("keygen should succeed");
-
-        let (shared_enc, mut encapsulation) = security::post_quantum::hybrid_encapsulate(
-            &keys.x25519_public,
-            &keys.kyber_public,
-        )
-        .expect("encapsulate should succeed");
-
-        encapsulation.x25519_ephemeral_public[0] ^= 0x01;
-
-        let shared_dec = security::post_quantum::hybrid_decapsulate(&keys, &encapsulation)
-            .expect("decapsulate should succeed");
-
-        assert_ne!(shared_enc.as_bytes(), shared_dec.as_bytes());
-    }
-
-    /// A malformed encapsulation key is refused outright rather than being
-    /// encapsulated to.
-    #[test]
-    fn test_post_quantum_rejects_malformed_encapsulation_key() {
-        let keys = security::post_quantum::HybridKeyPair::generate()
-            .expect("keygen should succeed");
-
-        let truncated = &keys.kyber_public[..keys.kyber_public.len() - 1];
-        assert!(
-            security::post_quantum::hybrid_encapsulate(&keys.x25519_public, truncated).is_err()
-        );
-        assert!(
-            security::post_quantum::hybrid_encapsulate(&keys.x25519_public, &[]).is_err()
-        );
-    }
-
-    /// Two independent handshakes must never agree on a key.
-    #[test]
-    fn test_post_quantum_distinct_sessions_differ() {
-        let keys = security::post_quantum::HybridKeyPair::generate().expect("keygen");
-
-        let (a, _) = security::post_quantum::hybrid_encapsulate(
-            &keys.x25519_public,
-            &keys.kyber_public,
-        )
-        .expect("encapsulate");
-        let (b, _) = security::post_quantum::hybrid_encapsulate(
-            &keys.x25519_public,
-            &keys.kyber_public,
-        )
-        .expect("encapsulate");
-
-        assert_ne!(a.as_bytes(), b.as_bytes());
     }
 
     #[test]

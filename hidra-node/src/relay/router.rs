@@ -11,7 +11,8 @@ use uuid::Uuid;
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
-use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::handshake::{onion_layer_key, HandshakeState, Role};
+use crate::crypto::hybrid_sig::HybridSigningKey;
 use crate::error::{HidraError, Result};
 use crate::network::connection::{
     read_frame, write_frame, Message, SecureConnection,
@@ -25,13 +26,79 @@ use crate::onion::layer::{
 /// How long a client gets to finish the three handshake messages.
 const HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Circuits one relay holds at once, over all sessions. Each is 64 bytes of
+/// key and a map slot; the cap is against a peer that creates circuits until
+/// the relay runs out of memory, not against any real load.
+pub const MAX_CIRCUITS: usize = 4096;
+/// Circuits one session may create. A client creates one per connection;
+/// a session asking for many is a session filling the table for everyone.
+pub const MAX_CIRCUITS_PER_SESSION: usize = 64;
+
+/// Which key a circuit's onion layers are under.
+///
+/// A client that saw the relay's identity proof derives a layer key from the
+/// session key; one from before the proof uses the session key itself. The
+/// relay cannot tell which it has until the first cell, so both stay
+/// candidates until then and the one that opens the cell is kept.
+enum LayerKey {
+    Undecided { derived: [u8; 32], transport: [u8; 32] },
+    Decided([u8; 32]),
+}
+
 struct CircuitEntry {
-    session_key: [u8; 32],
+    key: LayerKey,
+}
+
+impl CircuitEntry {
+    fn new(session_key: [u8; 32]) -> Self {
+        Self {
+            key: LayerKey::Undecided {
+                derived: onion_layer_key(&session_key),
+                transport: session_key,
+            },
+        }
+    }
 }
 
 impl Drop for CircuitEntry {
     fn drop(&mut self) {
-        self.session_key.zeroize();
+        match &mut self.key {
+            LayerKey::Undecided { derived, transport } => {
+                derived.zeroize();
+                transport.zeroize();
+            }
+            LayerKey::Decided(k) => k.zeroize(),
+        }
+    }
+}
+
+/// Peel one cell with the circuit's key, learning the key from the first
+/// cell when it is not known yet. Returns the header, the inner cell and
+/// the key, for the replies and the streaming loop that follow.
+async fn peel_for(
+    circuits: &Mutex<HashMap<u32, CircuitEntry>>,
+    circuit_id: u32,
+    data: &[u8],
+) -> Result<(LayerHeader, Vec<u8>, [u8; 32])> {
+    let mut map = circuits.lock().await;
+    let entry = map.get_mut(&circuit_id).ok_or_else(|| {
+        HidraError::Circuit(format!("unknown circuit {circuit_id}"))
+    })?;
+    match entry.key {
+        LayerKey::Decided(key) => {
+            let (header, inner) = peel_layer(&key, data)?;
+            Ok((header, inner, key))
+        }
+        LayerKey::Undecided { derived, transport } => {
+            if let Ok((header, inner)) = peel_layer(&derived, data) {
+                entry.key = LayerKey::Decided(derived);
+                return Ok((header, inner, derived));
+            }
+            // A client from before the layers had their own key.
+            let (header, inner) = peel_layer(&transport, data)?;
+            entry.key = LayerKey::Decided(transport);
+            Ok((header, inner, transport))
+        }
     }
 }
 
@@ -46,14 +113,20 @@ pub struct RelayRouter {
     circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     static_secret_bytes: Arc<[u8; 32]>,
     intro_registry: IntroRegistry,
+    /// Proved to every client in message B, when the relay has one.
+    identity: Option<Arc<HybridSigningKey>>,
 }
 
 impl RelayRouter {
-    pub fn new(static_secret_bytes: Arc<[u8; 32]>) -> Self {
+    pub fn new(
+        static_secret_bytes: Arc<[u8; 32]>,
+        identity: Option<Arc<HybridSigningKey>>,
+    ) -> Self {
         Self {
             circuits: Arc::new(Mutex::new(HashMap::new())),
             static_secret_bytes,
             intro_registry: Arc::new(Mutex::new(HashMap::new())),
+            identity,
         }
     }
 
@@ -74,12 +147,14 @@ impl RelayRouter {
         let circuits = Arc::clone(&self.circuits);
         let secret_bytes = Arc::clone(&self.static_secret_bytes);
         let intro_reg = Arc::clone(&self.intro_registry);
+        let identity = self.identity.clone();
         tokio::spawn(
             async move {
                 info!("client connection — starting Noise handshake");
                 if let Err(e) = handle_noise_session(
                     stream,
                     &secret_bytes,
+                    identity.as_deref(),
                     circuits,
                     intro_reg,
                 )
@@ -120,6 +195,7 @@ impl RelayRouter {
 async fn handle_noise_session(
     mut stream: TcpStream,
     secret_bytes: &[u8; 32],
+    identity: Option<&HybridSigningKey>,
     circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     intro_registry: IntroRegistry,
 ) -> Result<()> {
@@ -133,7 +209,12 @@ async fn handle_noise_session(
     let (send_cipher, recv_cipher) = tokio::time::timeout(HANDSHAKE_DEADLINE, async {
         let msg_a = read_frame(&mut stream).await?;
         handshake.read_message_a(&msg_a)?;
-        let msg_b = handshake.write_message_b()?;
+        // With an identity, message B carries the proof of it. A client
+        // from before the proof ignores the payload, as Noise says to.
+        let msg_b = match identity {
+            Some(id) => handshake.write_message_b_proving(id)?,
+            None => handshake.write_message_b()?,
+        };
         write_frame(&mut stream, &msg_b).await?;
         let msg_c = read_frame(&mut stream).await?;
         handshake.read_message_c(&msg_c)?;
@@ -143,9 +224,29 @@ async fn handle_noise_session(
     .map_err(|_| HidraError::Handshake("handshake did not finish in time".into()))??;
     info!("relay Noise XX handshake completed");
     let session_key = recv_cipher.session_key()?;
-    let mut conn =
-        SecureConnection::new(stream, send_cipher, recv_cipher);
+    let conn = SecureConnection::new(stream, send_cipher, recv_cipher);
 
+    // Whatever this session created goes away with it, on every path out:
+    // a circuit used to outlive its client for as long as the relay ran.
+    let mut created: Vec<u32> = Vec::new();
+    let outcome =
+        run_noise_session(conn, session_key, &circuits, &intro_registry, &mut created).await;
+    if !created.is_empty() {
+        let mut map = circuits.lock().await;
+        for id in created {
+            map.remove(&id);
+        }
+    }
+    outcome
+}
+
+async fn run_noise_session(
+    mut conn: SecureConnection,
+    session_key: [u8; 32],
+    circuits: &Arc<Mutex<HashMap<u32, CircuitEntry>>>,
+    intro_registry: &IntroRegistry,
+    created: &mut Vec<u32>,
+) -> Result<()> {
     loop {
         let msg = match conn.recv_message().await {
             Ok(m) => m,
@@ -157,8 +258,23 @@ async fn handle_noise_session(
         match msg {
             Message::CreateCircuit { circuit_id } => {
                 info!(circuit_id, "creating circuit");
-                let mut map = circuits.lock().await;
-                map.insert(circuit_id, CircuitEntry { session_key });
+                if created.len() >= MAX_CIRCUITS_PER_SESSION {
+                    warn!("session asked for more circuits than one client needs; closing it");
+                    return Err(HidraError::Circuit(
+                        "too many circuits from one session".into(),
+                    ));
+                }
+                {
+                    let mut map = circuits.lock().await;
+                    if !map.contains_key(&circuit_id) && map.len() >= MAX_CIRCUITS {
+                        warn!("relay circuit table is full; refusing a new circuit");
+                        return Err(HidraError::Circuit(
+                            "relay circuit table is full".into(),
+                        ));
+                    }
+                    map.insert(circuit_id, CircuitEntry::new(session_key));
+                }
+                created.push(circuit_id);
                 conn.send_message(&Message::CircuitCreated {
                     circuit_id,
                 })
@@ -166,17 +282,7 @@ async fn handle_noise_session(
                 info!(circuit_id, "circuit created");
             }
             Message::Relay { circuit_id, data } => {
-                let key = {
-                    let map = circuits.lock().await;
-                    let entry =
-                        map.get(&circuit_id).ok_or_else(|| {
-                            HidraError::Circuit(format!(
-                                "unknown circuit {circuit_id}"
-                            ))
-                        })?;
-                    entry.session_key
-                };
-                let (header, inner) = peel_layer(&key, &data)?;
+                let (header, inner, key) = peel_for(circuits, circuit_id, &data).await?;
                 info!(
                     circuit_id,
                     has_next_hop = header.next_hop.is_some(),
@@ -237,7 +343,7 @@ async fn handle_noise_session(
                                 &mut conn,
                                 circuit_id,
                                 &key,
-                                &intro_registry,
+                                intro_registry,
                             )
                             .await?;
                             break;
@@ -291,16 +397,7 @@ async fn handle_forwarded(
     let msg = Message::deserialize(&frame)?;
     match msg {
         Message::Relay { circuit_id, data } => {
-            let key = {
-                let map = circuits.lock().await;
-                let entry = map.get(&circuit_id).ok_or_else(|| {
-                    HidraError::Circuit(format!(
-                        "forwarded cell: unknown circuit {circuit_id}"
-                    ))
-                })?;
-                entry.session_key
-            };
-            let (header, inner) = peel_layer(&key, &data)?;
+            let (header, inner, key) = peel_for(&circuits, circuit_id, &data).await?;
             info!(
                 circuit_id,
                 has_next_hop = header.next_hop.is_some(),

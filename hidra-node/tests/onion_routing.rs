@@ -19,6 +19,7 @@ fn make_relays(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
             name: format!("relay-{}", i + 1),
             addr: *addr,
             noise_pubkey_b64: String::new(),
+            identity_pubkey_b64: String::new(),
         })
         .collect()
 }
@@ -116,16 +117,19 @@ async fn three_relay_onion_circuit() {
             name: "relay-1".into(),
             addr: addr1,
             noise_pubkey_b64: String::new(),
+            identity_pubkey_b64: String::new(),
         },
         RelayEntry {
             name: "relay-2".into(),
             addr: addr2,
             noise_pubkey_b64: String::new(),
+            identity_pubkey_b64: String::new(),
         },
         RelayEntry {
             name: "relay-3".into(),
             addr: addr3,
             noise_pubkey_b64: String::new(),
+            identity_pubkey_b64: String::new(),
         },
     ];
 

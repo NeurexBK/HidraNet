@@ -8,6 +8,7 @@ use uuid::Uuid;
 use x25519_dalek::StaticSecret;
 
 use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::hybrid_sig::HybridSigningKey;
 use crate::error::Result;
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::relay::router::RelayRouter;
@@ -22,6 +23,8 @@ const PROTOCOL_BYTE_DEADLINE: std::time::Duration = std::time::Duration::from_se
 pub struct NodeListener {
     listener: TcpListener,
     static_secret: Arc<[u8; 32]>,
+    /// The identity this relay proves in every handshake, when it has one.
+    identity: Option<Arc<HybridSigningKey>>,
 }
 
 impl NodeListener {
@@ -31,11 +34,23 @@ impl NodeListener {
         Ok(Self {
             listener,
             static_secret: Arc::new(static_secret.to_bytes()),
+            identity: None,
         })
     }
 
+    /// Prove this identity (Ed25519 and ML-DSA-87) to every client that
+    /// connects. Without it the relay is authenticated by its X25519 static
+    /// key alone, which is how it always was.
+    pub fn with_identity(mut self, identity: HybridSigningKey) -> Self {
+        self.identity = Some(Arc::new(identity));
+        self
+    }
+
     pub async fn accept_loop(&self) -> Result<()> {
-        let router = Arc::new(RelayRouter::new(Arc::clone(&self.static_secret)));
+        let router = Arc::new(RelayRouter::new(
+            Arc::clone(&self.static_secret),
+            self.identity.clone(),
+        ));
 
         loop {
             let (mut stream, remote_addr) = self.listener.accept().await?;

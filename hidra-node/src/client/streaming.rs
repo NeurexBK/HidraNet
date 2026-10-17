@@ -8,7 +8,9 @@ use tracing::{debug, info};
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
 
-use crate::crypto::handshake::{check_relay_identity, HandshakeState, Role};
+use crate::crypto::handshake::{
+    check_relay_identity, check_relay_pq_identity, onion_layer_key, HandshakeState, Role,
+};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{
     read_frame, write_frame, Message, SecureConnection,
@@ -50,6 +52,7 @@ impl StreamingCircuit {
             let (conn, session_key) = handshake_with_relay(
                 relay.addr,
                 &relay.noise_pubkey_b64,
+                &relay.identity_pubkey_b64,
                 hop_secret,
                 circuit_id,
             )
@@ -306,6 +309,7 @@ fn peel_all_stream_layers(
 async fn handshake_with_relay(
     addr: SocketAddr,
     expected_static_b64: &str,
+    expected_identity_b64: &str,
     static_secret: StaticSecret,
     circuit_id: u32,
 ) -> Result<(SecureConnection, [u8; 32])> {
@@ -324,11 +328,21 @@ async fn handshake_with_relay(
     handshake.read_message_b(&msg_b)?;
     // Known now; refused before our own static key goes out in message C.
     check_relay_identity(&handshake, expected_static_b64)?;
+    check_relay_pq_identity(&handshake, expected_identity_b64)?;
     let msg_c = handshake.write_message_c()?;
     write_frame(&mut stream, &msg_c).await?;
     debug!(relay = %sensitive(&addr), "handshake done");
+    // A relay that proved its identity is new enough to expect the onion
+    // layers under their own key; an older one still expects the transport
+    // key. See onion_layer_key.
+    let layers_have_own_key = handshake.remote_identity_proof_offered();
     let (send_cipher, recv_cipher) = handshake.into_transport()?;
     let session_key = send_cipher.session_key()?;
+    let session_key = if layers_have_own_key {
+        onion_layer_key(&session_key)
+    } else {
+        session_key
+    };
     let mut conn =
         SecureConnection::new(stream, send_cipher, recv_cipher);
     conn.send_message(&Message::CreateCircuit { circuit_id })

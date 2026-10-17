@@ -10,6 +10,7 @@ use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::crypto::hybrid_sig::{HybridSignature, HybridSigningKey, HybridVerifyingKey};
 use crate::error::{HidraError, Result};
 
 // Noise XX with hybrid forward secrecy: the X25519 exchange is joined by an
@@ -258,7 +259,20 @@ pub struct HandshakeState {
     /// Responder only: the initiator's encapsulation key, read from message A
     /// and used in message B.
     re1: Option<EncapsulationKey>,
+    /// Initiator only: the payload of message B, when the responder sent one.
+    /// A responder that proves its identity puts the proof here; an older
+    /// one sends nothing, and the field stays empty.
+    peer_identity_proof: Option<Vec<u8>>,
+    /// Initiator only: the transcript hash the proof was made over — the
+    /// state just before message B's payload was mixed in.
+    proof_transcript: Option<[u8; 32]>,
 }
+
+/// Domain separator for the identity proof. The signature covers the
+/// transcript hash, which already commits to both ephemerals, the ML-KEM
+/// material and the responder's encrypted static key.
+const IDENTITY_PROOF_DOMAIN: &[u8] = b"HidraNet-noise-identity-proof-v1";
+const IDENTITY_PROOF_VERSION: u8 = 0x01;
 
 impl HandshakeState {
     pub fn new(role: Role, static_secret: StaticSecret) -> Self {
@@ -271,6 +285,8 @@ impl HandshakeState {
             role,
             e1: None,
             re1: None,
+            peer_identity_proof: None,
+            proof_transcript: None,
         }
     }
 
@@ -352,6 +368,29 @@ impl HandshakeState {
     // cannot read the static key, let alone the transport.
     // -----------------------------------------------------------------------
     pub fn write_message_b(&mut self) -> Result<Vec<u8>> {
+        self.write_message_b_with(|_| Ok(Vec::new()))
+    }
+
+    /// Message B carrying a proof of who the responder is.
+    ///
+    /// Noise XX authenticates the responder's X25519 static key, and that is
+    /// a key a quantum computer recovers from its public half. The proof is
+    /// a hybrid signature (Ed25519 and ML-DSA-87, both required) over the
+    /// transcript hash, which commits to that static key and to everything
+    /// exchanged so far. An initiator that holds the responder's identity
+    /// checks it with [`verify_remote_identity`](Self::verify_remote_identity).
+    ///
+    /// It rides in the payload Noise reserves for exactly this, which until
+    /// now went empty. An initiator from before this decrypts the payload
+    /// and ignores it, as Noise says to, so the two keep talking.
+    pub fn write_message_b_proving(&mut self, identity: &HybridSigningKey) -> Result<Vec<u8>> {
+        self.write_message_b_with(|h| identity_proof(identity, h))
+    }
+
+    fn write_message_b_with(
+        &mut self,
+        payload: impl FnOnce(&[u8; 32]) -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
         // e — generate ephemeral
         let e = StaticSecret::random_from_rng(OsRng);
         let e_pub = PublicKey::from(&e);
@@ -406,7 +445,9 @@ impl HandshakeState {
         };
         self.sym()?.mix_key(es_dh.as_bytes());
 
-        let payload_ct = self.sym()?.encrypt_and_hash(&[])?;
+        let h = self.sym()?.h;
+        let payload = payload(&h)?;
+        let payload_ct = self.sym()?.encrypt_and_hash(&payload)?;
         msg.extend_from_slice(&payload_ct);
         Ok(msg)
     }
@@ -482,7 +523,15 @@ impl HandshakeState {
         };
         self.sym()?.mix_key(es_dh.as_bytes());
 
-        self.sym()?.decrypt_and_hash(&message[off..])?;
+        // The payload, kept rather than dropped: a responder that proves
+        // its identity puts the proof here. Its transcript is the hash
+        // before the payload itself is mixed in, which is what was signed.
+        let h = self.sym()?.h;
+        let payload = self.sym()?.decrypt_and_hash(&message[off..])?;
+        if !payload.is_empty() {
+            self.peer_identity_proof = Some(payload);
+            self.proof_transcript = Some(h);
+        }
         Ok(())
     }
 
@@ -629,6 +678,105 @@ impl HandshakeState {
             ))
         }
     }
+}
+
+impl HandshakeState {
+    /// Whether the responder sent an identity proof in message B.
+    pub fn remote_identity_proof_offered(&self) -> bool {
+        self.peer_identity_proof.is_some()
+    }
+
+    /// Check the responder's identity proof against the identity expected.
+    ///
+    /// Refuses when no proof was sent: a caller that holds an expected
+    /// identity is saying this peer must prove it, and an older responder
+    /// cannot. Refuses on either half failing, without saying which.
+    pub fn verify_remote_identity(&self, expected: &HybridVerifyingKey) -> Result<()> {
+        let (proof, h) = match (&self.peer_identity_proof, &self.proof_transcript) {
+            (Some(p), Some(h)) => (p, h),
+            _ => {
+                return Err(HidraError::Handshake(
+                    "relay did not prove its identity; an identity is pinned for it, \
+                     so this is either an older relay or an impostor"
+                        .into(),
+                ))
+            }
+        };
+        let signature = parse_identity_proof(proof)?;
+        expected
+            .verify(&identity_proof_message(h), &signature)
+            .map_err(|_| {
+                HidraError::Handshake(
+                    "relay identity proof does not match the pinned identity; refusing".into(),
+                )
+            })
+    }
+}
+
+fn identity_proof_message(h: &[u8; 32]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(IDENTITY_PROOF_DOMAIN.len() + 32);
+    m.extend_from_slice(IDENTITY_PROOF_DOMAIN);
+    m.extend_from_slice(h);
+    m
+}
+
+/// `version ‖ Ed25519 signature ‖ ML-DSA-87 signature`.
+fn identity_proof(identity: &HybridSigningKey, h: &[u8; 32]) -> Result<Vec<u8>> {
+    let sig = identity.sign(&identity_proof_message(h))?;
+    let mut out = Vec::with_capacity(1 + sig.ed25519.len() + sig.mldsa.len());
+    out.push(IDENTITY_PROOF_VERSION);
+    out.extend_from_slice(&sig.ed25519);
+    out.extend_from_slice(&sig.mldsa);
+    Ok(out)
+}
+
+fn parse_identity_proof(proof: &[u8]) -> Result<HybridSignature> {
+    match proof.first() {
+        Some(&IDENTITY_PROOF_VERSION) => HybridSignature::from_bytes(&proof[1..]),
+        Some(other) => Err(HidraError::Handshake(format!(
+            "unknown identity proof version {other}"
+        ))),
+        None => Err(HidraError::Handshake("empty identity proof".into())),
+    }
+}
+
+/// The key the onion layers use between a client and one relay.
+///
+/// The layers used to encrypt under the transport key itself — the same 32
+/// bytes that the Noise transport uses with a counter nonce, reused with a
+/// random nonce. Nothing was known to break, but one key in two AEAD uses is
+/// the kind of thing that stops being fine the day one of the uses changes,
+/// and an auditor is right to flag it. This derives a separate key.
+///
+/// A client uses it when the relay proved its identity in message B, which
+/// is exactly when the relay is new enough to expect it; against an older
+/// relay the client keeps the transport key, and a new relay still accepts
+/// an older client by trying the transport key when the derived one does
+/// not open the first cell. So the split lands without anyone being cut off.
+pub fn onion_layer_key(transport_key: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("HidraNet onion layer key v1", transport_key)
+}
+
+/// Hold the relay to its post-quantum identity when one is pinned.
+///
+/// With nothing pinned there is nothing to compare against, so a proof the
+/// relay offered is noted and the hop is otherwise treated as before. With
+/// an identity pinned, the relay must prove it, both halves.
+pub fn check_relay_pq_identity(handshake: &HandshakeState, expected_b64: &str) -> Result<()> {
+    if expected_b64.trim().is_empty() {
+        if handshake.remote_identity_proof_offered() {
+            tracing::debug!(
+                "relay offered a post-quantum identity proof, but none is pinned to check it \
+                 against; set identity_pubkey in the relay's config entry"
+            );
+        }
+        return Ok(());
+    }
+    let bytes = BASE64.decode(expected_b64.trim()).map_err(|_| {
+        HidraError::Handshake("expected relay identity is not valid base64".into())
+    })?;
+    let expected = HybridVerifyingKey::from_bytes(&bytes)?;
+    handshake.verify_remote_identity(&expected)
 }
 
 /// Pin the relay's key when one is known, and say so when it is not.
@@ -845,6 +993,83 @@ mod tests {
         assert!(check_relay_identity(&init, &BASE64.encode(other.as_bytes())).is_err());
         assert!(init.verify_remote_static("not base64!").is_err());
         assert!(init.verify_remote_static(&BASE64.encode([1u8; 16])).is_err());
+    }
+
+    fn run(init: &mut HandshakeState, resp: &mut HandshakeState, identity: Option<&HybridSigningKey>) {
+        let a = init.write_message_a().unwrap();
+        resp.read_message_a(&a).unwrap();
+        let b = match identity {
+            Some(id) => resp.write_message_b_proving(id).unwrap(),
+            None => resp.write_message_b().unwrap(),
+        };
+        init.read_message_b(&b).unwrap();
+        let c = init.write_message_c().unwrap();
+        resp.read_message_c(&c).unwrap();
+    }
+
+    /// The responder proves its hybrid identity; the initiator checks it,
+    /// and a different identity is refused even though the Noise handshake
+    /// itself succeeded.
+    #[test]
+    fn the_responder_can_prove_a_post_quantum_identity() {
+        let identity = HybridSigningKey::generate();
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        run(&mut init, &mut resp, Some(&identity));
+
+        assert!(init.remote_identity_proof_offered());
+        init.verify_remote_identity(&identity.verifying_key()).unwrap();
+        let pinned = BASE64.encode(identity.verifying_key().to_bytes());
+        check_relay_pq_identity(&init, &pinned).unwrap();
+
+        let other = HybridSigningKey::generate();
+        assert!(init.verify_remote_identity(&other.verifying_key()).is_err());
+        assert!(check_relay_pq_identity(&init, &BASE64.encode(other.verifying_key().to_bytes())).is_err());
+
+        // The session keys are unaffected by the proof: both sides agree.
+        let (i_send, _) = init.into_transport().unwrap();
+        let (_, r_recv) = resp.into_transport().unwrap();
+        assert_eq!(i_send.session_key().unwrap(), r_recv.session_key().unwrap());
+    }
+
+    /// An older responder sends no proof. With nothing pinned that is fine;
+    /// with an identity pinned it is refused, because the pin says this
+    /// relay must prove itself.
+    #[test]
+    fn an_unproven_responder_passes_only_when_nothing_is_pinned() {
+        let mut init = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        run(&mut init, &mut resp, None);
+        assert!(!init.remote_identity_proof_offered());
+        check_relay_pq_identity(&init, "").unwrap();
+        let pinned = BASE64.encode(HybridSigningKey::generate().verifying_key().to_bytes());
+        assert!(check_relay_pq_identity(&init, &pinned).is_err());
+    }
+
+    /// A proof that is not for this transcript is refused: the signature
+    /// from one handshake cannot be replayed into another.
+    #[test]
+    fn a_proof_from_another_handshake_is_refused() {
+        let identity = HybridSigningKey::generate();
+        let mut init1 = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp1 = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        run(&mut init1, &mut resp1, Some(&identity));
+        let stolen = init1.peer_identity_proof.clone().unwrap();
+
+        let mut init2 = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp2 = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        run(&mut init2, &mut resp2, Some(&identity));
+        init2.peer_identity_proof = Some(stolen);
+        assert!(init2.verify_remote_identity(&identity.verifying_key()).is_err());
+
+        // And a mangled proof is refused, never panicked on.
+        let mut init3 = HandshakeState::new(Role::Initiator, StaticSecret::random_from_rng(OsRng));
+        let mut resp3 = HandshakeState::new(Role::Responder, StaticSecret::random_from_rng(OsRng));
+        run(&mut init3, &mut resp3, Some(&identity));
+        for bad in [vec![], vec![0x09], vec![0x01, 0, 0], vec![0x01; 5000]] {
+            init3.peer_identity_proof = Some(bad);
+            assert!(init3.verify_remote_identity(&identity.verifying_key()).is_err());
+        }
     }
 
     /// No pinned key means connect and warn, not refuse: refusing would take

@@ -132,7 +132,11 @@ pub async fn run_api_server(addr: SocketAddr, state: Arc<ApiState>) {
     }
 }
 
-/// The bearer token on a request, from the header or the query string.
+/// The bearer token on a request, from the `Authorization` header.
+///
+/// It used to be accepted in the query string as well. A URL ends up in
+/// browser history, in proxy logs and in referrers, which is no place for a
+/// secret, and nothing that calls this endpoint needs the query form.
 fn presented_token(request: &str) -> Option<&str> {
     let head = request.split("\r\n\r\n").next().unwrap_or(request);
 
@@ -147,12 +151,7 @@ fn presented_token(request: &str) -> Option<&str> {
             return value.trim().strip_prefix("Bearer ").map(str::trim);
         }
     }
-
-    // ?token=… on the request line, for callers that cannot set headers.
-    let request_line = head.split("\r\n").next()?;
-    let target = request_line.split(' ').nth(1)?;
-    let query = target.split_once('?')?.1;
-    query.split('&').find_map(|p| p.strip_prefix("token="))
+    None
 }
 
 /// Compare in constant time: a token checked with `==` leaks its prefix to
@@ -323,14 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn a_token_is_read_from_the_header_and_the_query() {
+    fn a_token_is_read_from_the_header_and_never_from_the_query() {
         assert_eq!(
             presented_token("GET /api/circuit HTTP/1.1\r\nAuthorization: Bearer abc123\r\n\r\n"),
             Some("abc123")
         );
+        // A secret in a URL lands in history and logs; the query form is gone.
         assert_eq!(
             presented_token("GET /api/circuit?token=abc123 HTTP/1.1\r\nHost: x\r\n\r\n"),
-            Some("abc123")
+            None
         );
         assert_eq!(
             presented_token("GET /api/circuit HTTP/1.1\r\nHost: x\r\n\r\n"),
