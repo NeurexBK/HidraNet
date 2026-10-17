@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::client::circuit_pool::CircuitPool;
 use crate::client::streaming::StreamingCircuit;
+use crate::crypto::service_channel;
 use crate::error::{HidraError, Result};
 use crate::p2p::dht::DhtNode;
 use crate::proxy::resolver;
@@ -115,10 +116,14 @@ async fn handle_inner(
         let mut circuit = connect_service_with_failover(
             pool,
             &service_hash,
+            &intro_points,
             &target_domain,
             client_addr,
         )
         .await?;
+        // Everything from here on is end-to-end encrypted to the service, and
+        // the service has proved it holds the key the address was made from.
+        let mut channel = open_service_channel(&mut circuit, service_hash).await?;
         let circuit_id = circuit.circuit_id();
         let hop_count = circuit.hop_count();
         let relay_chain = circuit.relay_chain_display();
@@ -132,9 +137,10 @@ async fn handle_inner(
         socks5::send_success(browser).await?;
         let mut bytes_sent: u64 = 0;
         let mut bytes_received: u64 = 0;
-        stream_bidirectional(
+        stream_service_channel(
             browser,
             &mut circuit,
+            &mut channel,
             &mut bytes_sent,
             &mut bytes_received,
         )
@@ -242,13 +248,23 @@ async fn connect_with_failover(
 async fn connect_service_with_failover(
     pool: &CircuitPool,
     service_hash: &[u8; 20],
+    intro_points: &[SocketAddr],
     target_domain: &str,
     client_addr: SocketAddr,
 ) -> Result<StreamingCircuit> {
+    if intro_points.is_empty() {
+        return Err(HidraError::Circuit(
+            "hidden service descriptor names no introduction point".into(),
+        ));
+    }
     let mut backoff = Duration::from_millis(INITIAL_BACKOFF_MS);
     let mut last_error = None;
     for attempt in 0..MAX_RETRIES {
-        let mut circuit = match pool.get_circuit().await {
+        // The circuit has to end at the relay the service registered at, the
+        // one its descriptor names. It used to be any pooled circuit, which
+        // reached the service only when its exit happened to be that relay.
+        let intro = intro_points[attempt % intro_points.len()];
+        let mut circuit = match pool.build_circuit_ending_at(intro).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(
@@ -329,6 +345,69 @@ async fn stream_bidirectional(
                         debug!(error = %e, "circuit recv error");
                         break;
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Run the end-to-end handshake with the service over a connected circuit.
+async fn open_service_channel(
+    circuit: &mut StreamingCircuit,
+    service_hash: [u8; 20],
+) -> Result<service_channel::Channel> {
+    let (handshake, hello) = service_channel::ClientHandshake::start(service_hash);
+    circuit.send_data(&hello).await?;
+    let accept = tokio::time::timeout(Duration::from_secs(20), circuit.recv_data())
+        .await
+        .map_err(|_| HidraError::Circuit("hidden service did not answer the handshake".into()))??
+        .ok_or_else(|| HidraError::Circuit("hidden service closed during the handshake".into()))?;
+    handshake.finish(&accept)
+}
+
+/// Like `stream_bidirectional`, with every record sealed to the service. The
+/// introduction relay that bridges the two circuits sees only ciphertext.
+async fn stream_service_channel(
+    browser: &mut TcpStream,
+    circuit: &mut StreamingCircuit,
+    channel: &mut service_channel::Channel,
+    bytes_sent: &mut u64,
+    bytes_received: &mut u64,
+) {
+    let mut browser_buf = vec![0u8; 16384];
+    loop {
+        tokio::select! {
+            n = browser.read(&mut browser_buf) => {
+                match n {
+                    Ok(0) | Err(_) => {
+                        let _ = circuit.send_end().await;
+                        break;
+                    }
+                    Ok(n) => {
+                        *bytes_sent += n as u64;
+                        let Ok(record) = channel.seal(&browser_buf[..n]) else { break };
+                        if circuit.send_data(&record).await.is_err() { break; }
+                    }
+                }
+            }
+            data_result = circuit.recv_data() => {
+                match data_result {
+                    Ok(Some(record)) => match channel.open(&record) {
+                        Ok(service_channel::Inbound::Data(data)) => {
+                            *bytes_received += data.len() as u64;
+                            if browser.write_all(&data).await.is_err() { break; }
+                        }
+                        Ok(service_channel::Inbound::Close) => {
+                            let _ = circuit.send_end().await;
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "hidden service record rejected");
+                            let _ = circuit.send_end().await;
+                            break;
+                        }
+                    },
+                    Ok(None) | Err(_) => break,
                 }
             }
         }

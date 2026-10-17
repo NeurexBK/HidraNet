@@ -186,6 +186,9 @@ struct Cli {
 
     #[arg(long, help = "Run SevenNine.hidra website builder on port 8084")]
     sevennine: bool,
+
+    #[arg(long, help = "With --sevennine: also publish the sites on the network as a hidden service")]
+    publish: bool,
 }
 
 const LOCAL_RELAY_PORTS: [u16; 3] = [7001, 7002, 7003];
@@ -234,7 +237,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let signing_key = SigningKey::from_bytes(&keys.identity_signing.to_bytes());
 
-    if cli.sevennine {
+    if cli.sevennine && cli.publish {
+        // The builder on 8084, published as this node's hidden service, so
+        // other people reach its sites. Plain --sevennine never did: it opened
+        // no DHT and no service, and "publish" only saved to disk. If the
+        // network side cannot start, the builder still comes up locally.
+        let mut cfg = app_cfg.clone();
+        cfg.hidden_service.app = Some("sevennine".into());
+        cfg.hidden_service.local_port = 8084;
+        if let Err(e) = run_server_mode(&cfg, network_secret, signing_key).await {
+            tracing::warn!(error = %e, "SevenNine could not be published on the network; running locally");
+            run_sevennine_mode(&app_cfg).await?;
+        }
+    } else if cli.sevennine {
         run_sevennine_mode(&app_cfg).await?;
     } else if cli.dashboard {
         run_dashboard_mode(&app_cfg).await?;
@@ -260,6 +275,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     info!("node stopped");
     Ok(())
+}
+
+/// Entries for local relays started by another process on this machine.
+fn existing_local_relays() -> Vec<relay::registry::RelayEntry> {
+    LOCAL_RELAY_PORTS
+        .iter()
+        .enumerate()
+        .map(|(i, &port)| relay::registry::RelayEntry {
+            name: format!("local-relay-{}", i + 1),
+            addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            noise_pubkey_b64: String::new(),
+        })
+        .collect()
 }
 
 async fn spawn_local_relays(
@@ -548,7 +576,16 @@ async fn run_server_mode(
     );
 
     info!("spawning local relay nodes...");
-    let local_relays = spawn_local_relays().await?;
+    // The browser's proxy already runs the local relays on these ports when
+    // SevenNine is published from it, and binding them twice failed the whole
+    // service. Those relays are the same ones, so they are used instead.
+    let local_relays = match spawn_local_relays().await {
+        Ok(relays) => relays,
+        Err(e) => {
+            warn!(error = %e, "local relays already running; using them");
+            existing_local_relays()
+        }
+    };
 
     let dht_addr: SocketAddr = format!("0.0.0.0:{}", app_cfg.dht.port).parse()?;
     let dht_signing_key = ed25519_dalek::SigningKey::generate(
@@ -587,7 +624,10 @@ async fn run_server_mode(
 
     let local_port = app_cfg.hidden_service.local_port;
 
-    let intro_addr = relays[0].addr;
+    // The service registers at the last hop of its circuit, which is built
+    // from the first three relays. Announcing relays[0] sent every visitor to
+    // a relay where the service was not registered.
+    let intro_addr = relays[2].addr;
     if let Err(e) = dht.announce_service(
         service_hash,
         vec![intro_addr],
@@ -602,19 +642,8 @@ async fn run_server_mode(
         "announced service in DHT"
     );
 
-    let mut server_secret_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut server_secret_bytes);
-    let server_secret = StaticSecret::from(server_secret_bytes);
-    server_secret_bytes.zeroize();
-
     info!("building circuit to introduction point...");
-    let mut intro_circuit = client::streaming::StreamingCircuit::build(
-        &relays,
-        server_secret,
-    )
-    .await?;
-
-    intro_circuit.register_service(service_hash.to_vec()).await?;
+    let intro_circuit = register_intro_circuit(&relays, service_hash).await?;
     info!("registered at introduction point");
 
     let app_name = app_cfg.hidden_service.app.as_deref();
@@ -678,9 +707,11 @@ async fn run_server_mode(
             .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
         let sn_data = data_dir.clone();
         let (dht_tx, mut dht_rx) = tokio::sync::mpsc::channel::<apps::sevennine::DhtAnnouncement>(64);
+        let sn_address = hidra_address.to_string();
         tokio::spawn(async move {
             let manager = std::sync::Arc::new(
                 apps::sevennine::SiteManager::new_with_dht(&sn_data, dht_tx, sevennine_port)
+                    .with_network_address(&sn_address)
             );
             // Re-announce existing sites to DHT on startup
             manager.announce_all_sites().await;
@@ -733,52 +764,207 @@ async fn run_server_mode(
         info!("╚══════════════════════════════════════════════════════════════╝");
     }
 
-    // Service loop: receive client data from intro point, forward to local server
+    // Service loop: serve visitors through the introduction point, and come
+    // back when the circuit to it drops instead of going offline for good.
+    let service_signing = SigningKey::from_bytes(&service_keys.signing_key.to_bytes());
+    let mut intro_circuit = intro_circuit;
+    let mut backoff = std::time::Duration::from_secs(1);
     loop {
-        tokio::select! {
-            data_result = intro_circuit.recv_data() => {
-                match data_result {
-                    Ok(Some(data)) => {
-                        let local_addr = format!("127.0.0.1:{local_port}");
-                        match tokio::net::TcpStream::connect(&local_addr).await {
-                            Ok(mut local_stream) => {
-                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                                if local_stream.write_all(&data).await.is_ok() {
-                                    let mut response_buf = vec![0u8; 16384];
-                                    match local_stream.read(&mut response_buf).await {
-                                        Ok(0) => {}
-                                        Ok(n) => {
-                                            let _ = intro_circuit.send_data(&response_buf[..n]).await;
-                                        }
-                                        Err(e) => {
-                                            debug!(error = %e, "local server read error");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, local_port, "failed to connect to local server");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        info!("intro circuit closed, reconnecting...");
-                        break;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "intro circuit error");
-                        break;
-                    }
+        if serve_intro_circuit(&mut intro_circuit, &service_signing, local_port).await
+            == ServeEnd::Shutdown
+        {
+            break;
+        }
+        info!("intro circuit closed, reconnecting...");
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(backoff) => {}
+                _ = tokio::signal::ctrl_c() => {
+                    info!("received shutdown signal");
+                    return Ok(());
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("received shutdown signal");
-                break;
+            match register_intro_circuit(&relays, service_hash).await {
+                Ok(circuit) => {
+                    intro_circuit = circuit;
+                    backoff = std::time::Duration::from_secs(1);
+                    info!("registered at introduction point again");
+                    break;
+                }
+                Err(e) => {
+                    warn!(error = %e, "could not reach the introduction point; retrying");
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Build a circuit over the first three relays and register the service at
+/// its last hop, the relay announced as its introduction point.
+async fn register_intro_circuit(
+    relays: &[relay::registry::RelayEntry],
+    service_hash: [u8; 20],
+) -> std::result::Result<client::streaming::StreamingCircuit, Box<dyn std::error::Error>> {
+    let mut server_secret_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut server_secret_bytes);
+    let server_secret = StaticSecret::from(server_secret_bytes);
+    server_secret_bytes.zeroize();
+
+    let mut circuit = client::streaming::StreamingCircuit::build(relays, server_secret).await?;
+    circuit.register_service(service_hash.to_vec()).await?;
+    Ok(circuit)
+}
+
+#[derive(PartialEq, Eq)]
+enum ServeEnd {
+    /// The circuit to the introduction point is gone; build another.
+    Closed,
+    /// The operator asked to stop.
+    Shutdown,
+}
+
+/// Read from the local app when a session has a connection to it; otherwise
+/// wait forever, so the other branches of the select decide.
+async fn read_local(
+    local: &mut Option<tokio::net::TcpStream>,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
+    match local {
+        Some(stream) => stream.read(buf).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Serve visitors over one circuit to the introduction point.
+///
+/// The introduction relay hands visitors to this circuit one after another.
+/// Each starts with the end-to-end handshake (`crypto::service_channel`), so
+/// a HELLO marks a new visitor, and everything after it is sealed to that
+/// visitor's keys: the relay carries only ciphertext. Each session gets its
+/// own connection to the local app, kept for as long as the app keeps it,
+/// and the whole reply goes back, not just its first 16 KB.
+async fn serve_intro_circuit(
+    circuit: &mut client::streaming::StreamingCircuit,
+    signing_key: &SigningKey,
+    local_port: u16,
+) -> ServeEnd {
+    use crypto::service_channel::{self, Inbound};
+    use tokio::io::AsyncWriteExt;
+
+    enum Event {
+        Record(crate::error::Result<Option<Vec<u8>>>),
+        Local(std::io::Result<usize>),
+        Stop,
+    }
+
+    let mut session: Option<service_channel::Channel> = None;
+    let mut local: Option<tokio::net::TcpStream> = None;
+    let mut buf = vec![0u8; 16384];
+
+    loop {
+        let event = tokio::select! {
+            r = circuit.recv_data() => Event::Record(r),
+            n = read_local(&mut local, &mut buf) => Event::Local(n),
+            _ = tokio::signal::ctrl_c() => Event::Stop,
+        };
+
+        match event {
+            Event::Stop => {
+                info!("received shutdown signal");
+                return ServeEnd::Shutdown;
+            }
+            Event::Record(Ok(Some(record))) => {
+                if service_channel::is_hello(&record) {
+                    local = None;
+                    session = None;
+                    match service_channel::accept(signing_key, &record) {
+                        Ok((channel, accept)) => {
+                            if circuit.send_data(&accept).await.is_err() {
+                                return ServeEnd::Closed;
+                            }
+                            session = Some(channel);
+                        }
+                        Err(e) => debug!(error = %e, "visitor handshake rejected"),
+                    }
+                    continue;
+                }
+                let Some(channel) = session.as_mut() else {
+                    // Plaintext from before the end-to-end channel, or a
+                    // record from a session that already ended.
+                    debug!("record outside a session dropped");
+                    continue;
+                };
+                match channel.open(&record) {
+                    Ok(Inbound::Data(data)) => {
+                        if local.is_none() {
+                            match tokio::net::TcpStream::connect(("127.0.0.1", local_port)).await {
+                                Ok(stream) => local = Some(stream),
+                                Err(e) => {
+                                    warn!(error = %e, local_port, "failed to connect to local server");
+                                    if let Ok(close) = channel.seal_close() {
+                                        let _ = circuit.send_data(&close).await;
+                                    }
+                                    session = None;
+                                    continue;
+                                }
+                            }
+                        }
+                        if let Some(stream) = local.as_mut() {
+                            if stream.write_all(&data).await.is_err() {
+                                local = None;
+                            }
+                        }
+                    }
+                    Ok(Inbound::Close) => {
+                        local = None;
+                        session = None;
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "visitor record rejected; session ended");
+                        local = None;
+                        session = None;
+                    }
+                }
+            }
+            Event::Record(Ok(None)) => return ServeEnd::Closed,
+            Event::Record(Err(e)) => {
+                warn!(error = %e, "intro circuit error");
+                return ServeEnd::Closed;
+            }
+            Event::Local(Ok(n)) if n > 0 => {
+                if let Some(channel) = session.as_mut() {
+                    match channel.seal(&buf[..n]) {
+                        Ok(record) => {
+                            if circuit.send_data(&record).await.is_err() {
+                                return ServeEnd::Closed;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "could not seal reply");
+                            local = None;
+                        }
+                    }
+                }
+            }
+            Event::Local(_) => {
+                // The app finished its reply: tell the visitor, so the
+                // browser does not wait on a connection nobody will use.
+                local = None;
+                if let Some(channel) = session.as_mut() {
+                    if let Ok(close) = channel.seal_close() {
+                        if circuit.send_data(&close).await.is_err() {
+                            return ServeEnd::Closed;
+                        }
+                    }
+                }
+                session = None;
+            }
+        }
+    }
 }
 
 async fn run_proxy_mode(

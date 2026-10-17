@@ -36,8 +36,8 @@ pub async fn run_client_session(
     for (i, relay) in relays.iter().take(3).enumerate() {
         info!(
             hop = i,
-            relay = %relay.name,
-            addr = %relay.addr,
+            relay = %sensitive(&relay.name),
+            addr = %sensitive(&relay.addr),
             "establishing Noise XX handshake with relay"
         );
 
@@ -56,7 +56,7 @@ pub async fn run_client_session(
 
         info!(
             hop = i,
-            relay = %relay.name,
+            relay = %sensitive(&relay.name),
             "handshake completed, circuit extended"
         );
     }

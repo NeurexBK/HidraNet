@@ -753,8 +753,18 @@ class TabManager {
     const hostname = hidraUrl.replace('hidra://', '').split('/')[0];
     const pathPart = hidraUrl.replace('hidra://', '').substring(hostname.length);
 
-    // Network .hidra address (encrypted site on the relay): long base32 label.
     const label = hostname.replace('.hidra', '');
+
+    // A hidden service's own address: forty hex characters, the hash of its
+    // key. It is reached through the onion network, which the tab's proxy
+    // already carries, so it loads as a plain URL. Typed without "http://"
+    // it used to fall through to the lookups below and end at HidraReview.
+    if (/^[0-9a-f]{40}$/i.test(label)) {
+      this._loadLater(tab, seq, 'http://' + hostname.toLowerCase() + pathPart);
+      return;
+    }
+
+    // Network .hidra address (encrypted site on the relay): long base32 label.
     if (label.length >= 24 && /^[a-z2-7]+$/.test(label)) {
       this._loadLater(tab, seq, APPS_ORIGIN + '/site?addr=' + encodeURIComponent(hostname));
       return;

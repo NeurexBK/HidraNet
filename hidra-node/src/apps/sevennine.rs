@@ -23,6 +23,39 @@ pub struct DhtAnnouncement {
     pub service_pubkey: [u8; 32],
 }
 
+// ─── Limits ──────────────────────────────────────────────────────────────────
+
+/// Largest single file a site may hold. The builder's page promises this
+/// figure, and the server used to read only 512 KB of any request and save
+/// whatever arrived, so a larger upload was reported as done and stored
+/// truncated.
+const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Largest publish of a whole site (every generated page together).
+const MAX_SITE_BYTES: usize = 5_000_000;
+
+/// Largest request body the server reads: one file or one publish, plus the
+/// multipart framing around it. Anything bigger is refused with 413 before it
+/// is read, instead of being cut short in silence.
+const MAX_BODY_BYTES: usize = MAX_FILE_BYTES + 64 * 1024;
+
+/// Headers larger than this are not a browser's.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// How long a client gets to send its whole request. Without a limit, each
+/// half-open connection held its buffer forever, which matters once the
+/// builder is reachable over the network as a hidden service.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What a site may be made of. Everything a page can show or link, and
+/// nothing that only makes sense as a download of a program.
+const ALLOWED_EXTENSIONS: &[&str] = &[
+    "html", "htm", "css", "js", "json", "txt", "xml", "md",
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico",
+    "woff", "woff2", "ttf",
+    "pdf", "mp4", "webm", "mp3", "wav",
+];
+
 // ─── Data Types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +67,17 @@ pub struct SiteInfo {
     pub files: Vec<String>,
     pub size_bytes: u64,
     pub visits: u64,
+    /// The address derived from the site's own key: forty hex characters and
+    /// `.hidra`. It used to be written to the log and nowhere else. Older
+    /// metadata files have no such field, so it is recomputed from the key
+    /// when a site is loaded.
+    #[serde(default)]
+    pub crypto_address: String,
+    /// Where other people reach the site, when this node is published as a
+    /// hidden service: `http://<node address>.hidra/sites/<name>/`. Filled in
+    /// when a site is reported, never stored, and absent in local-only mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +91,21 @@ struct SiteRecord {
 #[derive(Debug, Serialize, Deserialize)]
 struct CreateSiteRequest {
     name: String,
+    /// A site is created only by someone who has accepted the Terms of Use
+    /// served at `/terms`. The builder's page sends this once the box is
+    /// ticked; a client that skips the page has to say so explicitly too.
+    #[serde(default)]
+    accept_terms: bool,
+}
+
+/// What `/api/status` reports: whether this builder is published on the
+/// network, and at which address.
+#[derive(Debug, Serialize)]
+struct StatusResponse {
+    ok: bool,
+    network: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +144,48 @@ pub struct SiteManager {
     base_dir: PathBuf,
     dht_tx: Option<tokio::sync::mpsc::Sender<DhtAnnouncement>>,
     port: u16,
+    /// This node's own hidden-service address (`<hash>.hidra`), when the
+    /// builder is published on the network. Every site is reachable under it.
+    network_address: Option<String>,
+}
+
+/// The one rule for a site's name, applied to every operation and not only
+/// to creation. A name that reached the file system unchecked could be `..`:
+/// `DELETE /api/sites/..` removed the whole data directory, keys included,
+/// and `/sites/../<file>` read any file next to it.
+pub fn normalize_site_name(name: &str) -> Result<String, String> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() || name.len() > 32 {
+        return Err("Name must be between 1 and 32 characters".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Name may contain only letters, numbers, - and _".into());
+    }
+    Ok(name)
+}
+
+/// The label of a `.hidra` host, or None for any other host.
+fn hidra_host_label(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    let host = host.split(':').next().unwrap_or(host);
+    let label = host.strip_suffix(".hidra")?;
+    if label.is_empty() {
+        return None;
+    }
+    Some(label.to_lowercase())
+}
+
+/// `<hash>.hidra` for a site's signing key: blake3 of the public key, first
+/// twenty bytes, in hex. The same derivation the hidden-service resolver uses.
+fn crypto_address_for(signing_key_bytes: &[u8; 32]) -> (String, [u8; 20], [u8; 32]) {
+    let sk = SigningKey::from_bytes(signing_key_bytes);
+    let vk: VerifyingKey = (&sk).into();
+    let pub_bytes = vk.to_bytes();
+    let full_hash = blake3::hash(&pub_bytes);
+    let mut address_hash = [0u8; 20];
+    address_hash.copy_from_slice(&full_hash.as_bytes()[..20]);
+    let hex: String = address_hash.iter().map(|b| format!("{b:02x}")).collect();
+    (format!("{hex}.hidra"), address_hash, pub_bytes)
 }
 
 impl SiteManager {
@@ -100,6 +201,16 @@ impl SiteManager {
         Self::_init(base_dir, Some(dht_tx), port)
     }
 
+    /// Record the hidden-service address this builder is published under,
+    /// so each site can report where other people reach it.
+    pub fn with_network_address(mut self, address: &str) -> Self {
+        let address = address.trim().to_lowercase();
+        if !address.is_empty() {
+            self.network_address = Some(address);
+        }
+        self
+    }
+
     fn _init(
         base_dir: &Path,
         dht_tx: Option<tokio::sync::mpsc::Sender<DhtAnnouncement>>,
@@ -108,46 +219,70 @@ impl SiteManager {
         let sites_dir = base_dir.join("sites");
         std::fs::create_dir_all(&sites_dir).ok();
 
-        let manager = Self {
-            sites: Arc::new(RwLock::new(HashMap::new())),
+        // Load existing sites from disk (including signing keys). This is
+        // done here, before the manager is handed out, not in a spawned
+        // task: a site created in the first instants used to be overwritten
+        // in memory when that task finally ran.
+        let mut sites_map = HashMap::new();
+        if let Ok(entries) = std::fs::read_dir(&sites_dir) {
+            for entry in entries.flatten() {
+                if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                // A folder that is not a valid site name is not a site.
+                if normalize_site_name(&name).ok().as_deref() != Some(name.as_str()) {
+                    continue;
+                }
+                let site_path = entry.path();
+                let meta_path = site_path.join(".sevennine-meta.json");
+                let Ok(data) = std::fs::read_to_string(&meta_path) else { continue };
+                let Ok(mut info) = serde_json::from_str::<SiteInfo>(&data) else { continue };
+                let key_bytes = load_site_key(&site_path);
+                if info.crypto_address.is_empty() && key_bytes != [0u8; 32] {
+                    info.crypto_address = crypto_address_for(&key_bytes).0;
+                }
+                info.network_address = None;
+                sites_map.insert(name, SiteRecord { info, signing_key_bytes: key_bytes });
+            }
+        }
+        if !sites_map.is_empty() {
+            tracing::info!("loaded {} existing sites", sites_map.len());
+        }
+
+        Self {
+            sites: Arc::new(RwLock::new(sites_map)),
             base_dir: base_dir.to_path_buf(),
             dht_tx,
             port,
-        };
-
-        // Load existing sites from disk (including signing keys)
-        if let Ok(entries) = std::fs::read_dir(&sites_dir) {
-            let rt_sites = manager.sites.clone();
-            let mut sites_map = HashMap::new();
-
-            for entry in entries.flatten() {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let site_path = entry.path();
-                    let meta_path = site_path.join(".sevennine-meta.json");
-                    if let Ok(data) = std::fs::read_to_string(&meta_path) {
-                        if let Ok(info) = serde_json::from_str::<SiteInfo>(&data) {
-                            let key_bytes = load_site_key(&site_path);
-                            sites_map.insert(name.clone(), SiteRecord {
-                                info,
-                                signing_key_bytes: key_bytes,
-                            });
-                        }
-                    }
-                }
-            }
-
-            if !sites_map.is_empty() {
-                let count = sites_map.len();
-                tokio::spawn(async move {
-                    let mut w = rt_sites.write().await;
-                    *w = sites_map;
-                });
-                tracing::info!("loaded {} existing sites", count);
-            }
+            network_address: None,
         }
+    }
 
-        manager
+    /// Where this builder is published, if it is.
+    pub fn network_address(&self) -> Option<&str> {
+        self.network_address.as_deref()
+    }
+
+    /// A site as reported to a client: with the address other people use
+    /// to reach it, when there is one.
+    fn reported(&self, mut info: SiteInfo) -> SiteInfo {
+        info.network_address = self
+            .network_address
+            .as_ref()
+            .map(|node| format!("http://{node}/sites/{}/", info.name));
+        info
+    }
+
+    /// The site a `.hidra` host label names, when it is one of this node's
+    /// sites' own addresses. The node's own address names no single site.
+    pub async fn site_for_label(&self, label: &str) -> Option<String> {
+        let wanted = format!("{}.hidra", label.to_lowercase());
+        let sites = self.sites.read().await;
+        sites
+            .values()
+            .find(|r| r.info.crypto_address == wanted)
+            .map(|r| r.info.name.clone())
     }
 
     pub async fn announce_all_sites(&self) {
@@ -159,18 +294,7 @@ impl SiteManager {
         let mut count = 0u32;
         for record in sites.values() {
             if record.signing_key_bytes == [0u8; 32] { continue; }
-            let verifying_key = match VerifyingKey::from_bytes(&{
-                let sk = SigningKey::from_bytes(&record.signing_key_bytes);
-                let vk: VerifyingKey = (&sk).into();
-                vk.to_bytes()
-            }) {
-                Ok(vk) => vk,
-                Err(_) => continue,
-            };
-            let pub_bytes = verifying_key.to_bytes();
-            let full_hash = blake3::hash(&pub_bytes);
-            let mut address_hash = [0u8; 20];
-            address_hash.copy_from_slice(&full_hash.as_bytes()[..20]);
+            let (_, address_hash, pub_bytes) = crypto_address_for(&record.signing_key_bytes);
 
             let announcement = DhtAnnouncement {
                 service_hash: address_hash,
@@ -186,7 +310,7 @@ impl SiteManager {
     }
 
     pub fn has_site_sync(&self, name: &str) -> bool {
-        let name = name.trim().to_lowercase();
+        let Ok(name) = normalize_site_name(name) else { return false };
         let site_dir = self.base_dir.join("sites").join(&name);
         site_dir.exists() && site_dir.join(".sevennine-meta.json").exists()
     }
@@ -195,15 +319,45 @@ impl SiteManager {
         self.port
     }
 
-    pub async fn create_site(&self, name: &str) -> Result<SiteInfo, String> {
-        let name = name.trim().to_lowercase();
+    /// The folder of an existing site, or the reason there is none. Every
+    /// operation on a site goes through here, so no unchecked name reaches
+    /// the file system.
+    fn existing_site_dir(&self, site_name: &str) -> Result<(String, PathBuf), String> {
+        let site_name = normalize_site_name(site_name)?;
+        let site_dir = self.base_dir.join("sites").join(&site_name);
+        if !site_dir.join(".sevennine-meta.json").exists() {
+            return Err(format!("Site '{}' does not exist", site_name));
+        }
+        Ok((site_name, site_dir))
+    }
 
-        if name.is_empty() || name.len() > 32 {
-            return Err("Name must be between 1 and 32 characters".into());
+    /// Re-read a site's folder and store what it holds in the metadata.
+    async fn refresh_site(&self, site_name: &str, site_dir: &Path) -> Result<SiteInfo, String> {
+        let mut total_size: u64 = 0;
+        let mut file_list = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(site_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname.starts_with('.') { continue; }
+                file_list.push(fname);
+                total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err("Name may contain only letters, numbers, - and _".into());
+        file_list.sort();
+
+        let mut sites = self.sites.write().await;
+        if let Some(record) = sites.get_mut(site_name) {
+            record.info.files = file_list;
+            record.info.size_bytes = total_size;
+            let meta_json = serde_json::to_string_pretty(&record.info).unwrap_or_default();
+            std::fs::write(site_dir.join(".sevennine-meta.json"), meta_json.as_bytes()).ok();
+            return Ok(self.reported(record.info.clone()));
         }
+        Err("Site not found".into())
+    }
+
+    pub async fn create_site(&self, name: &str) -> Result<SiteInfo, String> {
+        let name = normalize_site_name(name)?;
 
         {
             let sites = self.sites.read().await;
@@ -213,18 +367,11 @@ impl SiteManager {
         }
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let verifying_key: VerifyingKey = (&signing_key).into();
-        let pub_bytes = verifying_key.to_bytes();
-
-        // Derive .hidra address: blake3(pubkey)[..20] as hex
-        let full_hash = blake3::hash(&pub_bytes);
-        let mut address_hash = [0u8; 20];
-        address_hash.copy_from_slice(&full_hash.as_bytes()[..20]);
-        let address_hex: String = address_hash.iter().map(|b| format!("{b:02x}")).collect();
+        let (crypto_address, address_hash, pub_bytes) =
+            crypto_address_for(&signing_key.to_bytes());
 
         // Human-friendly name maps to the cryptographic address
         let hidra_address = format!("{}.hidra", name);
-        let crypto_address = format!("{}.hidra", address_hex);
         let public_key_b64 = base64::engine::general_purpose::STANDARD.encode(pub_bytes);
 
         let site_dir = self.base_dir.join("sites").join(&name);
@@ -242,6 +389,8 @@ impl SiteManager {
             files: vec!["index.html".into()],
             size_bytes: default_html.len() as u64,
             visits: 0,
+            crypto_address: crypto_address.clone(),
+            network_address: None,
         };
 
         let meta_json = serde_json::to_string_pretty(&info).unwrap_or_default();
@@ -272,19 +421,25 @@ impl SiteManager {
             };
             if tx.try_send(announcement).is_ok() {
                 tracing::info!(
-                    site = %name,
+                    site = %sensitive(&name),
                     address = %sensitive(&crypto_address),
                     "site published to DHT"
                 );
             }
         }
 
-        tracing::info!("site created: {} -> {} (crypto: {})", name, hidra_address, crypto_address);
-        Ok(info)
+        // The name and both addresses are the owner's, on the owner's own
+        // machine; they are still scrubbed, like every other name in the log.
+        tracing::info!(
+            site = %sensitive(&name),
+            address = %sensitive(&crypto_address),
+            "site created"
+        );
+        Ok(self.reported(info))
     }
 
     pub async fn upload_file(&self, site_name: &str, filename: &str, content: &[u8]) -> Result<SiteInfo, String> {
-        let site_name = site_name.trim().to_lowercase();
+        let (site_name, site_dir) = self.existing_site_dir(site_name)?;
 
         let safe_name = Path::new(filename)
             .file_name()
@@ -295,69 +450,46 @@ impl SiteManager {
         if safe_name.starts_with('.') {
             return Err("Hidden files are not allowed".into());
         }
-
-        let site_dir = self.base_dir.join("sites").join(&site_name);
-        if !site_dir.exists() {
-            return Err(format!("Site '{}' does not exist", site_name));
+        if !is_allowed_file(&safe_name) {
+            return Err(format!(
+                "File type not allowed. Allowed: {}",
+                ALLOWED_EXTENSIONS.join(", ")
+            ));
+        }
+        if content.len() > MAX_FILE_BYTES {
+            return Err("File too large (max 5 MB)".into());
         }
 
         std::fs::write(site_dir.join(&safe_name), content)
             .map_err(|e| format!("Could not save file: {}", e))?;
 
-        let mut total_size: u64 = 0;
-        let mut file_list = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&site_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if fname.starts_with('.') { continue; }
-                file_list.push(fname);
-                total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-        file_list.sort();
-
-        {
-            let mut sites = self.sites.write().await;
-            if let Some(record) = sites.get_mut(&site_name) {
-                record.info.files = file_list;
-                record.info.size_bytes = total_size;
-
-                let meta_json = serde_json::to_string_pretty(&record.info).unwrap_or_default();
-                std::fs::write(site_dir.join(".sevennine-meta.json"), meta_json.as_bytes()).ok();
-
-                return Ok(record.info.clone());
-            }
-        }
-
-        Err("Site not found".into())
+        self.refresh_site(&site_name, &site_dir).await
     }
 
     pub async fn delete_site(&self, name: &str) -> Result<(), String> {
-        let name = name.trim().to_lowercase();
-        let site_dir = self.base_dir.join("sites").join(&name);
+        let (name, site_dir) = self.existing_site_dir(name)?;
 
         {
             let mut sites = self.sites.write().await;
             sites.remove(&name);
         }
 
-        if site_dir.exists() {
-            std::fs::remove_dir_all(&site_dir).map_err(|e| format!("Could not remove: {}", e))?;
-        }
+        std::fs::remove_dir_all(&site_dir).map_err(|e| format!("Could not remove: {}", e))?;
 
-        tracing::info!("site deleted: {}", name);
+        tracing::info!(site = %sensitive(&name), "site deleted");
         Ok(())
     }
 
     pub async fn list_sites(&self) -> Vec<SiteInfo> {
         let sites = self.sites.read().await;
-        sites.values().map(|r| r.info.clone()).collect()
+        sites.values().map(|r| self.reported(r.info.clone())).collect()
     }
 
     #[allow(dead_code)]
     pub async fn get_site(&self, name: &str) -> Option<SiteInfo> {
+        let name = normalize_site_name(name).ok()?;
         let sites = self.sites.read().await;
-        sites.get(name).map(|r| r.info.clone())
+        sites.get(&name).map(|r| self.reported(r.info.clone()))
     }
 
     pub async fn save_page(
@@ -366,11 +498,7 @@ impl SiteManager {
         html: &str,
         source: &serde_json::Value,
     ) -> Result<SiteInfo, String> {
-        let site_name = site_name.trim().to_lowercase();
-        let site_dir = self.base_dir.join("sites").join(&site_name);
-        if !site_dir.exists() {
-            return Err(format!("Site '{}' does not exist", site_name));
-        }
+        let (site_name, site_dir) = self.existing_site_dir(site_name)?;
         if html.len() > 2_000_000 {
             return Err("Page too large (max 2 MB)".into());
         }
@@ -382,29 +510,7 @@ impl SiteManager {
         let src = serde_json::to_string(source).unwrap_or_default();
         std::fs::write(site_dir.join(".sevennine-page.json"), src.as_bytes()).ok();
 
-        let mut total_size: u64 = 0;
-        let mut file_list = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&site_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if fname.starts_with('.') { continue; }
-                file_list.push(fname);
-                total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-        file_list.sort();
-
-        {
-            let mut sites = self.sites.write().await;
-            if let Some(record) = sites.get_mut(&site_name) {
-                record.info.files = file_list;
-                record.info.size_bytes = total_size;
-                let meta_json = serde_json::to_string_pretty(&record.info).unwrap_or_default();
-                std::fs::write(site_dir.join(".sevennine-meta.json"), meta_json.as_bytes()).ok();
-                return Ok(record.info.clone());
-            }
-        }
-        Err("Site not found".into())
+        self.refresh_site(&site_name, &site_dir).await
     }
 
     pub async fn publish_site(
@@ -413,14 +519,10 @@ impl SiteManager {
         source: &serde_json::Value,
         files: &[(String, String)],
     ) -> Result<SiteInfo, String> {
-        let site_name = site_name.trim().to_lowercase();
-        let site_dir = self.base_dir.join("sites").join(&site_name);
-        if !site_dir.exists() {
-            return Err(format!("Site '{}' does not exist", site_name));
-        }
+        let (site_name, site_dir) = self.existing_site_dir(site_name)?;
 
         let total: usize = files.iter().map(|(_, h)| h.len()).sum();
-        if total > 5_000_000 {
+        if total > MAX_SITE_BYTES {
             return Err("Site too large (max 5 MB in total)".into());
         }
         if files.is_empty() {
@@ -457,39 +559,17 @@ impl SiteManager {
         let src = serde_json::to_string(source).unwrap_or_default();
         std::fs::write(site_dir.join(".sevennine-page.json"), src.as_bytes()).ok();
 
-        let mut total_size: u64 = 0;
-        let mut file_list = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&site_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if fname.starts_with('.') { continue; }
-                file_list.push(fname);
-                total_size += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-        file_list.sort();
-
-        {
-            let mut sites = self.sites.write().await;
-            if let Some(record) = sites.get_mut(&site_name) {
-                record.info.files = file_list;
-                record.info.size_bytes = total_size;
-                let meta_json = serde_json::to_string_pretty(&record.info).unwrap_or_default();
-                std::fs::write(site_dir.join(".sevennine-meta.json"), meta_json.as_bytes()).ok();
-                return Ok(record.info.clone());
-            }
-        }
-        Err("Site not found".into())
+        self.refresh_site(&site_name, &site_dir).await
     }
 
     pub fn load_page(&self, name: &str) -> Option<String> {
-        let name = name.trim().to_lowercase();
+        let name = normalize_site_name(name).ok()?;
         let p = self.base_dir.join("sites").join(&name).join(".sevennine-page.json");
         std::fs::read_to_string(p).ok()
     }
 
     pub async fn serve_file(&self, site_name: &str, file_path: &str) -> Option<(Vec<u8>, String)> {
-        let site_name = site_name.trim().to_lowercase();
+        let site_name = normalize_site_name(site_name).ok()?;
         let file_path = if file_path.is_empty() || file_path == "/" { "index.html" } else { file_path };
         let safe_path = Path::new(file_path).file_name()?.to_str()?;
 
@@ -508,6 +588,15 @@ impl SiteManager {
 
         Some((content, mime))
     }
+}
+
+/// Whether a file name ends in one of the extensions a site may hold.
+fn is_allowed_file(filename: &str) -> bool {
+    let ext = match filename.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => ext.to_lowercase(),
+        _ => return false,
+    };
+    ALLOWED_EXTENSIONS.contains(&ext.as_str())
 }
 
 fn load_site_key(site_dir: &Path) -> [u8; 32] {
@@ -640,36 +729,117 @@ pub async fn handle_connection_pub(
     }
 }
 
+/// What came in on a connection, once read up to its declared length.
+enum Incoming {
+    Request(Vec<u8>),
+    /// The headers declared more than the server reads; nothing was stored.
+    TooLarge,
+    /// The client sent nothing, or hung up before the headers ended.
+    Nothing,
+}
+
+/// Value of `Content-Length` in a request head, or 0 when there is none.
+fn content_length(head: &[u8]) -> usize {
+    String::from_utf8_lossy(head)
+        .lines()
+        .find(|l| l.to_lowercase().starts_with("content-length:"))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// First value of a header, case-insensitively, from a raw request.
+fn header_value(request: &str, name: &str) -> Option<String> {
+    request
+        .split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+        })
+}
+
+/// Read one request: the headers, then exactly the body they announce. The
+/// buffer grows with what arrives instead of being a fixed 512 KB, which
+/// used to cut every larger upload short and save the stump as the file.
+async fn read_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<Incoming> {
+    let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut chunk = [0u8; 16 * 1024];
+    let mut needed: Option<usize> = None;
+
+    loop {
+        if let Some(n) = needed {
+            if buf.len() >= n {
+                break;
+            }
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+
+        if needed.is_none() {
+            if let Some(hdr_end) = find_bytes(&buf, b"\r\n\r\n") {
+                let body_len = content_length(&buf[..hdr_end]);
+                if body_len > MAX_BODY_BYTES {
+                    return Ok(Incoming::TooLarge);
+                }
+                needed = Some(hdr_end + 4 + body_len);
+            } else if buf.len() > MAX_HEADER_BYTES {
+                return Ok(Incoming::TooLarge);
+            }
+        }
+    }
+
+    match needed {
+        Some(n) if buf.len() >= n => {
+            buf.truncate(n);
+            Ok(Incoming::Request(buf))
+        }
+        _ => Ok(Incoming::Nothing),
+    }
+}
+
 async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     manager: Arc<SiteManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut buf = vec![0u8; 1024 * 512]; // 512KB request limit
-    let mut total = 0usize;
-
-    // Read until we have headers + full body based on Content-Length
-    loop {
-        if total >= buf.len() { break; }
-        let n = stream.read(&mut buf[total..]).await?;
-        if n == 0 { break; }
-        total += n;
-
-        if let Some(hdr_end) = find_bytes(&buf[..total], b"\r\n\r\n") {
-            let hdr_str = String::from_utf8_lossy(&buf[..hdr_end]);
-            let content_length = hdr_str.lines()
-                .find(|l| l.to_lowercase().starts_with("content-length:"))
-                .and_then(|l| l.split(':').nth(1))
-                .and_then(|v| v.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            let needed = hdr_end + 4 + content_length;
-            if total >= needed { break; }
+    let raw = match tokio::time::timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await {
+        Ok(Ok(Incoming::Request(raw))) => raw,
+        Ok(Ok(Incoming::TooLarge)) => {
+            send_response(&mut stream, 413, "text/plain", b"Request too large (max 5 MB)", None).await;
+            return Ok(());
         }
+        Ok(Ok(Incoming::Nothing)) => return Ok(()),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Ok(()), // timed out waiting for the request
+    };
+
+    let request = String::from_utf8_lossy(&raw).into_owned();
+
+    let first_line = request.lines().next().unwrap_or("");
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        send_response(&mut stream, 400, "text/plain", b"Bad Request", None).await;
+        return Ok(());
     }
 
-    if total == 0 { return Ok(()); }
+    let method = parts[0];
+    let raw_path = parts[1];
+    let path = urldecode(raw_path);
 
-    let raw = &buf[..total];
-    let request = String::from_utf8_lossy(raw);
+    // A visitor who reached this builder over the network, through the
+    // hidden service, sends `Host: <hash>.hidra`. The loopback screening
+    // below refused that outright, so no published site ever opened. Such a
+    // request may read a site and nothing else: creating, uploading and
+    // deleting stay with the owner on this machine.
+    if let Some(label) = header_value(&request, "host").and_then(|h| hidra_host_label(&h)) {
+        handle_public(&mut stream, &manager, &label, method, &path).await;
+        return Ok(());
+    }
 
     // Every reply used to carry `Access-Control-Allow-Origin: *`, which let a
     // page on any site read this builder's site list and post to its API. The
@@ -691,23 +861,20 @@ async fn handle_connection(
     };
     let allowed_origin = allowed_origin.as_deref();
 
-    let first_line = request.lines().next().unwrap_or("");
-    let parts: Vec<&str> = first_line.split_whitespace().collect();
-
-    if parts.len() < 2 {
-        send_response(&mut stream, 400, "text/plain", b"Bad Request", allowed_origin).await;
-        return Ok(());
-    }
-
-    let method = parts[0];
-    let raw_path = parts[1];
-    let path = urldecode(raw_path);
-
     match (method, path.as_str()) {
         // ── API routes ──
         ("POST", "/api/sites") => {
             let body = extract_body(&request);
             match serde_json::from_str::<CreateSiteRequest>(&body) {
+                Ok(req) if !req.accept_terms => {
+                    let resp = ApiResponse {
+                        ok: false,
+                        msg: Some("You must accept the Terms of Use before creating a site".into()),
+                        site: None,
+                        sites: None,
+                    };
+                    send_json(&mut stream, 400, &resp, allowed_origin).await;
+                }
                 Ok(req) => {
                     match manager.create_site(&req.name).await {
                         Ok(site) => {
@@ -721,7 +888,7 @@ async fn handle_connection(
                     }
                 }
                 Err(_) => {
-                    let resp = ApiResponse { ok: false, msg: Some("Invalid JSON. Use: {\"name\": \"mysite\"}".into()), site: None, sites: None };
+                    let resp = ApiResponse { ok: false, msg: Some("Invalid JSON. Use: {\"name\": \"mysite\", \"accept_terms\": true}".into()), site: None, sites: None };
                     send_json(&mut stream, 400, &resp, allowed_origin).await;
                 }
             }
@@ -731,6 +898,13 @@ async fn handle_connection(
             let sites = manager.list_sites().await;
             let resp = ApiResponse { ok: true, msg: None, site: None, sites: Some(sites) };
             send_json(&mut stream, 200, &resp, allowed_origin).await;
+        }
+
+        ("GET", "/api/status") => {
+            let address = manager.network_address().map(|a| a.to_string());
+            let status = StatusResponse { ok: true, network: address.is_some(), network_address: address };
+            let body = serde_json::to_string(&status).unwrap_or_else(|_| "{}".into());
+            send_response(&mut stream, 200, "application/json; charset=utf-8", body.as_bytes(), allowed_origin).await;
         }
 
         // ── Visual page editor (save/load page source) ──
@@ -830,7 +1004,7 @@ async fn handle_connection(
 
         ("POST", p) if p.starts_with("/api/upload/") => {
             let site_name = &p[12..];
-            let (filename, file_data) = extract_multipart(&request, raw);
+            let (filename, file_data) = extract_multipart(&request, &raw);
             if let (Some(fname), Some(data)) = (filename, file_data) {
                 match manager.upload_file(site_name, &fname, &data).await {
                     Ok(site) => {
@@ -850,24 +1024,16 @@ async fn handle_connection(
 
         // ── Site preview ──
         ("GET", p) if p.starts_with("/sites/") => {
-            let rest = &p[7..]; // after "/sites/"
-            let (site_name, file_path) = match rest.find('/') {
-                Some(i) => (&rest[..i], &rest[i+1..]),
-                None => (rest, "index.html"),
-            };
-            match manager.serve_file(site_name, file_path).await {
-                Some((content, mime)) => {
-                    send_response(&mut stream, 200, &mime, &content, allowed_origin).await;
-                }
-                None => {
-                    send_response(&mut stream, 404, "text/plain", b"File not found", allowed_origin).await;
-                }
-            }
+            serve_site_path(&mut stream, &manager, &p[7..], allowed_origin).await;
         }
 
         // ── Frontend ──
         ("GET", "/") | ("GET", "/index.html") => {
             send_response(&mut stream, 200, "text/html; charset=utf-8", FRONTEND_HTML.as_bytes(), allowed_origin).await;
+        }
+
+        ("GET", "/terms") | ("GET", "/terms.html") => {
+            send_response(&mut stream, 200, "text/html; charset=utf-8", TERMS_HTML.as_bytes(), allowed_origin).await;
         }
 
         ("GET", "/style.css") => {
@@ -888,6 +1054,122 @@ async fn handle_connection(
     }
 
     Ok(())
+}
+
+/// Serve `<site>/<file>` from what follows `/sites/`.
+async fn serve_site_path(
+    stream: &mut tokio::net::TcpStream,
+    manager: &SiteManager,
+    rest: &str,
+    allowed_origin: Option<&str>,
+) {
+    let (site_name, file_path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => (rest, "index.html"),
+    };
+    match manager.serve_file(site_name, file_path).await {
+        Some((content, mime)) => {
+            send_site_file(stream, &mime, &content, allowed_origin).await;
+        }
+        None => {
+            send_response(stream, 404, "text/plain", b"File not found", allowed_origin).await;
+        }
+    }
+}
+
+/// A request that arrived through the hidden service, addressed to
+/// `<label>.hidra`. Read-only: the builder's pages and its API are not
+/// served here, whatever the path.
+///
+/// Under this node's own address every site is at `/sites/<name>/`, and `/`
+/// lists them. When the label is a site's own address (the one derived from
+/// its key), the site is the root: `/` is its home page and `/<file>` one of
+/// its files, so links inside the site work either way.
+async fn handle_public(
+    stream: &mut tokio::net::TcpStream,
+    manager: &SiteManager,
+    label: &str,
+    method: &str,
+    path: &str,
+) {
+    if method != "GET" && method != "HEAD" {
+        send_response(stream, 403, "text/plain", b"Read-only: this site is managed from its owner's machine", None).await;
+        return;
+    }
+    let path = path.split('?').next().unwrap_or("");
+
+    if let Some(rest) = path.strip_prefix("/sites/") {
+        serve_site_path(stream, manager, rest, None).await;
+        return;
+    }
+
+    if let Some(site) = manager.site_for_label(label).await {
+        let file = path.trim_start_matches('/');
+        match manager.serve_file(&site, file).await {
+            Some((content, mime)) => send_site_file(stream, &mime, &content, None).await,
+            None => send_response(stream, 404, "text/plain", b"File not found", None).await,
+        }
+        return;
+    }
+
+    if path == "/" || path == "/index.html" {
+        let sites = manager.list_sites().await;
+        let body = public_index_page(&sites);
+        send_response(stream, 200, "text/html; charset=utf-8", body.as_bytes(), None).await;
+        return;
+    }
+
+    send_response(stream, 404, "text/plain", b"Not Found", None).await;
+}
+
+/// Escape text for an HTML page.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// What a visitor sees at this node's own address: the sites it publishes.
+fn public_index_page(sites: &[SiteInfo]) -> String {
+    let mut names: Vec<&str> = sites.iter().map(|s| s.name.as_str()).collect();
+    names.sort_unstable();
+    let items: String = if names.is_empty() {
+        "<li class=\"empty\">No site is published here yet.</li>".to_string()
+    } else {
+        names
+            .iter()
+            .map(|n| {
+                let n = html_escape(n);
+                format!("<li><a href=\"/sites/{n}/\">{n}.hidra</a></li>")
+            })
+            .collect()
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sites on this HidraNet node</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0a0e17;color:#e0e0e8;margin:0;padding:40px 20px}}
+main{{max-width:560px;margin:0 auto}}
+h1{{color:#00d4aa;font-weight:600;font-size:1.4em}}
+ul{{list-style:none;padding:0}}
+li{{padding:10px 0;border-bottom:1px solid #1c2133}}
+a{{color:#00d4aa;text-decoration:none}}
+.empty{{color:#8888a0}}
+p{{color:#8888a0;font-size:.9em}}
+</style>
+</head>
+<body><main>
+<h1>Sites on this HidraNet node</h1>
+<ul>{items}</ul>
+<p>Built with SevenNine.hidra.</p>
+</main></body>
+</html>"#
+    )
 }
 
 fn extract_body(request: &str) -> String {
@@ -1001,6 +1283,21 @@ fn hex_val(b: u8) -> u8 {
     }
 }
 
+/// Policy sent with every file of a user's site.
+///
+/// A site's pages are written by whoever owns it, or copied from a template
+/// found anywhere, and they used to be served with no policy at all, from the
+/// same origin as this builder's API: a script in a page could delete sites
+/// and read the builder's storage. `sandbox` without `allow-same-origin` gives
+/// the page an opaque origin, so its requests carry `Origin: null` and the
+/// API refuses them, while its own scripts and forms still work.
+/// `connect-src 'none'` stops a page sending what it reads anywhere, and
+/// nothing is loaded from outside the site.
+const SITE_CSP: &str = "Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals; \
+default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; \
+object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'\r\n";
+
 async fn send_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
@@ -1008,12 +1305,35 @@ async fn send_response(
     body: &[u8],
     allowed_origin: Option<&str>,
 ) {
+    send_response_with(stream, status, content_type, body, allowed_origin, "").await;
+}
+
+/// A file of a user's site, with the policy above.
+async fn send_site_file(
+    stream: &mut tokio::net::TcpStream,
+    content_type: &str,
+    body: &[u8],
+    allowed_origin: Option<&str>,
+) {
+    send_response_with(stream, 200, content_type, body, allowed_origin, SITE_CSP).await;
+}
+
+async fn send_response_with(
+    stream: &mut tokio::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    allowed_origin: Option<&str>,
+    extra_headers: &str,
+) {
     let status_text = match status {
         200 => "OK",
         201 => "Created",
         204 => "No Content",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
+        413 => "Payload Too Large",
         500 => "Internal Server Error",
         _ => "OK",
     };
@@ -1021,6 +1341,7 @@ async fn send_response(
         "HTTP/1.1 {} {}\r\n\
          Content-Type: {}\r\n\
          Content-Length: {}\r\n\
+         {}\
          {}\
          Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
          Access-Control-Allow-Headers: Content-Type, X-Filename\r\n\
@@ -1030,7 +1351,8 @@ async fn send_response(
         status_text,
         content_type,
         body.len(),
-        crate::local_guard::response_headers(allowed_origin)
+        crate::local_guard::response_headers(allowed_origin),
+        extra_headers
     );
     let _ = stream.write_all(header.as_bytes()).await;
     let _ = stream.write_all(body).await;
@@ -1098,6 +1420,11 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
           Create site
         </button>
       </div>
+      <label class="terms-check">
+        <input type="checkbox" id="accept-terms">
+        <span>I have read and accept the <a href="/terms" target="_blank">Terms of Use</a>. I am responsible for what I publish.</span>
+      </label>
+      <div id="net-status" class="net-status"></div>
       <div id="create-msg" class="msg hidden"></div>
     </section>
 
@@ -1206,6 +1533,7 @@ const FRONTEND_HTML: &str = r##"<!DOCTYPE html>
     <footer class="footer">
       <p>SevenNine.hidra &mdash; Powered by <strong>HidraNet</strong></p>
       <p class="hint">Every site is hosted decentrally on the HidraNet network</p>
+      <p class="hint"><a href="/terms" target="_blank">Terms of Use</a></p>
     </footer>
   </div>
 
@@ -1619,6 +1947,14 @@ textarea.ed-input { resize: vertical; min-height: 64px; line-height: 1.5; }
 .ed-item-n { font-size: 0.72em; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }
 .ed-check { display: flex; align-items: center; gap: 7px; font-size: 0.85em; color: var(--text2); cursor: pointer; }
 .ed-palette { grid-template-columns: 1fr 1fr; }
+.terms-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; font-size: 0.85em; color: var(--text2); cursor: pointer; line-height: 1.5; }
+.terms-check input { margin-top: 3px; }
+.terms-check a, .footer a { color: var(--accent); }
+.net-status { margin-top: 12px; font-size: 0.82em; padding: 9px 12px; border-radius: 8px; line-height: 1.5; }
+.net-status.on { background: rgba(0, 212, 170, 0.08); color: var(--accent); border: 1px solid rgba(0, 212, 170, 0.25); }
+.net-status.off { background: rgba(255, 255, 255, 0.03); color: var(--text2); border: 1px solid var(--border); }
+.site-share { font-size: 0.78em; color: var(--text2); margin-top: 3px; word-break: break-all; }
+.site-share code { color: var(--accent); }
 "##;
 
 // ─── Frontend JavaScript ─────────────────────────────────────────────────────
@@ -1631,6 +1967,7 @@ let pendingFiles = [];
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
   loadSites();
+  loadNetworkStatus();
   setupDragDrop();
   document.getElementById('site-name').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') createSite();
@@ -1642,6 +1979,7 @@ async function createSite() {
   const nameInput = document.getElementById('site-name');
   const name = nameInput.value.trim().toLowerCase();
   if (!name) { showMsg('create-msg', 'Enter a name for the site', 'error'); return; }
+  if (!termsAccepted()) return;
 
   const btn = document.getElementById('create-btn');
   btn.disabled = true;
@@ -1651,7 +1989,7 @@ async function createSite() {
     const res = await fetch(API + '/api/sites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, accept_terms: true })
     });
     const data = await res.json();
 
@@ -1820,6 +2158,9 @@ function renderSites(sites) {
     '<div class="site-item">' +
       '<div class="site-info">' +
         '<div class="site-name">' + escapeHtml(s.hidra_address) + '</div>' +
+        (s.network_address
+          ? '<div class="site-share">Share this address: <code>' + escapeHtml(s.network_address) + '</code></div>'
+          : '<div class="site-share">Only on this computer for now</div>') +
         '<div class="site-meta">' +
           s.files.length + ' file(s) &middot; ' + formatSize(s.size_bytes) + ' &middot; ' +
           s.visits + ' visit(s) &middot; ' + new Date(s.created_at).toLocaleDateString('en-US') +
@@ -1859,11 +2200,12 @@ async function useTemplate(type) {
   if (!name) return;
   const clean = name.trim().toLowerCase();
   if (!clean) return;
+  if (!termsAccepted()) return;
   try {
     const res = await fetch(API + '/api/sites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: clean })
+      body: JSON.stringify({ name: clean, accept_terms: true })
     });
     const data = await res.json();
     if (data.ok && data.site) {
@@ -1875,6 +2217,36 @@ async function useTemplate(type) {
     }
   } catch (e) {
     showMsg('create-msg', 'Connection error: ' + e.message, 'error');
+  }
+}
+
+// ── Terms of Use ──
+// A site is created only once the owner has accepted the Terms of Use. The
+// server refuses a create request that does not say so.
+function termsAccepted() {
+  const box = document.getElementById('accept-terms');
+  if (box && box.checked) return true;
+  showMsg('create-msg', 'Please read and accept the Terms of Use first.', 'error');
+  if (box) box.focus();
+  return false;
+}
+
+// ── Network status: is this builder published as a hidden service? ──
+let networkAddress = null;
+async function loadNetworkStatus() {
+  const el = document.getElementById('net-status');
+  try {
+    const res = await fetch(API + '/api/status');
+    const data = await res.json();
+    networkAddress = data && data.network ? data.network_address : null;
+  } catch (e) { networkAddress = null; }
+  if (!el) return;
+  if (networkAddress) {
+    el.className = 'net-status on';
+    el.textContent = 'Online on HidraNet. Other people reach your sites at ' + networkAddress + '.';
+  } else {
+    el.className = 'net-status off';
+    el.textContent = 'Local only: sites are visible on this computer. Start SevenNine on the network to share them.';
   }
 }
 
@@ -2507,3 +2879,317 @@ function toast(msg){
 // Auto-refresh
 setInterval(loadSites, 10000);
 "##;
+
+// ─── Terms of Use ────────────────────────────────────────────────────────────
+
+/// Served at `/terms`. The builder's page links here, and a site is created
+/// only once its owner has ticked the box that says they accept it.
+const TERMS_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SevenNine.hidra — Terms of Use</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0e17; color: #e0e0e8; margin: 0; padding: 40px 20px; line-height: 1.65; }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { color: #00d4aa; font-size: 1.6em; margin-bottom: 4px; }
+    h2 { color: #00d4aa; font-size: 1.1em; margin-top: 28px; }
+    p, li { color: #c4c4d4; font-size: 0.95em; }
+    .muted { color: #8888a0; font-size: 0.85em; }
+    a { color: #00d4aa; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>SevenNine.hidra — Terms of Use</h1>
+  <p class="muted">Applies to every site created with the SevenNine builder on the HidraNet network.</p>
+
+  <h2>1. What SevenNine is</h2>
+  <p>SevenNine is a tool that runs on your own computer. It lets you build a website and publish it on the HidraNet network under a <code>.hidra</code> address. Your site is stored and served from your machine. HidraNet does not host, review or keep a copy of it.</p>
+
+  <h2>2. You are responsible for your site</h2>
+  <p>You are the publisher of everything on your site: text, images, files, links and code. You must have the right to publish all of it. You are responsible for following the laws that apply to you and to your visitors.</p>
+
+  <h2>3. What you may not publish</h2>
+  <ul>
+    <li>Sexual content involving minors, in any form.</li>
+    <li>Content that incites violence or terrorism, or threatens a person.</li>
+    <li>Malware, phishing pages, or anything built to deceive visitors or take over their devices or accounts.</li>
+    <li>Other people's personal data published without their consent, including doxxing.</li>
+    <li>Content that infringes copyright, trademarks or other rights you do not hold.</li>
+    <li>The sale or promotion of illegal goods or services, including weapons, drugs and stolen data.</li>
+    <li>Fraud, scams and impersonation of a person or an organisation.</li>
+  </ul>
+
+  <h2>4. Privacy</h2>
+  <p>Visitors reach your site through onion circuits, so neither you nor they learn each other's network address from the visit. SevenNine does not show your visitors' identities and does not write site names, addresses or contents to its log. Do not use your site to collect visitors' personal data without telling them clearly.</p>
+
+  <h2>5. Availability</h2>
+  <p>Your site is online only while your HidraNet node is running and published on the network. If you delete a site, it stops being served from your machine, but copies other people already saved cannot be recalled. Keep your own backups: deleting a site cannot be undone.</p>
+
+  <h2>6. Limits</h2>
+  <p>Each file may be up to 5 MB, and a site published from the editor up to 5 MB in total. Only file types a web page uses are accepted (HTML, CSS, JavaScript, JSON, text, images, fonts, PDF, audio and video).</p>
+
+  <h2>7. No warranty</h2>
+  <p>SevenNine and HidraNet are provided as they are, without any warranty. The developers are not liable for content published by users, for loss of data, or for a site being unavailable.</p>
+
+  <h2>8. Reporting abuse</h2>
+  <p>If you find a <code>.hidra</code> site that breaks these terms, report it through the HidraNet community channels. Nodes and directories in the network may refuse to list or relay a site that breaks them.</p>
+
+  <h2>9. Changes</h2>
+  <p>These terms may change with new versions of SevenNine. The version shown here is the one that applies to the copy of SevenNine you are running.</p>
+
+  <p class="muted"><a href="/">Back to SevenNine</a></p>
+</main>
+</body>
+</html>"##;
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A fresh data directory for one test, removed when dropped.
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!("sevennine-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Serve `manager` on an ephemeral loopback port and return the port.
+    async fn serve(manager: Arc<SiteManager>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                tokio::spawn(handle_connection_pub(stream, manager.clone()));
+            }
+        });
+        port
+    }
+
+    /// Send a raw request and return the whole raw reply.
+    async fn raw(port: u16, request: &[u8]) -> String {
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(request).await.unwrap();
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).await.unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn get(path: &str, host: &str) -> Vec<u8> {
+        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n").into_bytes()
+    }
+
+    fn post_json(path: &str, body: &str) -> Vec<u8> {
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn multipart(site: &str, filename: &str, data: &[u8]) -> Vec<u8> {
+        let boundary = "XBOUNDARYX";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let mut req = format!(
+            "POST /api/upload/{site} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: multipart/form-data; boundary={boundary}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        req.extend_from_slice(&body);
+        req
+    }
+
+    #[test]
+    fn site_names_are_checked_everywhere() {
+        assert_eq!(normalize_site_name(" My-Site_1 ").unwrap(), "my-site_1");
+        for bad in ["..", ".", "", "a/b", "a\\b", "../keys", "%2e%2e", "a b", &"x".repeat(33)] {
+            assert!(normalize_site_name(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn only_web_file_types_are_allowed() {
+        for ok in ["index.html", "a.CSS", "app.js", "logo.png", "font.woff2", "doc.pdf"] {
+            assert!(is_allowed_file(ok), "{ok}");
+        }
+        for bad in ["evil.exe", "run.sh", "x.php", "noext", ".png", "a.html.bat"] {
+            assert!(!is_allowed_file(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn hidra_host_labels() {
+        assert_eq!(hidra_host_label("ABC.hidra:80").as_deref(), Some("abc"));
+        assert_eq!(hidra_host_label("abc.hidra.").as_deref(), Some("abc"));
+        assert_eq!(hidra_host_label("127.0.0.1:8084"), None);
+        assert_eq!(hidra_host_label(".hidra"), None);
+        assert_eq!(hidra_host_label("evil.com"), None);
+    }
+
+    #[tokio::test]
+    async fn dot_dot_cannot_delete_read_or_write_the_data_dir() {
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.0.join("keys")).unwrap();
+        std::fs::write(dir.0.join("keys/node.key"), b"k").unwrap();
+        std::fs::write(dir.0.join("marker.txt"), b"TOPSECRET").unwrap();
+        let mgr = SiteManager::new(&dir.0, 0);
+
+        assert!(mgr.delete_site("..").await.is_err());
+        assert!(mgr.serve_file("..", "marker.txt").await.is_none());
+        assert!(mgr.upload_file("..", "x.txt", b"pwned").await.is_err());
+        assert!(mgr.save_page("..", "<p>", &serde_json::Value::Null).await.is_err());
+        assert!(mgr.publish_site("..", &serde_json::Value::Null, &[("index.html".into(), "x".into())]).await.is_err());
+        assert!(mgr.load_page("..").is_none());
+
+        assert!(dir.0.join("keys/node.key").exists(), "the keys must survive");
+        assert!(dir.0.join("marker.txt").exists());
+        assert!(!dir.0.join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn the_same_over_http_with_raw_paths() {
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.0.join("keys")).unwrap();
+        std::fs::write(dir.0.join("marker.txt"), b"TOPSECRET").unwrap();
+        let port = serve(Arc::new(SiteManager::new(&dir.0, 0))).await;
+
+        let del = raw(port, b"DELETE /api/sites/.. HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+        assert!(del.starts_with("HTTP/1.1 400"), "{del}");
+        assert!(dir.0.join("keys").exists());
+        for path in ["/sites/../marker.txt", "/sites/%2e%2e/marker.txt"] {
+            let r = raw(port, &get(path, "127.0.0.1")).await;
+            assert!(!r.contains("TOPSECRET"), "{path} leaked: {r}");
+        }
+    }
+
+    #[tokio::test]
+    async fn uploads_are_stored_whole_and_limits_are_enforced() {
+        let dir = TempDir::new();
+        let mgr = Arc::new(SiteManager::new(&dir.0, 0));
+        mgr.create_site("demo").await.unwrap();
+        let port = serve(mgr.clone()).await;
+
+        // 900 KB: bigger than the old 512 KB read, which stored a stump.
+        let data: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
+        let r = raw(port, &multipart("demo", "big.js", &data)).await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{}", &r[..r.len().min(200)]);
+        assert_eq!(std::fs::read(dir.0.join("sites/demo/big.js")).unwrap(), data);
+
+        let r = raw(port, &multipart("demo", "evil.exe", b"MZ")).await;
+        assert!(r.starts_with("HTTP/1.1 400") && r.contains("File type not allowed"), "{r}");
+        assert!(!dir.0.join("sites/demo/evil.exe").exists());
+
+        // Over the limit: refused before the body is read, not truncated.
+        let req = format!(
+            "POST /api/upload/demo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let r = raw(port, req.as_bytes()).await;
+        assert!(r.starts_with("HTTP/1.1 413"), "{r}");
+
+        assert!(mgr.upload_file("demo", "huge.png", &vec![0u8; MAX_FILE_BYTES + 1]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn creating_a_site_needs_the_terms_accepted() {
+        let dir = TempDir::new();
+        let port = serve(Arc::new(SiteManager::new(&dir.0, 0))).await;
+
+        let r = raw(port, &post_json("/api/sites", r#"{"name":"demo"}"#)).await;
+        assert!(r.starts_with("HTTP/1.1 400") && r.contains("Terms of Use"), "{r}");
+        assert!(!dir.0.join("sites/demo").exists());
+
+        let r = raw(port, &post_json("/api/sites", r#"{"name":"demo","accept_terms":true}"#)).await;
+        assert!(r.starts_with("HTTP/1.1 201"), "{r}");
+
+        let terms = raw(port, &get("/terms", "127.0.0.1")).await;
+        assert!(terms.starts_with("HTTP/1.1 200") && terms.contains("Terms of Use"));
+    }
+
+    #[tokio::test]
+    async fn sites_survive_a_restart_with_their_address() {
+        let dir = TempDir::new();
+        let created = SiteManager::new(&dir.0, 0).create_site("demo").await.unwrap();
+        assert!(created.crypto_address.ends_with(".hidra") && created.crypto_address.len() == 46);
+
+        // A new manager sees the site at once: loading is no longer deferred.
+        let again = SiteManager::new(&dir.0, 0);
+        let sites = again.list_sites().await;
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].crypto_address, created.crypto_address);
+        assert!(again.serve_file("demo", "").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_network_visitor_can_read_a_site_and_nothing_else() {
+        let dir = TempDir::new();
+        let node = "0123456789abcdef0123456789abcdef01234567.hidra";
+        let mgr = Arc::new(SiteManager::new(&dir.0, 0).with_network_address(node));
+        let site = mgr.create_site("demo").await.unwrap();
+        assert_eq!(site.network_address.as_deref(), Some(&*format!("http://{node}/sites/demo/")));
+        let port = serve(mgr).await;
+
+        // Was 403 for every visitor.
+        let r = raw(port, &get("/sites/demo/", node)).await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+        assert!(r.contains("demo.hidra"));
+        assert!(r.contains("Content-Security-Policy: sandbox"), "site pages need a policy");
+
+        // The node's own address lists its sites.
+        let r = raw(port, &get("/", node)).await;
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains("/sites/demo/"), "{r}");
+
+        // A site's own address serves it at the root.
+        let r = raw(port, &get("/", &site.crypto_address)).await;
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains("demo.hidra"), "{r}");
+
+        // The builder and its API are not reachable from the network.
+        for path in ["/api/sites", "/api/status", "/app.js", "/api/page/demo"] {
+            let r = raw(port, &get(path, node)).await;
+            assert!(!r.starts_with("HTTP/1.1 200") || !r.contains("\"sites\""), "{path}: {r}");
+            assert!(!r.contains("const API"), "{path} served the builder");
+        }
+        let del = format!("DELETE /api/sites/demo HTTP/1.1\r\nHost: {node}\r\n\r\n");
+        assert!(raw(port, del.as_bytes()).await.starts_with("HTTP/1.1 403"));
+        assert!(dir.0.join("sites/demo").exists());
+        let up = format!("POST /api/upload/demo HTTP/1.1\r\nHost: {node}\r\nContent-Length: 2\r\n\r\nhi");
+        assert!(raw(port, up.as_bytes()).await.starts_with("HTTP/1.1 403"));
+    }
+
+    #[tokio::test]
+    async fn the_builder_still_refuses_other_web_pages() {
+        let dir = TempDir::new();
+        let mgr = Arc::new(SiteManager::new(&dir.0, 0));
+        mgr.create_site("demo").await.unwrap();
+        let port = serve(mgr).await;
+
+        let r = raw(port, b"DELETE /api/sites/demo HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.com\r\n\r\n").await;
+        assert!(r.starts_with("HTTP/1.1 403"));
+        // A site page runs with an opaque origin, which sends this.
+        let r = raw(port, b"DELETE /api/sites/demo HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: null\r\n\r\n").await;
+        assert!(r.starts_with("HTTP/1.1 403"));
+        assert!(dir.0.join("sites/demo").exists());
+
+        let r = raw(port, &get("/api/status", "127.0.0.1")).await;
+        assert!(r.contains("\"network\":false"), "{r}");
+    }
+}

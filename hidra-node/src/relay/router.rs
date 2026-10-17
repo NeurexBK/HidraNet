@@ -63,7 +63,7 @@ impl RelayRouter {
         let span = tracing::info_span!(
             "relay_session",
             session_id = %session_id,
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
             role = "relay_responder",
         );
         let circuits = Arc::clone(&self.circuits);
@@ -94,7 +94,7 @@ impl RelayRouter {
     ) {
         let span = tracing::info_span!(
             "forwarded_cell",
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
         );
         let circuits = Arc::clone(&self.circuits);
         let intro_reg = Arc::clone(&self.intro_registry);
@@ -441,7 +441,7 @@ async fn handle_exit_command(
                 .await
         }
         RelayCommand::RegisterService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — registering hidden service");
+            info!(circuit_id, service = %sensitive(&service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()), "intro relay — registering hidden service");
             let (pipe_tx, mut pipe_rx) = mpsc::channel::<ClientPipe>(16);
             {
                 let mut reg = intro_registry.lock().await;
@@ -482,7 +482,7 @@ async fn handle_exit_command(
             Ok(())
         }
         RelayCommand::ConnectService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — client connecting to service");
+            info!(circuit_id, service = %sensitive(&service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()), "intro relay — client connecting to service");
             let pipe_tx = {
                 let reg = intro_registry.lock().await;
                 reg.get(&service_hash).cloned()
@@ -596,7 +596,7 @@ async fn handle_exit_forwarded(
 ) -> Result<()> {
     match cmd {
         RelayCommand::RegisterService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay (forwarded) — registering service");
+            info!(circuit_id, service = %sensitive(&service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()), "intro relay (forwarded) — registering service");
             let (pipe_tx, pipe_rx) = mpsc::channel::<ClientPipe>(16);
             {
                 let mut reg = intro_registry.lock().await;
@@ -612,15 +612,35 @@ async fn handle_exit_forwarded(
             let msg = Message::Relay { circuit_id, data: wrapped };
             write_frame(upstream, &msg.serialize()).await?;
             info!(circuit_id, "intro relay (forwarded) — service registered, waiting");
+            // Serve clients for as long as the service's circuit stays up, as
+            // the direct path above does. This used to deregister the service
+            // the moment it was acknowledged and return, which closed the
+            // service's circuit: a hidden service reached through a full
+            // circuit, which is every one, went offline as it came up.
+            let mut pipe_rx = pipe_rx;
+            while let Some(mut client_pipe) = pipe_rx.recv().await {
+                info!(circuit_id, "intro relay (forwarded) — bridging client to service");
+                if let Err(e) = bridge_forwarded_service_session(
+                    upstream,
+                    circuit_id,
+                    key,
+                    &mut client_pipe.from_client,
+                    &client_pipe.to_client,
+                )
+                .await
+                {
+                    warn!(error = %e, "forwarded service bridge session ended");
+                }
+            }
             {
                 let mut reg = intro_registry.lock().await;
                 reg.remove(&service_hash);
             }
-            drop(pipe_rx);
+            info!(circuit_id, "intro relay (forwarded) — service deregistered");
             Ok(())
         }
         RelayCommand::ConnectService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay (forwarded) — client connecting");
+            info!(circuit_id, service = %sensitive(&service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>()), "intro relay (forwarded) — client connecting");
             let pipe_tx = {
                 let reg = intro_registry.lock().await;
                 reg.get(&service_hash).cloned()
@@ -1009,6 +1029,59 @@ async fn bridge_service_session(
         }
     }
     debug!(circuit_id, "service bridge session ended");
+    Ok(())
+}
+
+/// One client session over a service circuit that reached this relay
+/// forwarded, as frames on `upstream`: the counterpart of
+/// `bridge_service_session` for that path.
+async fn bridge_forwarded_service_session(
+    upstream: &mut TcpStream,
+    circuit_id: u32,
+    key: &[u8; 32],
+    from_client: &mut mpsc::Receiver<Vec<u8>>,
+    to_client: &mpsc::Sender<Vec<u8>>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            frame_result = read_frame(upstream) => {
+                let frame = match frame_result {
+                    Ok(f) => f,
+                    Err(_) => break,
+                };
+                let msg = Message::deserialize(&frame)?;
+                match msg {
+                    Message::Relay { data, .. } => {
+                        let decrypted = decrypt_stream(key, &data)?;
+                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
+                        match cmd {
+                            RelayCommand::Data(payload) => {
+                                if to_client.send(payload).await.is_err() {
+                                    break;
+                                }
+                            }
+                            RelayCommand::End => break,
+                            _ => {}
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            data = from_client.recv() => {
+                match data {
+                    Some(payload) => {
+                        let cmd = RelayCommand::Data(payload);
+                        let cmd_data = cmd.serialize_bincode()?;
+                        let wrapped = encrypt_stream(key, &cmd_data)?;
+                        let msg = Message::Relay { circuit_id, data: wrapped };
+                        write_frame(upstream, &msg.serialize()).await?;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    debug!(circuit_id, "forwarded service bridge session ended");
     Ok(())
 }
 

@@ -204,8 +204,13 @@ class ProxyManager {
   // SevenNine is the engine's .hidra site builder. It is a separate mode from
   // the proxy — "--sevennine" serves it on 8084 and opens no SOCKS port — so it
   // gets its own process rather than riding on Connect.
+  //
+  // "--publish" also publishes its sites on the network as a hidden service,
+  // so other people can open them; without it, "publish" only saved to disk.
+  // If the network side cannot start, the engine still serves the builder
+  // locally on the same port.
   async startSevenNine() {
-    return this._startEngineApp('sevenNineProcess', '--sevennine', SEVENNINE_PORT, 'sevennine');
+    return this._startEngineApp('sevenNineProcess', ['--sevennine', '--publish'], SEVENNINE_PORT, 'sevennine');
   }
 
   /// Readiness is always the port opening, never a log line — the lesson
@@ -223,7 +228,7 @@ class ProxyManager {
     }
 
     const configPath = this._findConfig(hidraPath);
-    const args = [flag];
+    const args = [].concat(flag);
     if (configPath) args.push('--config', configPath);
     const cwd = configPath ? path.dirname(configPath) : path.dirname(hidraPath);
 
