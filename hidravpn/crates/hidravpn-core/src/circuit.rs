@@ -376,9 +376,14 @@ impl Circuit {
         netcfg::recover_dns();
 
         if let Some(entry) = &spec.entry {
-            if ONE_ADDRESS_PER_INTERFACE && same_address(entry, &spec.exit) {
+            if netcfg::ONE_ADDRESS_PER_INTERFACE && same_address(entry, &spec.exit) {
+                let what = if entry.admits_sessions() {
+                    "connect again, or ask an operator to give one of them another tunnel subnet"
+                } else {
+                    "ask an operator to give one of them another tunnel subnet"
+                };
                 return Err(anyhow!(
-                    "{} and {} gave this machine the same tunnel address, which one machine cannot hold on two interfaces; connect again, or ask an operator to give one of them another tunnel subnet",
+                    "{} and {} gave this machine the same tunnel address, which this system cannot hold on two interfaces; {what}",
                     entry.node_name,
                     spec.exit.node_name
                 ));
@@ -638,15 +643,7 @@ pub async fn prepare(
     }
     let mut won = None;
     if first.admits_sessions() {
-        let fresh = ClientKey::generate()?;
-        let invite = crate::admission::request_admission(
-            &first.record(),
-            &fresh.public_base64(),
-            "client",
-            true,
-        )
-        .await
-        .with_context(|| format!("asking {} for admission", first.node_name))?;
+        let (invite, fresh) = ask_session(first).await?;
         won = Some((invite, Some(fresh)));
     } else if first.takes_passes() {
         if let Some(invite) = first_hop_pass(first, wallet, &mut notes).await? {
@@ -694,8 +691,7 @@ pub async fn prepare(
                     exit.node_name
                 ));
             }
-            let session = matches!(ask, Ask::Session);
-            let (mut invite, mut fresh) = admit_behind(
+            let (invite, fresh) = admit_behind(
                 &entry,
                 spec.entry_shown(),
                 exit,
@@ -706,26 +702,6 @@ pub async fn prepare(
                 wallet,
             )
             .await?;
-            // Nodes on the same default subnet can hand this machine the
-            // same address, which Windows cannot hold on two interfaces. A
-            // session is simply asked for again: the exit leases the next
-            // address while the first lease lapses unused.
-            let mut tries = 0;
-            while ONE_ADDRESS_PER_INTERFACE && session && same_address(&entry, &invite) && tries < 3
-            {
-                tries += 1;
-                (invite, fresh) = admit_behind(
-                    &entry,
-                    spec.entry_shown(),
-                    exit,
-                    key,
-                    opts,
-                    held,
-                    Ask::Session,
-                    wallet,
-                )
-                .await?;
-            }
             if invite.pass.is_some() {
                 redeemed.push(invite.clone());
             }
@@ -733,11 +709,50 @@ pub async fn prepare(
             spec.exit_key = fresh;
         }
     }
+    // Nodes on the same default subnet can hand this machine the same
+    // address, which some systems cannot hold on two interfaces. The entry
+    // is asked again, directly, for a session: it sees this machine's
+    // address in any case, nothing is spent, and its next lease differs,
+    // while the first one lapses unused. The exit's answer, a session or a
+    // pass, is kept. (Invites admitted by hand cannot be changed here; the
+    // circuit refuses them with the reason.)
+    if netcfg::ONE_ADDRESS_PER_INTERFACE && first.admits_sessions() {
+        if let Some(entry) = entry {
+            let mut tries = 0;
+            while tries < 3
+                && spec
+                    .entry
+                    .as_ref()
+                    .is_some_and(|e| same_address(e, &spec.exit))
+            {
+                tries += 1;
+                let mut nodes = held.to_vec();
+                nodes.push(entry.endpoint_addr()?);
+                killswitch::hold_admitting(&nodes, &[entry.admission_addr()?], None).context(
+                    "could not hold the kill switch to ask the entry for admission again",
+                )?;
+                let (invite, fresh) = ask_session(entry).await?;
+                spec.entry = Some(invite);
+                spec.entry_key = Some(fresh);
+            }
+        }
+    }
     Ok(Prepared {
         spec,
         redeemed,
         notes,
     })
+}
+
+/// A key made for this one connection, admitted by a node that admits
+/// openly, paid for with a proof of work.
+async fn ask_session(node: &Invite) -> Result<(Invite, ClientKey)> {
+    let fresh = ClientKey::generate()?;
+    let invite =
+        crate::admission::request_admission(&node.record(), &fresh.public_base64(), "client", true)
+            .await
+            .with_context(|| format!("asking {} for admission", node.node_name))?;
+    Ok((invite, fresh))
 }
 
 /// A first hop that admits with a pass: the next pass, redeemed directly.
@@ -781,11 +796,6 @@ async fn first_hop_pass(
         }
     }
 }
-
-/// Windows will not hold one address on two interfaces (it gives the second
-/// a link-local one, silently); Linux does, and two hops with the same
-/// address on both interfaces work there.
-const ONE_ADDRESS_PER_INTERFACE: bool = cfg!(windows);
 
 /// Whether two invites give this machine the same tunnel address.
 fn same_address(a: &Invite, b: &Invite) -> bool {
@@ -837,9 +847,11 @@ async fn admit_behind(
     nodes.extend(held.iter().copied().filter(|a| *a != entry_ep));
 
     // The interface first, then the hold that names it: Windows filters an
-    // interface by its LUID, which exists only once the interface does. An
-    // interface with no route to it carries nothing meanwhile, and whatever
-    // hold or kill switch is already in place still blocks the rest.
+    // interface by its LUID, which exists only once the interface does. The
+    // interface has no route and no tunnel running yet, so it carries
+    // nothing meanwhile; during a rotation the hold already in place blocks
+    // the rest, and on a first connection nothing is armed until this hold,
+    // as before any connection.
     let (ip, _) = entry.client_ip()?;
     let tun = hidravpn_tun::open(&TunConfig {
         name: outer_name.clone(),

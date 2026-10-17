@@ -376,7 +376,11 @@ async fn wait_for_stop() {
 #[cfg(not(unix))]
 async fn wait_for_stop() {
     // A task started at boot may have no console to take a Ctrl+C from; then
-    // it runs until it is ended from outside, never stopping at once.
+    // it runs until it is ended from outside, never stopping at once. Ended
+    // that way (schtasks /End, the machine shutting down) it does not undo
+    // the network itself: its routes live in the active store, which a
+    // reboot clears, the next start puts the DNS back (`recover_dns`), and
+    // the next connection undoes a plan left behind.
     if tokio::signal::ctrl_c().await.is_err() {
         std::future::pending::<()>().await;
     }

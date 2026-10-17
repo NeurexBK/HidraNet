@@ -84,22 +84,22 @@ pub fn route_host_via(host: std::net::IpAddr, interface: &str) -> Result<()> {
     add_route(&prefix, if_index(interface)?, next_hop)
 }
 
-/// The interface holds `ip` (and not as a duplicate), within a few seconds.
+/// The interface is listed and holds `ip`, settled ("Preferred", not still
+/// being checked nor refused as a duplicate), within about five seconds.
+/// One PowerShell run waits, rather than one per look.
 pub fn check_address(interface: &str, ip: std::net::Ipv4Addr) -> Result<()> {
-    let idx = if_index(interface)?;
-    let want = ip.to_string();
-    for _ in 0..10 {
-        let out = ps(&format!(
-            "Get-NetIPAddress -InterfaceIndex {idx} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ $_.AddressState -ne 'Duplicate' }} | ForEach-Object {{ $_.IPAddress }}"
-        ))?;
-        if out.lines().any(|l| l.trim() == want) {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
+    let out = ps(&format!(
+        "$ok = $false; for ($i = 0; $i -lt 25 -and -not $ok; $i++) {{ $a = Get-NetIPAddress -InterfaceAlias {} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ $_.IPAddress -eq {} -and $_.AddressState -eq 'Preferred' }}; if ($a) {{ $ok = $true }} else {{ Start-Sleep -Milliseconds 200 }} }}; if ($ok) {{ 'ok' }} else {{ 'no' }}",
+        q(interface),
+        q(&ip.to_string())
+    ))?;
+    if out.trim() == "ok" {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "the tunnel interface \"{interface}\" did not take its address {ip}: Windows gave it another one, so nothing could pass through it"
+        ))
     }
-    Err(anyhow!(
-        "the tunnel interface \"{interface}\" did not take its address {ip}: Windows gave it another one, so nothing could pass through it"
-    ))
 }
 
 pub fn apply(w: &Wanted) -> Result<RevertPlan> {

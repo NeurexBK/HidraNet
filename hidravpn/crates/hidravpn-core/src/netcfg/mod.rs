@@ -203,6 +203,11 @@ pub fn route_host_via(host: IpAddr, interface: &str) -> Result<()> {
     }
 }
 
+/// Windows will not hold one address on two interfaces (it gives the second
+/// a link-local one, silently); Linux does, and two hops with the same
+/// address on both interfaces work there.
+pub const ONE_ADDRESS_PER_INTERFACE: bool = cfg!(windows);
+
 /// Whether a tunnel interface holds the address it was given. Windows will
 /// not put one address on two interfaces, and gives the second a link-local
 /// one instead (169.254.x.x), silently: a circuit through it carries
