@@ -267,7 +267,7 @@ var typingUsers={}, soundEnabled=true;
 // come and go, and ciphertext. Every message is signed by the session that
 // sent it and checked here before it is shown.
 var mode='ws';                 // 'ws' = direct/LAN server | 'relay' = public relay (MQTT)
-var mqttClient=null, relayTopic='', relayFails=0, relayTimer=null, relayClosed=false;
+var mqttClient=null, relayTopic='', relayFails=0, relayTimer=null, relayClosed=false, relayDown=false;
 var me=null, myColor='', peers={}, presenceTimer=null;
 var trust=null, guard=null, lastDropNotice=0;
 // Tried in turn: a relay that is down or unreachable is not the end of the
@@ -340,7 +340,8 @@ function relayOpen(){
   c.on('connect',function(){
     if(c!==mqttClient) return;
     relayFails=0;
-    $('connStatus').textContent='Connected (public relay)';
+    if(relayDown){ relayDown=false; addSys('Connected to the relay again.'); }
+    $('connStatus').textContent='Connected ('+(/broker\.(emqx|hivemq)\./.test(url)?'public relay':'HidraRelay')+')';
     $('connStatus').className='status on';
     c.subscribe(topic,{qos:0});
     relayPublish({k:'join',nick:nick,color:myColor});
@@ -356,9 +357,15 @@ function relayOpen(){
   });
 }
 
+// The relay is the only way out; there is no quiet fall-back to another.
+// When it does not answer, the room says so, once, and keeps trying.
 function scheduleRelayRetry(){
   clearTimeout(relayTimer);
   var delay=Math.min(2000*Math.pow(1.5,Math.min(relayFails,8)),20000);
+  if(relayFails>=2){
+    if(!relayDown){ relayDown=true; addSys('⚠️ The relay is not answering. Retrying; nothing is sent or received until it is back.'); }
+    $('connStatus').textContent='Relay not answering, retrying…';$('connStatus').className='status';
+  }
   relayTimer=setTimeout(function(){
     var old=mqttClient; mqttClient=null;
     try{ if(old) old.end(true); }catch(e){}

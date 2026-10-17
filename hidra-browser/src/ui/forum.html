@@ -140,6 +140,8 @@ svg{display:block}
 .ok{color:var(--accent);font-size:.82em}.err{color:var(--danger);font-size:.82em}
 .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--txt);color:#04120e;padding:11px 20px;border-radius:9px;font-weight:600;font-size:.85em;opacity:0;transition:.25s;pointer-events:none;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.relay-notice{display:none;padding:9px 20px;background:#3a2a05;color:#ffd47a;border-bottom:1px solid #6b4d0a;font-size:.84em;text-align:center}
+.relay-notice.show{display:block}
 ::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:5px}::-webkit-scrollbar-thumb:hover{background:var(--txt3)}
 </style>
 </head>
@@ -156,6 +158,7 @@ svg{display:block}
       <button class="iconbtn" id="btn-mod" title="Moderation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></button>
     </div>
   </div>
+  <div class="relay-notice" id="relay-notice" role="status"></div>
   <div class="main">
     <aside class="col side">
       <button class="btn-new" id="btn-new"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> New topic</button>
@@ -292,7 +295,7 @@ var CAT_LEGACY={'Tecnologia':'Technology','Privacidade':'Privacy'};
 function normCat(c){ c=String(c||''); return Object.prototype.hasOwnProperty.call(CAT_LEGACY,c)?CAT_LEGACY[c]:c; }
 var PER_PAGE=20, RPER_PAGE=20;
 var subtle=crypto.subtle, te=new TextEncoder();
-var client=null, relayFails=0, relayTimer=null, readyTimer=null;
+var client=null, relayFails=0, relayTimer=null, readyTimer=null, relayDown=false;
 // An id this page made, or one made by an earlier version: a letter and ten
 // base32 characters. Anything else off the wire is not a post.
 var ID_RE=/^[tr][a-z2-7]{10}$/;
@@ -455,6 +458,7 @@ function connect(){
   c.on('connect',function(){
     if(c!==client) return;
     relayFails=0;
+    if(relayDown){ relayDown=false; $('relay-notice').classList.remove('show'); toast('Connected to the relay again.'); }
     $('cdot').className='dot on'; $('ctxt').textContent='connected';
     c.subscribe('hforum/u/+',{qos:1});
     c.subscribe('hforum/t/+',{qos:1});
@@ -473,10 +477,17 @@ function connect(){
   c.on('error',function(){});
   c.on('message',function(topic,payload){ enqueue(topic,payload.toString()); });
 }
+// The relay is the only way out; there is no quiet fall-back to another.
+// When it does not answer, the page says so and keeps trying.
 function scheduleReconnect(){
   clearTimeout(relayTimer);
   var delay=Math.min(2000*Math.pow(1.5,Math.min(relayFails,8)),20000);
   $('ctxt').textContent='reconnecting…';
+  if(relayFails>=2){
+    relayDown=true;
+    $('relay-notice').textContent='The relay is not answering. Retrying in '+Math.ceil(delay/1000)+' s. Nothing you post reaches anyone until it is back.';
+    $('relay-notice').classList.add('show');
+  }
   relayTimer=setTimeout(function(){ var old=client; client=null; try{ if(old) old.end(true); }catch(e){} connect(); },delay);
 }
 // The relay hands over its retained messages in a burst after subscribing.
