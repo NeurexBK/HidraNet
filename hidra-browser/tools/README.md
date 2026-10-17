@@ -159,8 +159,13 @@ What it does that a public broker does not:
   wiped by an empty message (a report, which is unsigned, can be withdrawn
   by anyone, as on the page); the same bytes published again go nowhere;
   nothing retained in the chat tree, and nothing live-only in the forum
-  tree. Each kind has a cap (10 000 names, 30 000 posts, 5 000 hides,
-  5 000 reports) past which new ones are refused. The page's own checks
+  tree. Names are metered: one key holds one name (an account is one key
+  for one name), the relay as a whole takes 300 new names an hour with a
+  burst of 60, and a kept name the registrar's list does not carry, once
+  a list published two minutes or more after the name arrived has come,
+  is dropped, so the store never holds many more names than the
+  registrar's own caps allow. Each kind has a cap (10 000 names, 30 000
+  posts, 5 000 hides, 5 000 reports) past which new ones are refused. The page's own checks
   stay and agree with these; signatures are verified off the relay's
   lock, and under it the relay reads what it remembered beside each
   message instead of parsing it, so a flood slows only its sender.

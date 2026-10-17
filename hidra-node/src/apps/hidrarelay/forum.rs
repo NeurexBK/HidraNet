@@ -25,7 +25,8 @@
 //! but a newly kept registry list, once.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use p256::ecdsa::signature::Verifier;
@@ -42,6 +43,17 @@ pub const MAX_CLAIMS: usize = 10_000;
 pub const MAX_POSTS: usize = 30_000;
 pub const MAX_HIDES: usize = 5_000;
 pub const MAX_REPORTS: usize = 5_000;
+
+/// Names are free to make, so they are metered for the relay as a whole:
+/// this many new names an hour, with this much of a burst. A forum grows
+/// by a few accounts a day; a flood is what this stops. The registrar
+/// meters them again on its side.
+pub const NEW_NAMES_PER_HOUR: f64 = 300.0;
+pub const NEW_NAMES_BURST: f64 = 60.0;
+/// A kept name the registrar's list does not carry, once a list published
+/// this long after the name was kept has arrived, was refused by the
+/// registrar (its caps, its burst rule) and is dropped from the store.
+pub const UNLISTED_NAME_GRACE: Duration = Duration::from_secs(120);
 
 /// The largest integer JavaScript represents exactly. A timestamp or a
 /// sequence number above it would be read as a different number by the
@@ -61,6 +73,29 @@ pub struct ForumPolicy {
     /// What the kept list says, remembered by the identity of the kept
     /// bytes so the list is parsed and verified once, not on every post.
     registry: Mutex<Option<(usize, usize, Option<RegistryFacts>)>>,
+    /// The meter on new names, relay-wide.
+    names: Mutex<NameMeter>,
+}
+
+/// A token bucket for new names: `NEW_NAMES_PER_HOUR` sustained,
+/// `NEW_NAMES_BURST` at once.
+struct NameMeter {
+    tokens: f64,
+    last: Instant,
+}
+
+impl NameMeter {
+    fn take(&mut self, now: Instant) -> bool {
+        let dt = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        self.tokens = (self.tokens + dt * NEW_NAMES_PER_HOUR / 3600.0).min(NEW_NAMES_BURST);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// The parts of the registrar's list the rules use.
@@ -263,6 +298,10 @@ impl ForumPolicy {
             registrar,
             moderator,
             registry: Mutex::new(None),
+            names: Mutex::new(NameMeter {
+                tokens: NEW_NAMES_BURST,
+                last: Instant::now(),
+            }),
         }
     }
 
@@ -549,7 +588,17 @@ impl ForumPolicy {
                     Some(owner) if owner != pk => Some("claim: name taken"),
                     Some(_) => None,
                     None if retained.count("hforum/u") >= MAX_CLAIMS => Some("claim: cap reached"),
-                    None => None,
+                    // An account is one key for one name (the key is derived
+                    // from the name), so a key asking for a second name is
+                    // not the page.
+                    None if retained.claims_of(pk) >= 1 => {
+                        Some("claim: this key already holds a name")
+                    }
+                    None => {
+                        let mut meter = self.names.lock().unwrap_or_else(|p| p.into_inner());
+                        (!meter.take(Instant::now()))
+                            .then_some("claim: too many new names right now")
+                    }
                 }
             }
             Fact::Tombstone { pk } => match existing_pk {
@@ -658,6 +707,33 @@ impl Policy for ForumPolicy {
             return Some("forum: not prepared here");
         };
         self.weigh(fact, topic, retained)
+    }
+
+    /// Names the registrar did not take. A kept claim whose name the list
+    /// does not carry, or gives to another key, once a list published well
+    /// after the claim was kept has arrived, was refused on the registrar's
+    /// side and goes; so the store never holds more names than the
+    /// registrar's caps allow plus what is still pending there.
+    fn sweep(&self, retained: &Retained) -> Vec<Arc<str>> {
+        let (Some(facts), Some(list_since)) = (
+            self.registry_facts(retained),
+            retained.since(REGISTRY_TOPIC),
+        ) else {
+            return Vec::new();
+        };
+        retained
+            .of_class("hforum/u")
+            .into_iter()
+            .filter(|(topic, since, meta)| {
+                let norm = &topic["hforum/u/".len()..];
+                let listed_to_this_key = facts
+                    .names
+                    .get(norm)
+                    .is_some_and(|owner| meta.pk.as_deref() == Some(owner.as_str()));
+                !listed_to_this_key && list_since > *since + UNLISTED_NAME_GRACE
+            })
+            .map(|(topic, _, _)| topic)
+            .collect()
     }
 }
 
@@ -808,7 +884,8 @@ mod tests {
         );
         assert_eq!(
             refuse(&pol, "hforum/u/bob", &bytes(&v["claim_A_bob"]), &retained),
-            None
+            Some("claim: this key already holds a name"),
+            "A holds alice already; an account is one key for one name"
         );
         // Not retained: the page never does that, and the relay would have
         // nothing to hold the name against.
@@ -903,6 +980,109 @@ mod tests {
             ),
             Some("post: nickname belongs to another key")
         );
+    }
+
+    #[test]
+    fn a_key_holds_one_name_and_new_names_are_metered() {
+        let v = vectors();
+        let pol = policy(false, None);
+        let mut retained = Retained::default();
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/u/alice",
+            bytes(&v["claim_A_alice"]),
+        );
+        assert_eq!(
+            refuse(&pol, "hforum/u/bob", &bytes(&v["claim_A_bob"]), &retained),
+            Some("claim: this key already holds a name"),
+            "A already holds alice"
+        );
+        assert_eq!(
+            refuse(
+                &pol,
+                "hforum/u/alice",
+                &bytes(&v["claim_A_alice"]),
+                &retained
+            ),
+            None,
+            "the name it holds, again, is fine"
+        );
+        // Fresh keys may register until the relay-wide burst is spent.
+        let fresh = policy(false, None);
+        let retained = Retained::default();
+        let mut admitted = 0;
+        for i in 0..(NEW_NAMES_BURST as u8 + 5) {
+            let (sk, pk) = local_key(100 + i);
+            let name = format!("user{i:03}");
+            let claim = serde_json::json!({ "v": 2, "name": name, "pk": pk, "ts": 1,
+                "sig": local_sign(&sk, &serde_json::json!(["claim", name, name, pk, 1])) });
+            match refuse(
+                &fresh,
+                &format!("hforum/u/{name}"),
+                &bytes(&claim),
+                &retained,
+            ) {
+                None => admitted += 1,
+                Some(r) => assert_eq!(r, "claim: too many new names right now"),
+            }
+        }
+        assert_eq!(admitted, NEW_NAMES_BURST as usize);
+    }
+
+    #[test]
+    fn names_the_registrar_did_not_take_are_swept() {
+        let v = vectors();
+        let pol = policy(true, None);
+        let mut retained = Retained::default();
+        let long_ago = Instant::now() - Duration::from_secs(3600);
+        // alice (listed to A), eve (unlisted), and a claim on bob by B
+        // (listed to A): all kept an hour ago.
+        retained.insert_at(
+            "hforum/u/alice",
+            bytes(&v["claim_A_alice"]),
+            pol.meta("hforum/u/alice", &bytes(&v["claim_A_alice"])),
+            long_ago,
+        );
+        let (sk, pk) = local_key(5);
+        let eve = serde_json::json!({ "v": 2, "name": "eve", "pk": pk, "ts": 1,
+            "sig": local_sign(&sk, &serde_json::json!(["claim", "eve", "eve", pk, 1])) });
+        retained.insert_at(
+            "hforum/u/eve",
+            bytes(&eve),
+            pol.meta("hforum/u/eve", &bytes(&eve)),
+            long_ago,
+        );
+        let b_as_bob =
+            serde_json::json!({ "v": 2, "name": "bob", "pk": v["B"], "ts": 1, "sig": "x" });
+        retained.insert_at(
+            "hforum/u/bob",
+            bytes(&b_as_bob),
+            pol.meta("hforum/u/bob", &bytes(&b_as_bob)),
+            long_ago,
+        );
+        assert!(
+            pol.sweep(&retained).is_empty(),
+            "no list, nothing to judge by"
+        );
+        // A list kept just now, published long after those claims: alice stays,
+        // eve and the stray bob go.
+        keep(
+            &mut retained,
+            &pol,
+            "hforum/registry",
+            bytes(&v["registry_2"]),
+        );
+        let mut gone: Vec<String> = pol.sweep(&retained).iter().map(|t| t.to_string()).collect();
+        gone.sort();
+        assert_eq!(gone, vec!["hforum/u/bob", "hforum/u/eve"]);
+        // A name kept after the list was: still pending at the registrar, kept.
+        let (sk2, pk2) = local_key(6);
+        let zed = serde_json::json!({ "v": 2, "name": "zed", "pk": pk2, "ts": 1,
+            "sig": local_sign(&sk2, &serde_json::json!(["claim", "zed", "zed", pk2, 1])) });
+        keep(&mut retained, &pol, "hforum/u/zed", bytes(&zed));
+        let gone = pol.sweep(&retained);
+        assert!(!gone.iter().any(|t| &t[..] == "hforum/u/zed"));
     }
 
     #[test]

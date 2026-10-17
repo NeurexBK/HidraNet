@@ -114,6 +114,8 @@ pub const PRE_CONNECT_BYTES: usize = 4096;
 pub const DEFAULT_KEEPALIVE_SECS: u64 = 300;
 pub const MAX_KEEPALIVE_SECS: u64 = 600;
 pub const MAX_PACKET: usize = MAX_REGISTRY_PAYLOAD + MAX_TOPIC_BYTES + 16;
+/// How often the policy is asked what the store should stop keeping.
+pub const SWEEP_SECS: u64 = 60;
 /// Writes waiting for the store's thread, and how many it commits at once.
 pub const STORE_QUEUE: usize = 4096;
 pub const STORE_BATCH: usize = 256;
@@ -506,6 +508,12 @@ pub trait Policy: Send + Sync {
         Meta::default()
     }
 
+    /// Topics the relay should stop keeping, asked every minute under the
+    /// lock: what the policy has decided no longer belongs in the store.
+    fn sweep(&self, _retained: &Retained) -> Vec<Arc<str>> {
+        Vec::new()
+    }
+
     /// `Some(reason)` refuses the publish, under the lock, against what is
     /// kept. Called only when the publish also fits the generic caps, so
     /// `None` means it is about to be kept and delivered.
@@ -528,6 +536,8 @@ impl Policy for OpenPolicy {}
 struct Entry {
     payload: Arc<[u8]>,
     meta: Meta,
+    /// When the relay kept it, by its own clock.
+    since: Instant,
 }
 
 /// The last retained message per topic, with the bookkeeping the limits
@@ -542,6 +552,8 @@ pub struct Retained {
     counts: HashMap<String, usize>,
     ids: HashMap<String, Arc<str>>,
     by_author: HashMap<Arc<str>, usize>,
+    /// How many names (`hforum/u/*`) each key holds.
+    claims_by_pk: HashMap<Arc<str>, usize>,
 }
 
 /// The kind of a topic for counting: its first two segments
@@ -608,6 +620,25 @@ impl Retained {
         self.by_author.get(pk).copied().unwrap_or(0)
     }
 
+    /// Names (`hforum/u/*`) this key holds.
+    pub fn claims_of(&self, pk: &str) -> usize {
+        self.claims_by_pk.get(pk).copied().unwrap_or(0)
+    }
+
+    /// When the topic was kept, by the relay's clock.
+    pub fn since(&self, topic: &str) -> Option<Instant> {
+        self.map.get(topic).map(|e| e.since)
+    }
+
+    /// Every kept topic of a kind, with when it was kept and its metadata.
+    pub fn of_class(&self, class_name: &str) -> Vec<(Arc<str>, Instant, Meta)> {
+        self.map
+            .iter()
+            .filter(|(t, _)| class(t) == class_name)
+            .map(|(t, e)| (Arc::clone(t), e.since, e.meta.clone()))
+            .collect()
+    }
+
     /// The topic that holds a post id, if any.
     pub fn topic_of_id(&self, id: &str) -> Option<&str> {
         self.ids.get(id).map(|t| &t[..])
@@ -655,6 +686,11 @@ impl Retained {
     }
 
     pub fn insert(&mut self, topic: &str, payload: Arc<[u8]>, meta: Meta) {
+        self.insert_at(topic, payload, meta, Instant::now());
+    }
+
+    /// `insert` with the moment it counts from; tests backdate with it.
+    pub fn insert_at(&mut self, topic: &str, payload: Arc<[u8]>, meta: Meta, since: Instant) {
         self.remove(topic);
         let topic: Arc<str> = topic.into();
         self.bytes += payload.len();
@@ -664,8 +700,18 @@ impl Retained {
         }
         if let Some(pk) = &meta.pk {
             *self.by_author.entry(Arc::clone(pk)).or_insert(0) += payload.len();
+            if class(&topic) == "hforum/u" {
+                *self.claims_by_pk.entry(Arc::clone(pk)).or_insert(0) += 1;
+            }
         }
-        self.map.insert(topic, Entry { payload, meta });
+        self.map.insert(
+            topic,
+            Entry {
+                payload,
+                meta,
+                since,
+            },
+        );
     }
 
     /// Returns whether there was anything to remove.
@@ -690,6 +736,14 @@ impl Retained {
                 *n = n.saturating_sub(old.payload.len());
                 if *n == 0 {
                     self.by_author.remove(pk);
+                }
+            }
+            if class(topic) == "hforum/u" {
+                if let Some(n) = self.claims_by_pk.get_mut(pk) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        self.claims_by_pk.remove(pk);
+                    }
                 }
             }
         }
@@ -1076,6 +1130,36 @@ impl Relay {
     }
 
     async fn accept_loop(self) -> Result<()> {
+        let shared_for_sweep = Arc::clone(&self.shared);
+        let policy_for_sweep = Arc::clone(&self.policy);
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(Duration::from_secs(SWEEP_SECS));
+            t.tick().await;
+            loop {
+                t.tick().await;
+                let mut s = shared_for_sweep.lock().await;
+                let gone = policy_for_sweep.sweep(&s.retained);
+                let n = gone.len();
+                for topic in gone {
+                    let Shared {
+                        retained, store, ..
+                    } = &mut *s;
+                    let queued = match store {
+                        Some(st) => st.delete(&topic),
+                        None => true,
+                    };
+                    if queued {
+                        retained.remove(&topic);
+                    }
+                }
+                if n > 0 {
+                    info!(
+                        swept = n,
+                        "retained messages the policy no longer keeps were removed"
+                    );
+                }
+            }
+        });
         let shared_for_log = Arc::clone(&self.shared);
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(600));
@@ -2378,6 +2462,15 @@ mod tests {
         );
         r.remove("hforum/t/tbigoneabcd");
         assert_eq!(r.author_bytes("A"), 0);
+        // Names per key.
+        r.insert("hforum/u/alice", b"c"[..].into(), a.clone());
+        r.insert("hforum/u/alicia", b"c"[..].into(), a.clone());
+        assert_eq!(r.claims_of("A"), 2);
+        assert_eq!(r.of_class("hforum/u").len(), 2);
+        r.remove("hforum/u/alice");
+        assert_eq!(r.claims_of("A"), 1);
+        r.remove("hforum/u/alicia");
+        assert_eq!(r.claims_of("A"), 0);
         // One pass for many filters, each topic once, nothing already covered.
         let owed = r.topics_matching(&["hforum/#".into(), "hforum/t/+".into()], &[]);
         assert_eq!(owed.len(), 2, "the post and the report, each once");
