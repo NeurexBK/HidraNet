@@ -87,6 +87,17 @@ pub mod server {
     const MAX_CLIENTS: usize = 512;
     /// Concurrent Argon2id verifications. Each costs 64 MiB while it runs.
     const MAX_CONCURRENT_KDF: usize = 4;
+    /// The largest WebSocket frame a client may send. A chat message is at
+    /// most 2000 characters, which encrypted and base64-encoded is a few
+    /// kilobytes. A frame header announcing more than this is a client
+    /// filling the server's memory: before this bound the receive buffer
+    /// grew to whatever the header promised, up to the full 64-bit length.
+    pub(super) const MAX_FRAME_PAYLOAD: usize = 64 * 1024;
+    /// What the page lets a user type, applied again here so a hand-written
+    /// client cannot push a nickname or a room name of any length into every
+    /// other member's user list and into the room map.
+    const MAX_NICK_CHARS: usize = 24;
+    const MAX_ROOM_CHARS: usize = 64;
     const BROADCAST_CAP: usize = 1024;
     const HISTORY_LIMIT: usize = 200;
     const PING_SECS: u64 = 30;
@@ -252,35 +263,53 @@ pub mod server {
 
     // ── WebSocket frame I/O (handles TCP fragmentation properly) ────────
 
-    fn try_parse_frame(buf: &[u8]) -> Option<(u8, Vec<u8>, usize)> {
+    pub(super) enum Frame {
+        /// The header or the body has not fully arrived yet.
+        Incomplete,
+        /// The header promises more than MAX_FRAME_PAYLOAD: the connection
+        /// is closed rather than buffered.
+        TooLarge,
+        Ready {
+            opcode: u8,
+            payload: Vec<u8>,
+            consumed: usize,
+        },
+    }
+
+    pub(super) fn try_parse_frame(buf: &[u8]) -> Frame {
         if buf.len() < 2 {
-            return None;
+            return Frame::Incomplete;
         }
         let opcode = buf[0] & 0x0F;
         let masked = (buf[1] & 0x80) != 0;
-        let mut payload_len = (buf[1] & 0x7F) as usize;
+        let mut payload_len = (buf[1] & 0x7F) as u64;
         let mut offset = 2usize;
 
         if payload_len == 126 {
             if buf.len() < 4 {
-                return None;
+                return Frame::Incomplete;
             }
-            payload_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+            payload_len = u16::from_be_bytes([buf[2], buf[3]]) as u64;
             offset = 4;
         } else if payload_len == 127 {
             if buf.len() < 10 {
-                return None;
+                return Frame::Incomplete;
             }
             payload_len = u64::from_be_bytes([
                 buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
-            ]) as usize;
+            ]);
             offset = 10;
         }
+
+        if payload_len > MAX_FRAME_PAYLOAD as u64 {
+            return Frame::TooLarge;
+        }
+        let payload_len = payload_len as usize;
 
         let mask_len = if masked { 4 } else { 0 };
         let total = offset + mask_len + payload_len;
         if buf.len() < total {
-            return None;
+            return Frame::Incomplete;
         }
 
         let mut payload = buf[offset + mask_len..total].to_vec();
@@ -290,7 +319,18 @@ pub mod server {
                 *b ^= mask[i % 4];
             }
         }
-        Some((opcode, payload, total))
+        Frame::Ready {
+            opcode,
+            payload,
+            consumed: total,
+        }
+    }
+
+    /// A string from a client, cut to what the page itself allows, with a
+    /// fallback for an empty one.
+    pub(super) fn bounded(s: &str, max_chars: usize, fallback: &str) -> String {
+        let s: String = s.trim().chars().take(max_chars).collect();
+        if s.is_empty() { fallback.to_string() } else { s }
     }
 
     fn encode_frame(opcode: u8, data: &[u8]) -> Vec<u8> {
@@ -329,22 +369,32 @@ pub mod server {
 
         // ── Wait for join message ──
         let (nick, room_id, color) = 'join: loop {
-            while let Some((op, payload, consumed)) = try_parse_frame(&ws_buf) {
-                ws_buf.drain(..consumed);
+            loop {
+                let (op, payload) = match try_parse_frame(&ws_buf) {
+                    Frame::Incomplete => break,
+                    Frame::TooLarge => {
+                        debug!(peer = %sensitive(&peer), "frame over the size limit before join");
+                        return Ok(());
+                    }
+                    Frame::Ready { opcode, payload, consumed } => {
+                        ws_buf.drain(..consumed);
+                        (opcode, payload)
+                    }
+                };
                 if op == 1 {
                     if let Ok(text) = std::str::from_utf8(&payload) {
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) {
                             if msg.get("type").and_then(|t| t.as_str()) == Some("join") {
-                                let n = msg
-                                    .get("nick")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("Anon")
-                                    .to_string();
-                                let r = msg
-                                    .get("room")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("lobby")
-                                    .to_string();
+                                let n = bounded(
+                                    msg.get("nick").and_then(|v| v.as_str()).unwrap_or(""),
+                                    MAX_NICK_CHARS,
+                                    "Anon",
+                                );
+                                let r = bounded(
+                                    msg.get("room").and_then(|v| v.as_str()).unwrap_or(""),
+                                    MAX_ROOM_CHARS,
+                                    "lobby",
+                                );
                                 let pass = msg
                                     .get("pass")
                                     .and_then(|v| v.as_str())
@@ -506,8 +556,18 @@ pub mod server {
             match act {
                 Act::Data(n) => {
                     ws_buf.extend_from_slice(&tmp[..n]);
-                    while let Some((opcode, payload, consumed)) = try_parse_frame(&ws_buf) {
-                        ws_buf.drain(..consumed);
+                    loop {
+                        let (opcode, payload) = match try_parse_frame(&ws_buf) {
+                            Frame::Incomplete => break,
+                            Frame::TooLarge => {
+                                debug!(peer = %sensitive(&peer), "frame over the size limit");
+                                break 'main;
+                            }
+                            Frame::Ready { opcode, payload, consumed } => {
+                                ws_buf.drain(..consumed);
+                                (opcode, payload)
+                            }
+                        };
                         match opcode {
                             1 | 2 => on_message(&payload, &room, &nick, &color).await,
                             8 => break 'main,
@@ -652,19 +712,25 @@ pub mod server {
             );
             stream.write_all(header.as_bytes()).await?;
             stream.write_all(body.as_bytes()).await?;
-        } else if path == "/vendor/mqtt.min.js" {
+        } else if let Some((body, cache)) = match path {
             // Served from here rather than from a CDN. This page holds the
             // end-to-end encryption: a script fetched from someone else's
             // host at load time can read every message before it is encrypted,
             // and there is no integrity check on a <script src> pointing at a
             // moving "@5" tag. The browser's own copy of this app was moved
             // off the CDN already; this one was still loading it.
-            let body = frontend::VENDOR_MQTT;
+            "/vendor/mqtt.min.js" => Some((frontend::VENDOR_MQTT, "public, max-age=86400")),
+            // The two files the page shares with the browser, at fixed
+            // paths: nothing here concatenates the request path.
+            "/hidra-store.js" => Some((frontend::STORE_JS, "no-cache")),
+            "/hidrachat-crypto.js" => Some((frontend::ROOM_JS, "no-cache")),
+            _ => None,
+        } {
             let header = format!(
                 "HTTP/1.1 200 OK\r\n\
                  Content-Type: text/javascript; charset=utf-8\r\n\
                  Content-Length: {}\r\n\
-                 Cache-Control: public, max-age=86400\r\n\
+                 Cache-Control: {cache}\r\n\
                  Connection: close\r\n\r\n",
                 body.len()
             );
@@ -696,798 +762,17 @@ pub mod frontend {
     /// hidra-browser/src/ui/vendor/, kept byte-identical on purpose.
     pub const VENDOR_MQTT: &str = include_str!("../../assets/vendor/mqtt.min.js");
 
-    pub const PAGE_HTML: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HidraChat</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#0a0e17;--bg2:#111827;--bg3:#1a2332;--bg4:#243044;
-  --accent:#00d4aa;--accent2:#00a88a;--accentg:rgba(0,212,170,.12);
-  --txt:#e0e6ed;--txt2:#8892a4;--muted:#4a5568;--border:#1e293b;
-  --red:#ff4757;--own:#0d2818;--own-b:#0f3d22;--other:#1a2332;--other-b:#1e293b;
-  --sys:#1a1a2e;--sys-b:#2d2b55;
-}
-html,body{height:100%;overflow:hidden}
-body{font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--txt)}
-
-/* ── Layout ── */
-#app{display:none;height:100vh;flex-direction:column}
-#app.active{display:flex}
-
-header{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-.h-left{display:flex;align-items:center;gap:10px}
-.h-left .logo{font-size:22px;filter:drop-shadow(0 0 6px rgba(0,212,170,.4))}
-.h-left h1{font-size:17px;font-weight:600;color:var(--accent);letter-spacing:.5px}
-.room-tag{background:var(--bg3);color:var(--txt2);padding:3px 10px;border-radius:12px;font-size:11px;font-family:monospace;cursor:pointer;border:1px solid var(--border);transition:.2s}
-.room-tag:hover{border-color:var(--accent);color:var(--accent)}
-.h-right{display:flex;align-items:center;gap:14px}
-.status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
-.status.on{color:var(--accent)}
-.status.on::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent);animation:pulse 2s infinite}
-.count-badge{font-size:11px;color:var(--txt2);background:var(--bg3);padding:3px 10px;border-radius:10px}
-.sidebar-toggle{display:none;background:none;border:1px solid var(--border);color:var(--txt2);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:16px}
-
-.main-area{display:flex;flex:1;overflow:hidden}
-
-/* ── Sidebar ── */
-aside{width:220px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
-aside .section{padding:16px}
-aside .section-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px}
-.user-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px}
-.user-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.user-nick{color:var(--txt)}
-.room-info{margin-top:auto;padding:16px;border-top:1px solid var(--border)}
-.room-info .label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
-.room-info .code{font-family:monospace;font-size:14px;color:var(--accent);background:var(--bg);padding:8px 12px;border-radius:6px;border:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.room-info .code button{background:none;border:none;color:var(--txt2);cursor:pointer;font-size:12px;padding:2px 6px}
-.room-info .code button:hover{color:var(--accent)}
-.encryption-badge{margin-top:10px;font-size:11px;color:var(--accent2);display:flex;align-items:center;gap:5px}
-.share-hint{margin-top:10px;font-size:11px;color:var(--muted);line-height:1.5}
-
-/* ── Messages ── */
-.chat-col{flex:1;display:flex;flex-direction:column;min-width:0}
-#messages{flex:1;overflow-y:auto;padding:16px 20px;scroll-behavior:smooth}
-#messages::-webkit-scrollbar{width:6px}
-#messages::-webkit-scrollbar-track{background:transparent}
-#messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-
-.msg{display:flex;gap:10px;margin-bottom:10px;animation:fadeIn .2s ease-out;max-width:85%}
-.msg.own{margin-left:auto;flex-direction:row-reverse}
-.msg.sys{max-width:100%;justify-content:center}
-
-.avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0;text-transform:uppercase}
-.msg.own .avatar{display:none}
-
-.bubble{padding:10px 14px;border-radius:12px;max-width:100%;word-break:break-word}
-.msg.other .bubble{background:var(--other);border:1px solid var(--other-b);border-top-left-radius:4px}
-.msg.own .bubble{background:var(--own);border:1px solid var(--own-b);border-top-right-radius:4px}
-.msg.sys .bubble{background:var(--sys);border:1px solid var(--sys-b);font-size:12px;color:var(--txt2);padding:6px 16px;border-radius:20px}
-
-.bubble-header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:3px}
-.bubble-nick{font-size:12px;font-weight:600}
-.bubble-time{font-size:10px;color:var(--muted);white-space:nowrap}
-.bubble-text{font-size:14px;line-height:1.55;color:var(--txt)}
-.bubble-text.encrypted{color:var(--muted);font-style:italic;font-size:12px}
-
-.typing-bar{padding:4px 20px;font-size:12px;color:var(--txt2);min-height:22px;flex-shrink:0}
-.typing-bar .dots{display:inline-flex;gap:3px;vertical-align:middle;margin-left:4px}
-.typing-bar .dots span{width:5px;height:5px;border-radius:50%;background:var(--txt2);animation:typeDot 1.2s infinite}
-.typing-bar .dots span:nth-child(2){animation-delay:.2s}
-.typing-bar .dots span:nth-child(3){animation-delay:.4s}
-@keyframes typeDot{0%,100%{opacity:.3;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
-
-/* ── Input ── */
-footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border);flex-shrink:0}
-.input-row{display:flex;gap:8px}
-.input-row input{flex:1;padding:12px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--txt);font-size:14px;outline:none;font-family:inherit}
-.input-row input:focus{border-color:var(--accent)}
-.input-row button{padding:12px 24px;background:var(--accent);color:var(--bg);border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:.2s}
-.input-row button:hover{background:var(--accent2)}
-.footer-badge{text-align:center;font-size:10px;color:var(--muted);margin-top:6px}
-
-/* ── Welcome modal ── */
-#welcome{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
-#welcome.hidden{display:none}
-.wc{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:40px;text-align:center;max-width:420px;width:90%}
-.wc .logo-big{font-size:48px;margin-bottom:12px;filter:drop-shadow(0 0 16px rgba(0,212,170,.3))}
-.wc h2{color:var(--accent);margin-bottom:4px;font-size:24px;font-weight:600}
-.wc .sub{color:var(--txt2);margin-bottom:24px;font-size:13px}
-.wc input{width:100%;padding:13px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--txt);font-size:15px;outline:none;margin-bottom:10px;font-family:inherit}
-.wc input:focus{border-color:var(--accent)}
-.wc input[type=password]{border-color:#2d4a2d;font-family:monospace;font-size:14px;letter-spacing:1px}
-.wc input[type=password]:focus{border-color:var(--accent)}
-.wc button{width:100%;padding:14px;background:var(--accent);color:var(--bg);border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;transition:.2s;margin-top:4px}
-.wc button:hover{background:var(--accent2)}
-.wc .hint{color:var(--muted);font-size:11px;margin-top:12px;line-height:1.5}
-.my-addr{margin-top:14px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--muted);line-height:1.7}
-.my-addr.hidden{display:none}
-.my-addr span{display:inline-block;margin-top:2px;font-family:monospace;font-size:14px;color:var(--accent);cursor:pointer;font-weight:600}
-.adv-toggle{color:var(--muted);font-size:11px;cursor:pointer;margin-top:14px;display:inline-block;user-select:none}
-.adv-toggle:hover{color:var(--accent)}
-.adv{margin-top:10px}
-.adv.hidden{display:none}
-
-.date-sep{text-align:center;margin:16px 0;font-size:11px;color:var(--muted);position:relative}
-.date-sep::before,.date-sep::after{content:'';position:absolute;top:50%;width:calc(50% - 50px);height:1px;background:var(--border)}
-.date-sep::before{left:0}
-.date-sep::after{right:0}
-
-.copied-toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--bg);padding:8px 20px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;transition:.3s;pointer-events:none;z-index:200}
-.copied-toast.show{opacity:1}
-
-.pass-row{display:flex;gap:6px;width:100%;margin-bottom:10px}
-.pass-row input{flex:1;margin-bottom:0}
-.pass-row .mini{width:46px;flex-shrink:0;padding:0;font-size:17px;background:var(--bg3);border:1px solid var(--border);color:var(--txt);border-radius:8px;cursor:pointer;transition:.15s}
-.pass-row .mini:hover{border-color:var(--accent);color:var(--accent)}
-.recent{margin-top:14px;text-align:left}
-.recent.hidden{display:none}
-.recent-t{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:7px}
-.recent-chip{display:inline-flex;align-items:center;gap:7px;background:var(--bg3);border:1px solid var(--border);border-radius:16px;padding:5px 11px;margin:0 6px 6px 0;font-size:12px;color:var(--txt2);cursor:pointer;font-family:monospace}
-.recent-chip:hover{border-color:var(--accent);color:var(--accent)}
-.recent-chip .rm{color:var(--muted);font-size:13px}
-.recent-chip .rm:hover{color:#ff6b6b}
-
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-
-@media(max-width:700px){
-  aside{position:fixed;left:-260px;top:0;bottom:0;z-index:50;transition:left .3s;width:260px;box-shadow:4px 0 20px rgba(0,0,0,.5)}
-  aside.open{left:0}
-  .sidebar-toggle{display:flex;align-items:center;justify-content:center}
-  header{padding:12px 14px}
-  #messages{padding:12px 14px}
-  footer{padding:10px 14px}
-  .msg{max-width:92%}
-}
-</style>
-</head>
-<body>
-
-<div id="welcome">
-  <div class="wc">
-    <div class="logo-big">🐍</div>
-    <h2>HidraChat</h2>
-    <p class="sub">End-to-end encrypted chat on the HidraNet network</p>
-    <input type="text" id="inNick" placeholder="Your nickname" maxlength="24" autofocus>
-    <div class="pass-row">
-      <input type="text" id="inPass" placeholder="Room password (agree it with your friends)" maxlength="128" autocomplete="off" spellcheck="false">
-      <button id="btnGen" class="mini" title="Generate a strong password">🎲</button>
-      <button id="btnCopyPass" class="mini" title="Copy password">⧉</button>
-    </div>
-    <button id="btnJoin">Join room 🔒</button>
-    <p class="hint"><b>Same password = same room.</b> It works from anywhere, across different networks and IPs. Agree a password with your friends: everyone who types the same one lands in the same room. The content is end-to-end encrypted, so nobody in between can read it.</p>
-    <div id="recentBox" class="recent hidden">
-      <div class="recent-t">Recent rooms (click to rejoin)</div>
-      <div id="recentList"></div>
-    </div>
-    <div id="advToggle" class="adv-toggle">⚙ Advanced options</div>
-    <div id="advBox" class="adv hidden">
-      <input type="text" id="inServer" placeholder="(optional) Your own server — e.g. myhub.com:8081" maxlength="80" autocomplete="off" spellcheck="false">
-      <p class="hint" style="margin-top:6px"><b>Leave it empty</b> to use the public HidraNet relay (recommended — it works across networks). Fill it in only if you run your own server or hub on your network.</p>
-      <div id="myAddr" class="my-addr hidden">To host on your own network, your friends use:<br><span id="myAddrVal" title="Click to copy">—</span></div>
-    </div>
-  </div>
-</div>
-
-<div id="app">
-  <header>
-    <div class="h-left">
-      <button class="sidebar-toggle" id="sidebarBtn">☰</button>
-      <span class="logo">🐍</span>
-      <h1>HidraChat</h1>
-      <span class="room-tag" id="roomTag" title="Click to copy">—</span>
-    </div>
-    <div class="h-right">
-      <span class="status" id="connStatus">Connecting…</span>
-      <span class="count-badge" id="countBadge">0 online</span>
-    </div>
-  </header>
-  <div class="main-area">
-    <aside id="sidebar">
-      <div class="section">
-        <div class="section-title">Online</div>
-        <div id="userList"></div>
-      </div>
-      <div class="room-info">
-        <div class="label">Room code</div>
-        <div class="code"><span id="roomCode">—</span><button onclick="copyRoom()">Copy</button></div>
-        <div class="encryption-badge" id="encBadge">🔒 E2E: AES-256-GCM</div>
-        <div class="share-hint">Share the password with your friends. Anyone using the same password joins the same encrypted room.</div>
-      </div>
-    </aside>
-    <div class="chat-col">
-      <div id="messages"></div>
-      <div class="typing-bar" id="typingBar"></div>
-      <footer>
-        <div class="input-row">
-          <input type="text" id="msgInput" placeholder="Type your message..." maxlength="2000" autocomplete="off">
-          <button id="sendBtn">Send</button>
-        </div>
-        <div class="footer-badge">🔒 End-to-end encryption active — the server never sees your messages</div>
-      </footer>
-    </div>
-  </div>
-</div>
-
-<div class="copied-toast" id="toast">Copied!</div>
-
-<script src="/vendor/mqtt.min.js"></script>
-<script>
-(function(){
-'use strict';
-
-// DEFAULT_HUB: address of an always-on server that ALL apps use by
-// default. When filled in, the same password is enough for friends on
-// different networks to land in the same room. Empty = "host it yourself" (LAN).
-var DEFAULT_HUB='';
-
-var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='', roomPass='';
-var reconnAttempts=0, MAX_RECONN=15, typingTimeout=null, myTyping=false;
-var typingUsers={}, soundEnabled=true;
-
-// ── Relay (public hub) mode state ──
-var mode='ws';                 // 'ws' = direct/LAN server | 'relay' = public relay (MQTT)
-var mqttClient=null, relayTopic='', relayReconn=0;
-var myCid='', myColor='', peers={}, presenceTimer=null, startTime=0;
-var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
-var PALETTE=['#00d4aa','#ff6b6b','#4ecdc4','#45b7d1','#f9ca24','#fd79a8','#6c5ce7','#e17055','#0984e3','#00b894','#e84393','#00cec9','#fdcb6e','#a29bfe','#74b9ff'];
-function colorFor(s){var h=0;s=s||'';for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return PALETTE[h%PALETTE.length];}
-function genCid(){var a=crypto.getRandomValues(new Uint8Array(8)),s='';for(var i=0;i<8;i++)s+=a[i].toString(16).padStart(2,'0');return s;}
-
-var $=function(id){return document.getElementById(id)};
-var messagesEl=$('messages'), msgInput=$('msgInput');
-var inNick=$('inNick'), inPass=$('inPass'), inServer=$('inServer');
-
-// ── E2E Crypto (AES-256-GCM via Web Crypto API) ──
-
-async function deriveKey(pass){
-  var enc=new TextEncoder();
-  var km=await crypto.subtle.importKey('raw',enc.encode(pass),'PBKDF2',false,['deriveKey']);
-  return crypto.subtle.deriveKey(
-    {name:'PBKDF2',salt:enc.encode('hidrachat-e2e-v1'),iterations:100000,hash:'SHA-256'},
-    km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']
-  );
-}
-
-async function computeRoom(pass){
-  var enc=new TextEncoder();
-  var buf=await crypto.subtle.digest('SHA-256',enc.encode(pass));
-  var arr=new Uint8Array(buf);
-  var hex='';
-  for(var i=0;i<6;i++) hex+=arr[i].toString(16).padStart(2,'0');
-  return hex;
-}
-
-// Public topic derived from the password (a hash — it does not reveal it)
-async function computeTopic(pass){
-  var enc=new TextEncoder();
-  var buf=await crypto.subtle.digest('SHA-256',enc.encode('hidra-topic-v1:'+pass));
-  var arr=new Uint8Array(buf),hex='';
-  for(var i=0;i<16;i++) hex+=arr[i].toString(16).padStart(2,'0');
-  return 'hidra-'+hex;
-}
-
-// ── Public relay: discovery by password, content encrypted end to end ──
-
-function connectRelay(){
-  mode='relay';
-  startTime=Date.now();
-  myCid=genCid();
-  myColor=colorFor(nick);
-  peers={};
-  peers[myCid]={nick:nick,color:myColor,last:Date.now()};
-  updatePresence();
-  addSys('🔒 Room is end-to-end encrypted. Discovery happens by password on the HidraNet network.');
-  relayOpen();
-  startPresence();
-  window.addEventListener('beforeunload',function(){try{relayPublish({k:'leave',nick:nick,cid:myCid})}catch(e){}});
-}
-
-function relayOpen(){
-  if(typeof mqtt==='undefined'){
-    $('connStatus').textContent='No network';$('connStatus').className='status';
-    addSys('⚠️ Could not load the messaging layer. Check your connection and reload the page (↻).');
-    return;
-  }
-  var topic='hidra/'+relayTopic;
-  $('connStatus').textContent='Connecting…';$('connStatus').className='status';
-  try{
-    mqttClient=mqtt.connect(MQTT_BROKERS[0],{
-      clientId:'hidra_'+myCid+Math.floor(Math.random()*99999),
-      clean:true, connectTimeout:9000, reconnectPeriod:4000, keepalive:30
-    });
-  }catch(e){
-    $('connStatus').textContent='Connection failed';$('connStatus').className='status';return;
-  }
-  mqttClient.on('connect',function(){
-    $('connStatus').textContent='Connected (HidraNet network)';
-    $('connStatus').className='status on';
-    mqttClient.subscribe(topic,{qos:0});
-    relayPublish({k:'join',nick:nick,color:myColor,cid:myCid,t:Date.now()});
-  });
-  mqttClient.on('reconnect',function(){
-    $('connStatus').textContent='Reconnecting…';$('connStatus').className='status';
-  });
-  mqttClient.on('message',function(t,payload){ onRelayMessage(payload.toString()); });
-  mqttClient.on('error',function(){});
-}
-
-async function relayPublish(obj){
-  if(!cryptoKey||!mqttClient) return;
-  var enc=await encryptMsg(JSON.stringify(obj));
-  if(!enc) return;
-  try{ mqttClient.publish('hidra/'+relayTopic, enc, {qos:0}); }catch(e){}
-}
-
-async function onRelayMessage(ciphertext){
-  var plain=await decryptMsg(ciphertext);
-  if(plain===null) return;               // message from a different room/password
-  var o;try{o=JSON.parse(plain)}catch(e){return}
-  if(!o||!o.k) return;
-  if(o.cid&&o.cid!==myCid){
-    peers[o.cid]={nick:o.nick||(peers[o.cid]&&peers[o.cid].nick)||'Anon',color:o.color||colorFor(o.nick),last:Date.now()};
-    updatePresence();
-  }
-  switch(o.k){
-    case 'msg':
-      if(o.cid===myCid) return;          // my own message (already shown locally)
-      renderChatMsg({nick:o.nick,color:o.color,text:o.text,time:o.t,cid:o.cid});
-      beep();
-      break;
-    case 'join':
-      if(o.cid!==myCid) addSys((o.nick||'Someone')+' joined the room');
-      break;
-    case 'leave':
-      if(o.cid){delete peers[o.cid];updatePresence();addSys((o.nick||'Someone')+' left the room')}
-      break;
-    case 'typing':
-      if(o.cid!==myCid) setTyping(o.nick,o.state);
-      break;
-  }
-}
-
-function startPresence(){
-  if(presenceTimer) clearInterval(presenceTimer);
-  presenceTimer=setInterval(function(){
-    peers[myCid]={nick:nick,color:myColor,last:Date.now()};
-    relayPublish({k:'presence',nick:nick,color:myColor,cid:myCid,t:Date.now()});
-    updatePresence();
-  },25000);
-}
-
-function updatePresence(){
-  var now=Date.now();
-  Object.keys(peers).forEach(function(c){if(c!==myCid&&now-peers[c].last>70000) delete peers[c]});
-  var list=Object.keys(peers).map(function(c){return {nick:peers[c].nick,color:peers[c].color}});
-  $('countBadge').textContent=list.length+' online';
-  renderUsers(list);
-}
-
-async function encryptMsg(text){
-  if(!cryptoKey) return null;
-  var enc=new TextEncoder();
-  var iv=crypto.getRandomValues(new Uint8Array(12));
-  var ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},cryptoKey,enc.encode(text));
-  var buf=new Uint8Array(12+ct.byteLength);
-  buf.set(iv);buf.set(new Uint8Array(ct),12);
-  var b='';for(var i=0;i<buf.length;i++) b+=String.fromCharCode(buf[i]);
-  return btoa(b);
-}
-
-async function decryptMsg(b64){
-  if(!cryptoKey) return null;
-  try{
-    var raw=atob(b64);var arr=new Uint8Array(raw.length);
-    for(var i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
-    if(arr.length<13) return null;
-    var pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:arr.slice(0,12)},cryptoKey,arr.slice(12));
-    return new TextDecoder().decode(pt);
-  }catch(e){return null}
-}
-
-// ── Sound ──
-
-function beep(){
-  if(!soundEnabled) return;
-  try{
-    var ctx=new(window.AudioContext||window.webkitAudioContext)();
-    var o=ctx.createOscillator(),g=ctx.createGain();
-    o.connect(g);g.connect(ctx.destination);
-    o.frequency.value=880;o.type='sine';g.gain.value=0.08;
-    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.2);
-    o.start(ctx.currentTime);o.stop(ctx.currentTime+0.2);
-  }catch(e){}
-}
-
-// ── Join ──
-
-async function doJoin(){
-  var n=inNick.value.trim();
-  if(!n) return;
-  nick=n;
-  var sv=inServer.value.trim()||DEFAULT_HUB;
-  if(sv){
-    sv=sv.replace(/^wss?:\/\//i,'').replace(/^https?:\/\//i,'').replace(/\/+$/,'');
-    if(sv.indexOf(':')<0) sv+=':8081';
-  }
-  serverAddr=sv;
-  var pass=inPass.value;
-  // The server runs Argon2id over this and compares it with the room key, so
-  // a stranger who opens a socket no longer gets the backlog and the user
-  // list for free. It is a separate use from the end-to-end key below, which
-  // is derived in this page and never leaves it.
-  roomPass=pass;
-  if(pass.length>0){
-    try{
-      cryptoKey=await deriveKey(pass);
-      roomId=await computeRoom(pass);
-      e2e=true;
-    }catch(e){
-      alert('Could not derive the encryption key');
-      return;
-    }
-  }else{
-    roomId='lobby';
-    e2e=false;
-  }
-  if(pass && e2e){ saveRecent(pass, nick); }
-  $('welcome').classList.add('hidden');
-  $('app').classList.add('active');
-  $('roomTag').textContent='#'+roomId;
-  $('roomCode').textContent=roomId;
-  if(!e2e){
-    $('encBadge').innerHTML='⚠️ No E2E — set a password';
-    $('encBadge').style.color='var(--muted)';
-    document.querySelector('.footer-badge').textContent='⚠️ No E2E encryption — set a password to encrypt';
-  }
-  msgInput.focus();
-  if(serverAddr){
-    connectWS();                          // direct server / LAN / fixed hub
-  }else if(e2e){
-    relayTopic=await computeTopic(pass);
-    connectRelay();                       // public relay, keyed by password
-  }else{
-    connectWS();                          // no password and no server: host locally
-  }
-}
-
-$('btnJoin').onclick=doJoin;
-inNick.onkeydown=function(e){if(e.key==='Enter'){if(inPass.value||!inNick.value.trim())doJoin();else inPass.focus()}};
-inPass.onkeydown=function(e){if(e.key==='Enter')doJoin()};
-inServer.onkeydown=function(e){if(e.key==='Enter')doJoin()};
-$('sidebarBtn').onclick=function(){$('sidebar').classList.toggle('open')};
-
-// Advanced server section toggle + hub prefill
-$('advToggle').onclick=function(){$('advBox').classList.toggle('hidden')};
-if(DEFAULT_HUB){ inServer.value=DEFAULT_HUB; }
-
-// ── Generate / copy password ──
-var GENWORDS=['tiger','wind','moon','river','stone','fire','snow','wave','storm','leaf','gold','silver','night','sun','sea','flower','ice','train','cloud','pine','eagle','wolf','valley','mountain','flame'];
-// Anyone can subscribe to the whole relay and try passwords against what they
-// collect, offline, so a generated one has to be out of reach of that: ten
-// random characters plus three words is about 65 bits.
-function genPassword(){
-  var r=crypto.getRandomValues(new Uint8Array(13)),suf='';
-  var w=function(i){return GENWORDS[r[i]%GENWORDS.length];};
-  for(var i=3;i<13;i++) suf+=(r[i]%36).toString(36);
-  return w(0)+'-'+w(1)+'-'+w(2)+'-'+suf;
-}
-function copyText(s){ if(s&&navigator.clipboard){ navigator.clipboard.writeText(s).then(function(){showToast()}); } }
-$('btnGen').onclick=function(){ inPass.value=genPassword(); inPass.focus(); };
-$('btnCopyPass').onclick=function(){ copyText(inPass.value); };
-
-// ── Recent rooms (last 5 passwords, kept on this device only) ──
-function saveRecent(pass, nk){
-  try{
-    var list=JSON.parse(localStorage.getItem('hidra_recent')||'[]');
-    list=list.filter(function(x){return x.pass!==pass;});
-    list.unshift({pass:pass,nick:nk||'',ts:Date.now()});
-    localStorage.setItem('hidra_recent', JSON.stringify(list.slice(0,5)));
-  }catch(e){}
-}
-function removeRecent(i){
-  try{ var l=JSON.parse(localStorage.getItem('hidra_recent')||'[]'); l.splice(i,1); localStorage.setItem('hidra_recent',JSON.stringify(l)); renderRecent(); }catch(e){}
-}
-function renderRecent(){
-  var list=[];
-  try{ list=JSON.parse(localStorage.getItem('hidra_recent')||'[]'); }catch(e){}
-  if(!list.length){ $('recentBox').classList.add('hidden'); return; }
-  $('recentBox').classList.remove('hidden');
-  $('recentList').innerHTML=list.map(function(x,i){
-    var label=x.pass.length>24?x.pass.slice(0,24)+'…':x.pass;
-    return '<span class="recent-chip" data-i="'+i+'">🔑 '+esc(label)+' <span class="rm" data-rm="'+i+'">✕</span></span>';
-  }).join('');
-  Array.prototype.forEach.call($('recentList').querySelectorAll('.recent-chip'),function(el){
-    el.onclick=function(ev){
-      var i=parseInt(el.getAttribute('data-i'),10);
-      if(ev.target.hasAttribute('data-rm')){ ev.stopPropagation(); removeRecent(i); return; }
-      var item=null; try{ item=JSON.parse(localStorage.getItem('hidra_recent')||'[]')[i]; }catch(e){}
-      if(item){ inPass.value=item.pass; if(item.nick&&!inNick.value) inNick.value=item.nick; inNick.focus(); }
-    };
-  });
-}
-renderRecent();
-
-// Show the host's shareable LAN address so they can invite friends
-(function showMyAddr(){
-  fetch('/api/whoami').then(function(r){return r.json()}).then(function(d){
-    if(d&&d.lan_ip&&d.lan_ip!=='127.0.0.1'){
-      var a=d.lan_ip+':'+(d.port||8081);
-      var el=$('myAddrVal');
-      el.textContent=a;
-      el.onclick=function(){
-        if(navigator.clipboard) navigator.clipboard.writeText(a);
-        showToast();
-      };
-      $('myAddr').classList.remove('hidden');
-    }
-  }).catch(function(){});
-})();
-
-// ── WebSocket ──
-
-function connectWS(){
-  var host=serverAddr||location.host;
-  var proto=(!serverAddr&&location.protocol==='https:')?'wss:':'ws:';
-  try{
-    ws=new WebSocket(proto+'//'+host+'/ws');
-  }catch(e){
-    $('connStatus').textContent='Invalid address';
-    $('connStatus').className='status';
-    return;
-  }
-  ws.onopen=function(){
-    reconnAttempts=0;
-    $('connStatus').textContent=serverAddr?('Connected ('+host+')'):'Connected';
-    $('connStatus').className='status on';
-    ws.send(JSON.stringify({type:'join',nick:nick,room:roomId,pass:roomPass}));
-  };
-  ws.onmessage=function(ev){
-    try{handleMsg(JSON.parse(ev.data))}catch(e){}
-  };
-  ws.onclose=function(){
-    $('connStatus').textContent='Disconnected';
-    $('connStatus').className='status';
-    if(reconnAttempts<MAX_RECONN){
-      reconnAttempts++;
-      var delay=Math.min(1000*Math.pow(1.5,reconnAttempts),20000);
-      setTimeout(connectWS,delay);
-    }
-  };
-  ws.onerror=function(){ws.close()};
-}
-
-// ── Message handling ──
-
-function handleMsg(m){
-  switch(m.type){
-    case 'welcome':
-      $('countBadge').textContent=m.count+' online';
-      renderUsers(m.users);
-      if(m.history&&m.history.length>0){
-        m.history.forEach(function(h){if(h.type==='msg') renderChatMsg(h)});
-        scrollBottom();
-      }
-      if(e2e) addSys('🔒 E2E active — messages encrypted with AES-256-GCM (PBKDF2 100k)');
-      else addSys('Connected to room #'+roomId+' — messages are in plaintext');
-      break;
-    case 'joined':
-      addSys(m.nick+' joined the room');
-      $('countBadge').textContent=m.count+' online';
-      addUser(m.nick,m.color);
-      break;
-    case 'left':
-      addSys(m.nick+' left the room');
-      $('countBadge').textContent=m.count+' online';
-      removeUser(m.nick);
-      clearTyping(m.nick);
-      break;
-    case 'msg':
-      renderChatMsg(m);
-      if(m.nick!==nick) beep();
-      break;
-    case 'typing':
-      if(m.nick!==nick) setTyping(m.nick,m.state);
-      break;
-    case 'error':
-      addSys('⚠️ '+m.msg);
-      break;
-  }
-}
-
-async function renderChatMsg(m){
-  var isOwn=m.cid?(m.cid===myCid):(m.nick===nick);
-  var text;
-  if(m.enc){
-    text=await decryptMsg(m.enc);
-    if(text===null) text=null;
-  }else{
-    text=m.text||'';
-  }
-
-  var el=document.createElement('div');
-  el.className='msg '+(isOwn?'own':'other');
-
-  var avatar='';
-  if(!isOwn){
-    var initials=m.nick.substring(0,2).toUpperCase();
-    avatar='<div class="avatar" style="background:'+(m.color||'var(--accent)')+'">'+esc(initials)+'</div>';
-  }
-
-  var time=m.time?formatTime(m.time):'';
-  var nickHtml=isOwn?'':'<span class="bubble-nick" style="color:'+(m.color||'var(--accent)')+'">'+esc(m.nick)+'</span>';
-  var bodyHtml;
-  if(text===null){
-    bodyHtml='<div class="bubble-text encrypted">🔒 Encrypted message — wrong or missing password</div>';
-  }else{
-    bodyHtml='<div class="bubble-text">'+esc(text)+'</div>';
-  }
-
-  el.innerHTML=avatar+
-    '<div class="bubble">'+
-      '<div class="bubble-header">'+nickHtml+'<span class="bubble-time">'+time+'</span></div>'+
-      bodyHtml+
-    '</div>';
-  messagesEl.appendChild(el);
-  autoScroll();
-}
-
-function addSys(text){
-  var el=document.createElement('div');
-  el.className='msg sys';
-  el.innerHTML='<div class="bubble">'+esc(text)+'</div>';
-  messagesEl.appendChild(el);
-  autoScroll();
-}
-
-// ── User list ──
-
-function renderUsers(list){
-  var el=$('userList');el.innerHTML='';
-  list.forEach(function(u){addUser(u.nick,u.color)});
-}
-
-function addUser(n,color){
-  var el=$('userList');
-  if(el.querySelector('[data-nick="'+CSS.escape(n)+'"]')) return;
-  var d=document.createElement('div');
-  d.className='user-item';d.dataset.nick=n;
-  d.innerHTML='<span class="user-dot" style="background:'+(color||'var(--accent)')+'"></span><span class="user-nick">'+esc(n)+'</span>';
-  el.appendChild(d);
-}
-
-function removeUser(n){
-  var el=$('userList').querySelector('[data-nick="'+CSS.escape(n)+'"]');
-  if(el) el.remove();
-}
-
-// ── Typing ──
-
-function setTyping(who,state){
-  if(state) typingUsers[who]=Date.now();
-  else delete typingUsers[who];
-  renderTyping();
-}
-
-function clearTyping(who){delete typingUsers[who];renderTyping();}
-
-function renderTyping(){
-  var names=Object.keys(typingUsers);
-  var bar=$('typingBar');
-  if(names.length===0){bar.innerHTML='';return}
-  var dots='<span class="dots"><span></span><span></span><span></span></span>';
-  if(names.length===1) bar.innerHTML=esc(names[0])+' is typing'+dots;
-  else if(names.length===2) bar.innerHTML=esc(names[0])+' and '+esc(names[1])+' are typing'+dots;
-  else bar.innerHTML=names.length+' people typing'+dots;
-}
-
-// ── Stale typing cleanup ──
-setInterval(function(){
-  var now=Date.now(),changed=false;
-  Object.keys(typingUsers).forEach(function(k){
-    if(now-typingUsers[k]>4000){delete typingUsers[k];changed=true}
-  });
-  if(changed) renderTyping();
-},2000);
-
-// ── Send ──
-
-async function sendMessage(){
-  var text=msgInput.value.trim();
-  if(!text) return;
-  if(mode==='relay'){
-    var ts=Date.now();
-    relayPublish({k:'msg',nick:nick,color:myColor,text:text,t:ts,cid:myCid});
-    renderChatMsg({nick:nick,color:myColor,text:text,time:ts,cid:myCid}); // eco local: aparece na hora
-    msgInput.value='';
-    sendTypingState(false);
-    return;
-  }
-  if(!ws||ws.readyState!==1) return;
-  var payload={type:'msg'};
-  if(e2e){
-    var enc=await encryptMsg(text);
-    if(!enc){addSys('Encryption failed');return}
-    payload.enc=enc;
-  }else{
-    payload.text=text;
-  }
-  ws.send(JSON.stringify(payload));
-  msgInput.value='';
-  sendTypingState(false);
-}
-
-$('sendBtn').onclick=sendMessage;
-msgInput.onkeydown=function(e){
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}
-};
-
-// ── Typing indicator (debounced) ──
-
-msgInput.oninput=function(){
-  if(!myTyping){
-    myTyping=true;
-    sendTypingState(true);
-  }
-  clearTimeout(typingTimeout);
-  typingTimeout=setTimeout(function(){
-    myTyping=false;
-    sendTypingState(false);
-  },2000);
-};
-
-function sendTypingState(state){
-  if(mode==='relay'){relayPublish({k:'typing',nick:nick,cid:myCid,state:state,t:Date.now()});return}
-  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'typing',state:state}));
-}
-
-// ── Helpers ──
-
-function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
-
-function formatTime(ts){
-  var d=new Date(ts);
-  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-}
-
-var scrollLock=false;
-function autoScroll(){
-  if(scrollLock) return;
-  messagesEl.scrollTop=messagesEl.scrollHeight;
-}
-function scrollBottom(){messagesEl.scrollTop=messagesEl.scrollHeight}
-
-messagesEl.onscroll=function(){
-  var diff=messagesEl.scrollHeight-messagesEl.scrollTop-messagesEl.clientHeight;
-  scrollLock=diff>80;
-};
-
-window.copyRoom=function(){
-  var code=$('roomCode').textContent;
-  if(navigator.clipboard){
-    navigator.clipboard.writeText(code).then(function(){showToast()});
-  }else{
-    var ta=document.createElement('textarea');ta.value=code;
-    document.body.appendChild(ta);ta.select();document.execCommand('copy');
-    document.body.removeChild(ta);showToast();
-  }
-};
-
-$('roomTag').onclick=function(){window.copyRoom()};
-
-function showToast(){
-  var t=$('toast');t.classList.add('show');
-  setTimeout(function(){t.classList.remove('show')},1500);
-}
-
-})();
-</script>
-</body>
-</html>"##;
+    /// The chat page. The same file the browser ships in
+    /// hidra-browser/src/ui/hidrachat.html, kept byte-identical: it used to be
+    /// a second copy written out here, which had already drifted from the
+    /// browser's (no vault, an older password generator, a join that the
+    /// server rejected). The browser's test chat-crypto.js checks the copies.
+    pub const PAGE_HTML: &str = include_str!("../../assets/hidrachat.html");
+    /// The vault shim the page loads. Outside the browser there is no vault
+    /// bridge, and the shim falls back to localStorage as the page always did.
+    pub const STORE_JS: &str = include_str!("../../assets/hidra-store.js");
+    /// The room cryptography, shared with the browser the same way.
+    pub const ROOM_JS: &str = include_str!("../../assets/hidrachat-crypto.js");
 }
 
 #[cfg(test)]
@@ -1533,5 +818,103 @@ mod tests {
         let empty = derive_room_key("", "room").unwrap();
         let real = derive_room_key("actual passphrase", "room").unwrap();
         assert_ne!(empty, real);
+    }
+
+    use super::server::{Frame, MAX_FRAME_PAYLOAD, bounded, try_parse_frame};
+
+    /// A client frame, masked as browsers send them.
+    fn masked_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x80 | opcode];
+        let len = payload.len();
+        if len < 126 {
+            f.push(0x80 | len as u8);
+        } else if len <= 65535 {
+            f.push(0x80 | 126);
+            f.extend_from_slice(&(len as u16).to_be_bytes());
+        } else {
+            f.push(0x80 | 127);
+            f.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+        let mask = [0x12, 0x34, 0x56, 0x78];
+        f.extend_from_slice(&mask);
+        f.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        f
+    }
+
+    #[test]
+    fn a_masked_frame_is_unmasked_and_consumed() {
+        let mut bytes = masked_frame(1, b"{\"type\":\"typing\"}");
+        let total = bytes.len();
+        bytes.extend_from_slice(b"next");
+        match try_parse_frame(&bytes) {
+            Frame::Ready { opcode, payload, consumed } => {
+                assert_eq!(opcode, 1);
+                assert_eq!(payload, b"{\"type\":\"typing\"}");
+                assert_eq!(consumed, total);
+            }
+            _ => panic!("a complete frame must parse"),
+        }
+    }
+
+    #[test]
+    fn a_partial_frame_waits_for_the_rest() {
+        let bytes = masked_frame(1, &[7u8; 300]);
+        for cut in [0, 1, 3, 4, 7, 8, 100, bytes.len() - 1] {
+            assert!(
+                matches!(try_parse_frame(&bytes[..cut]), Frame::Incomplete),
+                "cut at {cut}"
+            );
+        }
+        assert!(matches!(try_parse_frame(&bytes), Frame::Ready { .. }));
+    }
+
+    #[test]
+    fn the_largest_allowed_frame_still_parses() {
+        let bytes = masked_frame(2, &[1u8; MAX_FRAME_PAYLOAD]);
+        assert!(matches!(try_parse_frame(&bytes), Frame::Ready { .. }));
+    }
+
+    /// The header alone decides: a client announcing a huge frame is cut
+    /// off before any of it is buffered, and the 64-bit length that would
+    /// have asked for an impossible allocation is refused the same way.
+    #[test]
+    fn a_frame_over_the_limit_is_refused_from_its_header() {
+        let mut too_big = vec![0x81, 0x80 | 127];
+        too_big.extend_from_slice(&((MAX_FRAME_PAYLOAD + 1) as u64).to_be_bytes());
+        assert!(matches!(try_parse_frame(&too_big), Frame::TooLarge));
+
+        let mut huge = vec![0x81, 0x80 | 127];
+        huge.extend_from_slice(&u64::MAX.to_be_bytes());
+        assert!(matches!(try_parse_frame(&huge), Frame::TooLarge));
+    }
+
+    #[test]
+    fn nicknames_and_rooms_are_cut_to_what_the_page_allows() {
+        assert_eq!(bounded("  alice ", 24, "Anon"), "alice");
+        assert_eq!(bounded("", 24, "Anon"), "Anon");
+        assert_eq!(bounded("   ", 24, "Anon"), "Anon");
+        let long = "x".repeat(500);
+        assert_eq!(bounded(&long, 24, "Anon").chars().count(), 24);
+        // Multi-byte characters are counted as characters, not cut in half.
+        assert_eq!(bounded(&"é".repeat(30), 24, "Anon"), "é".repeat(24));
+    }
+
+    /// The engine serves the browser's own page, and the copy under assets/
+    /// has to be the browser's bytes. The browser's test checks the same
+    /// thing from its side; this one runs wherever the sibling checkout is
+    /// present, and passes quietly where it is not.
+    #[test]
+    fn the_served_page_is_the_browsers_page() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for (ours, theirs) in [
+            (super::frontend::PAGE_HTML, "hidra-browser/src/ui/hidrachat.html"),
+            (super::frontend::STORE_JS, "hidra-browser/src/ui/hidra-store.js"),
+            (super::frontend::ROOM_JS, "hidra-browser/src/ui/hidrachat-crypto.js"),
+            (super::frontend::VENDOR_MQTT, "hidra-browser/src/ui/vendor/mqtt.min.js"),
+        ] {
+            if let Ok(browser) = std::fs::read_to_string(root.join(theirs)) {
+                assert!(ours == browser, "{theirs} differs from the copy under assets/");
+            }
+        }
     }
 }

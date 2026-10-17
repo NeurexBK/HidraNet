@@ -527,20 +527,22 @@ function startChatServer(attempt) {
     // anyone controlling that response read everything in plaintext. Now the
     // file comes from disk, at the version that was reviewed.
     //
-    // The shim the apps load to reach their vault compartment. A fixed name,
-    // like the vendor files below: nothing concatenates the request path.
-    if (p === '/hidra-store.js') {
+    // The shim the apps load to reach their vault compartment, and the room
+    // cryptography the chat page loads. Fixed names, like the vendor files
+    // below: nothing concatenates the request path.
+    const SHARED = { '/hidra-store.js': 'hidra-store.js', '/hidrachat-crypto.js': 'hidrachat-crypto.js' };
+    if (Object.prototype.hasOwnProperty.call(SHARED, p)) {
       try {
-        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', 'hidra-store.js'));
+        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', SHARED[p]));
         res.writeHead(200, {
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'no-cache',
         });
         res.end(body);
       } catch (e) {
-        console.error('[srv] hidra-store.js', e.message);
+        console.error('[srv]', SHARED[p], e.message);
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('could not read hidra-store.js');
+        res.end('could not read ' + SHARED[p]);
       }
       return;
     }
