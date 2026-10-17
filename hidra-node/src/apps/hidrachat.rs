@@ -4,38 +4,39 @@ pub mod crypto {
         ChaCha20Poly1305, Nonce,
     };
     use rand::RngCore;
+    use zeroize::Zeroize;
     use crate::error::{HidraError, Result};
 
-    /// Room key from the room passphrase.
+    /// What a client shows this server to be let into the room.
     ///
-    /// This was a bare `blake3::hash` of the passphrase: one pass of a fast
-    /// hash, no salt, no stretching. A room password people can actually type
-    /// falls to a dictionary run at billions of guesses a second, and because
-    /// there was no salt the same password gave the same key in every room, so
-    /// one cracked password unlocked all of them at once.
+    /// The browser turns the room password into everything the room needs
+    /// (hidra-browser/src/ui/hidrachat-crypto.js, `deriveRoom`): scrypt at
+    /// N=2^16, r=8, p=1 with the salt `hidrachat-room-v2` gives a seed, and
+    /// HKDF-SHA256 over that seed gives, under separate labels, the message
+    /// key, the relay topic, the room code and this verifier. The server
+    /// derives the verifier the same way from its passphrase, once, and
+    /// compares.
     ///
-    /// Argon2id at the vault's parameters costs 64 MiB and three passes per
-    /// guess, which is unnoticeable once per room and ruinous a few billion
-    /// times over. The salt is the room name, so two rooms never share a key
-    /// even on the same passphrase, and both sides still derive it offline
-    /// with nothing to exchange.
-    pub fn derive_room_key(passphrase: &str, room: &str) -> Result<[u8; 32]> {
-        // Argon2id requires at least 8 salt bytes; short room names are
-        // domain-separated and padded through BLAKE3 rather than rejected.
-        let salt = blake3::hash(
-            &[b"hidrachat-room-salt-v1:".as_slice(), room.as_bytes()].concat(),
-        );
-
-        let params = argon2::Params::new(65536, 3, 4, Some(32))
-            .map_err(|e| HidraError::Crypto(format!("Argon2 params error: {e}")))?;
-        let argon2 =
-            argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-        let mut key = [0u8; 32];
-        argon2
-            .hash_password_into(passphrase.as_bytes(), salt.as_bytes(), &mut key)
-            .map_err(|e| HidraError::Crypto(format!("Argon2id room KDF failed: {e}")))?;
-        Ok(key)
+    /// The password itself used to be sent and checked with Argon2id here.
+    /// Over a plain ws: connection that handed the whole room to anyone on
+    /// the path, since the same password is the message key; and every join
+    /// attempt cost the server 64 MiB, which a stranger could ask for in a
+    /// loop. The verifier opens the door and nothing else, and checking it
+    /// costs a comparison.
+    pub fn derive_join_verifier(passphrase: &str) -> Result<[u8; 32]> {
+        let params = scrypt::Params::new(16, 8, 1, 32)
+            .map_err(|e| HidraError::Crypto(format!("scrypt params error: {e}")))?;
+        let mut seed = [0u8; 32];
+        scrypt::scrypt(passphrase.as_bytes(), b"hidrachat-room-v2", &params, &mut seed)
+            .map_err(|e| HidraError::Crypto(format!("scrypt failed: {e}")))?;
+        // HKDF with no salt, as Web Crypto does with an empty one: both come
+        // down to an HMAC key of zeros.
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, &seed);
+        let mut out = [0u8; 32];
+        hk.expand(b"hidrachat-join-v2", &mut out)
+            .map_err(|e| HidraError::Crypto(format!("HKDF expand failed: {e}")))?;
+        seed.zeroize();
+        Ok(out)
     }
 
     #[allow(dead_code)]
@@ -77,7 +78,7 @@ pub mod server {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use subtle::ConstantTimeEq;
-    use tokio::sync::{Mutex, Semaphore, broadcast};
+    use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, broadcast};
     use tracing::{debug, info, warn};
 
     use crate::safelog::sensitive;
@@ -85,14 +86,29 @@ pub mod server {
     use super::frontend;
 
     const MAX_CLIENTS: usize = 512;
-    /// Concurrent Argon2id verifications. Each costs 64 MiB while it runs.
-    const MAX_CONCURRENT_KDF: usize = 4;
+    /// Open connections, joined or not. A client that connects and says
+    /// nothing used to hold a task and its buffers for ever; enough of them
+    /// ran the process out of file descriptors, which took every other
+    /// listener in the process down with the chat.
+    const MAX_CONNECTIONS: usize = 1024;
+    /// How long a connection may take to finish the handshake and to join.
+    const HANDSHAKE_SECS: u64 = 30;
+    /// How long a write may wait for the peer to take bytes. A peer that
+    /// stops reading used to hold the connection, and its permit, for ever.
+    const WRITE_SECS: u64 = 15;
+    /// A member that has sent nothing, not even a pong, for this long is
+    /// gone: its nickname is freed for the person who reconnects.
+    const IDLE_SECS: u64 = PING_SECS * 2 + 10;
     /// The largest WebSocket frame a client may send. A chat message is at
     /// most 2000 characters, which encrypted and base64-encoded is a few
     /// kilobytes. A frame header announcing more than this is a client
     /// filling the server's memory: before this bound the receive buffer
     /// grew to whatever the header promised, up to the full 64-bit length.
     pub(super) const MAX_FRAME_PAYLOAD: usize = 64 * 1024;
+    /// The largest chat message kept and relayed. The frame limit above is a
+    /// transport bound; this is what a room's history and every member's
+    /// socket are asked to carry per message.
+    pub(super) const MAX_MESSAGE_BYTES: usize = 8 * 1024;
     /// What the page lets a user type, applied again here so a hand-written
     /// client cannot push a nickname or a room name of any length into every
     /// other member's user list and into the room map.
@@ -144,28 +160,27 @@ pub mod server {
         next_id: Arc<AtomicU64>,
         #[allow(dead_code)]
         default_room: String,
-        /// Argon2id(passphrase, default_room). The passphrase used to be taken
-        /// and thrown away — the parameter was literally named `_passphrase` —
-        /// so the join handler admitted anyone who opened a socket, handed
-        /// them the backlog and the user list, and never asked for anything.
-        room_key: [u8; 32],
-        /// Every join attempt has to run the same Argon2id to be checked, and
-        /// that costs 64 MiB. Without a bound, a few hundred concurrent joins
-        /// would exhaust memory; with it they queue instead.
-        kdf_slots: Arc<Semaphore>,
+        /// What a client must show to join: see `crypto::derive_join_verifier`.
+        /// The passphrase used to be taken and thrown away — the parameter
+        /// was literally named `_passphrase` — so the join handler admitted
+        /// anyone who opened a socket, handed them the backlog and the user
+        /// list, and never asked for anything.
+        join_verifier: [u8; 32],
+        /// One permit per open connection, joined or not.
+        conns: Arc<Semaphore>,
     }
 
     impl ChatServer {
         pub fn new(addr: SocketAddr, default_room: String, passphrase: &str) -> Self {
-            let room_key = super::crypto::derive_room_key(passphrase, &default_room)
-                .expect("Argon2id parameters are constant and valid");
+            let join_verifier = super::crypto::derive_join_verifier(passphrase)
+                .expect("scrypt parameters are constant and valid");
             Self {
                 addr,
                 rooms: Arc::new(Mutex::new(HashMap::new())),
                 next_id: Arc::new(AtomicU64::new(1)),
                 default_room,
-                room_key,
-                kdf_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_KDF)),
+                join_verifier,
+                conns: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             }
         }
 
@@ -177,21 +192,23 @@ pub mod server {
                 let (stream, peer) = match listener.accept().await {
                     Ok(s) => s,
                     Err(e) => {
+                        // Out of descriptors, most likely: a tight loop here
+                        // would spin at full CPU until one freed up.
                         warn!(error = %e, "accept error");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                 };
+                let Ok(permit) = Arc::clone(&self.conns).try_acquire_owned() else {
+                    debug!(peer = %sensitive(&peer), "connection refused: at the connection limit");
+                    drop(stream);
+                    continue;
+                };
                 let rooms = Arc::clone(&self.rooms);
                 let next_id = Arc::clone(&self.next_id);
-                let room_key = self.room_key;
-                let default_room = self.default_room.clone();
-                let kdf_slots = Arc::clone(&self.kdf_slots);
+                let join_verifier = self.join_verifier;
                 tokio::spawn(async move {
-                    if let Err(e) = handle_conn(
-                        stream, peer, rooms, next_id, room_key, default_room, kdf_slots,
-                    )
-                    .await
-                    {
+                    if let Err(e) = handle_conn(stream, peer, rooms, next_id, join_verifier, permit).await {
                         debug!(peer = %sensitive(&peer), error = %e, "connection ended");
                     }
                 });
@@ -201,24 +218,43 @@ pub mod server {
 
     // ── Connection handler ──────────────────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_conn(
         mut stream: TcpStream,
         peer: SocketAddr,
         rooms: Arc<Mutex<HashMap<String, Arc<RoomState>>>>,
         next_id: Arc<AtomicU64>,
-        room_key: [u8; 32],
-        default_room: String,
-        kdf_slots: Arc<Semaphore>,
+        join_verifier: [u8; 32],
+        _permit: OwnedSemaphorePermit,
     ) -> crate::error::Result<()> {
         let mut buf = vec![0u8; 8192];
-        let n = stream.read(&mut buf).await?;
+        let n = match tokio::time::timeout(Duration::from_secs(HANDSHAKE_SECS), stream.read(&mut buf)).await {
+            Ok(r) => r?,
+            Err(_) => return Ok(()),           // said nothing in time
+        };
         if n == 0 {
             return Ok(());
         }
         let req = String::from_utf8_lossy(&buf[..n]);
 
         if req.to_lowercase().contains("upgrade: websocket") {
+            // The same screen the HTTP side applies. A page on any site the
+            // user visits can open a WebSocket to 127.0.0.1, and the browser
+            // marks it with the page's Origin; without this the one endpoint
+            // that takes credentials and the room's backlog answered it.
+            if matches!(crate::local_guard::screen(&req), crate::local_guard::Access::Deny) {
+                let (code, text) = crate::local_guard::DENIED_STATUS;
+                let body = crate::local_guard::DENIED_BODY;
+                let header = format!(
+                    "HTTP/1.1 {code} {text}\r\n\
+                     Content-Type: application/json\r\n\
+                     Content-Length: {}\r\n\
+                     Connection: close\r\n\r\n",
+                    body.len()
+                );
+                send(&mut stream, header.as_bytes()).await;
+                send(&mut stream, body.as_bytes()).await;
+                return Ok(());
+            }
             let key = extract_hdr(&req, "sec-websocket-key")
                 .ok_or_else(|| crate::error::HidraError::Protocol("missing ws key".into()))?;
             let accept = ws_accept(key);
@@ -228,17 +264,16 @@ pub mod server {
                  Connection: Upgrade\r\n\
                  Sec-WebSocket-Accept: {accept}\r\n\r\n"
             );
-            stream.write_all(resp.as_bytes()).await?;
+            if !send(&mut stream, resp.as_bytes()).await {
+                return Ok(());
+            }
             let hdr_end = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(n);
             let leftover = if hdr_end < n {
                 buf[hdr_end..n].to_vec()
             } else {
                 vec![]
             };
-            ws_session(
-                stream, peer, rooms, next_id, leftover, room_key, default_room, kdf_slots,
-            )
-            .await
+            ws_session(stream, peer, rooms, next_id, leftover, join_verifier).await
         } else {
             serve_http(&mut stream, &req).await
         }
@@ -326,11 +361,74 @@ pub mod server {
         }
     }
 
+    /// Every complete frame at the front of the buffer, taken off it in one
+    /// move. Draining per frame made receive processing quadratic: a read
+    /// full of two-byte frames moved the rest of the buffer once per frame.
+    pub(super) fn take_frames(buf: &mut Vec<u8>) -> (Vec<(u8, Vec<u8>)>, bool) {
+        let mut frames = Vec::new();
+        let mut pos = 0usize;
+        let mut too_large = false;
+        loop {
+            match try_parse_frame(&buf[pos..]) {
+                Frame::Incomplete => break,
+                Frame::TooLarge => {
+                    too_large = true;
+                    break;
+                }
+                Frame::Ready { opcode, payload, consumed } => {
+                    pos += consumed;
+                    frames.push((opcode, payload));
+                }
+            }
+        }
+        buf.drain(..pos);
+        (frames, too_large)
+    }
+
     /// A string from a client, cut to what the page itself allows, with a
     /// fallback for an empty one.
     pub(super) fn bounded(s: &str, max_chars: usize, fallback: &str) -> String {
         let s: String = s.trim().chars().take(max_chars).collect();
         if s.is_empty() { fallback.to_string() } else { s }
+    }
+
+    /// Code points that take no space on screen and so cannot be part of a
+    /// name. The same list as the page's (hidrachat-crypto.js, INVISIBLE),
+    /// tested against the same strings.
+    pub(super) fn is_invisible(c: char) -> bool {
+        let u = c as u32;
+        matches!(u,
+            0x0000..=0x001f | 0x007f..=0x009f | 0x00ad | 0x034f | 0x061c | 0x115f | 0x1160
+            | 0x17b4 | 0x17b5 | 0x180b..=0x180f | 0x200b..=0x200f | 0x2028..=0x202e
+            | 0x2060..=0x206f | 0x3164 | 0xe000..=0xf8ff | 0xfe00..=0xfe0f | 0xfeff | 0xffa0
+            | 0xfff9..=0xfffb | 0x1bca0..=0x1bca3 | 0x1d173..=0x1d17a | 0xe0000..=0xe007f
+            | 0xe0100..=0xe01ef | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
+    }
+
+    /// Two nicknames are the same name when they read the same: after
+    /// compatibility normalisation, with invisible characters dropped, with
+    /// runs of whitespace as one space, ignoring case. The page compares and
+    /// displays them the same way, and the room refuses a second member on a
+    /// name already in it. A weaker rule here let a member join as a
+    /// look-alike of another that the page then showed as the same name.
+    pub(super) fn nick_key(nick: &str) -> String {
+        use unicode_normalization::UnicodeNormalization;
+        let folded: String = nick.nfkc().filter(|c| !is_invisible(*c)).collect();
+        folded.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    }
+
+    /// The verifier a client sent, as bytes, if it has the shape of one.
+    pub(super) fn parse_auth(auth: &str) -> Option<[u8; 32]> {
+        if auth.len() != 64 || !auth.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        for (i, chunk) in auth.as_bytes().chunks(2).enumerate() {
+            let hi = (chunk[0] as char).to_digit(16)? as u8;
+            let lo = (chunk[1] as char).to_digit(16)? as u8;
+            out[i] = (hi << 4) | lo;
+        }
+        Some(out)
     }
 
     fn encode_frame(opcode: u8, data: &[u8]) -> Vec<u8> {
@@ -350,103 +448,104 @@ pub mod server {
         f
     }
 
+    /// write_all with a deadline. False when the peer would not take the
+    /// bytes in time, which callers treat as the connection having ended.
+    async fn send(stream: &mut TcpStream, bytes: &[u8]) -> bool {
+        matches!(
+            tokio::time::timeout(Duration::from_secs(WRITE_SECS), stream.write_all(bytes)).await,
+            Ok(Ok(()))
+        )
+    }
+
+    async fn refuse(stream: &mut TcpStream, msg: &str) {
+        let body = serde_json::json!({"type": "error", "msg": msg}).to_string();
+        if send(stream, &encode_frame(1, body.as_bytes())).await {
+            send(stream, &encode_frame(8, &[])).await;
+        }
+    }
+
     // ── WebSocket session with room management ──────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
+    /// What a join request says, once one has arrived; None when the
+    /// connection ended or sent a frame over the limit first.
+    async fn read_join(
+        stream: &mut TcpStream,
+        ws_buf: &mut Vec<u8>,
+        tmp: &mut [u8],
+    ) -> crate::error::Result<Option<(String, String, Option<[u8; 32]>)>> {
+        loop {
+            // One frame at a time here, so that whatever a client sent in the
+            // same segment as its join stays in the buffer for the session.
+            let (op, payload) = match try_parse_frame(ws_buf) {
+                Frame::TooLarge => return Ok(None),
+                Frame::Ready { opcode, payload, consumed } => {
+                    ws_buf.drain(..consumed);
+                    (opcode, payload)
+                }
+                Frame::Incomplete => {
+                    let n = stream.read(tmp).await?;
+                    if n == 0 {
+                        return Ok(None);
+                    }
+                    ws_buf.extend_from_slice(&tmp[..n]);
+                    continue;
+                }
+            };
+            if op == 8 {
+                return Ok(None);
+            }
+            if op != 1 {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(&payload) else { continue };
+            let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { continue };
+            if msg.get("type").and_then(|t| t.as_str()) != Some("join") {
+                continue;
+            }
+            let nick = bounded(msg.get("nick").and_then(|v| v.as_str()).unwrap_or(""), MAX_NICK_CHARS, "Anon");
+            let room = bounded(msg.get("room").and_then(|v| v.as_str()).unwrap_or(""), MAX_ROOM_CHARS, "lobby");
+            let auth = msg.get("auth").and_then(|v| v.as_str()).and_then(parse_auth);
+            return Ok(Some((nick, room, auth)));
+        }
+    }
+
     async fn ws_session(
         mut stream: TcpStream,
         peer: SocketAddr,
         rooms: Arc<Mutex<HashMap<String, Arc<RoomState>>>>,
         next_id: Arc<AtomicU64>,
         leftover: Vec<u8>,
-        room_key: [u8; 32],
-        default_room: String,
-        kdf_slots: Arc<Semaphore>,
+        join_verifier: [u8; 32],
     ) -> crate::error::Result<()> {
         let conn_id = next_id.fetch_add(1, Ordering::Relaxed);
         let mut ws_buf = leftover;
         let mut tmp = [0u8; 16384];
 
-        // ── Wait for join message ──
-        let (nick, room_id, color) = 'join: loop {
-            loop {
-                let (op, payload) = match try_parse_frame(&ws_buf) {
-                    Frame::Incomplete => break,
-                    Frame::TooLarge => {
-                        debug!(peer = %sensitive(&peer), "frame over the size limit before join");
-                        return Ok(());
-                    }
-                    Frame::Ready { opcode, payload, consumed } => {
-                        ws_buf.drain(..consumed);
-                        (opcode, payload)
-                    }
-                };
-                if op == 1 {
-                    if let Ok(text) = std::str::from_utf8(&payload) {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) {
-                            if msg.get("type").and_then(|t| t.as_str()) == Some("join") {
-                                let n = bounded(
-                                    msg.get("nick").and_then(|v| v.as_str()).unwrap_or(""),
-                                    MAX_NICK_CHARS,
-                                    "Anon",
-                                );
-                                let r = bounded(
-                                    msg.get("room").and_then(|v| v.as_str()).unwrap_or(""),
-                                    MAX_ROOM_CHARS,
-                                    "lobby",
-                                );
-                                let pass = msg
-                                    .get("pass")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-
-                                // The room key is derived from the server's
-                                // own room name, so a client cannot pick a
-                                // room it does not have the passphrase for.
-                                let offered = {
-                                    let _slot = kdf_slots.acquire().await.map_err(|_| {
-                                        crate::error::HidraError::Protocol(
-                                            "KDF semaphore closed".into(),
-                                        )
-                                    })?;
-                                    let pass = pass.to_string();
-                                    let room = default_room.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        super::crypto::derive_room_key(&pass, &room)
-                                    })
-                                    .await
-                                    .map_err(|e| {
-                                        crate::error::HidraError::Protocol(format!(
-                                            "KDF task failed: {e}"
-                                        ))
-                                    })??
-                                };
-
-                                if offered.ct_ne(&room_key).into() {
-                                    warn!(peer = %sensitive(&peer), "join rejected: wrong room passphrase");
-                                    let body = serde_json::json!({
-                                        "type": "error",
-                                        "msg": "Wrong room passphrase."
-                                    })
-                                    .to_string();
-                                    let _ = stream.write_all(&encode_frame(1, body.as_bytes())).await;
-                                    let _ = stream.write_all(&encode_frame(8, &[])).await;
-                                    return Ok(());
-                                }
-
-                                let c = nick_color(&n).to_string();
-                                break 'join (n, r, c);
-                            }
-                        }
-                    }
-                }
-            }
-            let n = stream.read(&mut tmp).await?;
-            if n == 0 {
+        // ── Wait for the join, but not for ever ──
+        let joined = tokio::time::timeout(
+            Duration::from_secs(HANDSHAKE_SECS),
+            read_join(&mut stream, &mut ws_buf, &mut tmp),
+        )
+        .await;
+        let (nick, room_id, auth) = match joined {
+            Ok(Ok(Some(j))) => j,
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                debug!(peer = %sensitive(&peer), "no join within the handshake window");
                 return Ok(());
             }
-            ws_buf.extend_from_slice(&tmp[..n]);
         };
+
+        // A wrong or missing verifier and a right one cost the same here.
+        let offered = auth.unwrap_or([0u8; 32]);
+        let ok: bool = offered.ct_eq(&join_verifier).into();
+        if auth.is_none() || !ok {
+            warn!(peer = %sensitive(&peer), "join rejected: wrong room passphrase");
+            refuse(&mut stream, "Wrong room passphrase.").await;
+            return Ok(());
+        }
+        let color = nick_color(&nick).to_string();
 
         info!(
             peer = %sensitive(&peer),
@@ -455,7 +554,11 @@ pub mod server {
             "user joined"
         );
 
-        // ── Get or create room ──
+        // ── Get or create the room and register, under one lock ──
+        //
+        // Looking the room up and joining it used to be two steps; a reap of
+        // the room between them left the member in a room no longer in the
+        // map, invisible to everyone who came after.
         let room = {
             let mut rm = rooms.lock().await;
             let r = rm.entry(room_id.clone()).or_insert_with(|| {
@@ -466,27 +569,38 @@ pub mod server {
                     history: Mutex::new(VecDeque::new()),
                 })
             });
-            Arc::clone(r)
-        };
-
-        // ── Register user ──
-        {
-            let mut users = room.users.lock().await;
-            if users.len() >= MAX_CLIENTS {
-                let err_msg = serde_json::json!({"type":"error","msg":"Room is full"});
-                let _ = stream
-                    .write_all(&encode_frame(1, err_msg.to_string().as_bytes()))
-                    .await;
+            let room = Arc::clone(r);
+            let refusal = {
+                let mut users = room.users.lock().await;
+                // One nickname, one member. The page shows a message as the
+                // reader's own by the connection it came from, but the
+                // nickname is still what everyone reads under it.
+                let wanted = nick_key(&nick);
+                if users.len() >= MAX_CLIENTS {
+                    Some("Room is full")
+                } else if users.values().any(|u| nick_key(&u.nick) == wanted) {
+                    Some("That nickname is already in the room.")
+                } else {
+                    users.insert(
+                        conn_id,
+                        UserInfo {
+                            nick: nick.clone(),
+                            color: color.clone(),
+                        },
+                    );
+                    None
+                }
+            };
+            if let Some(why) = refusal {
+                if room.users.lock().await.is_empty() {
+                    rm.remove(&room_id);
+                }
+                drop(rm);
+                refuse(&mut stream, why).await;
                 return Ok(());
             }
-            users.insert(
-                conn_id,
-                UserInfo {
-                    nick: nick.clone(),
-                    color: color.clone(),
-                },
-            );
-        }
+            room
+        };
 
         // ── Send welcome (history + user list) ──
         {
@@ -503,13 +617,17 @@ pub mod server {
             let welcome = serde_json::json!({
                 "type": "welcome",
                 "room": room_id,
+                "you": conn_id,
                 "users": user_list,
                 "history": hist,
                 "count": users.len()
             });
             let frame = encode_frame(1, welcome.to_string().as_bytes());
-            if stream.write_all(&frame).await.is_err() {
+            drop(history);
+            drop(users);
+            if !send(&mut stream, &frame).await {
                 room.users.lock().await.remove(&conn_id);
+                reap_room(&rooms, &room_id, &room).await;
                 return Ok(());
             }
         }
@@ -531,6 +649,7 @@ pub mod server {
         let mut rx = room.tx.subscribe();
         let mut ping_timer = tokio::time::interval(Duration::from_secs(PING_SECS));
         ping_timer.tick().await;
+        let mut last_seen = std::time::Instant::now();
 
         'main: loop {
             enum Act {
@@ -555,41 +674,40 @@ pub mod server {
 
             match act {
                 Act::Data(n) => {
+                    last_seen = std::time::Instant::now();
                     ws_buf.extend_from_slice(&tmp[..n]);
-                    loop {
-                        let (opcode, payload) = match try_parse_frame(&ws_buf) {
-                            Frame::Incomplete => break,
-                            Frame::TooLarge => {
-                                debug!(peer = %sensitive(&peer), "frame over the size limit");
-                                break 'main;
-                            }
-                            Frame::Ready { opcode, payload, consumed } => {
-                                ws_buf.drain(..consumed);
-                                (opcode, payload)
-                            }
-                        };
+                    let (frames, too_large) = take_frames(&mut ws_buf);
+                    for (opcode, payload) in frames {
                         match opcode {
-                            1 | 2 => on_message(&payload, &room, &nick, &color).await,
+                            1 | 2 => on_message(&payload, &room, conn_id, &nick, &color).await,
                             8 => break 'main,
                             9 => {
-                                let _ = stream
-                                    .write_all(&encode_frame(0x0A, &payload))
-                                    .await;
+                                if !send(&mut stream, &encode_frame(0x0A, &payload)).await {
+                                    break 'main;
+                                }
                             }
                             _ => {}
                         }
                     }
+                    if too_large {
+                        debug!(peer = %sensitive(&peer), "frame over the size limit");
+                        break 'main;
+                    }
                 }
                 Act::Bcast(data) => {
-                    if !data.is_empty() {
-                        let frame = encode_frame(1, data.as_bytes());
-                        if stream.write_all(&frame).await.is_err() {
-                            break;
-                        }
+                    if !data.is_empty() && !send(&mut stream, &encode_frame(1, data.as_bytes())).await {
+                        break;
                     }
                 }
                 Act::Ping => {
-                    if stream.write_all(&encode_frame(9, b"")).await.is_err() {
+                    // A pong, or anything else, arrives as Data and resets the
+                    // clock; a peer silent for IDLE_SECS is gone, whatever the
+                    // socket says.
+                    if last_seen.elapsed() > Duration::from_secs(IDLE_SECS) {
+                        debug!(peer = %sensitive(&peer), "no pong; connection considered dead");
+                        break;
+                    }
+                    if !send(&mut stream, &encode_frame(9, b"")).await {
                         break;
                     }
                 }
@@ -610,11 +728,34 @@ pub mod server {
             });
             let _ = room.tx.send(msg.to_string());
         }
+        reap_room(&rooms, &room_id, &room).await;
         info!(peer = %sensitive(&peer), nick = %sensitive(&nick), "user left");
         Ok(())
     }
 
-    async fn on_message(payload: &[u8], room: &Arc<RoomState>, nick: &str, color: &str) {
+    /// A room with nobody left in it is forgotten, history and all. Rooms
+    /// used to live for the life of the process, so a member could leave
+    /// hundreds of them behind, each holding its backlog.
+    async fn reap_room(
+        rooms: &Arc<Mutex<HashMap<String, Arc<RoomState>>>>,
+        room_id: &str,
+        room: &Arc<RoomState>,
+    ) {
+        let mut rm = rooms.lock().await;
+        let empty = room.users.lock().await.is_empty();
+        if empty {
+            if let Some(current) = rm.get(room_id) {
+                if Arc::ptr_eq(current, room) {
+                    rm.remove(room_id);
+                }
+            }
+        }
+    }
+
+    async fn on_message(payload: &[u8], room: &Arc<RoomState>, conn_id: u64, nick: &str, color: &str) {
+        if payload.len() > MAX_MESSAGE_BYTES {
+            return;
+        }
         let Ok(text) = std::str::from_utf8(payload) else {
             return;
         };
@@ -632,6 +773,7 @@ pub mod server {
                 if let Some(obj) = msg.as_object_mut() {
                     obj.insert("nick".into(), serde_json::json!(nick));
                     obj.insert("color".into(), serde_json::json!(color));
+                    obj.insert("from".into(), serde_json::json!(conn_id));
                     obj.insert("time".into(), serde_json::json!(now_ms()));
                     obj.insert("id".into(), serde_json::json!(gen_id()));
                 }
@@ -647,7 +789,7 @@ pub mod server {
             }
             "typing" => {
                 let state = msg.get("state").and_then(|s| s.as_bool()).unwrap_or(false);
-                let t = serde_json::json!({"type":"typing","nick":nick,"state":state});
+                let t = serde_json::json!({"type":"typing","nick":nick,"from":conn_id,"state":state});
                 let _ = room.tx.send(t.to_string());
             }
             _ => {}
@@ -689,8 +831,8 @@ pub mod server {
                 crate::local_guard::response_headers(None),
                 body.len()
             );
-            stream.write_all(header.as_bytes()).await?;
-            stream.write_all(body.as_bytes()).await?;
+            send(stream, header.as_bytes()).await;
+            send(stream, body.as_bytes()).await;
             return Ok(());
         }
 
@@ -710,8 +852,9 @@ pub mod server {
                  Connection: close\r\n\r\n",
                 body.len()
             );
-            stream.write_all(header.as_bytes()).await?;
-            stream.write_all(body.as_bytes()).await?;
+            if send(stream, header.as_bytes()).await {
+                send(stream, body.as_bytes()).await;
+            }
         } else if let Some((body, cache)) = match path {
             // Served from here rather than from a CDN. This page holds the
             // end-to-end encryption: a script fetched from someone else's
@@ -734,8 +877,9 @@ pub mod server {
                  Connection: close\r\n\r\n",
                 body.len()
             );
-            stream.write_all(header.as_bytes()).await?;
-            stream.write_all(body.as_bytes()).await?;
+            if send(stream, header.as_bytes()).await {
+                send(stream, body.as_bytes()).await;
+            }
         } else if path == "/api/whoami" {
             let ip = local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
             let body = format!("{{\"lan_ip\":\"{ip}\",\"port\":8081}}");
@@ -746,12 +890,11 @@ pub mod server {
                  Connection: close\r\n\r\n",
                 body.len()
             );
-            stream.write_all(header.as_bytes()).await?;
-            stream.write_all(body.as_bytes()).await?;
+            if send(stream, header.as_bytes()).await {
+                send(stream, body.as_bytes()).await;
+            }
         } else {
-            stream
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found")
-                .await?;
+            send(stream, b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found").await;
         }
         Ok(())
     }
@@ -777,50 +920,101 @@ pub mod frontend {
 
 #[cfg(test)]
 mod tests {
-    use super::crypto::derive_room_key;
+    use super::crypto::derive_join_verifier;
 
-    /// The old derivation was an unsalted blake3 of the passphrase, so the
-    /// same password produced the same key everywhere. Salting by room name
-    /// is what stops one cracked password from opening every room.
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// The browser computes the same value (hidra-browser/src/ui/
+    /// hidrachat-crypto.js, `deriveRoom(...).join`); this vector was taken
+    /// from it, so the two sides are known to agree byte for byte.
     #[test]
-    fn room_key_differs_per_room() {
-        let a = derive_room_key("same passphrase", "room-a").unwrap();
-        let b = derive_room_key("same passphrase", "room-b").unwrap();
+    fn join_verifier_matches_the_browser() {
+        let v = derive_join_verifier("test passphrase").unwrap();
+        assert_eq!(
+            hex(&v),
+            "32585c8aad2f832cb79f808518e71d53df8dc2b1151df339a6e9a610c8421fec"
+        );
+    }
+
+    #[test]
+    fn join_verifier_differs_per_passphrase_and_is_deterministic() {
+        let a = derive_join_verifier("passphrase one").unwrap();
+        let b = derive_join_verifier("passphrase two").unwrap();
+        let c = derive_join_verifier("passphrase one").unwrap();
         assert_ne!(a, b);
+        assert_eq!(a, c);
     }
 
-    #[test]
-    fn room_key_differs_per_passphrase() {
-        let a = derive_room_key("passphrase one", "room").unwrap();
-        let b = derive_room_key("passphrase two", "room").unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn room_key_is_deterministic() {
-        let a = derive_room_key("passphrase", "room").unwrap();
-        let b = derive_room_key("passphrase", "room").unwrap();
-        assert_eq!(a, b);
-    }
-
-    /// A room name shorter than Argon2id's eight-byte salt minimum has to
-    /// still derive, not error out.
-    #[test]
-    fn short_room_names_still_derive() {
-        assert!(derive_room_key("passphrase", "a").is_ok());
-        assert!(derive_room_key("passphrase", "").is_ok());
-    }
-
-    /// An empty passphrase is a real key, not a bypass: it must not collide
-    /// with any other passphrase.
+    /// An empty passphrase is a real value, not a bypass: it must not collide
+    /// with any other passphrase, and a client sending no verifier at all is
+    /// compared against zeros, which no passphrase derives to in practice.
     #[test]
     fn empty_passphrase_is_not_a_wildcard() {
-        let empty = derive_room_key("", "room").unwrap();
-        let real = derive_room_key("actual passphrase", "room").unwrap();
+        let empty = derive_join_verifier("").unwrap();
+        let real = derive_join_verifier("actual passphrase").unwrap();
         assert_ne!(empty, real);
+        assert_ne!(empty, [0u8; 32]);
     }
 
-    use super::server::{Frame, MAX_FRAME_PAYLOAD, bounded, try_parse_frame};
+    use super::server::{
+        Frame, MAX_FRAME_PAYLOAD, MAX_MESSAGE_BYTES, bounded, nick_key, parse_auth, take_frames,
+        try_parse_frame,
+    };
+
+    #[test]
+    fn a_verifier_is_sixty_four_hex_digits_and_nothing_else() {
+        let good = "32585c8aad2f832cb79f808518e71d53df8dc2b1151df339a6e9a610c8421fec";
+        assert_eq!(hex(&parse_auth(good).unwrap()), good);
+        for bad in ["", "abc", &good[..63], &format!("{good}0"), &good.replace('a', "g"), "the password itself"] {
+            assert!(parse_auth(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    /// The same strings the browser's test uses (test/chat-crypto.js): the
+    /// two sides must agree on what reads the same.
+    #[test]
+    fn nicknames_that_read_the_same_are_the_same_name() {
+        assert_eq!(nick_key("Alice"), nick_key("alice"));
+        assert_eq!(nick_key("  alice  "), nick_key("alice"));
+        assert_eq!(nick_key("al  ice"), nick_key("Al Ice"));
+        assert_ne!(nick_key("alice"), nick_key("alice2"));
+        for look_alike in [
+            "al\u{200b}ice", "al\u{fe0f}ice", "al\u{034f}ice", "al\u{3164}ice", "al\u{e0041}ice",
+            "al\u{180e}ice", "al\u{061c}ice", "al\u{fff9}ice", "\u{ff21}lice", "al\u{f0000}ice",
+            "al\u{ad}ice", "al\u{feff}ice", "al\u{2060}ice", "al\u{115f}ice",
+        ] {
+            assert_eq!(nick_key(look_alike), "alice", "{look_alike:?}");
+        }
+        assert_eq!(nick_key("  al\u{a0} ice "), "al ice");
+        assert_ne!(nick_key("ali\u{e7}a"), "alica", "a real accent stays");
+    }
+
+    #[test]
+    fn frames_are_taken_off_the_buffer_in_one_move() {
+        let mut buf = Vec::new();
+        for i in 0..100u8 {
+            buf.extend(masked_frame(1, &[i]));
+        }
+        let partial = masked_frame(1, &[7u8; 50]);
+        buf.extend_from_slice(&partial[..partial.len() - 1]);
+        let (frames, too_large) = take_frames(&mut buf);
+        assert_eq!(frames.len(), 100);
+        assert!(!too_large);
+        assert_eq!(frames[42].1, vec![42u8]);
+        assert_eq!(buf.len(), partial.len() - 1, "the partial frame stays");
+        buf.push(partial[partial.len() - 1]);
+        let (frames, _) = take_frames(&mut buf);
+        assert_eq!(frames.len(), 1);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_message_over_the_limit_is_smaller_than_a_frame_over_the_limit() {
+        assert!(MAX_MESSAGE_BYTES < MAX_FRAME_PAYLOAD);
+    }
+
 
     /// A client frame, masked as browsers send them.
     fn masked_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {

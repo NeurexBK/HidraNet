@@ -37,6 +37,17 @@ chrono = { version = "0.4", features = ["serde"] }
 # (KyberSlash), whose division timings depend on the secret.
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 argon2 = "0.5"
+# HidraChat's join check: the browser derives the room from its password with
+# scrypt and HKDF (hidra-browser/src/ui/hidrachat-crypto.js), and sends a
+# verifier rather than the password; the server derives the same verifier
+# from its passphrase, once, at startup.
+scrypt = { version = "0.11", default-features = false }
+hkdf = "0.12"
+sha2 = "0.10"
+# Nicknames are compared after the same normalisation the page applies
+# (NFKC, see hidrachat-crypto.js normalizeNick), so that two names that read
+# the same cannot both be in a room.
+unicode-normalization = "0.1"
 aes-gcm = "0.10"
 subtle = "2"
 

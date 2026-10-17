@@ -19,12 +19,13 @@
 //
 // 2. Impersonation. The room key is shared, so anyone in the room could once
 //    send a message carrying any nickname. Each session now signs what it
-//    sends with a key made for that session (ECDSA P-256), the first message
-//    seen from a session fixes its public key, and a message whose signature
-//    does not match is dropped before it is shown. The limit is that a second
-//    session may still choose the same nickname: the page shows a fingerprint
-//    beside a nickname that two sessions share, and a careful reader checks
-//    it out of band.
+//    sends with a key made for that session (ECDSA P-256); the session id is
+//    that key's hash, so an id cannot be worn by another key; and a message
+//    whose signature does not match is dropped before it is shown and before
+//    it changes anything. The limit is that a second session may still
+//    choose the same nickname: the page shows a fingerprint beside a
+//    nickname that two sessions share, and a careful reader checks it out of
+//    band.
 //
 // 3. Replay. The relay, or anyone who recorded the traffic, could send an old
 //    message again and it would read as new. Every message now carries a
@@ -52,6 +53,7 @@
   var INFO_KEY = 'hidrachat-key-v2';
   var INFO_TOPIC = 'hidrachat-topic-v2';
   var INFO_ID = 'hidrachat-id-v2';
+  var INFO_JOIN = 'hidrachat-join-v2';
   var REPLAY_WINDOW_MS = 10 * 60 * 1000;
   var SEEN_PER_SESSION = 512;
 
@@ -225,6 +227,11 @@
   //   key     the AES-256-GCM key, not extractable
   //   topic   the relay topic, 'hidra-' + 32 hex, public but useless alone
   //   roomId  12 hex, what the page shows as the room code
+  //   join    64 hex, what the page shows an own server to be let in. The
+  //           server derives the same value from its passphrase (hidrachat.rs)
+  //           and compares. The password itself used to go over the socket,
+  //           which on a plain ws: connection handed the whole room to anyone
+  //           on the path; this value opens the door and nothing else.
   // `params` is for the tests, which cannot afford 64 MiB per case.
   async function deriveRoom(password, params) {
     assertSubtle();
@@ -236,8 +243,9 @@
     var key = await hkdfAesKey(seed, INFO_KEY);
     var topic = 'hidra-' + toHex(await hkdfBits(seed, INFO_TOPIC, 128));
     var roomId = toHex(await hkdfBits(seed, INFO_ID, 48));
+    var join = toHex(await hkdfBits(seed, INFO_JOIN, 256));
     seed.fill(0);
-    return { key: key, topic: topic, roomId: roomId };
+    return { key: key, topic: topic, roomId: roomId, join: join };
   }
 
   // ── Message encryption ─────────────────────────────────────────────────
@@ -266,9 +274,32 @@
 
   // ── Session identity and signatures ────────────────────────────────────
 
+  // A public key on the wire is exactly one string: the uncompressed point,
+  // 65 bytes, base64 with its padding. Web Crypto would also import the
+  // compressed point, and atob forgives stray bits, so a key re-encoded
+  // another way would verify the same signatures while comparing unequal to
+  // the string every page holds. Anything but the one form is refused.
+  function canonicalPub(pubB64) {
+    if (typeof pubB64 !== 'string' || pubB64.length !== 88) return null;
+    var raw;
+    try { raw = fromB64(pubB64); } catch (e) { return null; }
+    if (raw.length !== 65 || raw[0] !== 4 || toB64(raw) !== pubB64) return null;
+    return raw;
+  }
+
   async function fingerprint(pubB64) {
     var h = await subtle.digest('SHA-256', fromB64(pubB64));
     return toHex(new Uint8Array(h).slice(0, 4));
+  }
+
+  // The session id is the key's own hash, so no key can wear another's id:
+  // a page checks the id against the key it arrives with before anything
+  // else. It used to be a random value, which a member could copy from any
+  // envelope and claim with their own key in every page that had not yet
+  // seen the real session.
+  async function cidFor(pubB64) {
+    var h = await subtle.digest('SHA-256', fromB64(pubB64));
+    return toHex(new Uint8Array(h).slice(0, 8));
   }
 
   async function newIdentity() {
@@ -276,7 +307,7 @@
     var pair = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
     var pub = toB64(new Uint8Array(await subtle.exportKey('raw', pair.publicKey)));
     return {
-      cid: toHex(randomBytes(8)),
+      cid: await cidFor(pub),
       privateKey: pair.privateKey,
       pub: pub,
       fingerprint: await fingerprint(pub),
@@ -305,7 +336,9 @@
 
   async function verify(pubB64, obj, sigB64) {
     try {
-      var key = await subtle.importKey('raw', fromB64(pubB64), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+      var raw = canonicalPub(pubB64);
+      if (!raw || typeof sigB64 !== 'string') return false;
+      var key = await subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
       return await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, fromB64(sigB64), canonical(obj));
     } catch (e) {
       return false;
@@ -380,8 +413,12 @@
       || typeof msg.sig !== 'string' || typeof msg.n !== 'string' || typeof msg.t !== 'number') {
       return { ok: false, reason: 'malformed' };
     }
-    if (!trust.bind(msg.cid, msg.pk)) return { ok: false, reason: 'identity' };
+    // The key must be in its one form, the id must be that key's own hash,
+    // and the signature must hold, all before any state is touched: a
+    // message that fails leaves nothing behind.
+    if (!canonicalPub(msg.pk) || msg.cid !== (await cidFor(msg.pk))) return { ok: false, reason: 'identity' };
     if (!(await verify(msg.pk, msg, msg.sig))) return { ok: false, reason: 'signature' };
+    if (!trust.bind(msg.cid, msg.pk)) return { ok: false, reason: 'identity' };
     if (!guard.accept(msg.cid, msg.n, msg.t)) return { ok: false, reason: 'replay' };
     return { ok: true, msg: msg };
   }
@@ -528,11 +565,17 @@
     return NAME_RE.test(normalizeName(name));
   }
 
+  // The public key is published, so the password can be guessed against it
+  // offline, at scrypt's cost per guess but with all the time in the world.
+  // Sixteen characters is where a human-chosen password stops being worth
+  // that; the page offers a generated one.
+  var MIN_ACCOUNT_PASSWORD = 16;
+
   async function deriveIdentity(name, password, params) {
     assertSubtle();
     var norm = normalizeName(name);
     if (!validName(norm)) throw new Error('a username is 3 to 24 characters: letters, digits, dot, dash or underscore');
-    if (typeof password !== 'string' || password.length < 10) throw new Error('a password is at least 10 characters');
+    if (typeof password !== 'string' || password.length < MIN_ACCOUNT_PASSWORD) throw new Error('a password is at least ' + MIN_ACCOUNT_PASSWORD + ' characters');
     var P = params || SCRYPT;
     var seed = await scrypt(te.encode(password), te.encode('hforum-identity-v1:' + norm), P.N, P.r, P.p, 32);
     return identityFromSeed(seed);
@@ -546,7 +589,9 @@
 
   async function verifyFields(pubB64, fields, sigB64) {
     try {
-      var key = await subtle.importKey('raw', fromB64(pubB64), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+      var raw = canonicalPub(pubB64);
+      if (!raw || typeof sigB64 !== 'string') return false;
+      var key = await subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
       return await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, fromB64(sigB64), te.encode(JSON.stringify(fields)));
     } catch (e) {
       return false;
@@ -568,13 +613,26 @@
   // sides. `seq` only ever grows: an older registry cannot be replayed over
   // a newer one.
 
+  // `hides` lists the posts the moderator key has hidden, so that a hide
+  // wiped from the relay still reaches pages that arrive later.
+  var POST_ID_RE = /^[tr][a-z2-7]{10}$/;
+
+  // A list signed before `hides` existed carries no such field; its
+  // signature covers five fields, and is still accepted.
   function registryFields(reg) {
-    return ['registry', Number(reg.seq) || 0, Number(reg.ts) || 0, reg.names, typeof reg.admin === 'string' ? reg.admin : ''];
+    var f = ['registry', Number(reg.seq) || 0, Number(reg.ts) || 0, reg.names, typeof reg.admin === 'string' ? reg.admin : ''];
+    if (Array.isArray(reg.hides)) f.push(reg.hides);
+    return f;
+  }
+
+  function sortStrings(a) {
+    return a.slice().sort(function (x, y) { return x < y ? -1 : x > y ? 1 : 0; });
   }
 
   async function signRegistry(identity, reg) {
     reg.v = 1;
     reg.names = reg.names.slice().sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
+    reg.hides = sortStrings(Array.isArray(reg.hides) ? reg.hides : []);
     reg.sig = await signFields(identity, registryFields(reg));
     return reg;
   }
@@ -582,18 +640,25 @@
   // The shape, then the signature. Returns the registry or null.
   async function verifyRegistry(pubB64, reg) {
     if (!reg || typeof reg !== 'object' || reg.v !== 1) return null;
-    if (!Number.isInteger(reg.seq) || reg.seq < 0 || typeof reg.ts !== 'number') return null;
+    if (!Number.isInteger(reg.seq) || reg.seq < 0 || typeof reg.ts !== 'number' || !isFinite(reg.ts)) return null;
     if (!Array.isArray(reg.names) || typeof reg.sig !== 'string') return null;
-    if (reg.admin !== null && reg.admin !== undefined && typeof reg.admin !== 'string') return null;
+    if (reg.admin !== null && reg.admin !== undefined && (typeof reg.admin !== 'string' || !canonicalPub(reg.admin))) return null;
+    if (reg.hides !== undefined && !Array.isArray(reg.hides)) return null;
     var last = '';
     for (var i = 0; i < reg.names.length; i++) {
       var e = reg.names[i];
       if (!Array.isArray(e) || e.length !== 4) return null;
       if (typeof e[0] !== 'string' || !validName(e[0]) || e[0] !== normalizeName(e[0])) return null;
       if (typeof e[1] !== 'string' || normalizeName(e[1]) !== e[0]) return null;
-      if (typeof e[2] !== 'string' || typeof e[3] !== 'number') return null;
+      if (typeof e[2] !== 'string' || !canonicalPub(e[2]) || !Number.isFinite(e[3])) return null;
       if (e[0] <= last) return null;             // sorted, no duplicates
       last = e[0];
+    }
+    var hides = reg.hides || [];
+    var lastHide = '';
+    for (var j = 0; j < hides.length; j++) {
+      if (typeof hides[j] !== 'string' || !POST_ID_RE.test(hides[j]) || hides[j] <= lastHide) return null;
+      lastHide = hides[j];
     }
     if (!(await verifyFields(pubB64, registryFields(reg), reg.sig))) return null;
     return reg;
@@ -606,6 +671,37 @@
   // anything else, including a closing quote, gets the fallback.
   function safeColor(c, fallback) {
     return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : fallback;
+  }
+
+  // A nickname as shown and as compared. Two members may pick the same
+  // nickname, and the pages tell them apart by fingerprint; that only works
+  // if 'alice', 'alice ' and 'alice' with an invisible character in it count
+  // as the same name. Compatibility normalisation folds look-alike forms,
+  // format characters (zero-width joiners and the like) are dropped, runs of
+  // whitespace become one space, and the comparison ignores case.
+  // Code points that take no space on screen and so cannot be part of a
+  // name: controls, the soft hyphen, joiners and zero-width characters,
+  // bidirectional marks, variation selectors, the Hangul and Khmer fillers,
+  // the Mongolian selectors, interlinear annotation, shorthand and musical
+  // format characters, language tags, and the private-use areas. The engine
+  // keeps the same list (hidrachat.rs, nick_key) and the two are tested
+  // against the same strings. Spelled out as escapes so that the file itself
+  // holds none of them.
+  var INVISIBLE = new RegExp('[' +
+    '\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f' +
+    '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ue000-\\uf8ff\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff9-\\ufffb' +
+    '\\u{1bca0}-\\u{1bca3}\\u{1d173}-\\u{1d17a}\\u{e0000}-\\u{e007f}\\u{e0100}-\\u{e01ef}\\u{f0000}-\\u{ffffd}\\u{100000}-\\u{10fffd}' +
+    ']', 'gu');
+  function normalizeNick(s) {
+    s = String(s == null ? '' : s);
+    try { s = s.normalize('NFKC'); } catch (e) {}
+    s = s.replace(INVISIBLE, '');
+    s = s.replace(/\s+/g, ' ').trim().slice(0, 24);
+    return s;
+  }
+
+  function nickKey(s) {
+    return normalizeNick(s).toLowerCase();
   }
 
   var PALETTE = ['#00d4aa', '#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#fd79a8', '#6c5ce7',
@@ -652,6 +748,11 @@
     safeColor: safeColor,
     colorFor: colorFor,
     genPassword: genPassword,
+    canonicalPub: canonicalPub,
+    cidFor: cidFor,
+    normalizeNick: normalizeNick,
+    nickKey: nickKey,
+    MIN_ACCOUNT_PASSWORD: MIN_ACCOUNT_PASSWORD,
     // Forum accounts.
     p256Public: p256Public,
     seedToScalar: seedToScalar,

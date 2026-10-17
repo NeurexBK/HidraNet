@@ -191,6 +191,67 @@ async function test(name, fn) {
     }
   });
 
+  await test('a session id is its key\'s hash, so no key can wear another\'s id', async () => {
+    assert.strictEqual(alice.cid, await room.cidFor(alice.pub));
+    assert.strictEqual(alice.cid.length, 16);
+    assert.ok(alice.cid.startsWith(alice.fingerprint));
+    // Validly signed by Mallory, but carrying Alice's id: refused before any
+    // state is touched, in a page that has never heard of Alice.
+    const r = fresh();
+    const worn = { k: 'join', cid: alice.cid, nick: 'alice', n: 'cc', t: Date.now(), pk: bob.pub };
+    worn.sig = await room.sign(bob, worn);
+    assert.deepStrictEqual(await room.open(key, r.trust, r.guard, await room.encrypt(key, JSON.stringify(worn))), { ok: false, reason: 'identity' });
+    // Alice's real message still gets through to that page afterwards.
+    const real = await room.seal(key, alice, { k: 'msg', nick: 'alice', text: 'still me' });
+    const got = await room.open(key, r.trust, r.guard, real.wire);
+    assert.ok(got.ok, got.reason);
+    assert.strictEqual(got.msg.text, 'still me');
+  });
+
+  await test('a message that fails verification leaves nothing behind', async () => {
+    const r = fresh();
+    const junk = { k: 'msg', cid: alice.cid, nick: 'alice', text: 'x', n: 'dd', t: Date.now(), pk: alice.pub, sig: 'AAAA' };
+    assert.deepStrictEqual(await room.open(key, r.trust, r.guard, await room.encrypt(key, JSON.stringify(junk))), { ok: false, reason: 'signature' });
+    assert.deepStrictEqual(r.trust.keys, {}, 'no binding was recorded');
+    assert.deepStrictEqual(r.guard.seen, {}, 'no nonce was recorded');
+    const real = await room.seal(key, alice, { k: 'msg', nick: 'alice', text: 'after junk' });
+    assert.ok((await room.open(key, r.trust, r.guard, real.wire)).ok);
+  });
+
+  await test('a public key is accepted in exactly one encoding', async () => {
+    assert.ok(room.canonicalPub(alice.pub));
+    const raw = room.fromB64(alice.pub);
+    const compressed = new Uint8Array(33); compressed[0] = 2 + (raw[64] & 1); compressed.set(raw.slice(1, 33), 1);
+    // The last character before the padding carries two bits that must be
+    // zero; flipping one changes the string but not the bytes it decodes to.
+    const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const flipped = alice.pub.slice(0, 86) + B64[B64.indexOf(alice.pub[86]) ^ 1] + '=';
+    assert.notStrictEqual(flipped, alice.pub);
+    assert.deepStrictEqual(room.fromB64(flipped), raw, 'same bytes, different string');
+    for (const odd of [room.toB64(compressed), alice.pub.slice(0, 10) + ' ' + alice.pub.slice(10), alice.pub.replace(/=$/, ''), flipped, '', 'AAAA']) {
+      assert.strictEqual(room.canonicalPub(odd), null, odd.slice(0, 20));
+    }
+    const sig = await room.sign(alice, { k: 'msg', cid: alice.cid, text: 'x', n: 'n', t: 1 });
+    assert.strictEqual(await room.verify(alice.pub, { k: 'msg', cid: alice.cid, text: 'x', n: 'n', t: 1 }, sig), true);
+    assert.strictEqual(await room.verify(room.toB64(compressed), { k: 'msg', cid: alice.cid, text: 'x', n: 'n', t: 1 }, sig), false);
+  });
+
+  await test('nicknames that read the same compare the same', async () => {
+    assert.strictEqual(room.normalizeNick('  alice  '), 'alice');
+    assert.strictEqual(room.normalizeNick('al​ice'), 'alice');
+    assert.strictEqual(room.normalizeNick('al  ice'), 'al ice');
+    assert.strictEqual(room.nickKey('ALICE⁠'), 'alice');
+    assert.strictEqual(room.nickKey('Ａlice'), 'alice'); // fullwidth A folds under NFKC
+    assert.notStrictEqual(room.nickKey('alice'), room.nickKey('alice2'));
+    assert.strictEqual(room.normalizeNick('x'.repeat(40)).length, 24);
+    // The same strings hidra-node tests against nick_key: the two sides agree.
+    for (const lookAlike of ['al\u200bice', 'al\ufe0fice', 'al\u034fice', 'al\u3164ice', 'al\u{e0041}ice', 'al\u180eice', 'al\u061cice', 'al\ufff9ice', '\uff21lice', 'al\u{f0000}ice', 'al\u00adice', 'al\ufeffice', 'al\u2060ice', 'al\u115fice']) {
+      assert.strictEqual(room.nickKey(lookAlike), 'alice', JSON.stringify(lookAlike));
+    }
+    assert.strictEqual(room.nickKey('  al\u00a0 ice '), 'al ice');
+    assert.notStrictEqual(room.nickKey('ali\u00e7a'), 'alica', 'a real accent stays');
+  });
+
   await test('fingerprints tell two sessions with the same nickname apart', async () => {
     assert.match(alice.fingerprint, /^[0-9a-f]{8}$/);
     assert.notStrictEqual(alice.fingerprint, bob.fingerprint);

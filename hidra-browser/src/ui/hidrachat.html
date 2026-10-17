@@ -196,7 +196,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
     <div id="advToggle" class="adv-toggle">⚙ Advanced options</div>
     <div id="advBox" class="adv hidden">
       <input type="text" id="inServer" placeholder="(optional) Your own server — e.g. myhub.com:8081" maxlength="80" autocomplete="off" spellcheck="false">
-      <p class="hint" style="margin-top:6px"><b>Leave it empty</b> to meet through a public relay, run by a third party: it carries only ciphertext and works across networks. Fill it in only if you run your own HidraChat server, which then needs its room passphrase here.</p>
+      <p class="hint" style="margin-top:6px"><b>Leave it empty</b> to meet through a public relay, run by a third party: it carries only ciphertext and works across networks. Fill it in only if you run your own HidraChat server, which then needs its room passphrase here. Type wss:// in front of a server reached across the internet.</p>
       <div id="myAddr" class="my-addr hidden">To host on your own network, your friends use:<br><span id="myAddrVal" title="Click to copy">—</span></div>
     </div>
   </div>
@@ -256,7 +256,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 // networks to land in the same room. Empty = "host it yourself" mode (LAN).
 var DEFAULT_HUB='';
 
-var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='', roomPass='';
+var ws=null, nick='', roomId='', cryptoKey=null, e2e=false, serverAddr='', serverSecure=false, joinAuth='', myConn=null;
 var reconnAttempts=0, MAX_RECONN=15, typingTimeout=null, myTyping=false;
 var typingUsers={}, soundEnabled=true;
 
@@ -280,8 +280,16 @@ var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884
 // at city level and, by grouping on the topic, work out who was talking to
 // whom, without breaking any encryption. The content was encrypted; the
 // metadata was in the open.
-var PRESENCE_TOPIC='hidra/presence/v1';
+// The beacon carries its own random id, not the session id used inside the
+// room, and goes out on its own clock with a random spread, so that a
+// subscriber cannot pair a beacon with the room ciphertext that left a
+// moment earlier and learn which session sits in which room.
+var PRESENCE_TOPIC='hidra/presence/v1', beaconId='', beaconTimer=null;
 function gpub(obj){ if(mqttClient&&mqttClient.connected){ try{ mqttClient.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }catch(e){} } }
+function scheduleBeacon(){
+  clearTimeout(beaconTimer);
+  beaconTimer=setTimeout(function(){ gpub({cid:beaconId,t:Date.now()}); scheduleBeacon(); },15000+Math.floor(Math.random()*20000));
+}
 
 var $=function(id){return document.getElementById(id)};
 var messagesEl=$('messages'), msgInput=$('msgInput');
@@ -292,12 +300,13 @@ var inNick=$('inNick'), inPass=$('inPass'), inServer=$('inServer');
 async function connectRelay(){
   mode='relay';
   me=await hidraRoom.newIdentity();
+  beaconId=hidraRoom.toHex(crypto.getRandomValues(new Uint8Array(8)));
   myColor=hidraRoom.colorFor(nick);
   trust=new hidraRoom.TrustStore();
   trust.bind(me.cid, me.pub);          // nobody else gets to wear this session's id
   guard=new hidraRoom.ReplayGuard();
   peers={};
-  peers[me.cid]={nick:nick,color:myColor,last:Date.now(),fp:me.fingerprint};
+  peers[me.cid]={nick:nick,key:hidraRoom.nickKey(nick),color:myColor,last:Date.now(),fp:me.fingerprint};
   updatePresence();
   addSys('🔒 This room is end-to-end encrypted. Messages travel through a public relay, which carries only ciphertext.');
   addSys('Your session fingerprint is '+me.fingerprint+'. If two people share a nickname, the list shows the first four characters of each fingerprint.');
@@ -305,7 +314,7 @@ async function connectRelay(){
   startPresence();
   window.addEventListener('beforeunload',function(){
     relayClosed=true;
-    try{relayPublish({k:'leave',nick:nick});gpub({cid:me.cid,leave:1})}catch(e){}
+    try{relayPublish({k:'leave',nick:nick});gpub({cid:beaconId,leave:1})}catch(e){}
   });
 }
 
@@ -335,7 +344,7 @@ function relayOpen(){
     $('connStatus').className='status on';
     c.subscribe(topic,{qos:0});
     relayPublish({k:'join',nick:nick,color:myColor});
-    gpub({cid:me.cid,t:Date.now()});
+    scheduleBeacon();
   });
   c.on('message',function(t,payload){ if(c===mqttClient&&t===topic) onRelayMessage(payload.toString()); });
   c.on('error',function(){});
@@ -375,10 +384,11 @@ async function fingerprintOf(cid,pk){
 }
 
 // A nickname, plus four characters of fingerprint when another live session
-// is using the same one.
+// is using the same one. Same means same after normalisation: case,
+// surrounding spaces and invisible characters do not make a different name.
 function labelOf(cid){
   var p=peers[cid]; if(!p) return 'Someone';
-  var shared=Object.keys(peers).some(function(c){return c!==cid&&peers[c].nick===p.nick});
+  var shared=Object.keys(peers).some(function(c){return c!==cid&&peers[c].key===p.key});
   return shared?(p.nick+'·'+p.fp.slice(0,4)):p.nick;
 }
 
@@ -397,10 +407,10 @@ async function onRelayMessage(wire){
   }
   var o=r.msg;
   if(o.cid===me.cid) return;               // our own, already shown
-  var nk=String(o.nick||'Anon').slice(0,24)||'Anon';
+  var nk=hidraRoom.normalizeNick(o.nick)||'Anon';
   var color=hidraRoom.safeColor(o.color, hidraRoom.colorFor(nk));
   var fp=await fingerprintOf(o.cid,o.pk);
-  peers[o.cid]={nick:nk,color:color,last:Date.now(),fp:fp};
+  peers[o.cid]={nick:nk,key:hidraRoom.nickKey(nk),color:color,last:Date.now(),fp:fp};
   updatePresence();
   var label=labelOf(o.cid);
   switch(o.k){
@@ -423,9 +433,8 @@ async function onRelayMessage(wire){
 function startPresence(){
   if(presenceTimer) clearInterval(presenceTimer);
   presenceTimer=setInterval(function(){
-    peers[me.cid]={nick:nick,color:myColor,last:Date.now(),fp:me.fingerprint};
+    peers[me.cid]={nick:nick,key:hidraRoom.nickKey(nick),color:myColor,last:Date.now(),fp:me.fingerprint};
     relayPublish({k:'presence',nick:nick,color:myColor});
-    gpub({cid:me.cid,t:Date.now()});
     updatePresence();
   },25000);
 }
@@ -463,10 +472,14 @@ function setJoinBusy(busy){
 
 async function doJoin(){
   if(joining) return;
-  var n=inNick.value.trim();
+  var n=hidraRoom.normalizeNick(inNick.value);
   if(!n) return;
   nick=n;
   var sv=inServer.value.trim()||DEFAULT_HUB;
+  // A typed wss:// or https:// is kept: a server reached across the internet
+  // should be spoken to over TLS. Plain ws: is for a server on the same
+  // network, or one reached through the engine's own circuit.
+  serverSecure=/^(wss|https):\/\//i.test(sv);
   if(sv){
     sv=sv.replace(/^wss?:\/\//i,'').replace(/^https?:\/\//i,'').replace(/\/+$/,'');
     if(sv.indexOf(':')<0) sv+=':8081';
@@ -481,11 +494,11 @@ async function doJoin(){
   // pass on to whoever should join.
   var created=false;
   if(!pass && !serverAddr){ pass=hidraRoom.genPassword(); inPass.value=pass; created=true; }
-  // The server runs Argon2id over this and compares it with its room key, so
-  // a stranger who opens a socket does not get the backlog and the user list
-  // for free. The end-to-end key below is a separate use of the same
-  // password: derived in this page, never sent anywhere.
-  roomPass=pass;
+  // The password never leaves this page. An own server is shown a verifier
+  // derived from it (deriveRoom's `join`), which opens the door and yields
+  // neither the password nor the message key; the server derives the same
+  // verifier from its passphrase. The password itself used to be sent, which
+  // on a plain ws: connection handed the room to anyone on the path.
   if(pass.length>0){
     setJoinBusy(true);
     try{
@@ -493,7 +506,7 @@ async function doJoin(){
       // this thread; a short pause first lets the button repaint.
       await new Promise(function(r){setTimeout(r,30)});
       var rm=await hidraRoom.deriveRoom(pass);
-      cryptoKey=rm.key; roomId=rm.roomId; relayTopic=rm.topic;
+      cryptoKey=rm.key; roomId=rm.roomId; relayTopic=rm.topic; joinAuth=rm.join;
       e2e=true;
     }catch(e){
       setJoinBusy(false);
@@ -545,8 +558,10 @@ $('btnCopyPass').onclick=function(){ copyText(inPass.value); };
 // it. They live in the browser's vault (hidra-store.js), under the system
 // keychain where there is one, and are never written out if they could not
 // be read in — that would replace the list with an empty one.
+// Outside the HidraNet browser there is no vault, only localStorage, which
+// is plain text on disk: there the list lives for this page only.
 var recentRooms=[], recentLocked=false;
-function persistRecent(){ if(recentLocked) return; hidraStore.save('hidra_recent', JSON.stringify(recentRooms.slice(0,5))); }
+function persistRecent(){ if(recentLocked||!hidraStore.inVault) return; hidraStore.save('hidra_recent', JSON.stringify(recentRooms.slice(0,5))); }
 function saveRecent(pass, nk){
   recentRooms=recentRooms.filter(function(x){return x.pass!==pass;});
   recentRooms.unshift({pass:pass,nick:nk||'',ts:Date.now()});
@@ -571,7 +586,10 @@ function renderRecent(){
     };
   });
 }
-hidraStore.load('hidra_recent').then(function(raw){
+// An earlier version wrote the list to localStorage outside the vault; it
+// is taken off the disk the first time this version runs there.
+if(!hidraStore.inVault){ try{ localStorage.removeItem('hidra_recent'); }catch(e){} }
+if(hidraStore.inVault) hidraStore.load('hidra_recent').then(function(raw){
   try{ recentRooms=JSON.parse(raw||'[]'); }catch(e){ recentRooms=[]; }
   if(!Array.isArray(recentRooms)) recentRooms=[];
   recentRooms=recentRooms.filter(function(x){return x&&typeof x.pass==='string'&&x.pass.length>0});
@@ -600,7 +618,7 @@ hidraStore.load('hidra_recent').then(function(raw){
 
 function connectWS(){
   var host=serverAddr||location.host;
-  var proto=(!serverAddr&&location.protocol==='https:')?'wss:':'ws:';
+  var proto=serverAddr?(serverSecure?'wss:':'ws:'):(location.protocol==='https:'?'wss:':'ws:');
   try{
     ws=new WebSocket(proto+'//'+host+'/ws');
   }catch(e){
@@ -612,7 +630,7 @@ function connectWS(){
     reconnAttempts=0;
     $('connStatus').textContent=serverAddr?('Connected ('+host+')'):'Connected';
     $('connStatus').className='status on';
-    ws.send(JSON.stringify({type:'join',nick:nick,room:roomId,pass:roomPass}));
+    ws.send(JSON.stringify({type:'join',nick:nick,room:roomId,auth:joinAuth}));
   };
   ws.onmessage=function(ev){
     try{handleMsg(JSON.parse(ev.data))}catch(e){}
@@ -635,13 +653,22 @@ function connectWS(){
 // cannot send as another; what arrives here is still checked before it is
 // put into markup.
 
-function wsNick(m){ return String(m.nick||'Anon').slice(0,24)||'Anon'; }
+function wsNick(m){ return hidraRoom.normalizeNick(m.nick)||'Anon'; }
+// On a server, a message is ours when it came from our connection, which the
+// server numbers; the nickname alone used to decide it, so another member
+// who took the same nickname had their words shown as ours.
+function isMine(m){
+  if(typeof m.from==='number'&&myConn!==null) return m.from===myConn;
+  if(m.cid) return !!(me&&m.cid===me.cid);
+  return false;
+}
 function wsColor(m,n){ return hidraRoom.safeColor(m.color, hidraRoom.colorFor(n)); }
 
 function handleMsg(m){
   if(!m||typeof m!=='object') return;
   switch(m.type){
     case 'welcome':
+      myConn=(typeof m.you==='number')?m.you:null;
       $('countBadge').textContent=(m.count|0)+' online';
       renderUsers(Array.isArray(m.users)?m.users.map(function(u){var n=wsNick(u||{});return {nick:n,color:wsColor(u||{},n)}}):[]);
       if(Array.isArray(m.history)&&m.history.length>0){
@@ -668,11 +695,11 @@ function handleMsg(m){
     }
     case 'msg':
       renderChatMsg(m);
-      if(m.nick!==nick) beep();
+      if(!isMine(m)) beep();
       break;
     case 'typing': {
       var tn=wsNick(m);
-      if(tn!==nick) setTyping(tn,m.state===true,tn);
+      if(!isMine(m)) setTyping(tn,m.state===true,tn);
       break;
     }
     case 'error':
@@ -682,8 +709,8 @@ function handleMsg(m){
 }
 
 async function renderChatMsg(m){
-  var isOwn=m.cid?(m.cid===(me&&me.cid)):(m.nick===nick);
-  var n=String(m.nick||'Anon').slice(0,24)||'Anon';
+  var isOwn=isMine(m);
+  var n=hidraRoom.normalizeNick(m.nick)||'Anon';
   var color=hidraRoom.safeColor(m.color, hidraRoom.colorFor(n));
   var text;
   if(typeof m.enc==='string'){
@@ -833,7 +860,7 @@ function sendTypingState(state){
 
 // ── Helpers ──
 
-function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 function formatTime(ts){
   var d=new Date(ts);
