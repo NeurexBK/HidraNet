@@ -1,7 +1,7 @@
 //! The node's settings: its key, where it listens, the tunnel subnet, where
 //! DNS goes. Written once by `init`, read by everything else.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -67,6 +67,19 @@ pub struct NodeConfig {
     /// Short: every connection brings a pass of its own.
     #[serde(default = "default_pass_idle_hours")]
     pub pass_idle_hours: u32,
+    /// IPv6 for clients. "auto" (the default): an exit gives each client an
+    /// address of `tunnel_cidr6` and carries its IPv6 out through this host's
+    /// own, translated as IPv4 is, when it runs the kernel's WireGuard and
+    /// the host has an IPv6 default route. "off": never; clients then block
+    /// their own IPv6 while connected. An entry never carries IPv6: it
+    /// forwards only WireGuard to other nodes.
+    #[serde(default = "default_ipv6")]
+    pub ipv6: String,
+    /// The unique local subnet clients' IPv6 addresses come from. A client's
+    /// is the subnet with its IPv4 tunnel address as the last 32 bits, so a
+    /// lease needs nothing more than it holds today.
+    #[serde(default = "default_tunnel_cidr6")]
+    pub tunnel_cidr6: String,
 }
 
 fn default_interface() -> String {
@@ -92,6 +105,33 @@ fn default_admission_work_bits() -> u8 {
 }
 fn default_pass_idle_hours() -> u32 {
     6
+}
+fn default_ipv6() -> String {
+    "auto".into()
+}
+fn default_tunnel_cidr6() -> String {
+    "fd68:6964:7261:7670::/64".into()
+}
+
+/// The IPv6 tunnel subnet, worked out once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TunnelNet6 {
+    pub network: Ipv6Addr,
+    pub prefix: u8,
+    /// The node's own: the subnet with the node's IPv4 tunnel address.
+    pub node_ip: Ipv6Addr,
+}
+
+impl TunnelNet6 {
+    /// The IPv6 address that goes with an IPv4 tunnel address: the subnet,
+    /// with the IPv4 address as its last 32 bits.
+    pub fn address_for(&self, v4: Ipv4Addr) -> Ipv6Addr {
+        Ipv6Addr::from(u128::from(self.network) | u128::from(u32::from(v4)))
+    }
+
+    pub fn cidr(&self) -> String {
+        format!("{}/{}", self.network, self.prefix)
+    }
 }
 
 /// The tunnel subnet, worked out once.
@@ -143,6 +183,8 @@ impl NodeConfig {
             admission_work_bits: default_admission_work_bits(),
             pass_keys: Vec::new(),
             pass_idle_hours: default_pass_idle_hours(),
+            ipv6: default_ipv6(),
+            tunnel_cidr6: default_tunnel_cidr6(),
         };
         let net = cfg.tunnel_network()?;
         // A client refuses an invite whose tunnel is not a private network
@@ -158,6 +200,7 @@ impl NodeConfig {
         for d in &cfg.dns {
             crate::dns::parse_upstream(d)?;
         }
+        cfg.tunnel_network6()?;
         Ok(cfg)
     }
 
@@ -304,6 +347,55 @@ impl NodeConfig {
             node_ip: Ipv4Addr::from(base + 1),
         })
     }
+
+    /// The IPv6 tunnel subnet, when these settings let this node carry
+    /// clients' IPv6 at all: not when `ipv6` is "off", and never as an entry.
+    /// Whether the host can is decided when the node starts.
+    pub fn tunnel_network6(&self) -> Result<Option<TunnelNet6>> {
+        match self.ipv6.trim().to_ascii_lowercase().as_str() {
+            "off" => return Ok(None),
+            "auto" => {}
+            other => return Err(anyhow!("ipv6 must be \"auto\" or \"off\", not \"{other}\"")),
+        }
+        if self.role.eq_ignore_ascii_case("entry") {
+            return Ok(None);
+        }
+        let (net, prefix) = self
+            .tunnel_cidr6
+            .split_once('/')
+            .ok_or_else(|| anyhow!("tunnel_cidr6 must be address/prefix"))?;
+        let network: Ipv6Addr = net.parse().context("tunnel_cidr6 is not IPv6")?;
+        let prefix: u8 = prefix
+            .parse()
+            .context("tunnel_cidr6 prefix is not a number")?;
+        // The last 32 bits hold the IPv4 tunnel address; a client takes only
+        // a unique local address.
+        if !(48..=96).contains(&prefix) {
+            return Err(anyhow!(
+                "the IPv6 tunnel prefix must be between /48 and /96"
+            ));
+        }
+        if network.segments()[0] & 0xfe00 != 0xfc00 {
+            return Err(anyhow!(
+                "tunnel_cidr6 {} is not a unique local subnet (inside fc00::/7)",
+                self.tunnel_cidr6
+            ));
+        }
+        let host_bits = u128::MAX >> prefix;
+        if u128::from(network) & host_bits != 0 {
+            return Err(anyhow!(
+                "tunnel_cidr6 {} is not a network address",
+                self.tunnel_cidr6
+            ));
+        }
+        let mut net6 = TunnelNet6 {
+            network,
+            prefix,
+            node_ip: network,
+        };
+        net6.node_ip = net6.address_for(self.tunnel_network()?.node_ip);
+        Ok(Some(net6))
+    }
 }
 
 #[cfg(test)]
@@ -325,6 +417,69 @@ mod tests {
         assert_eq!(net.node_ip, Ipv4Addr::new(10, 77, 0, 1));
         assert_eq!(net.prefix, 16);
         assert_eq!(net.cidr, "10.77.0.0/16");
+    }
+
+    #[test]
+    fn a_clients_ipv6_address_is_its_ipv4_one_inside_the_ula_subnet() {
+        let mut cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        let net6 = cfg.tunnel_network6().unwrap().unwrap();
+        assert_eq!(net6.cidr(), "fd68:6964:7261:7670::/64");
+        assert_eq!(
+            net6.node_ip,
+            "fd68:6964:7261:7670::a4d:1".parse::<Ipv6Addr>().unwrap()
+        );
+        assert_eq!(
+            net6.address_for(Ipv4Addr::new(10, 77, 0, 8)),
+            "fd68:6964:7261:7670::a4d:8".parse::<Ipv6Addr>().unwrap()
+        );
+        // An entry never carries IPv6, and "off" means off.
+        cfg.set_role("entry").unwrap();
+        assert_eq!(cfg.tunnel_network6().unwrap(), None);
+        cfg.set_role("exit").unwrap();
+        cfg.ipv6 = "off".into();
+        assert_eq!(cfg.tunnel_network6().unwrap(), None);
+        cfg.ipv6 = "yes".into();
+        assert!(cfg.tunnel_network6().is_err());
+        cfg.ipv6 = "auto".into();
+        // Only a unique local network, wide enough for an IPv4 address.
+        for bad in [
+            "2001:db8::/64",
+            "fd00::5/64",
+            "fd00::/112",
+            "fd00::",
+            "10.0.0.0/8",
+        ] {
+            cfg.tunnel_cidr6 = bad.into();
+            assert!(cfg.tunnel_network6().is_err(), "{bad}");
+        }
+        // Settings written before IPv6 existed read as "auto".
+        let mut old = toml::to_string(
+            &NodeConfig::fresh(
+                "n".into(),
+                "192.0.2.4:51820".parse().unwrap(),
+                51820,
+                "10.77.0.0/16",
+                NodeConfig::default_dns(),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        old = old
+            .lines()
+            .filter(|l| !l.starts_with("ipv6") && !l.starts_with("tunnel_cidr6"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let back: NodeConfig = toml::from_str(&old).unwrap();
+        assert!(back.tunnel_network6().unwrap().is_some());
     }
 
     #[test]

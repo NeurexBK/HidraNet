@@ -5,8 +5,9 @@
 //! until the tunnel is back or `down` is run.
 //!
 //! Two leaks the ordinary routing of phase 1 could still allow are closed here:
-//! IPv6 (blocked outright, since the tunnel carries only IPv4 in this phase)
-//! and DNS (never off the tunnel: on Linux allowed only to the node's own
+//! IPv6 (off the tunnel blocked outright; into the tunnel only from the
+//! tunnel's own IPv6 address, so a packet never carries the machine's real
+//! IPv6 address to a node, which decrypts it) and DNS (never off the tunnel: on Linux allowed only to the node's own
 //! resolver; on Windows any resolver, but only through the tunnel, which
 //! carries it to the exit).
 //!
@@ -19,7 +20,7 @@
 //! our own, so removing it removes everything and nothing else on the machine
 //! is disturbed. Nothing here is logged.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Result;
 
@@ -50,6 +51,14 @@ pub struct KillConfig {
     /// to that interface on purpose) would show the entry where it goes, so
     /// it is dropped here, before the entry sees it.
     pub outer_peer: Option<SocketAddr>,
+    /// The IPv6 address the exit gave the tunnel that carries the traffic
+    /// (the only one of one hop, the inner one of two), when it gave one.
+    /// IPv6 enters that tunnel only from this address; with none, no IPv6
+    /// enters it at all. Without the rule the system picks the machine's
+    /// own address for an IPv6 packet routed into a tunnel that has none,
+    /// and the exit, which decrypts the packet before it drops it, could
+    /// read it.
+    pub tunnel_ipv6: Option<Ipv6Addr>,
 }
 
 /// A TCP destination reached through a tunnel interface while a hold is in

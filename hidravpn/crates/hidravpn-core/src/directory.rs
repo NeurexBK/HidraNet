@@ -470,6 +470,7 @@ mod tests {
             node_public_key: r.node_public_key.clone(),
             endpoint: r.endpoint.clone(),
             client_address: "10.77.0.2/16".into(),
+            client_address6: None,
             dns: std::net::Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu: 1420,

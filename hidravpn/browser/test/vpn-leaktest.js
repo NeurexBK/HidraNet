@@ -63,6 +63,14 @@ const by = (r, id) => r.checks.find((c) => c.id === id);
     assert.strictEqual(by(r, 'ipv4').verdict, 'warn');
   });
 
+  await check('with an exit that carries IPv6, an IPv6 answer is the tunnel working, and no answer is a doubt', async () => {
+    let r = await runLeakTest(connected({ ipv6: true }), answers('203.0.113.20', '2001:db8::20'));
+    assert.strictEqual(by(r, 'ipv6').verdict, 'pass');
+    assert.ok(by(r, 'ipv6').detail.includes('2001:db8::20'));
+    r = await runLeakTest(connected({ ipv6: true }), answers('203.0.113.20', new Error('no route')));
+    assert.strictEqual(by(r, 'ipv6').verdict, 'warn');
+  });
+
   await check('an IPv6 answer is a leak', async () => {
     const r = await runLeakTest(connected(), answers('203.0.113.20', '2001:db8::1'));
     assert.strictEqual(by(r, 'ipv6').verdict, 'fail');

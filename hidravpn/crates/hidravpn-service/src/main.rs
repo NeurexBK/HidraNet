@@ -281,6 +281,7 @@ fn main() -> Result<()> {
                         allow_lan,
                         extra_interface,
                         outer_peer: None,
+                        tunnel_ipv6: None,
                     })?;
                     println!("kill switch on");
                 }

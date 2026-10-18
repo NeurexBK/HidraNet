@@ -136,9 +136,10 @@ enum Cmd {
         /// running both could see who you are and where you go.
         #[arg(long)]
         allow_same_operator: bool,
-        /// Leave IPv6 alone instead of routing it into the tunnel (where it is
-        /// dropped in this phase). Only for diagnosis: with this, IPv6 traffic
-        /// bypasses the VPN.
+        /// Leave IPv6 out of the tunnel's routes (it goes through the exit when
+        /// the exit carries IPv6, and is blocked otherwise). Only for
+        /// diagnosis: the kill switch then blocks it; without the kill switch
+        /// IPv6 traffic bypasses the VPN.
         #[arg(long)]
         keep_ipv6: bool,
         /// Name of the outer (or only) tunnel interface; the inner one of a
@@ -931,7 +932,7 @@ async fn main() -> Result<()> {
                     .ok_or_else(|| anyhow!("the service did not report a status"))?;
                 if s.connected {
                     println!(
-                        "connected: {}; kill switch {}; up {}, down {}; last handshake {}",
+                        "connected: {}; kill switch {}; up {}, down {}; last handshake {}; IPv6 {}",
                         describe(&s),
                         if s.killswitch { "on" } else { "OFF" },
                         fmt_bytes(s.tx_bytes),
@@ -939,6 +940,11 @@ async fn main() -> Result<()> {
                         s.last_handshake_secs
                             .map(|n| format!("{n}s ago"))
                             .unwrap_or_else(|| "none".into()),
+                        if s.ipv6 {
+                            "through the tunnel"
+                        } else {
+                            "blocked"
+                        },
                     );
                     print_detail(&s);
                 } else if s.hops > 0 {

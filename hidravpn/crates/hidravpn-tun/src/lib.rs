@@ -67,6 +67,36 @@ pub fn open(cfg: &TunConfig) -> Result<Arc<AsyncDevice>> {
     Ok(Arc::new(dev))
 }
 
+/// Gives an interface that is up an IPv6 address. Separate from `open`, so
+/// that a machine with IPv6 switched off still gets its tunnel: the caller
+/// takes a failure here as "no IPv6", never as "no tunnel". On Linux the
+/// address skips duplicate address detection: on a tunnel nobody else holds
+/// it, and while the check ran (about a second) the address could not be
+/// used. The address goes away with the interface.
+pub fn add_ipv6(dev: &AsyncDevice, addr: Ipv6Addr, prefix: u8) -> Result<()> {
+    #[cfg(windows)]
+    {
+        dev.add_address_v6(addr, prefix)
+            .context("could not give the tunnel interface its IPv6 address")
+    }
+    #[cfg(not(windows))]
+    {
+        let name = name(dev)?;
+        let a = format!("{addr}/{prefix}");
+        let out = std::process::Command::new("ip")
+            .args(["-6", "address", "replace", &a, "dev", &name, "nodad"])
+            .output()
+            .context("could not run ip")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "could not give the tunnel interface its IPv6 address: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+}
+
 /// The name the system gave the interface; on Linux it may differ from the
 /// one asked for if that was taken.
 pub fn name(dev: &AsyncDevice) -> Result<String> {

@@ -227,7 +227,7 @@ grep -q "laptop" "$WORK/entry-status.log" && ! grep -q "never" "$WORK/entry-stat
 echo "── the kill switch"
 $C nft list table inet hidravpn_ks > "$WORK/ks.log" 2>&1 && pass "the kill switch is armed" || fail "the kill switch is not armed"
 grep -q 'ip daddr 10.200.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -v 'oifname' "$WORK/ks.log" | grep -q 'ip daddr 10.202.0.1' && pass "the entry's endpoint is the only address allowed off-tunnel" || fail "kill switch rules: $(grep -c accept "$WORK/ks.log") accepts"
-grep -q 'oifname "hvpn1" accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -q 'oifname "hvpn0" accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
+grep -q 'oifname "hvpn1" meta nfproto ipv4 accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -qE 'oifname "hvpn0" (meta nfproto ipv4 )?accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
 $C curl -s --max-time 3 http://10.200.0.1:8081/ >/dev/null 2>&1 && fail "a plain request to the physical link got through the kill switch" || pass "a plain request to a host on the physical link is blocked"
 
 echo "── new identity: the exit changes"

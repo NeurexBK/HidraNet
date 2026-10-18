@@ -6,7 +6,7 @@
 //! person, so it can travel over any channel. It comes from the node's
 //! administrator, from open admission, or in exchange for a pass.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,12 @@ pub struct Invite {
     pub endpoint: String,
     /// The client's address inside the tunnel, `a.b.c.d/prefix`.
     pub client_address: String,
+    /// The client's IPv6 address inside the tunnel, `ula/prefix`, when the
+    /// node carries IPv6 out through its own; absent, the client's IPv6 is
+    /// blocked while connected. Always a unique local address (fc00::/7):
+    /// the node translates it to its own public one, as it does IPv4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_address6: Option<String>,
     /// The DNS server inside the tunnel (the node itself).
     pub dns: Ipv4Addr,
     /// What is routed through the tunnel. Phase 1 is always everything.
@@ -163,6 +169,7 @@ impl Invite {
             ));
         }
         self.client_ip()?;
+        self.client_ip6()?;
         if let Some(c) = self.country.as_deref() {
             crate::directory::normalise_country(c)?;
         }
@@ -192,6 +199,34 @@ impl Invite {
             return Err(anyhow!("the client prefix is larger than 32"));
         }
         Ok((ip, prefix))
+    }
+
+    /// The client's IPv6 tunnel address and prefix length, when the node gave
+    /// one. Only a unique local address is taken: a node that handed out an
+    /// address of the open internet would have every packet the client sends
+    /// over IPv6 name that address.
+    pub fn client_ip6(&self) -> Result<Option<(Ipv6Addr, u8)>> {
+        let Some(a) = self.client_address6.as_deref() else {
+            return Ok(None);
+        };
+        let (ip, prefix) = a
+            .split_once('/')
+            .ok_or_else(|| anyhow!("the client IPv6 address must be address/prefix"))?;
+        let ip: Ipv6Addr = ip.parse().context("the client IPv6 address is not IPv6")?;
+        let prefix: u8 = prefix
+            .parse()
+            .context("the client IPv6 prefix is not a number")?;
+        if !(48..=127).contains(&prefix) {
+            return Err(anyhow!(
+                "the client IPv6 prefix /{prefix} is not a tunnel subnet (between /48 and /127)"
+            ));
+        }
+        if ip.segments()[0] & 0xfe00 != 0xfc00 {
+            return Err(anyhow!(
+                "the client IPv6 address {ip} is not a unique local address (fc00::/7)"
+            ));
+        }
+        Ok(Some((ip, prefix)))
     }
 
     /// The resolver must be the node itself, inside the tunnel: an address
@@ -352,6 +387,7 @@ mod tests {
             node_public_key: ClientKey::generate().unwrap().public_base64(),
             endpoint: "203.0.113.10:51820".into(),
             client_address: "10.77.0.2/16".into(),
+            client_address6: None,
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: default_allowed(),
             mtu: 1420,
@@ -365,6 +401,40 @@ mod tests {
             behind: false,
             features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_ipv6_tunnel_address_must_be_a_unique_local_one() {
+        let mut inv = sample();
+        assert_eq!(
+            inv.client_ip6().unwrap(),
+            None,
+            "absent is fine: IPv6 is then blocked"
+        );
+        inv.client_address6 = Some("fd68:6964:7261:7670::a4d:2/64".into());
+        inv.validate().unwrap();
+        assert_eq!(
+            inv.client_ip6().unwrap(),
+            Some(("fd68:6964:7261:7670::a4d:2".parse().unwrap(), 64))
+        );
+        let back = Invite::from_json(&inv.to_json()).unwrap();
+        assert_eq!(back.client_address6, inv.client_address6);
+        // An address of the open internet, a missing or silly prefix, or
+        // not IPv6 at all: refused when the invite is read.
+        for bad in [
+            "2001:db8::2/64",
+            "fd68::2",
+            "fd68::2/200",
+            "fd68::2/8",
+            "10.77.0.2/16",
+        ] {
+            inv.client_address6 = Some(bad.into());
+            assert!(inv.validate().is_err(), "{bad}");
+        }
+        // An invite from a node that does not know the field still reads.
+        let old = r#"{"node_name":"n","node_public_key":"KEY","endpoint":"203.0.113.10:51820","client_address":"10.77.0.2/16","dns":"10.77.0.1"}"#
+            .replace("KEY", &sample().node_public_key);
+        assert_eq!(Invite::from_json(&old).unwrap().client_address6, None);
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //! with no table while the rules change.
 
 use std::io::Write;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -94,10 +94,7 @@ fn ruleset(cfg: &KillConfig) -> String {
     // into the outer tunnel, never to the physical link, so this opens no
     // new way out of the machine.
     let (extra_out, extra_in) = match &cfg.extra_interface {
-        Some(x) => (
-            format!("    oifname \"{x}\" accept comment \"inner tunnel\"\n"),
-            format!("    iifname \"{x}\" accept comment \"inner tunnel\"\n"),
-        ),
+        Some(x) => carrying_rules(x, cfg.tunnel_ipv6, " comment \"inner tunnel\""),
         None => (String::new(), String::new()),
     };
 
@@ -112,19 +109,32 @@ fn ruleset(cfg: &KillConfig) -> String {
                 i,
             )
         }
-        None => (
-            format!("    oifname \"{iface}\" accept\n"),
-            format!("    iifname \"{iface}\" accept\n"),
-        ),
+        None => carrying_rules(iface, cfg.tunnel_ipv6, ""),
     };
     // The tunnel's own packets to the node come first: a node whose
     // WireGuard port is 53 (to get past firewalls that allow DNS) must not
     // fall to the DNS rules, which are about names, not about the tunnel.
+    // The node's resolver is an IPv4 address, so no query goes over IPv6.
     let output = format!(
-        "{node_out}    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n{tunnel_out}{extra_out}{lan_out}"
+        "{node_out}    udp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    tcp dport 53 ip daddr != {dns} drop comment \"DNS only to the node\"\n    meta nfproto ipv6 udp dport 53 drop comment \"DNS only to the node\"\n    meta nfproto ipv6 tcp dport 53 drop comment \"DNS only to the node\"\n{tunnel_out}{extra_out}{lan_out}"
     );
     let input = format!("{node_in}{tunnel_in}{extra_in}{lan_in}");
     table(&output, &input, "nothing leaves outside the tunnel")
+}
+
+/// The tunnel that carries the traffic (the only one of one hop, the inner
+/// one of two): IPv4 out, and IPv6 out only from the address the exit gave
+/// it. An IPv6 packet routed into a tunnel with no address of its own leaves
+/// with the machine's own address, which the exit would read when it
+/// decrypts the packet; it is dropped here instead. Anything back in.
+fn carrying_rules(iface: &str, tunnel6: Option<Ipv6Addr>, comment: &str) -> (String, String) {
+    let mut out = format!("    oifname \"{iface}\" meta nfproto ipv4 accept{comment}\n");
+    if let Some(a) = tunnel6 {
+        out.push_str(&format!(
+            "    oifname \"{iface}\" ip6 saddr {a} accept{comment}\n"
+        ));
+    }
+    (out, format!("    iifname \"{iface}\" accept{comment}\n"))
 }
 
 /// One destination on one interface, both ways.
@@ -297,6 +307,7 @@ mod tests {
             allow_lan,
             extra_interface: None,
             outer_peer: None,
+            tunnel_ipv6: None,
         }
     }
 
@@ -316,7 +327,7 @@ mod tests {
             r.find(r#"oifname "hvpn0" ip daddr"#).unwrap()
                 < r.find(r#"oifname "hvpn0" drop"#).unwrap()
         );
-        assert!(r.contains(r#"oifname "hvpn1" accept"#));
+        assert!(r.contains(r#"oifname "hvpn1" meta nfproto ipv4 accept"#));
     }
 
     #[test]
@@ -355,7 +366,33 @@ mod tests {
         let r = ruleset(&cfg(false));
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
         assert!(r.contains("ip saddr 203.0.113.10 udp sport 51820 accept"));
-        assert!(r.contains(r#"oifname "hvpn0" accept"#));
+        assert!(r.contains(r#"oifname "hvpn0" meta nfproto ipv4 accept"#));
+    }
+
+    #[test]
+    fn ipv6_enters_the_tunnel_only_from_the_tunnels_own_address() {
+        // No address of its own: no IPv6 into the tunnel at all, so the
+        // machine's own IPv6 address is never put inside a packet the node
+        // decrypts.
+        let r = ruleset(&cfg(false));
+        assert!(!r.contains(r#"oifname "hvpn0" accept"#), "{r}");
+        assert!(!r.contains("ip6 saddr"), "{r}");
+        // With one, that address and no other, and no DNS over IPv6.
+        let mut c = cfg(false);
+        c.tunnel_ipv6 = Some("fd68:6964:7261::a4d:8".parse().unwrap());
+        let r = ruleset(&c);
+        assert!(r.contains(r#"oifname "hvpn0" ip6 saddr fd68:6964:7261::a4d:8 accept"#));
+        assert!(r.contains("meta nfproto ipv6 udp dport 53 drop"));
+        assert!(
+            r.find("meta nfproto ipv6 udp dport 53 drop").unwrap()
+                < r.find("ip6 saddr fd68").unwrap()
+        );
+        // Two hops: on the inner tunnel, never on the outer one.
+        c.extra_interface = Some("hvpn1".into());
+        c.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        let r = ruleset(&c);
+        assert!(r.contains(r#"oifname "hvpn1" ip6 saddr fd68:6964:7261::a4d:8 accept"#));
+        assert!(!r.contains(r#"oifname "hvpn0" ip6"#), "{r}");
     }
 
     #[test]
@@ -399,7 +436,7 @@ mod tests {
         let mut two = cfg(false);
         two.extra_interface = Some("hvpn1".into());
         let r = ruleset(&two);
-        assert!(r.contains(r#"oifname "hvpn1" accept comment "inner tunnel""#));
+        assert!(r.contains(r#"oifname "hvpn1" meta nfproto ipv4 accept comment "inner tunnel""#));
         assert!(r.contains(r#"iifname "hvpn1" accept comment "inner tunnel""#));
         // The entry node stays the only off-tunnel destination.
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));

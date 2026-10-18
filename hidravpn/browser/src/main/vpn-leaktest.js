@@ -4,8 +4,10 @@
 // machine looks like to the internet while HidraVPN is connected:
 //
 //   - IPv4: which address a website sees. It should be the exit node's.
-//   - IPv6: whether anything leaves over IPv6 at all. It should not: the kill
-//     switch drops IPv6.
+//   - IPv6: when the exit carries IPv6 (the service says so), that it goes
+//     through the tunnel; otherwise that nothing leaves over IPv6 at all. The
+//     kill switch lets IPv6 out through the tunnel only, so with it armed an
+//     IPv6 answer can only have come through the exit.
 //   - DNS: whether a name can be looked up outside the tunnel. The kill
 //     switch forbids it, so the test reads it from the service: armed or not.
 //   - The kill switch itself, as the service reports it.
@@ -131,9 +133,15 @@ async function runLeakTest(status, probe) {
   } catch {
     v6 = null;
   }
-  checks.push(v6
-    ? { id: 'ipv6', label: 'IPv6', verdict: 'fail', detail: `Traffic left over IPv6 as ${v6}, around the tunnel.` }
-    : { id: 'ipv6', label: 'IPv6', verdict: 'pass', detail: 'Nothing leaves over IPv6.' });
+  if (r.ipv6) {
+    checks.push(v6
+      ? { id: 'ipv6', label: 'IPv6', verdict: 'pass', detail: `IPv6 goes through the tunnel: websites see ${v6}, from the exit.` }
+      : { id: 'ipv6', label: 'IPv6', verdict: 'warn', detail: 'The exit carries IPv6, but the IPv6 check did not answer.' });
+  } else {
+    checks.push(v6
+      ? { id: 'ipv6', label: 'IPv6', verdict: 'fail', detail: `Traffic left over IPv6 as ${v6}, though the exit carries none.` }
+      : { id: 'ipv6', label: 'IPv6', verdict: 'pass', detail: 'Nothing leaves over IPv6.' });
+  }
 
   checks.push({ id: 'dns', label: 'DNS', verdict: 'pass', detail: 'No DNS query can leave outside the tunnel: the kill switch blocks every one that does not go through it.' });
 
