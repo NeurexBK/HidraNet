@@ -19,6 +19,17 @@ subscription costs, and they are what lets a stranger connect at all.
 - A kernel with WireGuard (every current one); the node falls back to its own
   userspace WireGuard otherwise.
 
+IPv6 is optional. A node used as an exit whose server has an IPv6 address
+and an IPv6 default route (Hetzner and most providers give one) carries its
+clients' IPv6 too: each client gets an address of a private subnet
+(`tunnel_cidr6`, `fd68:6964:7261:7670::/64` by default), and its IPv6 leaves
+with the server's own IPv6 address, as its IPv4 leaves with the server's
+IPv4 one. The node's log says `IPv6 for clients: yes` or `no`. Without IPv6
+on the server, or with `ipv6 = "off"` in `node.toml`, clients get IPv4 only
+and their IPv6 is blocked on their side while connected, which leaks
+nothing. An entry never carries IPv6, and neither does a node on userspace
+WireGuard. Clients reach every node over IPv4 in any case.
+
 A home connection is not a node: no port forwarding, no carrier-grade NAT,
 no changing address. That is by design (`docs/business/16`, §1).
 

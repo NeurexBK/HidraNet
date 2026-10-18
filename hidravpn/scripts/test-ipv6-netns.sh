@@ -192,7 +192,8 @@ blocked_round() {  # $1 round, $2 invite file
 
 echo "── an exit with ipv6 = \"off\""
 stop_exit
-echo 'ipv6 = "off"' >> "$WORK/exit.toml"
+sed -i 's/^ipv6 = "auto"$/ipv6 = "off"/' "$WORK/exit.toml"
+grep -q '^ipv6 = "off"$' "$WORK/exit.toml" || fail "could not set ipv6 = \"off\" in the exit's settings"
 start_exit || { fail "the exit did not come back"; exit 1; }
 grep -q "IPv6 for clients: no" "$WORK/exit.log" && pass "the exit carries no IPv6" || fail "exit: $(grep -i ipv6 "$WORK/exit.log")"
 admit_x laptop-off "$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$NODE_X_PUB" 2>/dev/null)" > "$WORK/exit-off.json"
@@ -201,7 +202,7 @@ blocked_round off "$WORK/exit-off.json"
 
 echo "── an exit whose host has no IPv6 route"
 stop_exit
-sed -i '/^ipv6 = "off"$/d' "$WORK/exit.toml"
+sed -i 's/^ipv6 = "off"$/ipv6 = "auto"/' "$WORK/exit.toml"
 $X ip -6 route del default
 start_exit || { fail "the exit did not come back"; exit 1; }
 grep -q "no IPv6 default route" "$WORK/exit.log" && pass "the exit says its host has no IPv6 route, and carries none" || fail "exit: $(grep -i ipv6 "$WORK/exit.log")"

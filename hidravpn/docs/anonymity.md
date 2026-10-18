@@ -60,7 +60,7 @@ The other gaps are closed too:
 
 | Party | Learns | Does not learn |
 |---|---|---|
-| **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (blocked). |
+| **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
 | **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:674`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
 | **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:891`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). |
@@ -518,6 +518,44 @@ has a test that fails on the code before the fix.
    start. Test H: such an exit is refused for two hops with the reason, and
    no packet leaves the client.
 
+### 18. High — on Linux, IPv6 carried the person's own IPv6 address into the tunnel (fourth round)
+
+The client routes all of IPv6 into the tunnel, so that it cannot go around
+it, and until now no node carried IPv6, so the tunnel had no IPv6 address
+of its own. Linux then picks a source address from another interface for a
+packet routed into that tunnel: the machine's own IPv6 address. Nothing
+reached the internet (the node drops a packet from an address it did not
+allow), but the node decrypts the packet first, so an exit run with
+modified software could read the IPv6 address of a person on two hops. The
+IPv6 checks of the anonymity suite passed throughout: they counted packets
+on the physical link, never inside the tunnel. Windows was not affected:
+it sends from an interface's own addresses only, and its kill switch
+blocked IPv6 outright.
+
+`test-ipv6-netns.sh` (new) captures what goes into the tunnel. On a runner
+with IPv6 it found six packets carrying the client's own address on the
+code before the fix, and none after. The kill switch now lets IPv4 into the
+tunnel that carries the traffic, and IPv6 only from the address the exit
+gave that tunnel; with none, no IPv6 enters it at all
+(`killswitch/linux.rs`, `carrying_rules`). No DNS goes over IPv6: the
+node's resolver is an IPv4 address.
+
+With the same change an exit now carries IPv6. An exit (never an entry)
+that runs the kernel's WireGuard on a host with an IPv6 default route gives
+each client an address of a unique local subnet, the client's IPv4 tunnel
+address in its last 32 bits, allows the peer that address and no other,
+and translates it to its own IPv6 address on the way out, as it does IPv4
+(`hidravpn-node/src/nat.rs`). The client puts that address on the tunnel
+that carries the traffic (the inner one of two hops), so the internet sees
+the exit's IPv6 address, as it sees its IPv4 one, and the entry carries no
+IPv6 at all. A client takes only a unique local address from an invite: an
+address of the open internet would name whoever holds it in every packet.
+The suite proves it for one hop and two (the entry's tunnel sees no IPv6),
+and that an exit with `ipv6 = "off"`, or whose host has no IPv6 route, hands
+out no IPv6 address and the client's IPv6 is then blocked, with nothing
+leaking either way. The leak test passes IPv6 that reaches a website when
+the service says the exit carries it, and fails it when the exit does not.
+
 ## Open
 
 None of these is claimed as solved.
@@ -529,12 +567,12 @@ None of these is claimed as solved.
    Someone with many machines can still fill such a node for a while.
    Nodes that admit with a pass (phase 5) are the answer; an operator
    chooses which a node is.
-3. **IPv6 has not run on this machine.** Its kernel boots with IPv6
-   disabled (`ipv6.disable=1`), so the three IPv6 checks print SKIP here.
+3. **IPv6 runs only on CI.** The machine this work is done on boots with
+   IPv6 disabled (`ipv6.disable=1`), so the IPv6 checks print SKIP here.
    The CI job `netns` (`.github/workflows/hidravpn-build.yml`) runs every
    suite twice on a runner with IPv6, with `HIDRAVPN_REQUIRE_IPV6=1`, so
-   the IPv6 checks must pass there, not be skipped. It runs on the first
-   push.
+   they must pass there, not be skipped. IPv6 through the tunnel on Windows
+   has not yet run on a PC; "Allow LAN" opens no IPv6 local network.
 4. **Windows at run time**: one hop and two hops by hand, on one PC, as said
    in 15; passes and the browser page not yet.
 5. **Nodes admitted by hand** keep a stable key. Their operator knows who

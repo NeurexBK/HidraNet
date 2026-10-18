@@ -11,9 +11,14 @@
 //! The sublayer is given the top weight so its decision is final. At the
 //! connect-authorisation layers the default is to BLOCK; a handful of higher-
 //! weight PERMIT filters open just what must stay open: loopback, the tunnel
-//! interface, the encrypted packets to the node, and DHCP. IPv6 has only the
-//! loopback exception, so it cannot leave the machine at all. DNS to anything
-//! but the node is not permitted, so it is blocked with everything else.
+//! interface, the encrypted packets to the node, and DHCP. IPv6 has the
+//! loopback exception and, when the exit gave the tunnel an IPv6 address,
+//! the tunnel that carries the traffic (the only one of one hop, the inner
+//! one of two), so it never leaves the machine off the tunnel. Windows sends
+//! from an interface's own addresses only (the strong host model), so IPv6
+//! into that tunnel carries the tunnel's address, never the machine's own.
+//! DNS to anything but the node is not permitted, so it is blocked with
+//! everything else.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -66,6 +71,8 @@ const F_NODE_V4: [GUID; 4] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0004_0004),
 ];
 const F_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0005_0001);
+/// IPv6 on the tunnel that carries the traffic, when the exit carries IPv6.
+const F_TUNNEL_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000a_0001);
 /// The inner tunnel interface of a two-hop circuit.
 const F_TUNNEL2_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0003_0002);
 /// One destination through one tunnel interface: the outer tunnel of two
@@ -102,12 +109,13 @@ const LAN_V4: [(u32, u32); 4] = [
     (0xA9FE_0000, 0xFFFF_0000), // 169.254.0.0/16
 ];
 
-const ALL_FILTER_KEYS: [GUID; 23] = [
+const ALL_FILTER_KEYS: [GUID; 24] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
     F_LOOPBACK_V6,
     F_TUNNEL_V4,
+    F_TUNNEL_V6,
     F_TUNNEL2_V4,
     F_NODE_V4[0],
     F_NODE_V4[1],
@@ -191,6 +199,9 @@ struct Allow<'a> {
     direct_tcp: &'a [SocketAddr],
     /// "Allow LAN": the private ranges off-tunnel, never their DNS.
     lan: bool,
+    /// The tunnel that carries the traffic, by alias, when the exit gave it
+    /// an IPv6 address: IPv6 is allowed on it.
+    tunnel_v6: Option<&'a str>,
 }
 
 /// An IPv4 endpoint in the host order WFP wants for UINT32.
@@ -346,6 +357,23 @@ fn install(allow: &Allow<'_>) -> Result<()> {
             }
         }
 
+        // IPv6 on the tunnel that carries the traffic, when the exit carries
+        // it. Unlike the IPv4 rule this one is not skipped: the interface
+        // exists by the time a circuit arms the kill switch.
+        if let Some(iface) = allow.tunnel_v6 {
+            add_filter(
+                engine,
+                &Filter {
+                    key: F_TUNNEL_V6,
+                    name: "allow IPv6 on the tunnel interface",
+                    layer: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+                    weight: 10,
+                    block: false,
+                    conditions: &[Cond::LocalInterface(luid_of(iface)?)],
+                },
+            )?;
+        }
+
         // The encrypted WireGuard packets to the node(s).
         for (i, (addr, port)) in nodes.iter().enumerate() {
             add_filter(
@@ -482,12 +510,15 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
             (Some(inner), None) => (vec![cfg.interface.as_str(), inner.as_str()], Vec::new()),
             (None, _) => (vec![cfg.interface.as_str()], Vec::new()),
         };
+    // The tunnel that carries the traffic: the inner one of two hops.
+    let carrying = cfg.extra_interface.as_deref().unwrap_or(&cfg.interface);
     install(&Allow {
         tunnels: &tunnels,
         nodes: &[cfg.node_endpoint],
         peered: &peered,
         direct_tcp: &[],
         lan: cfg.allow_lan,
+        tunnel_v6: cfg.tunnel_ipv6.map(|_| carrying),
     })
 }
 
@@ -512,6 +543,7 @@ pub fn hold_admitting(
         peered: &peered,
         direct_tcp: direct,
         lan: false,
+        tunnel_v6: None,
     })
 }
 
@@ -527,6 +559,7 @@ pub fn hold(endpoints: &[SocketAddr]) -> Result<()> {
         peered: &[],
         direct_tcp: &[],
         lan: false,
+        tunnel_v6: None,
     })
 }
 
@@ -713,5 +746,19 @@ fn build_condition(
                 Anonymous: FWP_CONDITION_VALUE0_0 { uint16: *p },
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_filter_has_its_own_key_and_is_removed_with_the_rest() {
+        let mut keys: Vec<u128> = ALL_FILTER_KEYS.iter().map(|g| g.to_u128()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), ALL_FILTER_KEYS.len(), "two filters share a key");
+        assert!(ALL_FILTER_KEYS.contains(&F_TUNNEL_V6));
     }
 }
