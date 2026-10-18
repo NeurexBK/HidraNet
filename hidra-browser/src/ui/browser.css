@@ -81,6 +81,25 @@ button:disabled:hover {
   align-items: center;
 }
 
+#hidra-logo img {
+  height: 20px;
+  width: auto;
+  display: block;
+}
+
+/* HidraNet's own pages carry the logo on their tab. */
+.tab-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+.tab-icon[hidden],
+.tab-loading + .tab-icon {
+  display: none;
+}
+
 #titlebar-text {
   font-size: 12px;
   font-weight: 600;

@@ -88,13 +88,14 @@ const vault = new VaultStore(dir, safe, 'linux');
   check(rejected, 'an absurd size is refused');
 
   // ── Which page may open which compartment ───────────────────────────────
-  const APPS = 'http://127.0.0.1:8090';
+  const A = (name) => `http://${name}.localhost:8090`;
   const NS = [
-    [`${APPS}/mail`, 'mail'], [`${APPS}/mail/`, 'mail'], [`${APPS}/mail?x#y`, 'mail'],
-    [`${APPS}/`, 'chat'], [`${APPS}`, 'chat'],
-    [`${APPS}/forum`, 'forum'], [`${APPS}/publish`, 'publish'], [`${APPS}/sites`, 'publish'],
-    [`${APPS}/search`, null], [`${APPS}/reviews`, null], [`${APPS}/site?addr=x`, null], [`${APPS}/donate`, null],
-    [`${APPS}/mailbox`, null], ['http://localhost:8090/mail', null], ['https://127.0.0.1:8090/mail', null],
+    [`${A('mail')}/`, 'mail'], [`${A('mail')}`, 'mail'], [`${A('mail')}/?x#y`, 'mail'],
+    [`${A('chat')}/`, 'chat'], [`${A('forum')}/`, 'forum'], [`${A('publish')}/`, 'publish'],
+    [`${A('search')}/`, null], [`${A('reviews')}/`, null], [`${A('site')}/?addr=x`, null], [`${A('donate')}/`, null],
+    // The old shared origin, now only a redirect, opens nothing.
+    ['http://127.0.0.1:8090/mail', null], ['http://localhost:8090/mail', null], ['https://mail.localhost:8090/', null],
+    ['http://mail.localhost:8091/', null], ['http://evil.localhost:8090/', null], ['http://mail.localhost.evil.com:8090/', null],
     ['http://127.0.0.1:8084/', null], ['https://example.com/mail', null], ['file:///tmp/x.html', null], ['nonsense', null],
   ];
   for (const [url, want] of NS) {
@@ -103,8 +104,8 @@ const vault = new VaultStore(dir, safe, 'linux');
 
   // The rule main.js applies to every IPC call: the top frame's own URL.
   const frame = (url) => ({ url });
-  const top = frame(`${APPS}/mail`);
-  const sub = frame(`${APPS}/mail`);
+  const top = frame(`${A('mail')}/`);
+  const sub = frame(`${A('mail')}/`);
   check(vaultNamespaceOf({ senderFrame: top, sender: { mainFrame: top } }) === 'mail', 'a call from the mail page opens mail');
   check(vaultNamespaceOf({ senderFrame: sub, sender: { mainFrame: top } }) === null, 'a call from a subframe opens nothing, whatever its URL');
   check(vaultNamespaceOf({ senderFrame: null, sender: { mainFrame: top } }) === null, 'a call with no frame opens nothing');

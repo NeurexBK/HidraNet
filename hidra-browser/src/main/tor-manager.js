@@ -26,6 +26,10 @@ class TorManager {
     this.lastError = null;
     this.exitIp = null;
     this._stopping = false;
+    // The start in progress, if any. See start().
+    this._starting = null;
+    // When the running Tor reached 100%: what the panel's uptime counts from.
+    this.readyAt = null;
     // Set by the main process. Called when Tor dies without us having
     // asked — the moment traffic stops being protected and the kill
     // switch has to close again.
@@ -44,6 +48,7 @@ class TorManager {
       proxyRules: `socks5://127.0.0.1:${this.socksPort}`,
       exitIp: this.exitIp,
       lastError: this.lastError,
+      readyAt: this.state === 'ready' ? this.readyAt : null,
     };
   }
 
@@ -131,9 +136,28 @@ class TorManager {
   /**
    * Starts Tor and resolves once it reports 100% bootstrapped.
    * `onProgress({ percent, summary })` fires as it climbs.
+   *
+   * One start at a time. The browser starts Tor by itself when it opens, and
+   * the new tab page's Connect button can be pressed while that start is
+   * still bootstrapping. A second start used to run beside the first: it
+   * found the port held by the first Tor, waited twenty seconds and marked
+   * the connection failed while the first Tor was carrying the traffic, and
+   * the kill switch closed again. Pressed at the same moment, it spawned a
+   * second Tor on the same data directory, which refused to run and, dying,
+   * took the first one's place in the bookkeeping. Now a start asked for
+   * while one is under way waits for that one and gets its result.
    */
-  async start(dataDir, onProgress) {
-    if (this.isRunning()) return { ok: true, alreadyRunning: true };
+  start(dataDir, onProgress) {
+    if (this.isRunning()) return Promise.resolve({ ok: true, alreadyRunning: true });
+    if (!this._starting) {
+      this._starting = this._start(dataDir, onProgress).finally(() => { this._starting = null; });
+    }
+    return this._starting;
+  }
+
+  async _start(dataDir, onProgress) {
+    // Whatever address the last connection left through is not this one's.
+    this.exitIp = null;
 
     const torPath = this.findBinary();
     if (!torPath) {
@@ -148,7 +172,7 @@ class TorManager {
     // fifteen seconds. Wait that out instead of failing the connection.
     if (!(await this._waitPortFree(20000))) {
       this.state = 'failed';
-      this.lastError = `port ${this.socksPort} is already in use`;
+      this.lastError = `port ${this.socksPort} is already in use — another copy of HidraNet, or another Tor, is running; close it and press Connect`;
       return { ok: false, error: this.lastError };
     }
 
@@ -166,7 +190,13 @@ class TorManager {
     this.dataDir = torData;
 
     const args = [
-      '--SocksPort', String(this.socksPort),
+      // A circuit per destination. Chromium sends no SOCKS credentials, so
+      // Tor's usual isolation by them cannot separate one tab from another;
+      // without this, every site visited within ten minutes left through the
+      // same exit, which links them for anyone watching that exit or
+      // comparing what the sites saw. Each destination address now gets a
+      // circuit of its own.
+      '--SocksPort', `${this.socksPort} IsolateDestAddr`,
       // Needed for "new identity": SIGNAL NEWNYM tears down the current
       // circuits so the next request leaves through a different exit.
       '--ControlPort', String(this.controlPort),
@@ -235,6 +265,7 @@ class TorManager {
           }
           if (this.bootstrapPercent >= 100) {
             this.state = 'ready';
+            this.readyAt = Date.now();
             finish({ ok: true, socksPort: this.socksPort });
           }
         }
@@ -279,12 +310,17 @@ class TorManager {
           this._stopping = false;
           this.state = 'stopped';
           this.bootstrapPercent = 0;
+          // Stopped before it was up: the start waiting on it ends now, as a
+          // start that did not happen, instead of hanging until the two-minute
+          // timeout marked a Tor nobody was running any more as failed.
+          finish({ ok: false, error: 'Tor was stopped before it finished connecting' });
           return;
         }
 
         if (this.state === 'ready') {
           // Died on its own after having worked.
           this.state = 'failed';
+          this.exitIp = null;
           this.lastError = this.lastError || 'Tor exited unexpectedly';
           if (typeof this.onUnexpectedExit === 'function') {
             try { this.onUnexpectedExit(this.lastError); } catch (e) {}

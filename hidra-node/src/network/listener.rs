@@ -10,6 +10,7 @@ use x25519_dalek::StaticSecret;
 use crate::crypto::handshake::{HandshakeState, Role};
 use crate::error::Result;
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
+use crate::relay::exit_policy::ExitPolicy;
 use crate::relay::router::RelayRouter;
 use crate::safelog::sensitive;
 
@@ -19,6 +20,7 @@ pub const PROTO_FORWARDED_CELL: u8 = 0x01;
 pub struct NodeListener {
     listener: TcpListener,
     static_secret: Arc<[u8; 32]>,
+    policy: ExitPolicy,
 }
 
 impl NodeListener {
@@ -28,11 +30,19 @@ impl NodeListener {
         Ok(Self {
             listener,
             static_secret: Arc::new(static_secret.to_bytes()),
+            policy: ExitPolicy::STRICT,
         })
     }
 
+    /// Where the relay behind this listener connects for others. Public
+    /// addresses only unless this is called; see `relay::exit_policy`.
+    pub fn with_exit_policy(mut self, policy: ExitPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
     pub async fn accept_loop(&self) -> Result<()> {
-        let router = RelayRouter::new(Arc::clone(&self.static_secret));
+        let router = RelayRouter::new(Arc::clone(&self.static_secret)).with_policy(self.policy);
 
         loop {
             let (mut stream, remote_addr) = self.listener.accept().await?;
@@ -78,7 +88,7 @@ pub async fn connect_to_peer(
     let _span = tracing::info_span!(
         "session",
         session_id = %session_id,
-        remote_addr = %addr,
+        remote_addr = %sensitive(&addr),
         role = "initiator",
     )
     .entered();

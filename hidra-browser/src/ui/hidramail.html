@@ -27,6 +27,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraMail</title>
+<link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
 <script src="hidra-store.js"></script>
 <style>
@@ -372,12 +373,28 @@ async function dirTopic(addr){ var h=new Uint8Array(await subtle.digest('SHA-256
 // read — a locked keyring, say — nothing is created and nothing is saved:
 // a new address written over the old one would lose every mail sent to it.
 var locked=false;
+// The sender picks every field of a message, the id included, and signing only
+// proves who that sender is. Anything that is not the shape this page writes
+// is replaced here, before it can reach storage, a selector or the screen.
+var MID_RE=/^[A-Za-z0-9._-]{1,64}$/;
+function newMid(){ return 'm'+Date.now()+Math.floor(Math.random()*1e6); }
+function str(v){ return typeof v==='string'?v:''; }
+function cleanMail(m,taken){
+  if(!m||typeof m!=='object') return null;
+  if(typeof m.mid!=='string'||!MID_RE.test(m.mid)||(taken&&taken[m.mid])) m.mid=newMid();
+  m.from=str(m.from); m.to=str(m.to); m.subject=str(m.subject); m.body=str(m.body);
+  if(typeof m.date!=='number'||!isFinite(m.date)) m.date=Date.now();
+  if(taken) taken[m.mid]=1;
+  return m;
+}
 function save(){ if(locked) return; hidraStore.save('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box})).catch(function(e){ toast('Could not save: '+e.message); }); }
 async function load(){
   var raw=null;
   try{ raw=await hidraStore.load('hmail_state'); }
   catch(e){ locked=true; $('cdot').className='dot'; $('ctxt').textContent='keys locked'; $('lock-why').textContent=e.message; $('m-locked').classList.remove('hidden'); return false; }
-  try{ var s=JSON.parse(raw||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!state.box[k])state.box[k]=[]; } }catch(e){}
+  try{ var s=JSON.parse(raw||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!Array.isArray(state.box[k]))state.box[k]=[];
+    // Mail stored by an earlier version was never checked; check it now.
+    var taken={}; for(var f in state.box) state.box[f]=state.box[f].map(function(m){ return cleanMail(m,taken); }).filter(Boolean); } }catch(e){}
   return true;
 }
 function showKeyProtection(){
@@ -437,8 +454,9 @@ async function onMessage(topic,payload){
           console.warn('[hidramail] dropped a message whose sender could not be proven');
           return;
         }
+        var taken={}; for(var tf in state.box) state.box[tf].forEach(function(x){ taken[x.mid]=1; });
+        if(!cleanMail(m,taken)) return;
         m.read=false; m.folder='inbox'; m._t=topic; m.verified=true;
-        if(!m.mid)m.mid='m'+Date.now()+Math.random();
         state.box.inbox.unshift(m); save(); renderAll(); notify(m);
       }catch(e){ /* not for me, or corrupted */ }
       return;
@@ -499,13 +517,14 @@ function renderAliases(){
   var el=$('aliases');
   el.innerHTML=state.ids.map(function(id,i){
     var legacy=id.sigPrivJwk?'':' <span title="Predates message signing — can receive, cannot send">(receive only)</span>';
-    return '<div class="alias'+(i===state.active?' active':'')+'" data-i="'+i+'"><span>'+(i===state.active?'●':'○')+'</span><code title="'+id.addr+'">'+id.addr+'</code>'+legacy+'</div>';
+    return '<div class="alias'+(i===state.active?' active':'')+'" data-i="'+i+'"><span>'+(i===state.active?'●':'○')+'</span><code title="'+esc(id.addr)+'">'+esc(id.addr)+'</code>'+legacy+'</div>';
   }).join('');
   Array.prototype.forEach.call(el.querySelectorAll('.alias'),function(a){ a.onclick=function(){ switchAlias(parseInt(a.getAttribute('data-i'))); }; });
   var me=activeId(); $('my-addr').textContent=me?me.addr:'—';
 }
 function fmtDate(t){ var d=new Date(t),n=new Date(); if(d.toDateString()===n.toDateString()) return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2); }
-function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+// Safe in text and inside a quoted attribute alike.
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function renderList(){
   var arr=(state.box[state.folder]||[]).slice();
   if(state.search){ var q=state.search.toLowerCase(); arr=arr.filter(function(m){ return ((m.from||'')+(m.to||'')+(m.subject||'')+(m.body||'')).toLowerCase().indexOf(q)>=0; }); }
@@ -513,7 +532,7 @@ function renderList(){
   if(!arr.length){ el.innerHTML='<div class="empty">No mail here.</div>'; return; }
   el.innerHTML=arr.map(function(m){
     var who=(state.folder==='sent')?('To: '+m.to):(m.from||'unknown');
-    return '<div class="mail-item'+(m.read?'':' unread')+(m.mid===state.selId?' sel':'')+'" data-mid="'+m.mid+'">'+
+    return '<div class="mail-item'+(m.read?'':' unread')+(m.mid===state.selId?' sel':'')+'" data-mid="'+esc(m.mid)+'">'+
       '<div class="mi-top"><span class="mi-from">'+esc(who)+'</span><span class="mi-date">'+fmtDate(m.date)+'</span></div>'+
       '<div class="mi-subj">'+esc(m.subject||'(no subject)')+'</div>'+
       '<div class="mi-prev">'+esc((m.body||'').slice(0,80))+'</div></div>';
@@ -525,11 +544,16 @@ function openMail(mid){
   var m=findMail(mid); if(!m) return; state.selId=mid; if(!m.read){ m.read=true; save(); }
   var who=(m.folder==='sent')?m.to:(m.from||'unknown');
   var init=(who||'?').slice(0,1).toUpperCase();
-  var spamBtn=(m.folder==='inbox')?'<button class="btn btn-g" onclick="spam(\''+mid+'\')">🚫 Spam</button>':'';
-  $('view').innerHTML='<div class="v-actions"><button class="btn btn-p" onclick="reply()">↩ Reply</button>'+spamBtn+'<button class="btn btn-d" onclick="trash(\''+mid+'\')">🗑 Delete</button></div>'+
+  var spamBtn=(m.folder==='inbox')?'<button class="btn btn-g" data-act="spam">🚫 Spam</button>':'';
+  $('view').innerHTML='<div class="v-actions"><button class="btn btn-p" data-act="reply">↩ Reply</button>'+spamBtn+'<button class="btn btn-d" data-act="trash">🗑 Delete</button></div>'+
     '<div class="v-subj">'+esc(m.subject||'(no subject)')+'</div>'+
     '<div class="v-meta"><div class="v-av">'+esc(init)+'</div><div><div class="v-from">'+esc(who)+'</div><div class="v-addr">'+esc(m.folder==='sent'?('from: '+m.from):who)+'</div></div><div class="v-date">'+new Date(m.date).toLocaleString()+'</div></div>'+
     '<div class="v-body">'+esc(m.body||'')+'</div>';
+  // Bound here with the id held in a variable, never written into markup.
+  Array.prototype.forEach.call($('view').querySelectorAll('[data-act]'),function(b){
+    var act=b.getAttribute('data-act');
+    b.onclick=function(){ if(act==='reply') window.reply(); else window[act](mid); };
+  });
   renderAll();
 }
 window.reply=function(){ var m=findMail(state.selId); if(!m)return; openCompose({to:(m.folder==='sent'?m.to:m.from),subject:(/^re:/i.test(m.subject||'')?m.subject:'Re: '+(m.subject||'')),body:'\n\n--- '+(m.from||'')+' wrote ---\n'+(m.body||'')}); };

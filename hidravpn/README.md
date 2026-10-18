@@ -19,6 +19,12 @@ that top themselves up) for what exists now and how to run it.
 Everything in this folder is new and separate from the HidraNet browser,
 mail, chat, forum and relay engine, which it does not change.
 
+**Not released yet.** HidraVPN is not part of the HidraNet release: the
+browser ships without it, and nothing here reaches anyone's machine. The
+browser's half — the VPN page, the module that talks to the service, the
+installer, the leak test and the release-signature check — is kept in
+[`browser/`](browser/README.md), with its tests, until HidraVPN is ready.
+
 ## What makes it different
 
 Only what the code proves, and the test scripts check:

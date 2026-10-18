@@ -1,7 +1,7 @@
 // The browser verifies releases with the same key and format as
 // hidravpn-sign, and refuses everything while it has no key.
 //
-//   node hidra-browser/test/release-verify.js
+//   node hidravpn/browser/test/release-verify.js
 //
 // The cross-check with the real `hidravpn-sign` binary runs when it has been
 // built (hidravpn/target/release/hidravpn-sign) and says so when it has not.
@@ -81,14 +81,14 @@ const rawPublic = (pub) => pub.export({ format: 'der', type: 'spki' }).slice(-32
   });
 
   await check('the key constant matches the one the Rust side embeds', async () => {
-    const rs = fs.readFileSync(path.join(__dirname, '..', '..', 'hidravpn', 'crates', 'hidravpn-core', 'src', 'release.rs'), 'utf8');
+    const rs = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'hidravpn-core', 'src', 'release.rs'), 'utf8');
     const m = rs.match(/pub const RELEASE_PUBLIC_KEY_B64: &str = "([^"]*)";/);
     assert.ok(m, 'release.rs has no RELEASE_PUBLIC_KEY_B64');
     assert.strictEqual(m[1], rv.RELEASE_PUBLIC_KEY);
   });
 
   // ── The same format as hidravpn-sign, both ways ──────────────────────────
-  const signBin = path.join(__dirname, '..', '..', 'hidravpn', 'target', 'release', 'hidravpn-sign');
+  const signBin = path.join(__dirname, '..', '..', 'target', 'release', 'hidravpn-sign');
   if (fs.existsSync(signBin)) {
     await check('a file signed by hidravpn-sign verifies here', async () => {
       const keyFile = path.join(tmp, 'release.key');

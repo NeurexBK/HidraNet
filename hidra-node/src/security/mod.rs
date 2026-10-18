@@ -6,6 +6,7 @@ pub mod rate_limiter {
     use std::time::{Duration, Instant};
 
     use crate::error::{HidraError, Result};
+    use crate::safelog::sensitive;
 
     struct TokenBucket {
         tokens: f64,
@@ -119,7 +120,7 @@ pub mod rate_limiter {
                         ));
                     state.backoff_until = Some(now + backoff);
                     tracing::warn!(
-                        peer = %ip,
+                        peer = %sensitive(&ip),
                         violations = state.violations,
                         ban_secs = backoff.as_secs(),
                         "peer banned (exponential backoff)"

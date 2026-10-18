@@ -194,113 +194,70 @@ pub mod collector {
         }
     }
 
+    /// What this node can actually see: which of its local relays answer,
+    /// and how long a connection to them takes.
+    ///
+    /// This used to report users, traffic, circuits and a breakdown by
+    /// country, all of it computed from a formula, the hour of the day and a
+    /// random jitter, with nothing measured behind it. A dashboard for an
+    /// anonymity network that shows made-up numbers is worse than none, and a
+    /// node has no business counting its users or where they are: it cannot
+    /// do it honestly and should not do it at all. So those stay at zero, and
+    /// the page says they are not collected.
     async fn collect_metrics() -> NetworkSnapshot {
         let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-
-        let base_users = estimate_active_users().await;
-        let base_relays = estimate_active_relays().await;
-
-        let jitter = || -> f64 {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            rng.gen_range(-0.05..0.05)
-        };
-
-        let users = ((base_users as f64) * (1.0 + jitter())) as i64;
-        let relays = ((base_relays as f64) * (1.0 + jitter())) as i64;
-
-        let circuits = (users as f64) * 0.3 * (1.0 + jitter());
-        let latency = 120.0 + (users as f64) * 0.5 + jitter() * 50.0;
-        let bytes_sent = (users as i64) * 2_500_000 + (jitter() * 500_000.0) as i64;
-        let bytes_recv = (users as i64) * 4_800_000 + (jitter() * 900_000.0) as i64;
-        let traffic_gb = (bytes_sent + bytes_recv) as f64 / 1_073_741_824.0 * 24.0;
-
-        let geo = generate_geo_distribution(users);
-
+        let (relays, latency_avg_ms) = probe_local_relays().await;
         NetworkSnapshot {
             ts: now,
-            active_users: users.max(1),
-            active_relays: relays.max(1),
-            circuits_per_sec: circuits.max(0.1),
-            bytes_sent: bytes_sent.max(0),
-            bytes_recv: bytes_recv.max(0),
-            latency_avg_ms: latency.max(10.0),
-            traffic_gb_day: traffic_gb.max(0.0),
-            geo,
+            active_users: 0,
+            active_relays: relays,
+            circuits_per_sec: 0.0,
+            bytes_sent: 0,
+            bytes_recv: 0,
+            latency_avg_ms,
+            traffic_gb_day: 0.0,
+            geo: Vec::<GeoEntry>::new(),
         }
     }
 
-    async fn estimate_active_users() -> i64 {
-        let local_connections = check_local_connections().await;
-        let hour = Utc::now().hour();
-        let time_factor = match hour {
-            0..=5 => 0.4,
-            6..=8 => 0.7,
-            9..=11 => 1.0,
-            12..=14 => 1.2,
-            15..=18 => 1.3,
-            19..=21 => 1.5,
-            22..=23 => 0.8,
-            _ => 1.0,
-        };
-        let base = 42 + local_connections * 15;
-        ((base as f64) * time_factor) as i64
-    }
-
-    async fn estimate_active_relays() -> i64 {
-        let local = check_local_relays().await;
-        12 + local
-    }
-
-    async fn check_local_connections() -> i64 {
-        let mut count: i64 = 0;
-        for port in [8080u16, 8081] {
+    /// The local relays that accept a connection, and the mean time to
+    /// connect to them, in milliseconds (0 when none answer).
+    async fn probe_local_relays() -> (i64, f64) {
+        let mut up = 0i64;
+        let mut total_ms = 0.0f64;
+        for port in [7001u16, 7002, 7003] {
             let addr = format!("127.0.0.1:{port}");
-            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-                count += 1;
+            let t0 = std::time::Instant::now();
+            let ok = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tokio::net::TcpStream::connect(&addr),
+            )
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false);
+            if ok {
+                up += 1;
+                total_ms += t0.elapsed().as_secs_f64() * 1000.0;
             }
         }
-        count
+        let avg = if up > 0 { total_ms / up as f64 } else { 0.0 };
+        (up, avg)
     }
 
-    async fn check_local_relays() -> i64 {
-        let mut count: i64 = 0;
-        for port in [7001u16, 7002, 7003, 9050, 9051] {
-            let addr = format!("127.0.0.1:{port}");
-            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-                count += 1;
-            }
+    #[cfg(test)]
+    mod tests {
+        #[tokio::test]
+        async fn nothing_is_made_up() {
+            let a = super::collect_metrics().await;
+            let b = super::collect_metrics().await;
+            assert_eq!(a.active_users, 0);
+            assert_eq!((a.bytes_sent, a.bytes_recv), (0, 0));
+            assert!(a.geo.is_empty());
+            assert_eq!(a.circuits_per_sec, 0.0);
+            // No jitter: with nothing listening, two snapshots agree exactly.
+            assert_eq!(a.active_relays, b.active_relays);
         }
-        count
     }
-
-    fn generate_geo_distribution(total_users: i64) -> Vec<GeoEntry> {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-
-        let regions = [
-            ("BR", 0.22), ("US", 0.18), ("DE", 0.10), ("FR", 0.07),
-            ("GB", 0.06), ("JP", 0.05), ("CA", 0.04), ("NL", 0.04),
-            ("AU", 0.03), ("KR", 0.03), ("IN", 0.03), ("SE", 0.02),
-            ("CH", 0.02), ("PL", 0.02), ("ES", 0.02), ("PT", 0.02),
-            ("IT", 0.02), ("RU", 0.01), ("AR", 0.01), ("MX", 0.01),
-        ];
-
-        let mut entries = Vec::new();
-        for (code, weight) in regions {
-            let noise: f64 = rng.gen_range(-0.3..0.3);
-            let count = ((total_users as f64) * weight * (1.0 + noise)).max(0.0) as i64;
-            if count > 0 {
-                entries.push(GeoEntry {
-                    country_code: code.to_string(),
-                    user_count: count,
-                });
-            }
-        }
-        entries
-    }
-
-    use chrono::Timelike;
 }
 
 pub mod dashboard {
@@ -476,11 +433,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="live"><span class="dot"></span> Live updates</div>
   </div>
 
+  <p style="color:#8888a0;font-size:13px;line-height:1.6;margin:0 0 18px">This page shows only what this node measures on this machine: which of its local relays answer, and how long a connection to them takes. HidraNet does not count its users, their traffic or where they are, so those are not collected.</p>
   <div class="stats-grid">
-<div class="stat-card"><div class="label">Active users</div><div class="value accent" id="s-users">—</div><div class="delta" id="d-users"></div></div>
-<div class="stat-card"><div class="label">Active relays</div><div class="value" id="s-relays">—</div><div class="delta" id="d-relays"></div></div>
+<div class="stat-card"><div class="label">Users</div><div class="value accent" id="s-users">—</div><div class="delta" id="d-users"></div></div>
+<div class="stat-card"><div class="label">Local relays answering</div><div class="value" id="s-relays">—</div><div class="delta" id="d-relays"></div></div>
 <div class="stat-card"><div class="label">Circuits/sec</div><div class="value" id="s-circuits">—</div></div>
-<div class="stat-card"><div class="label">Average latency</div><div class="value" id="s-latency">—</div></div>
+<div class="stat-card"><div class="label">Connect time to them</div><div class="value" id="s-latency">—</div></div>
 <div class="stat-card"><div class="label">Traffic (GB/day)</div><div class="value" id="s-traffic">—</div></div>
 <div class="stat-card"><div class="label">Countries</div><div class="value" id="s-countries">—</div></div>
   </div>
@@ -496,13 +454,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="chart-wrap"><canvas id="trafficChart"></canvas></div>
 </div>
 <div class="chart-card">
-  <h3>Users by region</h3>
+  <h3>Users by region — not collected</h3>
   <div class="chart-wrap"><canvas id="geoChart"></canvas></div>
 </div>
   </div>
 
   <div class="geo-section">
-<h3>Geographic distribution</h3>
+<h3>Geographic distribution — not collected</h3>
 <div class="geo-grid" id="geoGrid"></div>
   </div>
 
@@ -531,14 +489,13 @@ async function fetchStats(){
   try{
 const r=await fetch('/api/stats');
 const s=await r.json();
-document.getElementById('s-users').textContent=s.active_users||0;
+document.getElementById('s-users').textContent='not counted';
 document.getElementById('s-relays').textContent=s.active_relays||0;
-document.getElementById('s-circuits').textContent=(s.circuits_per_sec||0).toFixed(1);
+document.getElementById('s-circuits').textContent='not measured';
 document.getElementById('s-latency').textContent=(s.latency_avg_ms||0).toFixed(0)+'ms';
-document.getElementById('s-traffic').textContent=(s.traffic_gb_day||0).toFixed(2);
+document.getElementById('s-traffic').textContent='not measured';
 
 if(prevStats){
-  setDelta('d-users',s.active_users,prevStats.active_users);
   setDelta('d-relays',s.active_relays,prevStats.active_relays);
 }
 prevStats=s;
@@ -569,7 +526,7 @@ async function fetchGeo(){
   try{
 const r=await fetch('/api/geo');
 const data=await r.json();
-document.getElementById('s-countries').textContent=data.length;
+document.getElementById('s-countries').textContent='not collected';
 const top=data.slice(0,10);
 geoChart.data.labels=top.map(g=>NAMES[g.country_code]||g.country_code);
 geoChart.data.datasets[0].data=top.map(g=>g.user_count);

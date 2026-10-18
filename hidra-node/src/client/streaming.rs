@@ -15,6 +15,7 @@ use crate::network::connection::{
 };
 use crate::network::listener::PROTO_NOISE_SESSION;
 use crate::onion::builder::{build_onion, peel_response_layers};
+use crate::crypto::service_auth::{ClientHandshake, SealedChannel};
 use crate::onion::cell::RelayCommand;
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::onion::layer::{decrypt_stream, encrypt_stream};
@@ -26,6 +27,9 @@ pub struct StreamingCircuit {
     relay_addrs: Vec<SocketAddr>,
     #[allow(dead_code)]
     extra_conns: Vec<SecureConnection>,
+    /// Set once a hidden service has proven itself: everything sent and
+    /// received after that is sealed end to end, past the relay bridging it.
+    sealed: Option<SealedChannel>,
 }
 
 impl StreamingCircuit {
@@ -73,6 +77,7 @@ impl StreamingCircuit {
             circuit,
             relay_addrs,
             extra_conns,
+            sealed: None,
         })
     }
 
@@ -128,31 +133,7 @@ impl StreamingCircuit {
         &mut self,
         service_hash: Vec<u8>,
     ) -> Result<()> {
-        let cmd = RelayCommand::ConnectService { service_hash };
-        let cmd_data = cmd.serialize_bincode()?;
-        let onion_data = build_onion(&self.circuit, &cmd_data)?;
-        self.conn
-            .send_message(&Message::Relay {
-                circuit_id: self.circuit.id,
-                data: onion_data,
-            })
-            .await?;
-        let response_msg = self.conn.recv_message().await?;
-        let response_data = match response_msg {
-            Message::Relay { data, .. } => data,
-            other => {
-                return Err(HidraError::Circuit(format!(
-                    "expected Relay response, got: {other:?}"
-                )));
-            }
-        };
-        let decrypted = peel_response_layers(
-            &self.circuit,
-            response_data,
-        )?;
-        let resp_cmd =
-            RelayCommand::deserialize_bincode(&decrypted)?;
-        match resp_cmd {
+        match self.request(&RelayCommand::ConnectService { service_hash }).await? {
             RelayCommand::ServiceConnected => {
                 info!(circuit_id = self.circuit.id, "connected to hidden service");
                 Ok(())
@@ -168,11 +149,50 @@ impl StreamingCircuit {
         }
     }
 
+    /// Sends one command to the circuit's last relay and returns its answer.
+    pub async fn request(&mut self, cmd: &RelayCommand) -> Result<RelayCommand> {
+        let cmd_data = cmd.serialize_bincode()?;
+        let onion_data = build_onion(&self.circuit, &cmd_data)?;
+        self.conn
+            .send_message(&Message::Relay { circuit_id: self.circuit.id, data: onion_data })
+            .await?;
+        let data = match self.conn.recv_message().await? {
+            Message::Relay { data, .. } => data,
+            other => {
+                return Err(HidraError::Circuit(format!("expected Relay response, got: {other:?}")));
+            }
+        };
+        RelayCommand::deserialize_bincode(&peel_response_layers(&self.circuit, data)?)
+    }
+
+    /// Connects to a hidden service and makes it prove it is the one its
+    /// address names, with the key from its signed descriptor, before a byte
+    /// of the client's goes to it. Whoever answered for the address without
+    /// that key is refused here.
+    pub async fn connect_service_authenticated(
+        &mut self,
+        service_pubkey: &[u8; 32],
+    ) -> Result<()> {
+        let service_hash = crate::p2p::dht::descriptor::service_hash_of(service_pubkey).to_vec();
+        self.connect_service(service_hash).await?;
+        let (handshake, hello) = ClientHandshake::start();
+        self.send_raw(&hello).await?;
+        let answer = self.recv_raw().await?.ok_or_else(|| {
+            HidraError::Circuit("hidden service closed before proving itself".into())
+        })?;
+        self.sealed = Some(handshake.finish(service_pubkey, &answer)?);
+        info!(circuit_id = self.circuit.id, "hidden service proved its address");
+        Ok(())
+    }
+
     pub async fn register_service(
         &mut self,
-        service_hash: Vec<u8>,
+        service_key: &ed25519_dalek::SigningKey,
     ) -> Result<()> {
-        let cmd = RelayCommand::RegisterService { service_hash };
+        let (service_pubkey, timestamp, signature) =
+            crate::crypto::service_auth::registration_proof(service_key);
+        let service_hash = crate::p2p::dht::descriptor::service_hash_of(&service_pubkey).to_vec();
+        let cmd = RelayCommand::RegisterService { service_hash, service_pubkey, timestamp, signature };
         let cmd_data = cmd.serialize_bincode()?;
         let onion_data = build_onion(&self.circuit, &cmd_data)?;
         self.conn
@@ -213,6 +233,27 @@ impl StreamingCircuit {
     }
 
     pub async fn send_data(&mut self, data: &[u8]) -> Result<()> {
+        match self.sealed.as_mut() {
+            Some(ch) => {
+                let sealed = ch.seal(data)?;
+                self.send_raw(&sealed).await
+            }
+            None => self.send_raw(data).await,
+        }
+    }
+
+    pub async fn recv_data(&mut self) -> Result<Option<Vec<u8>>> {
+        match self.recv_raw().await? {
+            Some(payload) => match self.sealed.as_mut() {
+                Some(ch) => ch.open(&payload).map(Some),
+                None => Ok(Some(payload)),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// A Data cell as it goes over the circuit, sealed or not.
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<()> {
         let cmd = RelayCommand::Data(data.to_vec());
         let cmd_data = cmd.serialize_bincode()?;
         let encrypted =
@@ -225,7 +266,7 @@ impl StreamingCircuit {
             .await
     }
 
-    pub async fn recv_data(
+    pub async fn recv_raw(
         &mut self,
     ) -> Result<Option<Vec<u8>>> {
         let msg = self.conn.recv_message().await?;

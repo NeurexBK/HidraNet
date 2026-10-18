@@ -16,7 +16,8 @@
 // engine API, file:// pages — stays reachable throughout, so the interface
 // still works while locked.
 
-// The browser's own services: apps server (8090), engine API (9051),
+// The browser's own services: apps server (8090, one *.localhost host per
+// app — app-origins.js), engine API (9051),
 // SevenNine (8084). All loopback, none of it leaves the machine.
 const LOCAL_HOSTS = new Set([
   '127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0', '',
@@ -70,7 +71,10 @@ class NetworkLock {
       && parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
       return false;
     }
-    return LOCAL_HOSTS.has(parsed.hostname.toLowerCase());
+    const host = parsed.hostname.toLowerCase();
+    // *.localhost is this machine by definition (RFC 6761), and Chromium
+    // resolves it without a DNS query: it is where each app has its origin.
+    return LOCAL_HOSTS.has(host) || host.endsWith('.localhost');
   }
 
   // Installs the filter on a session. Every session the browser owns has to go

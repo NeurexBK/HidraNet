@@ -31,7 +31,16 @@ pub enum RelayCommand {
     ConnectFailed(String),
     ResolveDns { hostname: String },
     DnsResolved { addresses: Vec<String> },
-    RegisterService { service_hash: Vec<u8> },
+    /// A service asking this relay to introduce clients to it. Carries the
+    /// service key, the time and the key's signature over the address and
+    /// the time (`crypto::service_auth`): without them anyone could register
+    /// someone else's address and be that site.
+    RegisterService {
+        service_hash: Vec<u8>,
+        service_pubkey: [u8; 32],
+        timestamp: u64,
+        signature: Vec<u8>,
+    },
     ServiceRegistered,
     ConnectService { service_hash: Vec<u8> },
     ServiceConnected,

@@ -135,6 +135,20 @@ code. **Never for running text.**
 
 ## 5. Logo
 
+The logo is the three-headed hydra, in green (`#268D00`) on black. Every
+file below is made from the one master, `brand/logo/hidranet-logo-black.jpg`;
+the script that makes them is described in `brand/README.md`.
+
+| File in `brand/logo/` | Use |
+|---|---|
+| `hidranet-logo.png`, `hidranet-logo-640.png` | The logo alone, transparent background: pages, headers |
+| `hidranet-logo-square.png` | The logo centred in a transparent square |
+| `hidranet-icon-1024.png` and `-512` … `-16` | App icon: the logo on a black rounded square |
+| `hidranet.ico` | Windows (16–256 px) |
+| `hidranet.icns`, `hidranet-macos-1024.png` | macOS, on Apple's icon grid |
+| `favicon.ico`, `favicon-32.png` | Browser tabs |
+| `hidranet-social-1200x630.png` | Link previews (Open Graph, X) |
+
 ### 5.1 Variants
 
 | Variant | Use |

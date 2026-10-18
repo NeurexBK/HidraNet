@@ -126,6 +126,18 @@ jobs:
         working-directory: hidra-browser
         run: node scripts/update-sums.js dist/release-out "$GITHUB_SHA"
 
+      # The description on the release page says what is in the packages and
+      # carries the same table, written from the same files. See
+      # release-notes.yml for the case where only the notes change.
+      - name: Rewrite the release description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node hidra-browser/scripts/release-notes.js hidra-browser/dist/release-out "$GITHUB_SHA" > notes.md
+          gh release edit v1.0.0 --repo "$GITHUB_REPOSITORY" \
+            --title 'HidraNet Browser 1.0.0' \
+            --notes-file notes.md
+
       - name: Commit the table
         run: |
           if git diff --quiet landing/SHA256SUMS.txt; then

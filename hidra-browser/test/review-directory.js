@@ -65,7 +65,7 @@ app.whenReady().then(async () => {
       'characters outside base32 are refused': normHidra('abcdefghijklmnopqrstuvwxyz01789.hidra') === '',
       'empty input is refused': normHidra('') === '',
       'prose is refused': normHidra('not an address') === '',
-      'the open link points at the site route': hidraUrl(real).indexOf('127.0.0.1:8090/site?addr=') > 0,
+      'the open link points at the site route': hidraUrl(real).indexOf('//site.localhost:8090/?addr=') > 0,
       'a legacy record with a city reads as a place': kindOf({ city: 'Lisboa' }) === 'place',
       'a record with an address reads as a site': kindOf({ hidra: real }) === 'site',
       'an explicit kind wins over the guess': kindOf({ kind: 'site', city: 'x' }) === 'site'
@@ -98,13 +98,13 @@ app.whenReady().then(async () => {
 
   // ── the directory, with listings that arrived from the network ───────
   const cards = await js(`(function(){
-    state.biz['good'] = { name:'The Lantern Board', kind:'site', hidra:${MAKE_ADDR},
+    state.biz['good'] = { signed:true, name:'The Lantern Board', kind:'site', hidra:${MAKE_ADDR},
       cat:'Forum', desc:'Slow board, long posts', at: Date.now() };
-    state.biz['bad'] = { name:'Fast Exit', kind:'site', hidra:${MAKE_ADDR},
+    state.biz['bad'] = { signed:true, name:'Fast Exit', kind:'site', hidra:${MAKE_ADDR},
       cat:'Marketplace', desc:'Sells things', at: Date.now() };
-    state.biz['unrated'] = { name:'Quiet Wiki', kind:'site', hidra:${MAKE_ADDR},
+    state.biz['unrated'] = { signed:true, name:'Quiet Wiki', kind:'site', hidra:${MAKE_ADDR},
       cat:'Wiki', desc:'Nobody has been here', at: Date.now() };
-    state.biz['cafe'] = { name:'Corner Cafe', cat:'Cafe', city:'Lisboa',
+    state.biz['cafe'] = { signed:true, name:'Corner Cafe', cat:'Cafe', city:'Lisboa',
       desc:'Pastries', at: Date.now() };
     // state.revs is flat, keyed by review id, each carrying its _slug.
     state.revs['r1'] = { _slug:'good', stars:5, txt:'Worth reading', at:Date.now() };
@@ -139,7 +139,7 @@ app.whenReady().then(async () => {
     visit: document.getElementById('b-visit').innerHTML,
     caution: document.getElementById('b-caution').textContent,
     owner: document.getElementById('b-addr-box').textContent }; })()`);
-  say(/site\?addr=/.test(good.visit), 'a site offers an Open button pointing at the site route');
+  say(/site\.localhost:8090\/\?addr=/.test(good.visit), 'a site offers an Open button pointing at the site route');
   say(good.caution.trim() === '', 'a well-reviewed site shows no warning');
   say(/share outside HidraNet/.test(good.owner), 'the owner block speaks to a site owner');
 

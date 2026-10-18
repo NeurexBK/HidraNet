@@ -15,10 +15,11 @@
   script elements; moving it into separate files, and dropping that, is the
   next step. Until then the exits above are what the policy is doing.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' http://127.0.0.1:8090; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraSearch — Anonymous Search</title>
+<link rel="icon" href="img/favicon.png">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -96,6 +97,9 @@ a:hover{color:var(--link-hover)}
   transition:opacity .15s;
 }
 .top-logo:hover{opacity:.8}
+.top-logo{display:flex;align-items:center;gap:8px}
+.top-logo img{height:24px;width:auto}
+.logo-mark{height:96px;width:auto;margin:0 auto 18px;display:block;filter:drop-shadow(0 0 18px rgba(46,160,0,.35))}
 .top-logo .hi{color:var(--accent)}
 .top-search{flex:1;max-width:580px}
 .top-search .search-box{border-radius:22px;padding:2px 4px 2px 16px}
@@ -236,6 +240,7 @@ a:hover{color:var(--link-hover)}
 <!-- HOME VIEW -->
 <div class="home-view" id="homeView">
   <div class="logo-area">
+    <img class="logo-mark" src="img/hidranet-logo.png" alt="HidraNet">
     <div class="logo-text"><span class="hi">Hidra</span><span class="search">Search</span></div>
     <div class="logo-sub">Anonymous &amp; Private Search</div>
   </div>
@@ -261,7 +266,7 @@ a:hover{color:var(--link-hover)}
 <!-- RESULTS VIEW -->
 <div class="results-view" id="resultsView">
   <div class="top-bar">
-    <div class="top-logo" id="topLogo"><span class="hi">Hidra</span>Search</div>
+    <div class="top-logo" id="topLogo"><img src="img/hidranet-logo.png" alt=""><span class="hi">Hidra</span>Search</div>
     <div class="top-search">
       <div class="search-box">
         <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -313,7 +318,8 @@ a:hover{color:var(--link-hover)}
 
 <script>
 'use strict';
-const API_BASE = 'http://127.0.0.1:8090';
+// Same origin: the search page and its API are both on search.localhost.
+const API_BASE = location.origin;
 let currentQuery = '';
 let currentPage = 1;
 let currentTab = 'all';
@@ -534,11 +540,18 @@ function esc(s) {
     .replace(/&/g,'&amp;')
     .replace(/</g,'&lt;')
     .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;');
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
 }
+// A link from a result: a web address or nothing. The browser filters these
+// too; this holds even if a result reaches the page some other way.
 function escAttr(s) {
   if (!s) return '#';
-  return esc(s);
+  try {
+    var u = new URL(String(s));
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return '#';
+    return esc(u.href);
+  } catch (e) { return '#'; }
 }
 </script>
 </body>

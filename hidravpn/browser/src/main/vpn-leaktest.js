@@ -26,16 +26,51 @@
 
 'use strict';
 
+const net = require('net');
+
 const IPV4_URL = 'https://api.ipify.org?format=json';
 const IPV6_URL = 'https://api6.ipify.org?format=json';
 // How recent the exit's last handshake must be for the test to run: a live
 // WireGuard session shakes hands every two minutes.
 const FRESH_SECS = 180;
 
+// One spelling per address, so two spellings of the same address compare
+// equal: IPv6 in its canonical form (RFC 5952: lower case, zeros dropped,
+// the longest run compressed), and an IPv4 address written as IPv6
+// (::ffff:192.0.2.1) as plain IPv4. Anything that is not an address comes
+// back unchanged.
+function normalizeIp(ip) {
+  const s = String(ip || '').trim();
+  if (net.isIPv4(s)) return s;
+  if (!net.isIPv6(s)) return s;
+  let canon;
+  try {
+    canon = new URL(`http://[${s}]/`).hostname.slice(1, -1);
+  } catch {
+    return s.toLowerCase();
+  }
+  const mapped = canon.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mapped) {
+    const hi = parseInt(mapped[1], 16);
+    const lo = parseInt(mapped[2], 16);
+    return [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.');
+  }
+  return canon;
+}
+
+// The address part of an endpoint, in any of the four ways one is written:
+//   [2001:db8::1]:51820   2001:db8::1   192.0.2.1:51820   192.0.2.1
+// Cutting at the last ":" (as this once did) breaks both IPv6 forms.
 function hostOf(endpoint) {
-  const s = String(endpoint || '');
-  const i = s.lastIndexOf(':');
-  return i > 0 ? s.slice(0, i) : s;
+  const s = String(endpoint || '').trim();
+  let host = s;
+  const bracketed = s.match(/^\[([^\]]+)\](?::\d{1,5})?$/);
+  if (bracketed) {
+    host = bracketed[1];
+  } else if ((s.match(/:/g) || []).length === 1) {
+    host = s.slice(0, s.indexOf(':'));
+  }
+  return normalizeIp(host);
 }
 
 function readIp(body) {
@@ -83,7 +118,7 @@ async function runLeakTest(status, probe) {
   }
   if (!seen) {
     checks.push({ id: 'ipv4', label: 'IPv4 address', verdict: 'warn', detail: 'The address check did not answer, so the address websites see is not known.' });
-  } else if (seen === exitHost) {
+  } else if (normalizeIp(seen) === exitHost) {
     checks.push({ id: 'ipv4', label: 'IPv4 address', verdict: 'pass', detail: `Websites see ${seen}, the exit node's address.` });
   } else {
     checks.push({
@@ -114,4 +149,4 @@ async function runLeakTest(status, probe) {
   return { ran: true, verdict: worst, checks };
 }
 
-module.exports = { runLeakTest, IPV4_URL, IPV6_URL, hostOf, readIp };
+module.exports = { runLeakTest, IPV4_URL, IPV6_URL, hostOf, normalizeIp, readIp };

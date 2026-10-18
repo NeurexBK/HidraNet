@@ -92,11 +92,25 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// True when the line is a tracing macro call.
+///
+/// Spans count too: a field on a span is printed with every event logged
+/// inside it, so `info_span!("relay_session", remote_addr = %remote_addr)`
+/// put the client's address on every line a relay wrote about them, and the
+/// first version of this check, looking only at events, never saw it. So does
+/// the qualified form, `tracing::warn!(`, which it also missed.
 fn is_log_line(line: &str) -> bool {
     let t = line.trim_start();
-    ["info!(", "warn!(", "error!(", "debug!(", "trace!("]
-        .iter()
-        .any(|m| t.starts_with(m) || t.contains(&format!(" {m}")))
+    [
+        "info!(", "warn!(", "error!(", "debug!(", "trace!(",
+        "info_span!(", "warn_span!(", "error_span!(", "debug_span!(", "trace_span!(", "span!(",
+    ]
+    .iter()
+    .any(|m| {
+        t.starts_with(m)
+            || t.contains(&format!(" {m}"))
+            || t.contains(&format!("::{m}"))
+            || t.contains(&format!("({m}"))
+    })
 }
 
 /// Every tracing macro call in a file, with the line it starts on, joined

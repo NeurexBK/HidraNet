@@ -47,8 +47,11 @@ fn host_of(authority: &str) -> &str {
 /// True when the authority names this machine. The whole 127.0.0.0/8 block
 /// counts, not just 127.0.0.1, because a server may be reached on any of it.
 fn is_loopback_authority(authority: &str) -> bool {
-    let host = host_of(authority);
+    let host = host_of(authority).to_ascii_lowercase();
+    // *.localhost is this machine by definition (RFC 6761); the browser
+    // serves each of its apps on a host of its own there.
     host == "localhost"
+        || host.ends_with(".localhost")
         || host == "::1"
         || host
             .parse::<std::net::Ipv4Addr>()
@@ -85,6 +88,21 @@ pub fn screen(request: &str) -> Access {
                 Access::Deny
             }
         }
+    }
+}
+
+/// [`screen`], and then the `Origin`, when there is one, must be one of these.
+///
+/// For a server whose API changes things, where "some page on this machine"
+/// is too wide: every app the browser serves, and every `.hidra` site shown
+/// in its viewer, is on a loopback origin too.
+pub fn screen_for(request: &str, allowed_origins: &[&str]) -> Access {
+    match screen(request) {
+        Access::Allow(None) => Access::Allow(None),
+        Access::Allow(Some(origin)) if allowed_origins.contains(&origin.as_str()) => {
+            Access::Allow(Some(origin))
+        }
+        _ => Access::Deny,
     }
 }
 
@@ -174,6 +192,25 @@ mod tests {
             Access::Allow(None) => {}
             _ => panic!("the body must not be parsed as headers"),
         }
+    }
+
+    #[test]
+    fn an_app_host_under_localhost_is_this_machine() {
+        assert!(allowed(&req("Host: 127.0.0.1:8084\r\nOrigin: http://publish.localhost:8090")));
+        assert!(!allowed(&req("Host: 127.0.0.1:8084\r\nOrigin: http://publish.localhost.evil.com")));
+        assert!(!allowed(&req("Host: localhost.evil.com:8084")));
+    }
+
+    #[test]
+    fn screen_for_admits_only_the_named_origins() {
+        let ok = ["http://127.0.0.1:8084", "http://publish.localhost:8090"];
+        let r = |h: &str| matches!(screen_for(&req(h), &ok), Access::Allow(_));
+        assert!(r("Host: 127.0.0.1:8084"));
+        assert!(r("Host: 127.0.0.1:8084\r\nOrigin: http://publish.localhost:8090"));
+        assert!(r("Host: 127.0.0.1:8084\r\nOrigin: http://127.0.0.1:8084"));
+        assert!(!r("Host: 127.0.0.1:8084\r\nOrigin: http://forum.localhost:8090"));
+        assert!(!r("Host: 127.0.0.1:8084\r\nOrigin: http://site.localhost:8090"));
+        assert!(!r("Host: 127.0.0.1:8084\r\nOrigin: http://127.0.0.1:8090"));
     }
 
     #[test]

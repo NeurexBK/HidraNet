@@ -1,12 +1,12 @@
 // The one-click leak test: every verdict comes from the service or from what
 // the address checks actually answered, and nothing is green by default.
 //
-//   node hidra-browser/test/vpn-leaktest.js
+//   node hidravpn/browser/test/vpn-leaktest.js
 
 'use strict';
 
 const assert = require('assert');
-const { runLeakTest, IPV4_URL, IPV6_URL } = require('../src/main/vpn-leaktest');
+const { runLeakTest, IPV4_URL, IPV6_URL, hostOf, normalizeIp } = require('../src/main/vpn-leaktest');
 
 let passed = 0;
 let failed = 0;
@@ -117,6 +117,67 @@ const by = (r, id) => r.checks.find((c) => c.id === id);
     const r = await runLeakTest(connected(), async (url) => (url === IPV4_URL ? '<html>' : JSON.stringify({ ip: '<b>x</b>' })));
     assert.strictEqual(by(r, 'ipv4').verdict, 'warn');
     assert.strictEqual(by(r, 'ipv6').verdict, 'pass');
+  });
+
+  // ── Endpoints in every form a node can be listed with ──────────────────
+  // Documentation addresses only (RFC 5737, RFC 3849).
+  await check('hostOf reads all four forms: [v6]:port, v6, v4:port and v4', async () => {
+    assert.strictEqual(hostOf('[2001:db8::1]:51820'), '2001:db8::1');
+    assert.strictEqual(hostOf('2001:db8::1'), '2001:db8::1');
+    assert.strictEqual(hostOf('192.0.2.1:51820'), '192.0.2.1');
+    assert.strictEqual(hostOf('192.0.2.1'), '192.0.2.1');
+    assert.strictEqual(hostOf('[2001:db8::1]'), '2001:db8::1');
+    assert.strictEqual(hostOf(' 198.51.100.7:51820 '), '198.51.100.7');
+  });
+
+  await check('IPv6 is put in one canonical form before comparing', async () => {
+    assert.strictEqual(hostOf('[2001:DB8:0:0:0:0:0:1]:51820'), '2001:db8::1');
+    assert.strictEqual(hostOf('2001:0db8:0000::0001'), '2001:db8::1');
+    assert.strictEqual(normalizeIp('2001:DB8::A'), '2001:db8::a');
+    assert.strictEqual(normalizeIp('::ffff:192.0.2.1'), '192.0.2.1', 'an IPv4 address written as IPv6 is that IPv4 address');
+    assert.strictEqual(normalizeIp('not-an-address'), 'not-an-address');
+  });
+
+  const exitAt = (endpoint) => connected({
+    endpoint,
+    hops_detail: [
+      { role: 'entry', node_name: 'n1', endpoint: '198.51.100.10:51820', connected: true, last_handshake_secs: 4 },
+      { role: 'exit', node_name: 'n2', endpoint, connected: true, last_handshake_secs: 5 },
+    ],
+  });
+
+  await check('an exit listed as [v6]:port passes when its address is seen', async () => {
+    const r = await runLeakTest(exitAt('[2001:db8::20]:51820'), answers('2001:db8:0:0::20', new Error('no route')));
+    assert.strictEqual(by(r, 'ipv4').verdict, 'pass', by(r, 'ipv4').detail);
+  });
+
+  await check('an exit listed as a bare v6 address passes when its address is seen', async () => {
+    const r = await runLeakTest(exitAt('2001:db8::20'), answers('2001:DB8::20', new Error('no route')));
+    assert.strictEqual(by(r, 'ipv4').verdict, 'pass', by(r, 'ipv4').detail);
+  });
+
+  await check('an exit listed as v4:port and as bare v4 both pass when its address is seen', async () => {
+    for (const ep of ['192.0.2.20:51820', '192.0.2.20']) {
+      const r = await runLeakTest(exitAt(ep), answers('192.0.2.20', new Error('no route')));
+      assert.strictEqual(by(r, 'ipv4').verdict, 'pass', `${ep}: ${by(r, 'ipv4').detail}`);
+    }
+  });
+
+  await check('an IPv4 exit seen as ::ffff:v4 is the same address', async () => {
+    const r = await runLeakTest(exitAt('192.0.2.20:51820'), answers('::ffff:192.0.2.20', new Error('no route')));
+    assert.strictEqual(by(r, 'ipv4').verdict, 'pass', by(r, 'ipv4').detail);
+  });
+
+  await check('another IPv6 address is still a warning that names both', async () => {
+    const r = await runLeakTest(exitAt('[2001:db8::20]:51820'), answers('2001:db8::21', new Error('no route')));
+    const c = by(r, 'ipv4');
+    assert.strictEqual(c.verdict, 'warn');
+    assert.ok(/2001:db8::21/.test(c.detail) && /2001:db8::20/.test(c.detail), c.detail);
+  });
+
+  await check('a port is never taken for part of the address', async () => {
+    const r = await runLeakTest(exitAt('192.0.2.20:51820'), answers('192.0.2.2', new Error('no route')));
+    assert.strictEqual(by(r, 'ipv4').verdict, 'warn', 'a prefix of the address passed');
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
