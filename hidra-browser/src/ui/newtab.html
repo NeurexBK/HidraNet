@@ -939,7 +939,9 @@
   </div>
 
   <script>
-    const startTime = Date.now();
+    // When the Tor connection came up, from the main process; null while it
+    // is not up. The uptime is the connection's, not this page's.
+    var connectedSince = null;
     var isConnecting = false;
 
     // A relay is shown by fingerprint, never by address, not even a masked
@@ -967,7 +969,8 @@
     }
 
     function updateUptime() {
-      var elapsed = Math.floor((Date.now() - startTime) / 1000);
+      if (!connectedSince) { document.getElementById('stat-uptime').textContent = '—'; return; }
+      var elapsed = Math.max(0, Math.floor((Date.now() - connectedSince) / 1000));
       var h = Math.floor(elapsed / 3600);
       var m = Math.floor((elapsed % 3600) / 60);
       var s = elapsed % 60;
@@ -1048,7 +1051,9 @@
       if (bootstrapTimer) { clearInterval(bootstrapTimer); bootstrapTimer = null; }
     }
 
-    function updateConnectUI(state) {
+    // `detail` is the bootstrap percent while starting, or the reason Tor
+    // stopped when it failed.
+    function updateConnectUI(state, detail) {
       var btn = document.getElementById('connectBtn');
       var btnText = document.getElementById('connectBtnText');
       var title = document.getElementById('connect-title');
@@ -1061,6 +1066,16 @@
         title.textContent = 'Starting Tor…';
         title.style.color = 'var(--warning)';
         desc.textContent = 'Building an anonymous circuit — usually takes 20 to 40 seconds';
+      } else if (state === 'starting') {
+        // Started by the browser itself, not by this page's button: the same
+        // wait, shown the same way, so nobody is told they are disconnected
+        // while Tor is on its way up.
+        btn.className = 'connect-btn loading';
+        btnText.textContent = 'Connecting…';
+        btn.querySelector('svg').innerHTML = '<circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="10" class="spinner"/>';
+        title.textContent = 'Starting Tor — ' + (detail || 0) + '%';
+        title.style.color = 'var(--warning)';
+        desc.textContent = 'Building an anonymous circuit. Nothing leaves this computer until it is ready.';
       } else if (state === 'connected') {
         btn.className = 'connect-btn on';
         btnText.textContent = 'Disconnect';
@@ -1072,9 +1087,18 @@
         btn.className = 'connect-btn off';
         btnText.textContent = 'Connect';
         btn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
-        title.textContent = 'HidraNet disconnected';
-        title.style.color = 'var(--text-primary)';
-        desc.textContent = 'Your browsing is going out through your own IP. Click to connect through the Tor network.';
+        // Disconnected, the kill switch is closed (network-lock.js): pages
+        // do not load at all, rather than load from this computer's address.
+        if (state === 'failed') {
+          title.textContent = 'Tor stopped';
+          title.style.color = 'var(--danger)';
+          desc.textContent = (detail ? 'Why: ' + detail + '. ' : '') +
+            'Nothing leaves this computer until Tor is connected again. Click Connect to try again.';
+        } else {
+          title.textContent = 'HidraNet disconnected';
+          title.style.color = 'var(--text-primary)';
+          desc.textContent = 'Nothing leaves this computer until Tor is connected. Click Connect to start it.';
+        }
       }
     }
 
@@ -1138,6 +1162,7 @@
       var text = document.getElementById('status-text');
       var connected = false;
       var mode = 'disconnected';
+      var tor = null;
 
       try {
         if (window.hidra && window.hidra.proxy) {
@@ -1145,11 +1170,15 @@
           if (status) {
             connected = status.connected;
             mode = status.mode || (connected ? 'local' : 'disconnected');
+            tor = status.tor || null;
+            connectedSince = connected && tor && tor.readyAt ? tor.readyAt : null;
             document.getElementById('stat-relays').textContent = status.relayCount || '—';
             document.getElementById('stat-latency').textContent =
               status.latencyMs ? status.latencyMs + 'ms' : '—';
+            // Only while connected: the address the last connection left
+            // through is not where anything goes now.
             document.getElementById('stat-exit').textContent =
-              (status.tor && status.tor.exitIp) ? status.tor.exitIp : '—';
+              (connected && tor && tor.exitIp) ? tor.exitIp : '—';
 
             if (status.relayChain) {
               var relays = status.relayChain.split(' → ');
@@ -1182,11 +1211,18 @@
         text.textContent = 'Connected — local mode';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
+      } else if (mode === 'connecting') {
+        var pct = tor ? (tor.bootstrapPercent || 0) : 0;
+        dot.className = 'dot connecting';
+        text.textContent = 'Connecting to Tor — ' + pct + '%';
+        text.style.color = 'var(--warning)';
+        if (!isConnecting) updateConnectUI('starting', pct);
       } else {
+        var failedWhy = tor && tor.state === 'failed' ? (tor.lastError || 'Tor stopped') : null;
         dot.className = 'dot disconnected';
-        text.textContent = 'Disconnected';
+        text.textContent = failedWhy ? 'Disconnected — Tor stopped' : 'Disconnected';
         text.style.color = '#ff4466';
-        if (!isConnecting) updateConnectUI('disconnected');
+        if (!isConnecting) updateConnectUI(failedWhy ? 'failed' : 'disconnected', failedWhy);
       }
 
       // Every other badge on this panel describes something the browser does

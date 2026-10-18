@@ -80,8 +80,16 @@ async function applyProxyEverywhere(proxyRules) {
 }
 
 // Shared by the Connect button and the automatic connect at startup, so both
-// paths route traffic and verify the exit the same way.
-async function connectTor() {
+// paths route traffic and verify the exit the same way. Connect pressed while
+// the automatic connect is still bootstrapping joins it rather than running a
+// second one beside it (see TorManager.start).
+let connecting = null;
+function connectTor() {
+  if (!connecting) connecting = connectTorOnce().finally(() => { connecting = null; });
+  return connecting;
+}
+
+async function connectTorOnce() {
   const started = await torManager.start(app.getPath('userData'));
   if (!started.ok) {
     // Stays closed: a Tor that did not start must not let traffic out.
@@ -672,7 +680,25 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true }
 }]);
 
+// One browser at a time. Two copies share the same profile, the same apps
+// port and the same Tor port and data directory, and fight over all three:
+// the second one's Tor could not start, its apps read "Offline", and each
+// copy's panel said the other's connection was down. Opening HidraNet again
+// now brings the window that is already open to the front.
+const firstInstance = app.requestSingleInstanceLock();
+if (!firstInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 app.whenReady().then(async () => {
+  if (!firstInstance) return;
   applyAppIcon({ app, nativeImage, shell });
   loadPrefs();
   vault = new VaultStore(path.join(app.getPath('userData'), 'vault'), safeStorage);

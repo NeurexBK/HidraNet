@@ -41,7 +41,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault ipc-senders; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault ipc-senders tor-connect; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
