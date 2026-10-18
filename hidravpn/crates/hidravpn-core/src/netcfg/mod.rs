@@ -234,29 +234,6 @@ pub fn route_host_via(host: IpAddr, interface: &str) -> Result<()> {
     }
 }
 
-/// Gives a tunnel interface its IPv6 address. On Linux it is added here,
-/// without duplicate address detection: on a tunnel nobody else has the
-/// address, and while the check ran (about a second) the address could not
-/// be used and IPv6 would leave from the machine's own one, which the kill
-/// switch drops. On Windows the interface got it when it was made. The
-/// address goes away with the interface.
-pub fn assign_ipv6(interface: &str, ip: std::net::Ipv6Addr, prefix: u8) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let a = format!("{ip}/{prefix}");
-        run(
-            "ip",
-            &["-6", "address", "replace", &a, "dev", interface, "nodad"],
-        )
-        .map(|_| ())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (interface, ip, prefix);
-        Ok(())
-    }
-}
-
 /// Whether a tunnel interface holds the address it was given. Windows will
 /// not put one address on two interfaces, and gives the second a link-local
 /// one instead (169.254.x.x), silently: a circuit through it carries

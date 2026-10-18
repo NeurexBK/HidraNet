@@ -449,22 +449,20 @@ impl Circuit {
             None => outer_name,
         };
         let (ip, prefix) = spec.exit.client_ip()?;
-        // The exit's IPv6 address for this client, when it carries IPv6. On
-        // Windows the interface is made with it; on Linux it is added below.
-        let ip6 = spec.exit.client_ip6()?;
         let tun = hidravpn_tun::open(&TunConfig {
             name: inner_name.clone(),
             ipv4: (ip, prefix),
-            ipv6: if cfg!(windows) { ip6 } else { None },
+            ipv6: None,
             mtu: spec.inner_mtu(),
         })
         .context("the tunnel interface")?;
         let inner_ifname = hidravpn_tun::name(&tun).unwrap_or(inner_name);
         netcfg::check_address(&inner_ifname, ip)?;
-        // A machine with IPv6 switched off takes no address: its IPv6 is then
+        // The exit's IPv6 address for this client, when it carries IPv6. A
+        // machine with IPv6 switched off takes none: its IPv6 is then
         // blocked, as with an exit that carries none.
-        let tunnel_ipv6 = match ip6 {
-            Some((a, p)) => netcfg::assign_ipv6(&inner_ifname, a, p).ok().map(|()| a),
+        let tunnel_ipv6 = match spec.exit.client_ip6()? {
+            Some((a, p)) => hidravpn_tun::add_ipv6(&tun, a, p).ok().map(|()| a),
             None => None,
         };
         steps.ipv6 = tunnel_ipv6.is_some();

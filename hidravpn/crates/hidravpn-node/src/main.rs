@@ -525,25 +525,38 @@ mod node {
             None => None,
         };
         let forwarding_was_on = crate::nat::enable_forwarding()?;
-        let dev = crate::wg::bring_up(&cfg, &net, net6).await?;
+        let mut dev = crate::wg::bring_up(&cfg, &net, net6).await?;
         info!(
             "tunnel interface {} up ({} WireGuard), listening on UDP {}",
             cfg.interface,
             dev.backend_name(),
             cfg.listen_port
         );
-        let forwarding6 = match dev.ipv6() {
+        let mut forwarding6 = match dev.ipv6() {
             Some(_) => Some(crate::nat::enable_forwarding6(&out_if)?),
             None => None,
         };
-        let cidr6 = dev.ipv6().map(|n| n.cidr());
-        crate::nat::apply(
+        let mut cidr6 = dev.ipv6().map(|n| n.cidr());
+        if let Err(e) = crate::nat::apply(
             &cfg.interface,
             &out_if,
             &net.cidr,
             &cfg.role,
             cidr6.as_deref(),
-        )?;
+        ) {
+            // A kernel without IPv6 translation still runs the node, for
+            // IPv4: no IPv6 address is handed out, and clients block theirs.
+            if cidr6.is_none() {
+                return Err(e);
+            }
+            warn!("IPv6 translation could not be set up ({e:#}); clients get IPv4 only");
+            dev.drop_ipv6();
+            if let Some(f) = forwarding6.take() {
+                let _ = crate::nat::restore_forwarding6(&f);
+            }
+            cidr6 = None;
+            crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &cfg.role, None)?;
+        }
         info!(
             "forwarding and NAT set through {out_if} (role: {}; IPv6 for clients: {})",
             cfg.role,

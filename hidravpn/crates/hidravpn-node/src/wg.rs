@@ -156,6 +156,25 @@ impl WgDevice {
         self.v6
     }
 
+    /// Stops carrying IPv6: the node's address goes from the interface, and
+    /// peers admitted from now on are allowed their IPv4 address only.
+    pub fn drop_ipv6(&mut self) {
+        if let Some(n) = self.v6.take() {
+            let addr6 = format!("{}/{}", n.node_ip, n.prefix);
+            let _ = run(
+                "ip",
+                &[
+                    "-6",
+                    "address",
+                    "del",
+                    &addr6,
+                    "dev",
+                    &self.iface.to_string(),
+                ],
+            );
+        }
+    }
+
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
             Backend::Kernel => "kernel",
