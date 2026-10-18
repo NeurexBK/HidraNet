@@ -513,6 +513,7 @@ impl Circuit {
                 allow_lan: opts.allow_lan,
                 extra_interface,
                 outer_peer,
+                tunnel_ipv6: None,
             })
             .context("could not arm the kill switch; connection refused")?;
             steps.kill_switch = true;

@@ -36,4 +36,10 @@ jobs:
       - name: the IPv6 suite
         env:
           HIDRAVPN_REQUIRE_IPV6: "1"
-        run: sudo -E env "PATH=$PATH" bash hidravpn/scripts/test-ipv6-netns.sh
+        run: |
+          set -e
+          for t in test-ipv6-netns test-anonymity-netns; do
+            echo "::group::$t"
+            sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
+            echo "::endgroup::"
+          done
