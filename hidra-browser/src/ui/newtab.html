@@ -924,14 +924,14 @@
 
     <footer class="footer">
       <div class="footer-left">
-        <span class="version">HidraNet Browser v0.1.0</span>
+        <span class="version" id="app-version">HidraNet Browser</span>
         <span class="separator">&middot;</span>
         <span class="crypto">Noise XX · X25519 + ML-KEM-1024 · ChaCha20-Poly1305 · BLAKE3</span>
       </div>
       <div class="footer-right">
         <span class="footer-indicator">
           <span class="footer-dot"></span>
-          All traffic routed through HidraNet
+          Nothing leaves this computer without Tor
         </span>
       </div>
     </footer>
@@ -990,6 +990,12 @@
 
     async function detectApps() {
       var status = await appsStatus();
+      // The exact build, so an older copy can be told apart at a glance.
+      var about = status.about;
+      if (about && typeof about.version === 'string') {
+        document.getElementById('app-version').textContent = 'HidraNet Browser ' + about.version +
+          ' · build ' + about.build + (about.date ? ' · ' + about.date : '');
+      }
       var chatOk = status.chat;
       var chatBadge = document.getElementById('chat-badge');
       if (chatOk) {

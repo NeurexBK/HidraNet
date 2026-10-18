@@ -31,6 +31,21 @@ function isTrustedRequest(req) {
   return true;
 }
 
+// Which build this is, for the footer of the new tab page: someone testing a
+// package has to be able to tell it from an older copy at a glance. The
+// release script writes build.json into each package; a checkout has none.
+function buildInfo() {
+  let stamp = {};
+  try {
+    stamp = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'build.json'), 'utf8'));
+  } catch (e) { /* a checkout */ }
+  return {
+    version: app.getVersion(),
+    build: typeof stamp.build === 'string' && /^[\w.+-]{1,40}$/.test(stamp.build) ? stamp.build : 'dev',
+    date: typeof stamp.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(stamp.date) ? stamp.date : null,
+  };
+}
+
 function pingLocalPort(port, urlPath, timeoutMs) {
   return new Promise((resolve) => {
     const req = http.get(
@@ -965,7 +980,7 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error };
+    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo() };
   });
 
   ipcMain.handle('prefs:get', (event) => {

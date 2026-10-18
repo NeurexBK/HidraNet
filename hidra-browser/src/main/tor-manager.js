@@ -172,7 +172,7 @@ class TorManager {
     // fifteen seconds. Wait that out instead of failing the connection.
     if (!(await this._waitPortFree(20000))) {
       this.state = 'failed';
-      this.lastError = `port ${this.socksPort} is already in use`;
+      this.lastError = `port ${this.socksPort} is already in use — another copy of HidraNet, or another Tor, is running; close it and press Connect`;
       return { ok: false, error: this.lastError };
     }
 
