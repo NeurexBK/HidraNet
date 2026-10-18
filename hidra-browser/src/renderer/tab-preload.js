@@ -45,31 +45,6 @@ const uiPage = (() => {
   }
 })();
 
-// HidraVPN: the browser drives the service installed on this machine
-// (src/main/vpn-manager.js). Connecting routes the whole machine and
-// uninstalling removes the service, so the bridge goes to the VPN page only;
-// the new tab page gets the status for its badge and nothing else. The main
-// process checks the caller again before it does anything.
-const vpnBridge = uiPage === 'hidravpn.html' ? {
-  status: () => ipcRenderer.invoke('vpn:status'),
-  connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
-  leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
-  checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
-  install: () => ipcRenderer.invoke('vpn:install'),
-  uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
-  disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
-  newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),
-  nodes: () => ipcRenderer.invoke('vpn:nodes'),
-  importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
-  fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
-  getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
-  setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
-  refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
-  verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
-} : uiPage === 'newtab.html' ? {
-  status: () => ipcRenderer.invoke('vpn:status'),
-} : null;
-
 if (isInternalPage) {
   contextBridge.exposeInMainWorld('hidra', {
     proxy: {
@@ -94,7 +69,6 @@ if (isInternalPage) {
     vault: {
       status: () => ipcRenderer.invoke('vault:status'),
     },
-    ...(vpnBridge ? { vpn: vpnBridge } : {}),
   });
 }
 

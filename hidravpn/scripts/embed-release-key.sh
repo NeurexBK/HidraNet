@@ -7,7 +7,7 @@
 #
 # It edits RELEASE_PUBLIC_KEY_B64 and LIST_PUBLIC_KEY_B64 in
 # hidravpn/crates/hidravpn-core/src/release.rs and RELEASE_PUBLIC_KEY in
-# hidra-browser/src/main/release-verify.js, then prints what to run to check.
+# hidravpn/browser/src/main/release-verify.js, then prints what to run to check.
 # The secret keys stay where they were made; this script never sees them.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -30,7 +30,7 @@ check() {
   [ "$n" = 32 ] || { echo "$2 is not a 32-byte base64 key: '$k'" >&2; exit 2; }
 }
 RS="$ROOT/hidravpn/crates/hidravpn-core/src/release.rs"
-JS="$ROOT/hidra-browser/src/main/release-verify.js"
+JS="$ROOT/hidravpn/browser/src/main/release-verify.js"
 [ -f "$RS" ] && [ -f "$JS" ] || { echo "cannot find $RS or $JS (use --root)" >&2; exit 1; }
 if [ -n "$RELEASE" ]; then
   check "$RELEASE" "--release"
@@ -48,7 +48,7 @@ fi
 cat <<EOT
 Now check and rebuild:
   cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core     # the key must parse
-  node hidra-browser/test/release-verify.js                            # the two constants must match
+  node hidravpn/browser/test/release-verify.js                         # the two constants must match
   cargo build --release --manifest-path hidravpn/Cargo.toml
 Then commit release.rs and release-verify.js. The secret keys never enter the repository.
 EOT

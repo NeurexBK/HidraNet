@@ -173,6 +173,10 @@ function verify(file) {
   check(donate.indexOf(OLD_BTC) === -1, 'donate page no longer carries the retired Bitcoin address');
   check(by.has(pfx + 'main/network-lock.js'), 'network kill switch is in the package');
   check(by.has(pfx + 'ui/vendor/mqtt.min.js'), 'mqtt is vendored (no CDN at runtime)');
+  // HidraVPN is not released; its half of the browser is parked in
+  // hidravpn/browser/ and must not ride along in a package.
+  const vpn = es.filter(e => e.filename.startsWith(pfx) && /vpn|release-verify/i.test(e.filename.slice(pfx.length)));
+  check(vpn.length === 0, 'HidraVPN is not in the package' + (vpn.length ? ' (' + vpn.map(e => e.filename).join(', ') + ')' : ''));
 }
 
 (async function main() {

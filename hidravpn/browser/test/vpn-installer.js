@@ -3,7 +3,7 @@
 // thing executed with administrator rights is the service from that folder,
 // with arguments that cannot be turned into a command.
 //
-//   node hidra-browser/test/vpn-installer.js
+//   node hidravpn/browser/test/vpn-installer.js
 
 'use strict';
 

@@ -102,7 +102,7 @@ if command -v node >/dev/null && [ -x "$BIN/hidravpn-sign" ]; then
   PUB=$("$BIN/hidravpn-sign" keygen --out "$W/release.key" 2>/dev/null)
   "$HERE/make-release-manifest.sh" --version 9.9.9 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" > "$W/rel/manifest.json"
   "$BIN/hidravpn-sign" sign --key "$W/release.key" "$W/rel/manifest.json" >/dev/null 2>&1
-  OUT=$(cd "$HERE/../../hidra-browser" && HV_REL="$W/rel" HV_PUB="$PUB" HV_USER="$TESTUSER" node -e '
+  OUT=$(cd "$HERE/../browser" && HV_REL="$W/rel" HV_PUB="$PUB" HV_USER="$TESTUSER" node -e '
     const fs = require("fs"); const path = require("path"); const { execFile } = require("child_process");
     const { VpnInstaller } = require("./src/main/vpn-installer");
     const rel = process.env.HV_REL;
