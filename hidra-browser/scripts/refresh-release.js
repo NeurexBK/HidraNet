@@ -23,7 +23,7 @@ const path   = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { inflateRawSync } = require('zlib');
-const { readZip } = require('./lib/zip');
+const { readZip, validDosDate } = require('./lib/zip');
 const { download } = require('./lib/net');
 const { patchZip } = require('./patch-zip');
 
@@ -54,6 +54,27 @@ const ENGINE_IN_ZIP = 'resources/bin/hidra-node.exe';
 // the browser opens with nothing connecting. See vendor/linux-x64/README.md.
 const LIBEVENT_LOCAL  = path.join(ROOT, 'vendor', 'linux-x64', 'libevent-2.1.so.7');
 const LIBEVENT_IN_ZIP = 'resources/bin/tor/libevent-2.1.so.7';
+
+// HidraNet's icon for the macOS bundle, from brand/logo/ at the top of the
+// repository (made from the master logo by the same script as every other
+// icon).
+const MAC_ICON_LOCAL  = path.join(ROOT, '..', 'brand', 'logo', 'hidranet.icns');
+const MAC_ICON_IN_ZIP = 'HidraNet.app/Contents/Resources/electron.icns';
+
+// Which build a package is: the commit it was made from and the day. The new
+// tab page shows it in its footer (main.js, buildInfo), so whoever tests a
+// package can tell it from an older copy still on their machine. A tree with
+// uncommitted changes says so: "-dirty" is not something to publish.
+const BUILD_JSON = path.join(DIST, 'build.json');
+const buildInZip = (name) => (/macOS/.test(name) ? 'HidraNet.app/Contents/Resources/' : 'resources/') + 'app/build.json';
+function buildStamp() {
+  let build = 'unknown';
+  try {
+    build = execFileSync('git', ['describe', '--always', '--dirty', '--abbrev=7', '--exclude', '*'],
+      { cwd: ROOT, encoding: 'utf8' }).trim();
+  } catch (e) { /* not a checkout */ }
+  return { build, date: new Date().toISOString().slice(0, 10) };
+}
 
 /**
  * The engine that goes in the Windows package.
@@ -117,6 +138,10 @@ function verify(file) {
 
   console.log('\n  ' + name);
   check(es.every(e => e.filename.indexOf('\\') === -1), 'every path uses forward slashes');
+  // Windows' own zip support refuses an archive with an impossible date
+  // (1980-00-00, which a zeroed timestamp decodes to): the package would not
+  // open on double-click. See lib/zip.js.
+  check(es.every(e => validDosDate(e.dosDate)), 'every entry has a real date (Windows opens the zip)');
   check(by.has(tor), 'Tor is in the package (' + (by.has(tor) ? by.get(tor).uncompSz : 0) + ' bytes)');
   if (!win) check(mode(tor) === '755', 'Tor is executable (mode ' + mode(tor) + ')');
   check(by.has(res + '/bin/tor/geoip'), 'Tor geoip data present');
@@ -163,6 +188,14 @@ function verify(file) {
   check(donate.indexOf(OLD_BTC) === -1, 'donate page no longer carries the retired Bitcoin address');
   check(by.has(pfx + 'main/network-lock.js'), 'network kill switch is in the package');
   check(by.has(pfx + 'ui/vendor/mqtt.min.js'), 'mqtt is vendored (no CDN at runtime)');
+  const b = by.get(buildInZip(name));
+  check(!!b && contents(b).toString() === fs.readFileSync(BUILD_JSON, 'utf8'),
+        'says which build it is (' + (b ? JSON.parse(contents(b).toString()).build : 'none') + ')');
+
+  // HidraVPN is not released; its half of the browser is parked in
+  // hidravpn/browser/ and must not ride along in a package.
+  const vpn = es.filter(e => e.filename.startsWith(pfx) && /vpn|release-verify/i.test(e.filename.slice(pfx.length)));
+  check(vpn.length === 0, 'HidraVPN is not in the package' + (vpn.length ? ' (' + vpn.map(e => e.filename).join(', ') + ')' : ''));
 }
 
 (async function main() {
@@ -187,10 +220,19 @@ function verify(file) {
   console.log('');
   buildEngine();
 
+  const stamp = buildStamp();
+  fs.writeFileSync(BUILD_JSON, JSON.stringify(stamp) + '\n');
+  console.log('\n  build ' + stamp.build + ' · ' + stamp.date);
+
   console.log('\n  patching\n');
   for (const n of NAMES) {
     const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
-    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL } : {};
+    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
+      // The bundle's icon: Electron's own until now. The binary is not
+      // touched, only the picture the Dock and the Finder show for it.
+      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
+      : {};
+    extras[buildInZip(n)] = BUILD_JSON;
     patchZip(path.join(inDir, n), path.join(outDir, n), { binaries, extras });
   }
 

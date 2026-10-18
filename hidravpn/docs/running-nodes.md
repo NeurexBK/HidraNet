@@ -160,9 +160,10 @@ hidravpn/scripts/make-node-list.sh --key list.key --out nodes.json \
 `--sequence` goes up every time (clients refuse an older list); `--expires`
 is when clients stop trusting it (90 days by default); `--removed <key>`
 withdraws a node from every client that imports the list. Publish
-`nodes.json` and `nodes.json.sig` where the browser looks (`VPN_LIST_URL` in
-`hidra-browser/src/main/main.js`, `https://hidranet.org/vpn/nodes.json`), and
-anywhere else you like.
+`nodes.json` and `nodes.json.sig` where the browser looks
+(`https://hidranet.org/vpn/nodes.json`, `VPN_LIST_URL` in the browser's VPN
+wiring, parked until HidraVPN ships: `browser/README.md`), and anywhere else
+you like.
 
 ## What a client does with it
 

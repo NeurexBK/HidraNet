@@ -157,7 +157,7 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   cannot switch it off. On Windows the caller is "elevated or not", so the
   owner is the elevated prompt or everyone interactive.
 - **Two keys** (`hidravpn-core/src/release.rs`,
-  `hidra-browser/src/main/release-verify.js`). The **release key** says "this
+  `hidravpn/browser/src/main/release-verify.js`). The **release key** says "this
   file came from HidraVPN's maintainers"; the **list key** says "this node
   list did". Both are Ed25519. The maintainers made them offline with
   `hidravpn-sign keygen` (the secret halves never entered the repository or
@@ -221,11 +221,18 @@ page that were still missing.
   `.sig`, checks the signature against the release key it carries **before
   parsing a byte of it**, downloads this platform's files into a fresh folder
   only this account can read, checks every file's size and SHA-256 against the
-  manifest, and only then asks the system for administrator rights — UAC on
-  Windows, `pkexec` on Linux — to run `hidravpn-service install --client
-  hidravpn [--user <this account>]` from that folder (`src/main/vpn-installer.js`).
-  The paths travel to the elevated process as data, never inside a command
-  string. A refused prompt is reported as cancelled; nothing is half-installed.
+  manifest, and only then asks the system for administrator rights, once —
+  UAC on Windows, `pkexec` on Linux. With those rights a fixed script copies
+  the files into a folder only an administrator can write (`/var/lib` on
+  Linux, Program Files on Windows), checks each copy's SHA-256 against the
+  signed manifest again, and only then runs `hidravpn-service install
+  --client hidravpn [--user <this account>]` from that copy
+  (`src/main/vpn-installer.js`). The second check is what stops another
+  program running as this user from swapping a file in the download folder
+  after the first one: whatever was swapped in would otherwise run as root or
+  Administrator. Names, paths and hashes travel to the elevated script as
+  data, never inside it. A refused prompt is reported as cancelled; nothing is
+  half-installed.
 - **Update and remove, from the same page.** "Check for an update" reads the
   signed manifest and compares its version with the one the service now
   reports in `status` (`version`); "Install the update" runs the same path, and
@@ -270,8 +277,8 @@ Checked by: `scripts/test-client-installer.sh` (17 checks, run for real as
 root with systemd stood in for: install, update, refusal, uninstall, purge,
 and the whole chain — a manifest made by the script, signed by
 `hidravpn-sign`, accepted by the browser's installer, which installs the
-download), `hidra-browser/test/vpn-installer.js` (16),
-`hidra-browser/test/vpn-leaktest.js` (8), `hidra-browser/test/vpn-page.js`
+download), `hidravpn/browser/test/vpn-installer.js` (16),
+`hidravpn/browser/test/vpn-leaktest.js` (8), `hidravpn/browser/test/vpn-page.js`
 (50) and a unit test for the country. On Windows, `scripts/windows/phase4-test.ps1`
 is the checklist for the real PC: install and update over the pipe the
 browser uses, the data folder's rights, connect with and without the local
@@ -371,7 +378,7 @@ operator. It proves, in 36 checks:
 - no node or service log names the client's address, a lease or a key.
 
 `test-browser-netns.sh` runs the three namespaces of `test-service-netns.sh`
-and drives everything through `hidra-browser/src/main/vpn-manager.js` — the
+and drives everything through `hidravpn/browser/src/main/vpn-manager.js` — the
 exact module the page uses — as an unprivileged user in the `hidravpn` group.
 It proves, in 28 checks:
 
@@ -399,7 +406,7 @@ the three throughout, carrying no client address, readable by root only;
 then an admission on one of them turns it into an exit, and importing the
 list again does not demote it.
 
-In the browser (`hidra-browser/`), `node test/vpn-manager.js` drives the
+In `hidravpn/browser/`, `node test/vpn-manager.js` drives the
 module against a stand-in service: every command, and every way the service
 can be absent — not installed, not running, not this user's to open, a stale
 token, an answer that is not an answer, no answer, a flood — comes back as a

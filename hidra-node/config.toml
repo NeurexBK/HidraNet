@@ -4,6 +4,11 @@ name = "hidra-node-01"
 [network]
 listen_addr = "0.0.0.0"
 listen_port = 9150
+# This relay connects only to public addresses for others: never to its own
+# loopback, its LAN or a cloud metadata service. Turn these on only for a
+# test network whose relays share one machine or one LAN.
+# allow_private_hops = false
+# allow_private_targets = false
 
 [logging]
 level = "info"

@@ -27,7 +27,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraReview — business reviews</title>
+<link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidrachat-crypto.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#06060b;--card:#10101c;--card2:#14142a;--line:#1a1a2e;--line2:#22223a;
@@ -586,7 +588,7 @@ function normHidra(a) {
 
 /** Where the browser serves a .hidra site from. */
 function hidraUrl(addr) {
-  return 'http://127.0.0.1:8090/site?addr=' + encodeURIComponent(addr);
+  return 'http://site.localhost:8090/?addr=' + encodeURIComponent(addr);
 }
 
 /** Enough of an address to recognise, without filling the card with it. */
@@ -609,7 +611,7 @@ var PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_cu
 var client = null, brokerIx = 0;
 var state = { biz: {}, revs: {}, pics: {}, replies: {}, sort: 'best', rsort: 'newest',
   open: null, stars: 0, draft: [], paidSats: null, btcPrice: null,
-  ownerSlug: null, ownerSecret: null, ownerOpen: false, editSlug: null,
+  ownerSlug: null, ownerSecret: null, ownerIdentity: null, ownerOpen: false, editSlug: null,
   kind: 'site' };
 
 function rid(n) {
@@ -617,7 +619,106 @@ function rid(n) {
   crypto.getRandomValues(a);
   return Array.from(a).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
 }
-function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+// Safe in text and inside a quoted attribute alike.
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ───────── what comes off the relay ─────────
+//
+// Every listing, photo, review and reply is published by whoever wants to,
+// under whatever topic they choose. Nothing is shown, stored or used as a key
+// until it is the shape this page itself writes: a slug or an id is a plain
+// token (it ends up in attributes, selectors and object keys — "__proto__"
+// included), a photo is base64 image data and nothing else, and every field
+// is the type the page writes, so one malformed listing cannot stop the
+// directory rendering for everyone.
+var SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+var PIC_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/]+={0,2}$/;
+var PIC_MAX = 2 * 1024 * 1024;
+function str(v) { return typeof v === 'string' ? v : ''; }
+function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
+function cleanBiz(o) {
+  if (!o || typeof o !== 'object') return null;
+  var b = {};
+  ['name', 'mail', 'desc', 'city', 'addr', 'phone', 'hours', 'about', 'menu'].forEach(function (k) { b[k] = str(o[k]); });
+  b.kind = (o.kind === 'site' || o.kind === 'place') ? o.kind : '';
+  b.hidra = normHidra(str(o.hidra));
+  b.site = safeUrl(str(o.site));
+  b.cat = normType(str(o.cat));
+  b.sats = (Number.isInteger(o.sats) && o.sats > 0) ? o.sats : 0;
+  b.ownerHash = /^[0-9a-f]{64}$/.test(str(o.ownerHash)) ? o.ownerHash : '';
+  b.at = num(o.at);
+  b.opk = str(o.opk).slice(0, 200);
+  b.sig = str(o.sig).slice(0, 200);
+  return b;
+}
+function cleanReview(o) {
+  if (!o || typeof o !== 'object') return null;
+  return { stars: Math.max(1, Math.min(5, num(o.stars) | 0)), text: str(o.text), name: str(o.name),
+           loc: str(o.loc), at: num(o.at) };
+}
+function cleanReply(o) {
+  if (!o || typeof o !== 'object') return null;
+  return { text: str(o.text), at: num(o.at), sig: str(o.sig).slice(0, 200) };
+}
+
+// ───────── who owns a listing ─────────
+//
+// A listing, its photos and the owner's replies are signed by the owner's
+// key. The key is made from the owner key the owner was given at
+// registration (scrypt, hidrachat-crypto.js), so nothing new has to be kept.
+// This page remembers the first key it saw for each listing; a later listing
+// under the same slug with another key, an unsigned one, or an empty payload
+// that would wipe it, is ignored, and the listing is marked as disputed.
+// Listings from before signing carry no key: they are shown as before, their
+// replies marked unverified, until the owner opens the panel once, which
+// signs and republishes them.
+var OWNER_NAME = 'hreview-owner';
+function ownerIdentity(slug, secret) { return hidraRoom.deriveIdentity(OWNER_NAME, slug + ':' + secret); }
+var LISTING_KEYS = ['name', 'kind', 'hidra', 'sats', 'mail', 'ownerHash', 'cat', 'desc', 'city', 'addr', 'phone', 'site', 'hours', 'about', 'menu', 'at'];
+function listingFields(slug, b) { return ['hreview-listing-v2', slug].concat(LISTING_KEYS.map(function (k) { return b[k]; })); }
+function replyFields(slug, id, r) { return ['hreview-reply-v2', slug, id, r.text, r.at]; }
+function photoFields(slug, pid, d) { return ['hreview-photo-v2', slug, pid, d]; }
+var knownOwners = {};
+try { knownOwners = JSON.parse(localStorage.getItem('hreview-owners') || '{}') || {}; } catch (e) { knownOwners = {}; }
+function rememberOwner(slug, opk) {
+  if (knownOwners[slug]) return;
+  knownOwners[slug] = opk;
+  try { localStorage.setItem('hreview-owners', JSON.stringify(knownOwners)); } catch (e) {}
+}
+var disputed = {};
+// Photos and replies that arrived before their listing said whose it is.
+var pending = { pics: {}, replies: {} };
+function hold(kind, slug, id, item) {
+  if (!pending[kind][slug]) pending[kind][slug] = {};
+  if (Object.keys(pending[kind][slug]).length < 64) pending[kind][slug][id] = item;
+}
+// Once a signed listing is known: what was held is checked against its key,
+// and anything unsigned shown for it in the meantime goes.
+async function settle(slug, opk) {
+  var pp = pending.pics[slug] || {}, pr = pending.replies[slug] || {};
+  delete pending.pics[slug]; delete pending.replies[slug];
+  if (state.pics[slug]) for (var k in state.pics[slug]) if (!state.pics[slug][k].sig) delete state.pics[slug][k];
+  for (var rk in state.replies) if (state.replies[rk]._slug === slug && !state.replies[rk].verified) delete state.replies[rk];
+  for (var pid in pp) {
+    var it = pp[pid];
+    if (it.sig && await hidraRoom.verifyFields(opk, photoFields(slug, pid, it.d), it.sig)) {
+      if (!state.pics[slug]) state.pics[slug] = {};
+      state.pics[slug][pid] = { d: it.d, sig: it.sig };
+    }
+  }
+  for (var id in pr) {
+    var r = pr[id];
+    if (r.sig && await hidraRoom.verifyFields(opk, replyFields(slug, id, r), r.sig)) { r.verified = true; state.replies[id] = r; }
+  }
+}
+// Signatures are checked one message at a time, in arrival order, so a later
+// message never overtakes an earlier one for the same slug.
+var inbox = Promise.resolve();
+function okPic(p) { return typeof p === 'string' && p.length <= PIC_MAX && PIC_RE.test(p); }
 function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
 function when(t) { try { return new Date(t).toLocaleDateString(); } catch (e) { return ''; } }
 function toast(t) {
@@ -731,15 +832,19 @@ function connect() {
   client.on('message', onMessage);
 }
 
-var pending = false;
+var drawPending = false;
 function schedule() {
-  if (pending) return;
-  pending = true;
-  setTimeout(function () { pending = false; render(); }, 120);
+  if (drawPending) return;
+  drawPending = true;
+  setTimeout(function () { drawPending = false; render(); }, 120);
 }
 
 function onMessage(topic, payload) {
   var s = payload.toString();
+  inbox = inbox.then(function () { return handle(topic, s); }).catch(function () {});
+}
+
+async function handle(topic, s) {
   // Mail directory answering a request to notify the owner.
   if (topic.indexOf('hmaildir/') === 0) {
     var cb = mailResolvers[topic];
@@ -749,28 +854,93 @@ function onMessage(topic, payload) {
   // Owner replying to a review.
   if (topic.indexOf('hreview/reply/') === 0) {
     var rp = topic.split('/');
-    if (!s) delete state.replies[rp[3]]; else { try { state.replies[rp[3]] = JSON.parse(s); } catch (e) {} }
+    if (rp.length !== 4 || !SLUG_RE.test(rp[2]) || !ID_RE.test(rp[3])) return;
+    var owner = knownOwners[rp[2]];
+    if (!s) { if (!owner) delete state.replies[rp[3]]; schedule(); return; }
+    var rr = null;
+    try { rr = cleanReply(JSON.parse(s)); } catch (e) {}
+    if (!rr) return;
+    rr._slug = rp[2];
+    if (owner) {
+      // Only the listing's key speaks for the business.
+      if (!rr.sig || !(await hidraRoom.verifyFields(owner, replyFields(rp[2], rp[3], rr), rr.sig))) return;
+      rr.verified = true;
+    } else {
+      hold('replies', rp[2], rp[3], rr);
+      if (rr.sig) return;          // signed: shown once its listing's key is known
+    }
+    state.replies[rp[3]] = rr;
     schedule(); return;
   }
   try {
     if (topic.indexOf('hreview/b/') === 0) {
       var slug = topic.slice(10);
-      if (!s) delete state.biz[slug];
-      else { var rec = JSON.parse(s); rec.cat = normType(rec.cat); state.biz[slug] = rec; }
+      if (!SLUG_RE.test(slug)) return;
+      var known = knownOwners[slug];
+      if (!s) {
+        // Anyone can send an empty payload. It removes only a listing with
+        // no key behind it; a signed one stays.
+        if (!known) delete state.biz[slug]; else disputed[slug] = true;
+        schedule(); return;
+      }
+      var rec = cleanBiz(JSON.parse(s));
+      if (!rec) return;
+      if (rec.opk || rec.sig) {
+        if (!(await hidraRoom.verifyFields(rec.opk, listingFields(slug, rec), rec.sig))) return;
+        if (known && known !== rec.opk) { disputed[slug] = true; schedule(); return; }
+        rememberOwner(slug, rec.opk);
+        rec.signed = true;
+        await settle(slug, rec.opk);
+      } else if (known) {
+        // An unsigned listing over a signed one: someone trying to take it.
+        disputed[slug] = true; schedule(); return;
+      }
+      state.biz[slug] = rec;
       schedule(); return;
     }
     if (topic.indexOf('hreview/r/') === 0) {
       var p = topic.split('/'), id = p[3];
-      if (!s) delete state.revs[id]; else { var r = JSON.parse(s); r._slug = p[2]; state.revs[id] = r; }
+      if (p.length !== 4 || !SLUG_RE.test(p[2]) || !ID_RE.test(id)) return;
+      if (!s) delete state.revs[id];
+      else { var r = cleanReview(JSON.parse(s)); if (r) { r._slug = p[2]; state.revs[id] = r; } }
       schedule(); return;
     }
     if (topic.indexOf('hreview/p/') === 0) {
       var q = topic.split('/'), sl = q[2], pid = q[3];
+      if (q.length !== 4 || !SLUG_RE.test(sl) || !ID_RE.test(pid)) return;
+      var powner = knownOwners[sl];
+      if (!s) { if (!powner && state.pics[sl]) delete state.pics[sl][pid]; schedule(); return; }
+      var d = s, psig = '';
+      if (s.charAt(0) === '{') {
+        // A signed photo: { d, sig } by the listing's key.
+        var po = null;
+        try { po = JSON.parse(s); } catch (e) {}
+        if (!po || typeof po.d !== 'string' || typeof po.sig !== 'string') return;
+        d = po.d; psig = po.sig.slice(0, 200);
+      }
+      if (!okPic(d)) return;
+      if (powner) {
+        if (!psig || !(await hidraRoom.verifyFields(powner, photoFields(sl, pid, d), psig))) return;
+      } else {
+        hold('pics', sl, pid, { d: d, sig: psig });
+        if (psig) return;           // signed: shown once its listing's key is known
+      }
       if (!state.pics[sl]) state.pics[sl] = {};
-      if (!s) delete state.pics[sl][pid]; else state.pics[sl][pid] = s;
+      state.pics[sl][pid] = { d: d, sig: psig };
       schedule(); return;
     }
   } catch (e) { /* malformed message from another client: ignore */ }
+}
+
+/** A listing as it goes on the relay: its fields, the owner's key, signed. */
+async function signedListing(slug, rec, identity) {
+  rec.opk = identity.pub;
+  rec.sig = await hidraRoom.signFields(identity, listingFields(slug, rec));
+  return rec;
+}
+async function publishPhoto(slug, pid, d, identity) {
+  var sig = await hidraRoom.signFields(identity, photoFields(slug, pid, d));
+  return publish('hreview/p/' + slug + '/' + pid, { d: d, sig: sig });
 }
 
 function publish(topic, value) {
@@ -946,7 +1116,7 @@ function reviewsOf(slug) {
 }
 function photosOf(slug) {
   var m = state.pics[slug] || {}, out = [];
-  for (var k in m) out.push(m[k]);
+  for (var k in m) out.push(m[k].d);
   return out;
 }
 function statsOf(slug) {
@@ -1015,7 +1185,7 @@ function render() {
   $('grid').innerHTML = list.map(function (it) {
     var isSite = kindOf(it.b) === 'site';
     var cover = it.pics.length
-      ? '<img src="' + it.pics[0] + '" alt="">'
+      ? '<img src="' + esc(it.pics[0]) + '" alt="">'
       : '<div class="noimg">' + esc((it.b.name || '?').charAt(0).toUpperCase()) + '</div>';
     var tag = it.b.cat ? '<span class="tag">' + esc(it.b.cat) + '</span>' : '';
     var rating = it.st.count
@@ -1069,7 +1239,7 @@ function renderBiz() {
     : '<span class="cnt">no reviews yet</span>';
 
   $('b-hero').innerHTML =
-    (pics.length ? '<img src="' + pics[0] + '" alt="">' : '') +
+    (pics.length ? '<img src="' + esc(pics[0]) + '" alt="">' : '') +
     '<div class="veil"></div><div class="inner">' +
     (b.cat ? '<div class="site-kicker">' + esc(b.cat) + '</div>' : '') +
     '<h3>' + esc(b.name || '') + seal + '</h3>' +
@@ -1092,6 +1262,13 @@ function renderBiz() {
       caution = 'People who went there rated it ' + st.avg.toFixed(1) + ' out of 5. ' +
         'Read the reviews below before you open it.';
     }
+  }
+  if (disputed[state.open]) {
+    caution = (caution ? caution + ' ' : '') + 'Someone tried to replace or remove this listing with one its owner did not sign. ' +
+      'You are seeing the owner\'s version.';
+  }
+  if (!b.signed) {
+    caution = (caution ? caution + ' ' : '') + 'This listing was made before listings were signed, so its owner cannot yet be told apart from anyone else.';
   }
   $('b-caution').innerHTML = caution ? '<div class="caution">' + esc(caution) + '</div>' : '';
 
@@ -1165,7 +1342,7 @@ function renderBiz() {
   // ── Gallery: the cover already appears in the header ──
   $('b-gal-card').style.display = pics.length > 1 ? 'block' : 'none';
   $('b-gal').innerHTML = pics.slice(1).map(function (p) {
-    return '<img src="' + p + '" alt="" data-full="' + p + '">';
+    return '<img src="' + esc(p) + '" alt="" data-full="' + esc(p) + '">';
   }).join('');
   [].forEach.call(document.querySelectorAll('[data-full]'), function (im) {
     im.addEventListener('click', function () {
@@ -1186,7 +1363,10 @@ function renderBiz() {
   $('r-list').innerHTML = rs.length ? rs.map(function (it) {
     var r = it.r, rep = state.replies[it.id];
     var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
-    var reply = rep ? '<div class="orev"><div class="reply"><div class="rl">Reply from the business</div>' + esc(rep.text) + '</div></div>' : '';
+    // "From the business" only when the listing's own key signed it.
+    var label = rep && rep.verified ? 'Reply from the business'
+      : 'Reply, unverified — this listing has no owner signature yet';
+    var reply = rep ? '<div class="orev"><div class="reply"><div class="rl">' + label + '</div>' + esc(rep.text) + '</div></div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
@@ -1445,13 +1625,17 @@ $('n-save').addEventListener('click', async function () {
   var prev = state.biz[slug] || {};
 
   $('n-save').disabled = true;
+  // The key that signs the listing is made from the owner key: slow on
+  // purpose, so the owner key cannot be guessed from the public half.
+  say('n-msg', 'Making the owner signature…', 'work');
+  var identity = editing && state.ownerIdentity ? state.ownerIdentity : await ownerIdentity(slug, secret);
   say('n-msg', 'Publishing…', 'work');
 
   // Photos first, each on its own topic: if the listing appeared first, other
   // cards flickered without an image while the photos were arriving.
   for (var i = 0; i < state.draft.length; i++) {
     say('n-msg', 'Uploading photo ' + (i + 1) + ' of ' + state.draft.length + '…', 'work');
-    await publish('hreview/p/' + slug + '/' + rid(6), state.draft[i]);
+    await publishPhoto(slug, rid(6), state.draft[i], identity);
   }
 
   // The badge amount is fixed here, derived from the slug: it is what links a
@@ -1460,7 +1644,7 @@ $('n-save').addEventListener('click', async function () {
   var sats = prev.sats || 0;
   if (!sats) { try { sats = satsFor(slug, await btcPrice()); } catch (e) { /* no price: no badge */ } }
 
-  var ok = await publish('hreview/b/' + slug, {
+  var ok = await publish('hreview/b/' + slug, await signedListing(slug, {
     name: name,
     kind: kind,
     hidra: hidra,
@@ -1477,7 +1661,7 @@ $('n-save').addEventListener('click', async function () {
     about: $('n-about').value.trim(),
     menu: $('n-menu').value.trim(),
     at: prev.at || Date.now()
-  });
+  }, identity));
   $('n-save').disabled = false;
 
   if (!ok) { say('n-msg', 'Could not publish. Check your connection.', 'err'); return; }
@@ -1494,7 +1678,7 @@ $('n-save').addEventListener('click', async function () {
   ['n-name', 'n-desc', 'n-city', 'n-addr', 'n-phone', 'n-site', 'n-hours', 'n-about', 'n-menu', 'n-mail'].forEach(function (id) { $(id).value = ''; });
   state.draft = []; renderThumbs();
   // Sign straight in as owner of this business and show the key (once only).
-  state.ownerSlug = slug; state.ownerSecret = secret;
+  state.ownerSlug = slug; state.ownerSecret = secret; state.ownerIdentity = identity;
   $('add-form').className = 'card hidden'; $('n-msg').className = 'msg';
   showOwnerKey(slug, secret);
 });
@@ -1602,10 +1786,33 @@ $('o-enter').addEventListener('click', async function () {
   var b = state.biz[slug];
   if (!b) { say('o-msg', 'Choose a business.', 'err'); return; }
   if (!key) { say('o-msg', 'Enter your owner key.', 'err'); return; }
-  if (!b.ownerHash) { say('o-msg', 'This business was created before owner keys existed and has no panel. Get in touch.', 'err'); return; }
-  var h = await ownerHashOf(key);
-  if (h !== b.ownerHash) { say('o-msg', 'Wrong key for this business.', 'err'); return; }
-  state.ownerSlug = slug; state.ownerSecret = key;
+  if (!b.ownerHash && !b.opk) { say('o-msg', 'This business was created before owner keys existed and has no panel. Get in touch.', 'err'); return; }
+  say('o-msg', 'Checking the key…', 'work');
+  var identity = null;
+  try { identity = await ownerIdentity(slug, key); } catch (e) { identity = null; }
+  if (b.opk) {
+    if (!identity || identity.pub !== b.opk) { say('o-msg', 'Wrong key for this business.', 'err'); return; }
+  } else {
+    var h = await ownerHashOf(key);
+    if (h !== b.ownerHash || !identity) { say('o-msg', 'Wrong key for this business.', 'err'); return; }
+    // Listed before listings were signed: sign it now, with its photos and
+    // replies, so nobody else can take it over from here on.
+    say('o-msg', 'Signing your listing so only you can change it…', 'work');
+    var upgraded = await signedListing(slug, Object.assign({}, b), identity);
+    delete upgraded.signed;
+    var pics = state.pics[slug] || {};
+    for (var pid in pics) await publishPhoto(slug, pid, pics[pid].d, identity);
+    for (var rid_ in state.replies) {
+      var rr = state.replies[rid_];
+      if (rr._slug !== slug) continue;
+      var nr = { text: rr.text, at: rr.at };
+      nr.sig = await hidraRoom.signFields(identity, replyFields(slug, rid_, nr));
+      await publish('hreview/reply/' + slug + '/' + rid_, nr);
+    }
+    await publish('hreview/b/' + slug, upgraded);
+    toast('Listing signed: only your key can change it now');
+  }
+  state.ownerSlug = slug; state.ownerSecret = key; state.ownerIdentity = identity;
   $('o-key').value = ''; $('o-msg').className = 'msg';
   $('o-lock').className = 'card hidden'; $('o-dash').className = '';
   renderOwner();
@@ -1668,7 +1875,7 @@ function renderOwner() {
 
   // button wiring
   $('o-exit').addEventListener('click', function () {
-    state.ownerSlug = null; state.ownerSecret = null;
+    state.ownerSlug = null; state.ownerSecret = null; state.ownerIdentity = null;
     $('o-dash').className = 'hidden'; $('o-lock').className = 'card';
   });
   $('o-view').addEventListener('click', function () { closeOwner(); openBiz(slug); });
@@ -1683,9 +1890,11 @@ function renderOwner() {
       var txt = ($('rep-' + id).value || '').trim();
       if (!txt) { toast('Write the reply.'); return; }
       btn.disabled = true;
-      var ok = await publish('hreview/reply/' + slug + '/' + id, { text: txt, at: Date.now() });
+      var reply = { text: txt, at: Date.now() };
+      reply.sig = await hidraRoom.signFields(state.ownerIdentity, replyFields(slug, id, reply));
+      var ok = await publish('hreview/reply/' + slug + '/' + id, reply);
       btn.disabled = false;
-      if (ok) { state.replies[id] = { text: txt, at: Date.now() }; toast('Reply published'); renderOwner(); }
+      if (ok) { reply.verified = true; reply._slug = slug; state.replies[id] = reply; toast('Reply published'); renderOwner(); }
       else toast('Could not publish.');
     });
   });

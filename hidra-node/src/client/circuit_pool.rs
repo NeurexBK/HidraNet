@@ -76,6 +76,34 @@ impl CircuitPool {
         StreamingCircuit::build(&selected, secret).await
     }
 
+    /// A fresh circuit whose last relay is `exit`: a hidden service's
+    /// introduction point, which only knows the services registered with it.
+    /// The other two hops are picked as usual from the rest.
+    pub async fn build_circuit_via(&self, exit: std::net::SocketAddr) -> Result<StreamingCircuit> {
+        let relays = self.relays.lock().await.clone();
+        let last = relays.iter().find(|r| r.addr == exit).cloned().unwrap_or(RelayEntry {
+            name: "intro".into(),
+            addr: exit,
+            noise_pubkey_b64: String::new(),
+        });
+        let others: Vec<RelayEntry> = relays.into_iter().filter(|r| r.addr != exit).collect();
+        if others.len() < 2 {
+            return Err(HidraError::Circuit(format!(
+                "need two relays besides the introduction point, have {}",
+                others.len()
+            )));
+        }
+        let mut path = others;
+        path.shuffle(&mut rand::thread_rng());
+        path.truncate(2);
+        path.push(last);
+
+        let mut sb = self.secret_bytes;
+        let secret = StaticSecret::from(sb);
+        sb.zeroize();
+        StreamingCircuit::build(&path, secret).await
+    }
+
     pub async fn maintain(&self) {
         {
             let mut entries = self.entries.lock().await;

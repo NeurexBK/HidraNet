@@ -11,9 +11,17 @@
 //   2. downloads the files for this platform into a fresh private folder and
 //      checks each one's size and SHA-256 against the signed manifest;
 //   3. asks for administrator rights once — UAC on Windows, pkexec on Linux —
-//      and runs `hidravpn-service install` from that folder, which copies the
+//      and, with those rights, copies the files into a folder only an
+//      administrator can write, checks each copy's SHA-256 again there, and
+//      only then runs `hidravpn-service install` from it. That copies the
 //      service into place, registers it, makes the machine's key and, on
 //      Linux, puts this user in the hidravpn group.
+//
+// Why the second check: the download folder belongs to this user, so any
+// other program running as this user could swap a file in it between the
+// first check and the moment it runs — and whatever was swapped in would run
+// as root or Administrator. A copy in a folder this user cannot write, checked
+// after the copy, cannot be swapped.
 //
 // Nothing runs that the release key did not vouch for, and a manifest that
 // fails the check is not read at all: it could say anything. An update is the
@@ -38,6 +46,60 @@ const FILE_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_FILES = 8;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+// The exit code the privileged step uses when a copy does not match.
+const CHANGED_AFTER_CHECK = 65;
+
+// Linux, run as root by pkexec. A fixed script: everything it is told comes
+// in as positional arguments, never as part of the script, so no file name
+// or path can become a command. It makes a root-only folder (mktemp -d is
+// 0700), copies each file in, refuses anything that is not a plain file or
+// whose SHA-256 is not the one from the signed manifest, and only then runs
+// the service from there. The folder is removed whatever happens.
+//   $1 base folder  $2 download folder  $3 service  $4 client or ''
+//   $5 user or ''   then pairs of: name sha256
+const LINUX_INSTALL_SCRIPT = [
+  'set -eu',
+  'base=$1; src=$2; service=$3; client=$4; user=$5; shift 5',
+  'umask 077',
+  'dst=$(mktemp -d "$base/hidravpn-install.XXXXXXXX")',
+  'trap \'rm -rf -- "$dst"\' EXIT',
+  'while [ $# -ge 2 ]; do',
+  '  name=$1; want=$2; shift 2',
+  '  case $name in ""|*/*|.*) exit ' + CHANGED_AFTER_CHECK + ';; esac',
+  '  cp -- "$src/$name" "$dst/$name"',
+  '  if [ -L "$dst/$name" ] || [ ! -f "$dst/$name" ]; then exit ' + CHANGED_AFTER_CHECK + '; fi',
+  '  got=$(sha256sum -- "$dst/$name" | cut -d" " -f1)',
+  '  if [ "$got" != "$want" ]; then echo "$name changed after it was checked" >&2; exit ' + CHANGED_AFTER_CHECK + '; fi',
+  '  chmod 0700 -- "$dst/$name"',
+  'done',
+  'set -- install',
+  'if [ -n "$client" ]; then set -- "$@" --client "$dst/$client"; fi',
+  'if [ -n "$user" ]; then set -- "$@" --user "$user"; fi',
+  '"$dst/$service" "$@"',
+].join('\n');
+
+// Windows, run as Administrator through UAC. The same steps in PowerShell.
+// What it is told travels as base64 JSON inside a string literal (base64 has
+// no quote), never as code. The folder is made under Program Files, found
+// through the known-folder API rather than an environment variable this user
+// could set, where an ordinary account cannot write.
+const WINDOWS_INSTALL_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  "$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('@PAYLOAD@'))|ConvertFrom-Json",
+  "$root=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('HidraVPN-install-'+[guid]::NewGuid().ToString('N'))",
+  'New-Item -ItemType Directory -Path $root|Out-Null',
+  'try{',
+  ' foreach($f in $d.files){',
+  '  $to=Join-Path $root $f.name',
+  '  Copy-Item -LiteralPath (Join-Path $d.src $f.name) -Destination $to',
+  '  $h=(Get-FileHash -Algorithm SHA256 -LiteralPath $to).Hash.ToLowerInvariant()',
+  '  if($h -ne $f.sha256){exit ' + CHANGED_AFTER_CHECK + '}',
+  ' }',
+  " $a=@('install');if($d.client){$a+='--client';$a+=(Join-Path $root $d.client)}",
+  " $p=Start-Process -FilePath (Join-Path $root $d.service) -ArgumentList ($a|ForEach-Object{'\"'+$_+'\"'}) -Wait -PassThru -WindowStyle Hidden",
+  ' exit $p.ExitCode',
+  '}finally{Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}',
+].join('\n');
 
 // What this machine is, as the manifest names it.
 function platformKey(platform = process.platform, arch = process.arch) {
@@ -116,6 +178,8 @@ class VpnInstaller {
     this.fetchBuffer = options.fetchBuffer;
     this.run = options.run || runFile;
     this.tmpRoot = options.tmpRoot || os.tmpdir();
+    // Where the root-only copy is made on Linux (tests point it elsewhere).
+    this.privRoot = options.privRoot || '/var/lib';
     this.user = options.user || safeUser();
   }
 
@@ -187,12 +251,11 @@ class VpnInstaller {
         }
         await fs.promises.writeFile(path.join(dir, f.name), data, { mode: 0o700 });
       }
-      const service = path.join(dir, p.service);
-      const args = ['install'];
-      if (p.client) args.push('--client', path.join(dir, p.client));
-      if (this.platform === 'linux' && this.user) args.push('--user', this.user);
-      const r = await this._elevated(service, args);
+      const r = await this._elevatedInstall(dir, p);
       if (r.cancelled) return { ok: false, cancelled: true, error: 'administrator rights were not given; nothing was installed' };
+      if (r.code === CHANGED_AFTER_CHECK) {
+        return { ok: false, error: 'a downloaded file changed after it was checked, so nothing was run. Nothing was installed.' };
+      }
       if (r.code !== 0) {
         return { ok: false, error: `the installer failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 400)}` };
       }
@@ -224,6 +287,34 @@ class VpnInstaller {
         ? 'HidraVPN is removed, with its programs, its nodes and this machine\'s key.'
         : 'HidraVPN is removed. This machine\'s key and nodes are kept for a later install.',
     };
+  }
+
+  // With administrator rights, asking the person once: copy the checked files
+  // out of this user's folder into one only an administrator can write, check
+  // them again there, and run the installer from that copy.
+  async _elevatedInstall(dir, p) {
+    const files = p.files.map((f) => ({ name: f.name, sha256: f.sha256 }));
+    if (this.platform === 'win32') {
+      const payload = Buffer.from(JSON.stringify({ src: dir, files, service: p.service, client: p.client || null }), 'utf8').toString('base64');
+      const inner = WINDOWS_INSTALL_SCRIPT.replace('@PAYLOAD@', payload);
+      // The elevated program is Windows' own PowerShell by its full path,
+      // never whatever "powershell.exe" this user's PATH finds first.
+      const script =
+        "$ErrorActionPreference='Stop';" +
+        "$ps=Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\\v1.0\\powershell.exe';" +
+        "try{$p=Start-Process -FilePath $ps -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand',$env:HV_CMD -Verb RunAs -Wait -PassThru -WindowStyle Hidden}" +
+        'catch{exit 1223};' +
+        'exit $p.ExitCode';
+      const r = await this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        HV_CMD: Buffer.from(inner, 'utf16le').toString('base64'),
+      });
+      return { ...r, cancelled: r.code === 1223 };
+    }
+    const user = this.platform === 'linux' && this.user ? this.user : '';
+    const pairs = files.flatMap((f) => [f.name, f.sha256]);
+    const r = await this.run('pkexec', ['/bin/sh', '-c', LINUX_INSTALL_SCRIPT, 'hidravpn-install',
+      this.privRoot, dir, p.service, p.client || '', user, ...pairs], {});
+    return { ...r, cancelled: r.code === 126 || r.code === 127 };
   }
 
   // Runs `file args` with administrator rights, asking the person once.
@@ -270,4 +361,7 @@ function runFile(file, args, extraEnv) {
   });
 }
 
-module.exports = { VpnInstaller, parseManifest, compareVersions, platformKey, installedService, MANIFEST_MAX_BYTES, FILE_MAX_BYTES };
+module.exports = {
+  VpnInstaller, parseManifest, compareVersions, platformKey, installedService, MANIFEST_MAX_BYTES, FILE_MAX_BYTES,
+  LINUX_INSTALL_SCRIPT, WINDOWS_INSTALL_SCRIPT, CHANGED_AFTER_CHECK,
+};

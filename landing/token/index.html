@@ -9,8 +9,9 @@
 <meta name="theme-color" content="#070809">
 <meta property="og:type" content="article">
 <meta property="og:title" content="HNET Token Whitepaper">
-<meta property="og:description" content="HidraNet's token on Solana: no presale, no mint authority, a supply that can only shrink. Used to fund the network, trade on .hidra and pay for HidraVPN.">
-<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<meta property="og:description" content="HidraNet's token on Solana: no presale, no mint authority, a supply that can only shrink. Used to fund the network, trade on .hidra and pay for HidraNet services.">
+<link rel="icon" type="image/png" href="../icons/favicon-32.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
 <link rel="stylesheet" href="../assets/paper.css">
 </head>
 <body>
@@ -40,7 +41,7 @@
   <span class="kicker"><span class="dot" aria-hidden="true"></span>HNET token whitepaper &middot; v1.1 &middot; October 2026</span>
   <h1>HNET, the token of the <span class="hl">HidraNet privacy network</span></h1>
   <p class="lede">HNET runs on Solana. It funds the network, settles trades between <code>.hidra</code> shops and
-    their buyers, and will pay for HidraVPN without linking a payment to a connection. This paper gives the
+    their buyers, and will pay for the HidraNet services that cost money to run. This paper gives the
     facts a buyer needs, each one checkable on chain.</p>
   <div class="meta">
     <span><b>Network</b> Solana</span>
@@ -81,10 +82,10 @@
       <div class="sn">Summary</div>
       <h2>In one paragraph</h2>
       <p class="abstract">HidraNet is an open-source privacy network: a browser, encrypted applications, its own
-        <code>.hidra</code> services and HidraVPN, all under the MIT licence. HNET is its token on Solana. It launched
+        <code>.hidra</code> services, all under the MIT licence. HNET is its token on Solana. It launched
         with 1,000,000,000 and no presale; burns have taken the supply to 957,402,743, and no one can ever add
         to it. HNET pays for things that cost money to run: servers and bandwidth
-        today, HidraVPN access and the other paid HidraNet services as they arrive. It also lets people buy and sell
+        today, the paid HidraNet services as they arrive. It also lets people buy and sell
         on <code>.hidra</code>. Privacy itself is never
         paywalled: the network, the browser and the apps stay free.</p>
       <p>Each use of HNET below carries a label: <span class="pill live">Live</span> works today,
@@ -136,7 +137,7 @@
       <h2>What HNET is for</h2>
       <figure>
         <svg viewBox="0 0 900 330" role="img" aria-labelledby="f1t">
-          <title id="f1t">Where HNET goes: to the support wallet, to HidraVPN passes, and to shops on .hidra</title>
+          <title id="f1t">Where HNET goes: to the support wallet, to paid HidraNet services, and to shops on .hidra</title>
           <defs>
             <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9aa1a9"/></marker>
           </defs>
@@ -159,8 +160,8 @@
             <rect x="380" y="123" width="500" height="84" rx="14" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".5"/>
             <rect x="400" y="137" width="80" height="20" rx="10" fill="rgba(0,204,255,.16)" stroke="#00ccff" stroke-opacity=".6"/>
             <text x="440" y="151" text-anchor="middle" fill="#00ccff" font-size="10.5" font-weight="700" font-family="JetBrains Mono, monospace">PLANNED</text>
-            <text x="494" y="152" fill="#fff" font-size="16" font-weight="650">HidraVPN passes</text>
-            <text x="400" y="185" fill="#9aa1a9" font-size="13">The issuer sees a payment; the node sees a pass; nobody sees both</text>
+            <text x="494" y="152" fill="#fff" font-size="16" font-weight="650">Paid HidraNet services</text>
+            <text x="400" y="185" fill="#9aa1a9" font-size="13">Extras that cost money to run; privacy itself stays free</text>
 
             <rect x="380" y="226" width="500" height="84" rx="14" fill="rgba(245,184,61,.07)" stroke="#f5b83d" stroke-opacity=".5"/>
             <rect x="400" y="240" width="140" height="20" rx="10" fill="rgba(245,184,61,.16)" stroke="#f5b83d" stroke-opacity=".6"/>
@@ -179,11 +180,9 @@
         <div class="card"><h4>Buy and sell on .hidra <span class="pill live">Live, basic</span></h4><p>Shops published
           as <code>.hidra</code> sites take HNET straight into the seller's wallet, and HidraReview lists them under
           Marketplace. An integrated marketplace, with signed listings and encrypted orders, is planned.</p></div>
-        <div class="card"><h4>Pay for HidraVPN and HidraNet services <span class="pill next">Planned</span></h4><p>HidraVPN
-          access first, then the other paid HidraNet services, paid in HNET. VPN access uses passes built on blind
-          signatures: the issuer sees a payment and the VPN node sees a pass, and nothing links the two. Before this
-          goes live we will publish who runs the issuer and how nodes stop a pass being spent twice. Free access
-          stays.</p></div>
+        <div class="card"><h4>Pay for HidraNet services <span class="pill next">Planned</span></h4><p>The HidraNet
+          services that cost money to run, paid in HNET as each one arrives. Before one goes live we will publish
+          who runs it and what it can see. Free access stays.</p></div>
         <div class="card"><h4>Bounties and HidraNet Pro <span class="pill next">Planned</span></h4><p>Rewards in HNET
           for reported security flaws, and paid extras that cost money to run (more HidraMail storage, more
           <code>.hidra</code> sites), payable in HNET.</p></div>
@@ -206,7 +205,6 @@
           <tr><td>Shops on <code>.hidra</code> taking HNET; Marketplace in HidraReview</td><td><span class="pill done">Done, basic</span></td></tr>
           <tr><td>Security bounties paid in HNET</td><td><span class="pill next">Next</span></td></tr>
           <tr><td>Independent security audit</td><td><span class="pill next">Planned</span></td></tr>
-          <tr><td>HidraVPN access paid in HNET, through unlinkable passes</td><td><span class="pill next">Planned</span></td></tr>
           <tr><td>Integrated marketplace on <code>.hidra</code></td><td><span class="pill next">Planned</span></td></tr>
           <tr><td>Other paid HidraNet services, payable in HNET</td><td><span class="pill next">Planned</span></td></tr>
           <tr><td>HidraNet Pro, payable in HNET</td><td><span class="pill next">Planned</span></td></tr>

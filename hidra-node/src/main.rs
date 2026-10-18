@@ -274,7 +274,14 @@ async fn spawn_local_relays(
         let relay_secret = StaticSecret::from(rng_bytes);
         rng_bytes.zeroize();
 
-        let listener = network::listener::NodeListener::bind(addr, relay_secret).await?;
+        // These relays all live on this machine and hand circuits to each
+        // other over loopback; the exit still goes only to public addresses.
+        let listener = network::listener::NodeListener::bind(addr, relay_secret)
+            .await?
+            .with_exit_policy(relay::exit_policy::ExitPolicy {
+                private_hops: true,
+                private_targets: false,
+            });
         let relay_num = i + 1;
 
         info!(relay = relay_num, addr = %addr, "local relay node started");
@@ -587,7 +594,10 @@ async fn run_server_mode(
 
     let local_port = app_cfg.hidden_service.local_port;
 
-    let intro_addr = relays[0].addr;
+    // The service registers at the last relay of its circuit, so that is the
+    // introduction point to announce. Announcing the first one sent every
+    // client to a relay that had never heard of the service.
+    let intro_addr = relays[2].addr;
     // Signed by the service's own key: a node on the lookup path can
     // withhold this descriptor but not swap its introduction points.
     if let Err(e) = dht.announce_signed_service(
@@ -615,7 +625,8 @@ async fn run_server_mode(
     )
     .await?;
 
-    intro_circuit.register_service(service_hash.to_vec()).await?;
+    let _ = service_hash;
+    intro_circuit.register_service(&service_keys.signing_key).await?;
     info!("registered at introduction point");
 
     let app_name = app_cfg.hidden_service.app.as_deref();
@@ -742,11 +753,38 @@ async fn run_server_mode(
     }
 
     // Service loop: receive client data from intro point, forward to local server
+    let mut session: Option<crypto::service_auth::SealedChannel> = None;
     loop {
         tokio::select! {
-            data_result = intro_circuit.recv_data() => {
+            data_result = intro_circuit.recv_raw() => {
                 match data_result {
-                    Ok(Some(data)) => {
+                    Ok(Some(raw)) => {
+                        // Every client session opens with a challenge, which
+                        // the service answers with the address's key. Nothing
+                        // reaches the local server until it has, and what
+                        // does is sealed end to end.
+                        if crypto::service_auth::is_hello(&raw) {
+                            match crypto::service_auth::answer_hello(&service_keys.signing_key, &raw) {
+                                Ok((channel, answer)) => {
+                                    if intro_circuit.send_raw(&answer).await.is_err() { break; }
+                                    session = Some(channel);
+                                }
+                                Err(e) => warn!(error = %e, "could not answer a client's challenge"),
+                            }
+                            continue;
+                        }
+                        let Some(channel) = session.as_mut() else {
+                            warn!("dropped data from a client that skipped the challenge");
+                            continue;
+                        };
+                        let data = match channel.open(&raw) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                warn!(error = %e, "client session ended: a message did not open");
+                                session = None;
+                                continue;
+                            }
+                        };
                         let local_addr = format!("127.0.0.1:{local_port}");
                         match tokio::net::TcpStream::connect(&local_addr).await {
                             Ok(mut local_stream) => {
@@ -756,7 +794,11 @@ async fn run_server_mode(
                                     match local_stream.read(&mut response_buf).await {
                                         Ok(0) => {}
                                         Ok(n) => {
-                                            let _ = intro_circuit.send_data(&response_buf[..n]).await;
+                                            if let Some(channel) = session.as_mut()
+                                                && let Ok(sealed) = channel.seal(&response_buf[..n])
+                                            {
+                                                let _ = intro_circuit.send_raw(&sealed).await;
+                                            }
                                         }
                                         Err(e) => {
                                             debug!(error = %e, "local server read error");
@@ -1008,7 +1050,16 @@ async fn run_relay_mode(
         None
     };
 
-    let listener = network::listener::NodeListener::bind(addr, network_secret).await?;
+    let policy = relay::exit_policy::ExitPolicy {
+        private_hops: app_cfg.network.allow_private_hops,
+        private_targets: app_cfg.network.allow_private_targets,
+    };
+    if policy.private_targets {
+        tracing::warn!("allow_private_targets is on: this exit will connect to loopback and private addresses for anyone");
+    }
+    let listener = network::listener::NodeListener::bind(addr, network_secret)
+        .await?
+        .with_exit_policy(policy);
     info!(addr = %addr, "listening for inbound connections");
 
     tokio::select! {

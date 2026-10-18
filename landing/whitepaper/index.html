@@ -5,12 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="referrer" content="no-referrer">
 <title>HidraNet Technical Whitepaper</title>
-<meta name="description" content="HidraNet technical whitepaper, version 2.0: onion routing over a post-quantum handshake, a Sybil-resistant DHT, self-certifying .hidra services, end-to-end encrypted apps and HidraVPN, verified against the code.">
+<meta name="description" content="HidraNet technical whitepaper, version 2.0: onion routing over a post-quantum handshake, a Sybil-resistant DHT, self-certifying .hidra services and end-to-end encrypted apps, verified against the code.">
 <meta name="theme-color" content="#070809">
 <meta property="og:type" content="article">
 <meta property="og:title" content="HidraNet Technical Whitepaper">
 <meta property="og:description" content="What HidraNet does, how, and what it does not do yet. Verified against the code.">
-<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<link rel="icon" type="image/png" href="../icons/favicon-32.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
 <link rel="stylesheet" href="../assets/paper.css">
 </head>
 <body>
@@ -40,8 +41,8 @@
   <span class="kicker"><span class="dot" aria-hidden="true"></span>Technical whitepaper &middot; v2.0 &middot; October 2026</span>
   <h1>An anonymity network you can <span class="hl">check for yourself</span></h1>
   <p class="lede">HidraNet is an open-source overlay network: onion routing over a post-quantum handshake, a
-    Sybil-resistant DHT, self-certifying <code>.hidra</code> services, end-to-end encrypted applications and
-    HidraVPN. This paper describes what is built, how it works, and, just as plainly, what it does not do yet.
+    Sybil-resistant DHT, self-certifying <code>.hidra</code> services and end-to-end encrypted applications.
+    This paper describes what is built, how it works, and, just as plainly, what it does not do yet.
     Every claim in it points at code anyone can run.</p>
   <div class="meta">
     <span><b>Authors</b> Jo&#227;o Brand&#227;o, Leonardo Mello</span>
@@ -55,9 +56,9 @@
   </div>
   <div class="tiles">
     <div class="tile"><div class="n">17.7k</div><div class="l">lines of Rust in the network engine</div></div>
-    <div class="tile"><div class="n c">11.5k</div><div class="l">lines of Rust in HidraVPN</div></div>
+    <div class="tile"><div class="n c">6</div><div class="l">applications built into the browser</div></div>
     <div class="tile"><div class="n">243</div><div class="l">engine tests, attack scenarios included</div></div>
-    <div class="tile"><div class="n c">250</div><div class="l">VPN checks on real tunnels in 8 network suites</div></div>
+    <div class="tile"><div class="n c">0</div><div class="l">scripts from a CDN: every library is served locally</div></div>
     <div class="tile"><div class="n">1024</div><div class="l">ML-KEM-1024, hybrid with X25519</div></div>
     <div class="tile"><div class="n c">MIT</div><div class="l">open source, every line</div></div>
   </div>
@@ -74,13 +75,12 @@
     <a href="#dht">5. A DHT that resists Sybils</a>
     <a href="#hidra">6. .hidra services</a>
     <a href="#apps">7. Applications</a>
-    <a href="#vpn">8. HidraVPN</a>
-    <a href="#machine">9. Protecting the machine</a>
-    <a href="#threat">10. Threat model</a>
-    <a href="#verify">11. Verify it yourself</a>
-    <a href="#roadmap">12. Roadmap</a>
-    <a href="#governance">13. Licence and governance</a>
-    <a href="#refs">14. References</a>
+    <a href="#machine">8. Protecting the machine</a>
+    <a href="#threat">9. Threat model</a>
+    <a href="#verify">10. Verify it yourself</a>
+    <a href="#roadmap">11. Roadmap</a>
+    <a href="#governance">12. Licence and governance</a>
+    <a href="#refs">13. References</a>
   </nav>
 
   <article>
@@ -90,14 +90,12 @@
       <h2>What this paper is</h2>
       <p class="abstract">HidraNet combines onion routing with a hybrid post-quantum key exchange
         (X25519 + ML-KEM-1024), a Kademlia DHT hardened with the S/Kademlia defences, self-certifying
-        hidden services and a suite of applications that encrypt on the device. HidraVPN, built
-        alongside it, routes a whole machine through one or two independently run WireGuard nodes behind
-        a kill switch. The reference implementation is a Rust network engine (<code>hidra-node</code>), the
-        HidraVPN workspace and a desktop browser.</p>
+        hidden services and a suite of applications that encrypt on the device. The reference implementation
+        is a Rust network engine (<code>hidra-node</code>) and a desktop browser.</p>
       <p>We state one thing first, because a whitepaper that overstates is worse than none:
         <strong>today, exit anonymity in HidraBrowser is provided by the Tor network</strong>, which the browser
         bundles. The HidraNet protocol layer is implemented and tested; its relay population is not yet large
-        enough to provide anonymity on its own. Section 12 sets out how that changes.</p>
+        enough to provide anonymity on its own. Section 11 sets out how that changes.</p>
     </section>
 
     <section id="status">
@@ -110,10 +108,8 @@
           <tr><td>Onion circuits, three hops</td><td><span class="pill open">Layering built; telescoping not yet</span></td><td><code>onion/</code>, <code>client/</code></td></tr>
           <tr><td>Sybil-resistant DHT (S/Kademlia)</td><td><span class="pill done">Built</span></td><td><code>p2p/dht/</code></td></tr>
           <tr><td>Signed, expiring <code>.hidra</code> service records</td><td><span class="pill done">Built</span></td><td><code>p2p/dht/descriptor.rs</code></td></tr>
-          <tr><td>HidraVPN: one hop, two hops, kill switch, signed node list</td><td><span class="pill done">Built</span></td><td><code>hidravpn/</code></td></tr>
           <tr><td>Exit anonymity for the browser</td><td><span class="pill open">Via Tor today</span></td><td>bundled Tor</td></tr>
-          <tr><td>HidraVPN on Windows</td><td><span class="pill open">Compiled, not yet run on hardware</span></td><td><code>hidravpn/scripts/windows</code></td></tr>
-          <tr><td>Independent external security audit</td><td><span class="pill open">Not yet</span></td><td>&sect;12</td></tr>
+          <tr><td>Independent external security audit</td><td><span class="pill open">Not yet</span></td><td>&sect;11</td></tr>
         </tbody>
       </table></div>
     </section>
@@ -121,12 +117,11 @@
     <section id="architecture" class="brk">
       <div class="sn">2</div>
       <h2>Architecture</h2>
-      <p>Three programs, each doing one job. The browser is what a person opens. The engine carries the
-        network. HidraVPN protects the rest of the machine, and is driven by the browser without ever handing it
-        a key.</p>
+      <p>Two programs, each doing one job. The browser is what a person opens. The engine carries the
+        network.</p>
       <figure>
-        <svg viewBox="0 0 900 470" role="img" aria-labelledby="f1t">
-          <title id="f1t">HidraNet architecture: applications over the browser over the engine, with HidraVPN beside them</title>
+        <svg viewBox="0 0 630 470" role="img" aria-labelledby="f1t">
+          <title id="f1t">HidraNet architecture: applications over the browser over the engine</title>
           <defs>
             <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#00ff88" stop-opacity=".16"/><stop offset="1" stop-color="#00ccff" stop-opacity=".08"/></linearGradient>
           </defs>
@@ -157,33 +152,18 @@
 
             <rect x="10" y="396" width="610" height="62" rx="14" fill="rgba(245,184,61,.07)" stroke="#f5b83d" stroke-opacity=".5" stroke-dasharray="6 5"/>
             <text x="30" y="424" fill="#f5b83d" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">EXIT LAYER</text>
-            <text x="30" y="446" fill="#fff" font-size="14">Today the Tor network; the HidraNet relay population grows into it (&#167;12)</text>
+            <text x="30" y="446" fill="#fff" font-size="14">Today the Tor network; the HidraNet relay population grows into it (&#167;11)</text>
 
-            <rect x="650" y="10" width="240" height="448" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".45"/>
-            <text x="670" y="40" fill="#00ccff" font-size="12" font-family="JetBrains Mono, monospace" letter-spacing="2">HIDRAVPN (RUST)</text>
-            <g font-size="14" fill="#fff">
-              <rect x="668" y="58" width="204" height="74" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
-              <text x="682" y="84" font-weight="600">hidravpn</text><text x="682" y="106" fill="#9aa1a9" font-size="12">command line</text><text x="682" y="122" fill="#9aa1a9" font-size="12">and the browser's VPN page</text>
-              <rect x="668" y="144" width="204" height="90" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
-              <text x="682" y="170" font-weight="600">hidravpn-service</text><text x="682" y="192" fill="#9aa1a9" font-size="12">holds the circuit</text><text x="682" y="208" fill="#9aa1a9" font-size="12">arms the kill switch</text><text x="682" y="224" fill="#9aa1a9" font-size="12">checks the signed node list</text>
-              <rect x="668" y="246" width="204" height="74" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
-              <text x="682" y="272" font-weight="600">hidravpn-node</text><text x="682" y="294" fill="#9aa1a9" font-size="12">WireGuard, NAT, DNS over</text><text x="682" y="310" fill="#9aa1a9" font-size="12">HTTPS, open admission</text>
-              <rect x="668" y="332" width="204" height="58" rx="10" fill="rgba(0,204,255,.07)" stroke="#00ccff" stroke-opacity=".35"/>
-              <text x="682" y="358" font-weight="600">hidravpn-sign</text><text x="682" y="378" fill="#9aa1a9" font-size="12">Ed25519 releases and lists</text>
-              <text x="668" y="418" fill="#9aa1a9" font-size="12">Whole-machine protection,</text>
-              <text x="668" y="436" fill="#9aa1a9" font-size="12">one hop or two</text>
-            </g>
           </g>
         </svg>
-        <figcaption><b>Figure 1.</b> The engine and the VPN are separate Rust workspaces with separate
-          build pipelines, so a change to one cannot change how the other is built or tested.</figcaption>
+        <figcaption><b>Figure 1.</b> The applications run in the browser, the engine carries their traffic,
+          and until the relay population is large enough, exits are the Tor network's.</figcaption>
       </figure>
       <div class="tbl"><table>
         <thead><tr><th>Component</th><th>Language</th><th>Job</th></tr></thead>
         <tbody>
           <tr><td><code>hidra-node</code></td><td>Rust 2024</td><td>Circuits, DHT, relay, SOCKS5 gateway, the apps' local servers</td></tr>
-          <tr><td><code>hidra-browser</code></td><td>JavaScript, Electron</td><td>Interface, tab isolation, fingerprint profiles, Tor management, VPN page</td></tr>
-          <tr><td><code>hidravpn</code></td><td>Rust 2021</td><td>Client, background service, node, signing tool</td></tr>
+          <tr><td><code>hidra-browser</code></td><td>JavaScript, Electron</td><td>Interface, tab isolation, fingerprint profiles, Tor management</td></tr>
           <tr><td>Applications</td><td>JavaScript, Web Crypto; Rust</td><td>Encryption on the device; the network carries ciphertext</td></tr>
         </tbody>
       </table></div>
@@ -264,7 +244,7 @@
         their views of the same client. The layers still keep the payload from all but the last relay, but the
         unlinkability the design promises is not there. The fix is telescoping construction, as in Tor: the client
         connects only to the entry and extends through it, hop by hop, with a fresh ephemeral key for each hop.
-        It is the first item on the roadmap (&sect;12).</p>
+        It is the first item on the roadmap (&sect;11).</p>
       <figure>
         <svg viewBox="0 0 900 230" role="img" aria-labelledby="f3t">
           <title id="f3t">A three-hop circuit; each relay removes one layer</title>
@@ -455,74 +435,8 @@
       </table></div>
     </section>
 
-    <section id="vpn" class="brk">
-      <div class="sn">8</div>
-      <h2>HidraVPN</h2>
-      <p>The browser protects what happens in the browser. HidraVPN protects the whole machine. It is WireGuard,
-        run as a background service, through nodes run by different people, with a kill switch that is on by default.</p>
-      <figure>
-        <svg viewBox="0 0 900 270" role="img" aria-labelledby="f5t">
-          <title id="f5t">Privado mode: your machine, an entry node and an exit node; neither node sees both who and where</title>
-          <defs><marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9aa1a9"/></marker></defs>
-          <g font-family="Inter, sans-serif" font-size="14">
-            <rect x="12" y="56" width="190" height="110" rx="14" fill="rgba(0,255,136,.08)" stroke="#00ff88" stroke-opacity=".55"/>
-            <text x="107" y="92" text-anchor="middle" fill="#fff" font-weight="600">Your machine</text>
-            <text x="107" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">kill switch armed</text>
-            <text x="107" y="132" text-anchor="middle" fill="#9aa1a9" font-size="12">a key per node</text>
-            <rect x="300" y="56" width="190" height="110" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".5"/>
-            <text x="395" y="92" text-anchor="middle" fill="#fff" font-weight="600">Entry node</text>
-            <text x="395" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">forwards only WireGuard</text>
-            <rect x="588" y="56" width="190" height="110" rx="14" fill="#0b0d0f" stroke="#00ccff" stroke-opacity=".5"/>
-            <text x="683" y="92" text-anchor="middle" fill="#fff" font-weight="600">Exit node</text>
-            <text x="683" y="114" text-anchor="middle" fill="#9aa1a9" font-size="12">DNS over HTTPS</text>
-            <text x="683" y="132" text-anchor="middle" fill="#9aa1a9" font-size="12">no mail, no abuse ports</text>
-            <rect x="816" y="76" width="72" height="70" rx="12" fill="rgba(255,255,255,.04)" stroke="#fff" stroke-opacity=".2"/>
-            <text x="852" y="116" text-anchor="middle" fill="#fff" font-size="13">Web</text>
-            <rect x="208" y="97" width="86" height="28" rx="14" fill="rgba(0,204,255,.12)" stroke="#00ccff" stroke-opacity=".6"/>
-            <rect x="218" y="104" width="66" height="14" rx="7" fill="rgba(0,255,136,.25)" stroke="#00ff88" stroke-opacity=".7"/>
-            <line x1="492" y1="111" x2="584" y2="111" stroke="#00ff88" stroke-width="2.5" stroke-opacity=".8" marker-end="url(#a5)"/>
-            <line x1="780" y1="111" x2="812" y2="111" stroke="#9aa1a9" stroke-width="1.6" marker-end="url(#a5)"/>
-            <g font-size="12.5" text-anchor="middle">
-              <text x="395" y="200" fill="#fff">Sees your address</text><text x="395" y="218" fill="#9aa1a9">not where you go</text>
-              <text x="683" y="200" fill="#fff">Sees where you go</text><text x="683" y="218" fill="#9aa1a9">not your address</text>
-              <text x="251" y="152" fill="#9aa1a9" font-size="11">tunnel in a tunnel</text>
-            </g>
-            <text x="450" y="258" text-anchor="middle" fill="#6b727a" font-size="12">Rapido is one hop: faster, and that one node sees both. The app says which mode is on, in those words.</text>
-          </g>
-        </svg>
-        <figcaption><b>Figure 5.</b> Privado nests a WireGuard tunnel to the exit inside a tunnel to the entry.
-          A test watches the entry and counts zero plaintext packets leaving it.</figcaption>
-      </figure>
-      <div class="cards">
-        <div class="card"><h4>A different identity for every node</h4><p>Each node is shown a key derived for it
-          from one master key with HKDF-SHA256. No node sees the master key, and two operators comparing peer lists
-          find nothing in common.</p></div>
-        <div class="card"><h4>Kill switch, including between circuits</h4><p>nftables on Linux, the Windows Filtering
-          Platform on Windows. IPv6 is blocked, DNS is pinned to the node's resolver, and nothing passes for merely
-          being an established connection. When a circuit is rebuilt for a new identity, a hold allows only the old
-          and the new first hop until the new rules replace it.</p></div>
-        <div class="card"><h4>Nodes from a signed list</h4><p>A new client learns which nodes exist from a list
-          signed with Ed25519, checked against a key built into the client before a byte of it is read. Lists carry
-          a sequence and an expiry; an older or expired list is refused, and a newer one follows a node that moved.</p></div>
-        <div class="card"><h4>Open admission, with limits</h4><p>A stranger connects on the first try: a node that
-          admits openly issues an invite on request, at most three per address and 120 per node every ten minutes,
-          up to 4,000 leases. A lease with no handshake lapses within fifteen minutes.</p></div>
-        <div class="card span"><h4>Nothing recorded <span class="pill done">Tested</span></h4><p>No node or service log
-          names an address, a name looked up or a byte of traffic. The network test suites grep every log for them.</p></div>
-      </div>
-      <div class="tbl"><table>
-        <thead><tr><th>Measured</th><th>Before the fix</th><th>Now</th></tr></thead>
-        <tbody>
-          <tr><td>Requests reaching the open network during a new identity</td><td>7</td><td>0</td></tr>
-          <tr><td>A connection opened before the VPN surviving the kill switch</td><td>yes</td><td>no</td></tr>
-        </tbody>
-      </table></div>
-      <p>Both rows come from the network test suites, run against the code before and after the October 2026 fixes.
-        HidraVPN is strong privacy, not anonymity: the app says what each node can see, and nowhere says "anonymous".</p>
-    </section>
-
     <section id="machine">
-      <div class="sn">9</div>
+      <div class="sn">8</div>
       <h2>Protecting the machine</h2>
       <ul>
         <li><strong>Local services cannot be reached by web pages.</strong> Everything listens on loopback and screens
@@ -537,13 +451,13 @@
           language chosen together), deterministic canvas noise, masked WebGL renderer, and no client-hint headers.
           WebRTC is held to the proxy in the network stack. The profile is injected when the page's DOM is ready,
           not yet at document start; that is on the roadmap.</li>
-        <li><strong>Releases you can check.</strong> Release files are signed with Ed25519; the browser verifies them
-          with a key built into it, in the same format the command-line tool uses.</li>
+        <li><strong>Downloads you can check.</strong> The SHA-256 of every package is published beside it, in
+          <code>SHA256SUMS.txt</code>.</li>
       </ul>
     </section>
 
     <section id="threat" class="brk">
-      <div class="sn">10</div>
+      <div class="sn">9</div>
       <h2>Threat model</h2>
       <p>A threat model that does not say what it does not protect against is advertising, not engineering.</p>
       <h3>Protected against</h3>
@@ -579,29 +493,24 @@
     </section>
 
     <section id="verify">
-      <div class="sn">11</div>
+      <div class="sn">10</div>
       <h2>Verify it yourself</h2>
       <p>Nothing in this paper needs to be taken on trust. From a checkout of the repository:</p>
 <pre><code>cargo test --manifest-path hidra-node/Cargo.toml --no-fail-fast    # 243 tests
 cargo test --manifest-path hidra-node/Cargo.toml --test dht_discovery   # the DHT attacks
 cargo test --manifest-path hidra-node/Cargo.toml --test no_addresses_in_logs
-cargo test --manifest-path hidravpn/Cargo.toml --workspace         # VPN unit tests
-sudo hidravpn/scripts/test-multihop-netns.sh                        # two hops, no leak while rotating
-sudo hidravpn/scripts/test-killswitch.sh                            # the leak test
 node hidra-browser/test/anonymity-claims.js                         # every badge is backed by code</code></pre>
       <div class="tbl"><table>
         <thead><tr><th>Suite</th><th>Result, October 2026</th></tr></thead>
         <tbody>
           <tr><td>Engine (<code>hidra-node</code>)</td><td>243 tests passing, 15 of them DHT attack scenarios</td></tr>
-          <tr><td>HidraVPN unit tests</td><td>86 passing</td></tr>
-          <tr><td>HidraVPN network suites</td><td>8 suites, 250 checks on real tunnels in network namespaces, 0 failures</td></tr>
           <tr><td>Continuous integration</td><td>Format, lint, tests and <code>cargo audit</code> on every change</td></tr>
         </tbody>
       </table></div>
     </section>
 
     <section id="roadmap" class="brk">
-      <div class="sn">12</div>
+      <div class="sn">11</div>
       <h2>Roadmap</h2>
       <p>Public, with its state, because a security project's credibility is measured by what it says it will fix
         and then fixes.</p>
@@ -615,7 +524,6 @@ node hidra-browser/test/anonymity-claims.js                         # every badg
           <tr><td>Keys sealed at rest under a passphrase</td><td><span class="pill done">Done</span></td></tr>
           <tr><td>Sender signatures in HidraMail</td><td><span class="pill done">Done</span></td></tr>
           <tr><td>S/Kademlia defences in the DHT</td><td><span class="pill done">Done</span></td></tr>
-          <tr><td>HidraVPN phases 1 to 4: tunnel, kill switch, two hops, signed list, open admission</td><td><span class="pill done">Done</span></td></tr>
           <tr><td>Telescoping circuits: connect to the entry only, extend through it, fresh ephemeral key per hop</td><td><span class="pill open">Open, high</span></td></tr>
           <tr><td>Pin each relay's static key in circuit construction</td><td><span class="pill open">Open, high</span></td></tr>
           <tr><td>DHT queries through a circuit</td><td><span class="pill open">Open, high</span></td></tr>
@@ -623,8 +531,6 @@ node hidra-browser/test/anonymity-claims.js                         # every badg
           <tr><td>Fingerprint profile at document start, in every frame</td><td><span class="pill open">Open, high</span></td></tr>
           <tr><td>Argon2id in the browser's chat page</td><td><span class="pill open">Open, medium</span></td></tr>
           <tr><td>Fixed-size cells and cover traffic on the data path</td><td><span class="pill open">Open, medium</span></td></tr>
-          <tr><td>HidraVPN on Windows, run on real hardware; code signing</td><td><span class="pill next">Next</span></td></tr>
-          <tr><td>HidraVPN phase 5: admission by unlinkable passes</td><td><span class="pill next">Next</span></td></tr>
           <tr><td>Volunteer relay programme</td><td><span class="pill next">Next</span></td></tr>
           <tr><td>Independent external security audit, report published</td><td><span class="pill open">Before broad release</span></td></tr>
         </tbody>
@@ -634,7 +540,7 @@ node hidra-browser/test/anonymity-claims.js                         # every badg
     </section>
 
     <section id="governance">
-      <div class="sn">13</div>
+      <div class="sn">12</div>
       <h2>Licence and governance</h2>
       <p>All of it is under the MIT licence. The protocol is a common good: anyone may implement it, audit it, fork
         it and run nodes. The company develops software and services and <strong>does not operate exit
@@ -642,7 +548,7 @@ node hidra-browser/test/anonymity-claims.js                         # every badg
     </section>
 
     <section id="refs">
-      <div class="sn">14</div>
+      <div class="sn">13</div>
       <h2>References</h2>
       <ul>
         <li>NIST FIPS 203, Module-Lattice-Based Key-Encapsulation Mechanism Standard (ML-KEM)</li>
@@ -650,7 +556,6 @@ node hidra-browser/test/anonymity-claims.js                         # every badg
         <li>Dingledine, Mathewson, Syverson, Tor: The Second-Generation Onion Router</li>
         <li>Maymounkov, Mazi&#232;res, Kademlia: A Peer-to-peer Information System Based on the XOR Metric</li>
         <li>Baumgart, Mies, S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing</li>
-        <li>Donenfeld, WireGuard: Next Generation Kernel Network Tunnel</li>
         <li>RFC 7748 (X25519), RFC 8032 (Ed25519), RFC 8439 (ChaCha20-Poly1305), RFC 9106 (Argon2)</li>
       </ul>
       <p class="no-print" style="margin-top:22px"><a class="btn btn-ghost" href="../token/">Next: the HNET token whitepaper</a></p>

@@ -76,8 +76,9 @@ arrive with it already resolved, or declared as a known item with a date. See
 
 ### 1.3 Applications
 
-Served by the browser itself at `127.0.0.1:8090` (they do not depend on the
-engine running — a sound decision, it reduces points of failure):
+Served by the browser itself on port 8090, each on an origin of its own
+(`mail.localhost`, `forum.localhost`, …), so one app cannot reach another's
+data (they do not depend on the engine running — a sound decision, it reduces points of failure):
 
 - **HidraSearch** — meta-search (DuckDuckGo + SearXNG), 109 languages, requests
   routed through Tor.

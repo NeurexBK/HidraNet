@@ -23,12 +23,14 @@
   script already running in this document, which 'unsafe-inline' above already
   allows, so this opens no exit the policy was closing.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884 http://127.0.0.1:8084 http://127.0.0.1:8090; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884 http://127.0.0.1:8084; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Publish a .hidra site</title>
+<link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
 <script src="hidra-store.js"></script>
+<script src="hidra-site.js"></script>
 <style>
 :root{--bg:#06070d;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--danger:#ff5c6c}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -131,9 +133,12 @@ var enc=new TextEncoder(), dec=new TextDecoder();
 var mqttClient=null, published=[];  // {name, addr, bundle}
 var lastAddr='';
 
-// ── crypto: a .hidra address IS the secret key ──
+// ── crypto ──
+// A site's address is made of its signing key (hidra-site.js): the address
+// lets anyone read it, only the key lets anyone change it. The relay topic
+// and the encryption key still come from the address, so the relay sees
+// neither the site nor its name.
 function b32(bytes){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<bytes.length;i++){v=(v<<8)|bytes[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}
-function newAddr(){var r=crypto.getRandomValues(new Uint8Array(16));return b32(r)+'.hidra';}
 async function deriveKey(a){var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
 async function siteTopic(a){var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a));var u=new Uint8Array(b),h='';for(var i=0;i<16;i++)h+=u[i].toString(16).padStart(2,'0');return 'hsite/'+h;}
 async function E(k,t){var iv=crypto.getRandomValues(new Uint8Array(12));var c=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,enc.encode(t));var o=new Uint8Array(12+c.byteLength);o.set(iv);o.set(new Uint8Array(c),12);var s='';for(var i=0;i<o.length;i++)s+=String.fromCharCode(o[i]);return btoa(s);}
@@ -179,31 +184,37 @@ async function publish(){
   if(!html){ showMsg('Paste the HTML, or load a site from SevenNine.','err'); return; }
   var btn=$('btn-pub'); btn.disabled=true; var old=btn.innerHTML; btn.innerHTML='<span class="spin"></span> Publishing…';
   try{
-    var addr=newAddr();
+    var site=await hidraSite.newSite(), addr=site.addr;
     var bundle={'index.html':html};
     if(loaded.name===name){ for(var f in loaded.pages) bundle[f]=loaded.pages[f]; }
-    await doPublish(addr,bundle);
+    var entry={name:name,addr:addr,pk:site.pk,privJwk:site.privJwk,bundle:bundle};
+    entry.wire=await hidraSite.sealFiles(site,bundle);
+    await doPublish(entry);
     // Re-read first: another tab may have published since this one loaded,
-    // and saving this tab's copy would drop that site from the list.
-    await loadMine(); published.push({name:name,addr:addr,bundle:bundle}); saveMine(); renderMine();
+    // and saving this tab's copy would drop that site from the list. The
+    // key goes into the vault with the site: it is what lets you change it.
+    await loadMine(); published.push(entry); saveMine(); renderMine();
     lastAddr=addr;
     $('r-addr').textContent=addr;
-    $('r-open').href='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
+    $('r-open').href='http://site.localhost:8090/?addr='+encodeURIComponent(addr);
     $('result').classList.remove('hidden');
     showMsg('','');
   }catch(e){ showMsg('Could not publish: '+e.message,'err'); }
   btn.disabled=false; btn.innerHTML=old;
 }
-async function doPublish(addr,bundle){
+// A site from before signing has no key and goes out as it always did; a
+// signed one goes out as the signed message made when it was published.
+async function doPublish(entry){
+  var addr=entry.addr;
   var key=await deriveKey(addr), top=await siteTopic(addr);
-  var ct=await E(key,JSON.stringify(bundle));
+  var ct=await E(key,entry.wire||JSON.stringify(entry.bundle));
   if(ct.length>900000) throw new Error('site too large (max ~600 KB)');
   return new Promise(function(res,rej){
     if(!mqttClient||!mqttClient.connected) return rej(new Error('no connection'));
     mqttClient.publish(top,ct,{qos:0,retain:true},function(err){ err?rej(err):res(); });
   });
 }
-function repubAll(){ published.forEach(function(p){ doPublish(p.addr,p.bundle).catch(function(){}); }); }
+function repubAll(){ published.forEach(function(p){ doPublish(p).catch(function(){}); }); }
 setInterval(repubAll,60000); // keeps the sites online
 
 // A site's address is the only key to it, so the list lives in the browser's
@@ -225,7 +236,7 @@ function renderMine(){
   if(!published.length){ el.innerHTML='<div class="empty">No sites published yet.</div>'; return; }
   el.innerHTML=published.map(function(p,i){
     return '<div class="it"><div><div class="nm">'+esc(p.name)+'</div><div class="ad">'+esc(p.addr)+'</div></div>'+
-      '<div class="row"><span class="st">online</span><a class="btn btn-ghost" style="padding:6px 12px;font-size:.78em" target="_blank" href="http://127.0.0.1:8090/site?addr='+encodeURIComponent(p.addr)+'">Open</a>'+
+      '<div class="row"><span class="st">online</span><a class="btn btn-ghost" style="padding:6px 12px;font-size:.78em" target="_blank" href="http://site.localhost:8090/?addr='+encodeURIComponent(p.addr)+'">Open</a>'+
       '<button class="btn btn-ghost" style="padding:6px 10px;font-size:.78em" onclick="copyOne('+i+')">Copy</button></div></div>';
   }).join('');
 }
@@ -234,7 +245,8 @@ window.copyAddr=function(){ copy(lastAddr); };
 function copy(s){ if(navigator.clipboard){ navigator.clipboard.writeText(s).then(toast); } }
 function toast(){ var t=$('toast'); t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},1500); }
 function showMsg(s,type){ var m=$('msg'); if(!s){m.innerHTML='';return;} m.className='msg '+type; m.textContent=s; }
-function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':s);return d.innerHTML}
+// Safe in text and inside a quoted attribute alike.
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 $('btn-load').onclick=loadSelected;
 $('btn-pub').onclick=publish;

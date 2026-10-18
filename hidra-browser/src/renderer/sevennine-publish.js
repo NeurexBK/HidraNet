@@ -1,7 +1,9 @@
 // Injected into the SevenNine page (127.0.0.1:8084) by the HidraNet browser.
 // Adds a "Publish to the network" button to each site, encrypting + storing the site
 // on the public relay (MQTT retained) so it's reachable from any network by its
-// secret .hidra address. Runs in the trusted browser process — no engine rebuild.
+// .hidra address. A site is signed by a key its address is made of
+// (hidra-site.js, injected just before this): the address lets anyone read it,
+// only the key lets anyone change it.
 (function(){
   if (window.__hnetPub) return; window.__hnetPub = true;
   var enc = new TextEncoder();
@@ -10,27 +12,32 @@
 
   // ── crypto (same scheme as the site viewer) ──
   function b32(bytes){ var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0; for(var i=0;i<bytes.length;i++){ v=(v<<8)|bytes[i]; bits+=8; while(bits>=5){ o+=A[(v>>>(bits-5))&31]; bits-=5; } } if(bits>0) o+=A[(v<<(5-bits))&31]; return o; }
-  function newAddr(){ return b32(crypto.getRandomValues(new Uint8Array(16)))+'.hidra'; }
   async function deriveKey(a){ var km=await crypto.subtle.importKey('raw',enc.encode(a),'PBKDF2',false,['deriveKey']); return crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('hidra-site-v1'),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']); }
   async function siteTopic(a){ var b=await crypto.subtle.digest('SHA-256',enc.encode('hidra-site-topic:'+a)); var u=new Uint8Array(b),h=''; for(var i=0;i<16;i++) h+=u[i].toString(16).padStart(2,'0'); return 'hsite/'+h; }
   async function E(k,t){ var iv=crypto.getRandomValues(new Uint8Array(12)); var c=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},k,enc.encode(t)); var o=new Uint8Array(12+c.byteLength); o.set(iv); o.set(new Uint8Array(c),12); var s=''; for(var i=0;i<o.length;i++) s+=String.fromCharCode(o[i]); return btoa(s); }
 
-  // Served by the browser itself at 127.0.0.1:8090/vendor/, not by a CDN: this
+  // Served by the browser itself (the Sites app's origin, /vendor/), not by a CDN: this
   // script is injected into a page that publishes sites, and a library from a
   // third party with no integrity check would be a direct route to tampering
   // with what gets published.
   function loadMqtt(cb){
     if(window.mqtt) return cb();
     var s=document.createElement('script');
-    s.src='http://127.0.0.1:8090/vendor/mqtt.min.js';
+    s.src='http://publish.localhost:8090/vendor/mqtt.min.js';
     s.onload=cb;
     s.onerror=function(){ console.error('[sevennine] local mqtt unavailable'); };
     document.head.appendChild(s);
   }
   function mqttConnect(){ try{ client=mqtt.connect(BROKER,{clientId:'hnetsn_'+Math.floor(Math.random()*1e9),clean:true,reconnectPeriod:4000,keepalive:30}); client.on('connect',function(){ ready=true; republishAll(); }); }catch(e){} }
 
+  // name -> { addr, pk, privJwk } for a signed site, or name -> address for
+  // one published before signing, which goes on being published as it was.
   function getAddrs(){ try{ return JSON.parse(localStorage.getItem('hnet_site_addrs')||'{}'); }catch(e){ return {}; } }
-  function setAddr(name,addr){ var m=getAddrs(); m[name]=addr; try{ localStorage.setItem('hnet_site_addrs',JSON.stringify(m)); }catch(e){} }
+  function setSite(name,site){ var m=getAddrs(); m[name]=site; try{ localStorage.setItem('hnet_site_addrs',JSON.stringify(m)); }catch(e){} }
+  function addrOf(site){ return typeof site==='string' ? site : site.addr; }
+  async function wireFor(site,bundle){
+    return typeof site==='string' ? JSON.stringify(bundle) : hidraSite.sealFiles(site,bundle);
+  }
 
   async function fetchBundle(name){
     var bundle={};
@@ -44,18 +51,18 @@
   }
   async function publish(name){
     if(!ready){ showResult(null,'Connecting to the network… wait a few seconds and try again.'); return; }
-    var addrs=getAddrs(); var addr=addrs[name]||newAddr();
+    var addrs=getAddrs(); var site=addrs[name]||await hidraSite.newSite(); var addr=addrOf(site);
     var bundle=await fetchBundle(name);
     var key=await deriveKey(addr), top=await siteTopic(addr);
-    var ct=await E(key, JSON.stringify(bundle));
+    var ct=await E(key, await wireFor(site,bundle));
     if(ct.length>900000){ showResult(null,'This site is too large for the public relay (max ~600 KB). Reduce images or content.'); return; }
     client.publish(top, ct, {qos:0, retain:true});
-    setAddr(name, addr);
+    setSite(name, site);
     showResult(addr, null);
   }
   async function republishAll(){
     var addrs=getAddrs();
-    for(var name in addrs){ try{ var bundle=await fetchBundle(name); var key=await deriveKey(addrs[name]), top=await siteTopic(addrs[name]); var ct=await E(key, JSON.stringify(bundle)); if(ct.length<=900000) client.publish(top, ct, {qos:0, retain:true}); }catch(e){} }
+    for(var name in addrs){ try{ var site=addrs[name], addr=addrOf(site); var bundle=await fetchBundle(name); var key=await deriveKey(addr), top=await siteTopic(addr); var ct=await E(key, await wireFor(site,bundle)); if(ct.length<=900000) client.publish(top, ct, {qos:0, retain:true}); }catch(e){} }
   }
   setInterval(function(){ if(ready) republishAll(); }, 60000);
 
@@ -90,7 +97,7 @@
     m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:-apple-system,sans-serif';
     var inner;
     if(addr){
-      var url='http://127.0.0.1:8090/site?addr='+encodeURIComponent(addr);
+      var url='http://site.localhost:8090/?addr='+encodeURIComponent(addr);
       inner='<div style="font-size:1.15em;font-weight:800;color:#00d4aa;margin-bottom:8px">🌐 Site published to the network!</div>'+
         '<div style="color:#9aa3bd;font-size:.88em;margin-bottom:14px;line-height:1.5">Share this secret address. Anyone who has it can open the site from any network by typing it into the HidraNet address bar. The content travels encrypted.</div>'+
         '<div style="display:flex;gap:8px;align-items:center;background:#0a0d16;border:1px solid #1c2133;border-radius:9px;padding:12px 14px;margin-bottom:14px"><code id="hnet-addr" style="flex:1;color:#00d4aa;word-break:break-all;font-size:.95em;font-family:monospace">'+addr+'</code><button id="hnet-copy" style="background:none;border:none;color:#9aa3bd;cursor:pointer;font-size:1.15em">⧉</button></div>'+

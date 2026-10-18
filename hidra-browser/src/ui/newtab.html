@@ -23,10 +23,11 @@
   script already running in this document, which 'unsafe-inline' above already
   allows, so this opens no exit the policy was closing.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884 http://127.0.0.1:8084 http://127.0.0.1:8090; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884 http://127.0.0.1:8084; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HidraNet — Secure Network</title>
+  <link rel="icon" href="img/favicon.png">
   <script src="vendor/mqtt.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -72,13 +73,13 @@
     .logo-container { display: flex; flex-direction: column; align-items: center; gap: 16px; }
 
     .logo-svg {
-      width: 100px; height: 100px;
+      height: 110px; width: auto;
       animation: pulse-glow 4s ease-in-out infinite;
     }
 
     @keyframes pulse-glow {
-      0%, 100% { filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.2)); }
-      50% { filter: drop-shadow(0 0 20px rgba(0, 212, 170, 0.4)); }
+      0%, 100% { filter: drop-shadow(0 0 8px rgba(46, 160, 0, 0.25)); }
+      50% { filter: drop-shadow(0 0 20px rgba(46, 160, 0, 0.5)); }
     }
 
     .logo-text h1 {
@@ -419,7 +420,7 @@
 
     @media (max-width: 768px) {
       .dashboard { padding: 24px 16px; }
-      .logo-svg { width: 72px; height: 72px; }
+      .logo-svg { height: 80px; width: auto; }
       .logo-text h1 { font-size: 24px; letter-spacing: 4px; }
       .stat-grid { grid-template-columns: repeat(2, 1fr); }
       .footer { flex-direction: column; gap: 8px; text-align: center; }
@@ -431,21 +432,7 @@
 
     <header class="header">
       <div class="logo-container">
-        <svg class="logo-svg" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="60" cy="60" r="54" stroke="#00d4aa" stroke-width="1.5" opacity="0.2"/>
-          <circle cx="60" cy="60" r="40" stroke="#00d4aa" stroke-width="1.5" opacity="0.35"/>
-          <circle cx="60" cy="60" r="26" stroke="#00d4aa" stroke-width="1.5" opacity="0.55"/>
-          <circle cx="60" cy="60" r="12" stroke="#00d4aa" stroke-width="2" opacity="0.8"/>
-          <circle cx="60" cy="60" r="4" fill="#00d4aa"/>
-          <line x1="60" y1="6" x2="60" y2="20" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
-          <line x1="60" y1="100" x2="60" y2="114" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
-          <line x1="6" y1="60" x2="20" y2="60" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
-          <line x1="100" y1="60" x2="114" y2="60" stroke="#00d4aa" stroke-width="1" opacity="0.2"/>
-          <line x1="17" y1="17" x2="28" y2="28" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
-          <line x1="92" y1="92" x2="103" y2="103" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
-          <line x1="103" y1="17" x2="92" y2="28" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
-          <line x1="17" y1="103" x2="28" y2="92" stroke="#00d4aa" stroke-width="0.8" opacity="0.15"/>
-        </svg>
+        <img class="logo-svg" src="img/hidranet-logo.png" alt="HidraNet">
         <div class="logo-text">
           <h1>HidraNet</h1>
           <p class="tagline">Anonymous Overlay Network</p>
@@ -476,7 +463,7 @@
           <h2>HidraNet Apps</h2>
         </div>
         <div class="apps-grid">
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/mail" id="app-mail">
+          <a class="app-shortcut" href="#" data-url="http://mail.localhost:8090/" id="app-mail">
             <div class="app-icon mail-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -487,7 +474,7 @@
             <span class="app-desc">E2E encrypted email</span>
             <span class="app-badge online">Ready</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090" id="app-chat">
+          <a class="app-shortcut" href="#" data-url="http://chat.localhost:8090/" id="app-chat">
             <div class="app-icon chat-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -497,7 +484,7 @@
             <span class="app-desc">Anonymous real-time chat</span>
             <span class="app-badge" id="chat-badge">Checking…</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/forum" id="app-forum">
+          <a class="app-shortcut" href="#" data-url="http://forum.localhost:8090/" id="app-forum">
             <div class="app-icon" style="background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: #fff;">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -508,7 +495,7 @@
             <span class="app-desc">Anonymous community</span>
             <span class="app-badge online">Ready</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/donate" id="app-donate">
+          <a class="app-shortcut" href="#" data-url="http://donate.localhost:8090/" id="app-donate">
             <div class="app-icon" style="background: linear-gradient(135deg, #00d4aa, #3df5c4); color: #032018;">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
@@ -518,18 +505,7 @@
             <span class="app-desc">Support HidraNet with $HNET</span>
             <span class="app-badge online">HNET</span>
           </a>
-          <a class="app-shortcut" href="#" data-url="hidravpn.html" id="app-vpn">
-            <div class="app-icon" style="background: linear-gradient(135deg, #00d4aa, #3df5c4); color: #032018;">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/>
-                <path d="M9 12l2 2 4-4"/>
-              </svg>
-            </div>
-            <span class="app-name">HidraVPN</span>
-            <span class="app-desc">Whole machine. Strong privacy, not anonymity</span>
-            <span class="app-badge" id="vpn-badge">Checking…</span>
-          </a>
-          <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/search">
+          <a class="app-shortcut" href="#" data-url="http://search.localhost:8090/">
             <div class="app-icon search-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="11" cy="11" r="8"/>
@@ -553,7 +529,7 @@
             <span class="app-desc">.hidra site builder</span>
             <span class="app-badge" id="sevennine-badge">Offline</span>
           </a>
-          <a class="app-shortcut" href="#" id="app-hidrareview" data-url="http://127.0.0.1:8090/reviews">
+          <a class="app-shortcut" href="#" id="app-hidrareview" data-url="http://reviews.localhost:8090/">
             <div class="app-icon" style="background: linear-gradient(135deg, #ffaa33, #ff7043); border-color: rgba(255, 170, 51, 0.3);">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path d="M12 2l2.9 6.3 6.6.8-4.9 4.6 1.3 6.6L12 17l-5.9 3.3 1.3-6.6L2.5 9.1l6.6-.8z"/>
@@ -948,14 +924,14 @@
 
     <footer class="footer">
       <div class="footer-left">
-        <span class="version">HidraNet Browser v0.1.0</span>
+        <span class="version" id="app-version">HidraNet Browser</span>
         <span class="separator">&middot;</span>
         <span class="crypto">Noise XX · X25519 + ML-KEM-1024 · ChaCha20-Poly1305 · BLAKE3</span>
       </div>
       <div class="footer-right">
         <span class="footer-indicator">
           <span class="footer-dot"></span>
-          All traffic routed through HidraNet
+          Nothing leaves this computer without Tor
         </span>
       </div>
     </footer>
@@ -963,7 +939,9 @@
   </div>
 
   <script>
-    const startTime = Date.now();
+    // When the Tor connection came up, from the main process; null while it
+    // is not up. The uptime is the connection's, not this page's.
+    var connectedSince = null;
     var isConnecting = false;
 
     // A relay is shown by fingerprint, never by address, not even a masked
@@ -991,7 +969,8 @@
     }
 
     function updateUptime() {
-      var elapsed = Math.floor((Date.now() - startTime) / 1000);
+      if (!connectedSince) { document.getElementById('stat-uptime').textContent = '—'; return; }
+      var elapsed = Math.max(0, Math.floor((Date.now() - connectedSince) / 1000));
       var h = Math.floor(elapsed / 3600);
       var m = Math.floor((elapsed % 3600) / 60);
       var s = elapsed % 60;
@@ -1009,38 +988,14 @@
       return { chat: false, sevennine: false, error: null };
     }
 
-    // The VPN badge says what the service on this machine says, and nothing
-    // when there is no service to ask: a fixed "On" would be a promise this
-    // page cannot keep.
-    async function detectVpn() {
-      var badge = document.getElementById('vpn-badge');
-      if (!badge) return;
-      if (!(window.hidra && window.hidra.vpn)) {
-        badge.textContent = 'Unavailable'; badge.className = 'app-badge offline'; return;
-      }
-      try {
-        var s = await window.hidra.vpn.status();
-        if (s.state === 'connected') {
-          badge.textContent = s.report && s.report.mode === 'privado' ? 'On, two hops' : 'On, one hop';
-          badge.className = 'app-badge online';
-        } else if (s.state === 'connecting') {
-          badge.textContent = 'Connecting'; badge.className = 'app-badge';
-        } else if (s.state === 'disconnected') {
-          badge.textContent = 'Off'; badge.className = 'app-badge offline';
-        } else if (s.state === 'not-installed') {
-          badge.textContent = 'Not installed'; badge.className = 'app-badge offline';
-        } else {
-          badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
-        }
-        badge.title = s.error || '';
-      } catch (e) {
-        badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
-      }
-    }
-
     async function detectApps() {
-      detectVpn();
       var status = await appsStatus();
+      // The exact build, so an older copy can be told apart at a glance.
+      var about = status.about;
+      if (about && typeof about.version === 'string') {
+        document.getElementById('app-version').textContent = 'HidraNet Browser ' + about.version +
+          ' · build ' + about.build + (about.date ? ' · ' + about.date : '');
+      }
       var chatOk = status.chat;
       var chatBadge = document.getElementById('chat-badge');
       if (chatOk) {
@@ -1102,7 +1057,9 @@
       if (bootstrapTimer) { clearInterval(bootstrapTimer); bootstrapTimer = null; }
     }
 
-    function updateConnectUI(state) {
+    // `detail` is the bootstrap percent while starting, or the reason Tor
+    // stopped when it failed.
+    function updateConnectUI(state, detail) {
       var btn = document.getElementById('connectBtn');
       var btnText = document.getElementById('connectBtnText');
       var title = document.getElementById('connect-title');
@@ -1115,6 +1072,16 @@
         title.textContent = 'Starting Tor…';
         title.style.color = 'var(--warning)';
         desc.textContent = 'Building an anonymous circuit — usually takes 20 to 40 seconds';
+      } else if (state === 'starting') {
+        // Started by the browser itself, not by this page's button: the same
+        // wait, shown the same way, so nobody is told they are disconnected
+        // while Tor is on its way up.
+        btn.className = 'connect-btn loading';
+        btnText.textContent = 'Connecting…';
+        btn.querySelector('svg').innerHTML = '<circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="10" class="spinner"/>';
+        title.textContent = 'Starting Tor — ' + (detail || 0) + '%';
+        title.style.color = 'var(--warning)';
+        desc.textContent = 'Building an anonymous circuit. Nothing leaves this computer until it is ready.';
       } else if (state === 'connected') {
         btn.className = 'connect-btn on';
         btnText.textContent = 'Disconnect';
@@ -1126,9 +1093,18 @@
         btn.className = 'connect-btn off';
         btnText.textContent = 'Connect';
         btn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
-        title.textContent = 'HidraNet disconnected';
-        title.style.color = 'var(--text-primary)';
-        desc.textContent = 'Your browsing is going out through your own IP. Click to connect through the Tor network.';
+        // Disconnected, the kill switch is closed (network-lock.js): pages
+        // do not load at all, rather than load from this computer's address.
+        if (state === 'failed') {
+          title.textContent = 'Tor stopped';
+          title.style.color = 'var(--danger)';
+          desc.textContent = (detail ? 'Why: ' + detail + '. ' : '') +
+            'Nothing leaves this computer until Tor is connected again. Click Connect to try again.';
+        } else {
+          title.textContent = 'HidraNet disconnected';
+          title.style.color = 'var(--text-primary)';
+          desc.textContent = 'Nothing leaves this computer until Tor is connected. Click Connect to start it.';
+        }
       }
     }
 
@@ -1192,6 +1168,7 @@
       var text = document.getElementById('status-text');
       var connected = false;
       var mode = 'disconnected';
+      var tor = null;
 
       try {
         if (window.hidra && window.hidra.proxy) {
@@ -1199,11 +1176,15 @@
           if (status) {
             connected = status.connected;
             mode = status.mode || (connected ? 'local' : 'disconnected');
+            tor = status.tor || null;
+            connectedSince = connected && tor && tor.readyAt ? tor.readyAt : null;
             document.getElementById('stat-relays').textContent = status.relayCount || '—';
             document.getElementById('stat-latency').textContent =
               status.latencyMs ? status.latencyMs + 'ms' : '—';
+            // Only while connected: the address the last connection left
+            // through is not where anything goes now.
             document.getElementById('stat-exit').textContent =
-              (status.tor && status.tor.exitIp) ? status.tor.exitIp : '—';
+              (connected && tor && tor.exitIp) ? tor.exitIp : '—';
 
             if (status.relayChain) {
               var relays = status.relayChain.split(' → ');
@@ -1236,11 +1217,18 @@
         text.textContent = 'Connected — local mode';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
+      } else if (mode === 'connecting') {
+        var pct = tor ? (tor.bootstrapPercent || 0) : 0;
+        dot.className = 'dot connecting';
+        text.textContent = 'Connecting to Tor — ' + pct + '%';
+        text.style.color = 'var(--warning)';
+        if (!isConnecting) updateConnectUI('starting', pct);
       } else {
+        var failedWhy = tor && tor.state === 'failed' ? (tor.lastError || 'Tor stopped') : null;
         dot.className = 'dot disconnected';
-        text.textContent = 'Disconnected';
+        text.textContent = failedWhy ? 'Disconnected — Tor stopped' : 'Disconnected';
         text.style.color = '#ff4466';
-        if (!isConnecting) updateConnectUI('disconnected');
+        if (!isConnecting) updateConnectUI(failedWhy ? 'failed' : 'disconnected', failedWhy);
       }
 
       // Every other badge on this panel describes something the browser does
@@ -1271,7 +1259,7 @@
       if (e.key === 'Enter') {
         var q = this.value.trim();
         if (q) {
-          window.location.href = 'http://127.0.0.1:8090/search?q=' + encodeURIComponent(q);
+          window.location.href = 'http://search.localhost:8090/?q=' + encodeURIComponent(q);
         }
       }
     });

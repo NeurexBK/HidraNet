@@ -106,7 +106,7 @@ Release. Users then verify the download with the project's public key (the one
 `hidravpn-sign keygen` printed; it is published on the site and embedded in
 the client and the browser — `RELEASE_PUBLIC_KEY_B64` in
 `crates/hidravpn-core/src/release.rs` and `RELEASE_PUBLIC_KEY` in
-`hidra-browser/src/main/release-verify.js`, which a test keeps identical):
+`hidravpn/browser/src/main/release-verify.js`, which a test keeps identical):
 
 ```
 hidravpn-sign verify --pubkey <project public key> SHA256SUMS-hidravpn-v0.3.0.txt

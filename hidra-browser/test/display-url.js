@@ -13,7 +13,7 @@ const { pathToFileURL } = require('url');
 const { TabManager } = require('../src/main/tab-manager');
 
 const UI = pathToFileURL(path.join(__dirname, '..', 'src', 'ui') + path.sep).href;
-const APPS = 'http://127.0.0.1:8090';
+const A = (name) => `http://${name}.localhost:8090`;
 
 // _displayUrl touches no instance state, so it can be exercised directly.
 const show = TabManager.prototype._displayUrl;
@@ -24,10 +24,11 @@ const cases = [
   [`${UI}hidrachat.html`, 'hidra://chat', 'chat, from disk'],
   [`${UI}hidrareview.html`, 'hidra://reviews', 'reviews, from disk'],
   [`${UI}hidramail.html?x=1#y`, 'hidra://mail', 'a query and fragment are dropped'],
-  [`${APPS}/mail`, 'hidra://mail', 'mail, from the apps server'],
-  [`${APPS}/reviews`, 'hidra://reviews', 'reviews, from the apps server'],
-  [`${APPS}/`, 'hidra://chat', 'the apps root is chat'],
-  [`${APPS}/search?q=hello`, 'hidra://search', 'a search keeps its name'],
+  [`${A('mail')}/`, 'hidra://mail', 'mail, from its own origin'],
+  [`${A('reviews')}/?b=cafe`, 'hidra://reviews', 'reviews, from its own origin'],
+  [`${A('chat')}/`, 'hidra://chat', 'chat, from its own origin'],
+  [`${A('search')}/?q=hello`, 'hidra://search', 'a search keeps its name'],
+  ['http://evil.localhost:8090/', 'http://evil.localhost:8090/', 'a .localhost host that is not an app is shown as it is'],
   ['https://example.com/page', 'https://example.com/page', 'an ordinary site is untouched'],
   ['hidra://newtab', 'hidra://newtab', 'an already-internal name is untouched'],
 ];

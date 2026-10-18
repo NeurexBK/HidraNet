@@ -283,7 +283,82 @@ var client = null, brokerIx = 0;
 var slug = '', biz = null, revs = {}, pics = {}, replies = {}, stars = 0, ready = false;
 var dirBiz = {}, dirRev = {}, drawTimer = null;
 
-function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+// Safe in text and inside a quoted attribute alike.
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* ---- What comes off the relay ----
+   Anyone can publish a listing, a photo, a review or a reply, under any
+   topic. Nothing is shown or used as a key until it is the shape the app
+   writes: a slug or id is a plain token ("__proto__" included), a photo is
+   base64 image data and nothing else, every field is the type the app
+   writes. This page is on hidranet.org: a stranger's script here would run
+   on the project's own domain, next to its download links. */
+var SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+var PIC_RE = /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+\/]+={0,2}$/;
+var PIC_MAX = 2 * 1024 * 1024;
+function str(v) { return typeof v === 'string' ? v : ''; }
+function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
+function okPic(p) { return typeof p === 'string' && p.length <= PIC_MAX && PIC_RE.test(p); }
+function cleanBiz(o) {
+  if (!o || typeof o !== 'object') return null;
+  var b = {};
+  ['name', 'cat', 'desc', 'city', 'addr', 'phone', 'hours', 'about', 'menu', 'mail', 'site', 'hidra', 'kind'].forEach(function (k) { b[k] = str(o[k]); });
+  b.at = num(o.at);
+  return b;
+}
+function cleanReview(o) {
+  if (!o || typeof o !== 'object') return null;
+  return { stars: Math.max(1, Math.min(5, num(o.stars) | 0)), text: str(o.text), name: str(o.name), loc: str(o.loc), at: num(o.at) };
+}
+function cleanReply(o) { return (o && typeof o === 'object') ? { text: str(o.text), at: num(o.at), sig: str(o.sig).slice(0, 200) } : null; }
+
+/* ---- Who owns a listing ----
+   The same rules as HidraReview in the browser (hidrareview.html): a
+   listing, its photos and the owner's replies are signed by the listing's
+   key, ECDSA P-256 over JSON.stringify of a fixed list of fields. This page
+   remembers the first key it saw for each listing and ignores a later one
+   signed by another key, an unsigned one, or an empty payload that would
+   wipe it. Listings from before signing show as before, their replies
+   marked unverified. */
+var LISTING_KEYS = ['name', 'kind', 'hidra', 'sats', 'mail', 'ownerHash', 'cat', 'desc', 'city', 'addr', 'phone', 'site', 'hours', 'about', 'menu', 'at'];
+function listingFields(s, o) { return ['hreview-listing-v2', s].concat(LISTING_KEYS.map(function (k) { return o[k]; })); }
+function replyFields(s, id, r) { return ['hreview-reply-v2', s, id, r.text, r.at]; }
+function photoFields(s, pid, d) { return ['hreview-photo-v2', s, pid, d]; }
+function b64bytes(s) { var r = atob(s), u = new Uint8Array(r.length); for (var i = 0; i < r.length; i++) u[i] = r.charCodeAt(i); return u; }
+async function verifyFields(pk, fields, sig) {
+  try {
+    if (typeof pk !== 'string' || typeof sig !== 'string' || !pk || !sig) return false;
+    var raw = b64bytes(pk);
+    if (raw.length !== 65 || raw[0] !== 4) return false;
+    var key = await crypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64bytes(sig), new TextEncoder().encode(JSON.stringify(fields)));
+  } catch (e) { return false; }
+}
+var owners = {};
+try { owners = JSON.parse(localStorage.getItem('hreview-owners') || '{}') || {}; } catch (e) { owners = {}; }
+function remember(s, pk) { if (owners[s]) return; owners[s] = pk; try { localStorage.setItem('hreview-owners', JSON.stringify(owners)); } catch (e) {} }
+var disputed = false, signedListing = false;
+var held = { pics: {}, replies: {} };
+var queue = Promise.resolve();
+
+/* A listing off the wire: its record, or null when it is not to be shown. */
+async function checkListing(s, o) {
+  var b = cleanBiz(o);
+  if (!b) return null;
+  if (o.opk || o.sig) {
+    if (!(await verifyFields(str(o.opk), listingFields(s, o), str(o.sig)))) return null;
+    if (owners[s] && owners[s] !== o.opk) { if (s === slug) disputed = true; return null; }
+    remember(s, o.opk);
+    b.signed = true;
+    return b;
+  }
+  if (owners[s]) { if (s === slug) disputed = true; return null; }
+  return b;
+}
 function starRow(n) { var o = ''; for (var i = 1; i <= 5; i++) o += i <= n ? '★' : '☆'; return o; }
 function when(t) { try { return new Date(t).toLocaleDateString('en-US'); } catch (e) { return ''; } }
 function rid(n) {
@@ -350,8 +425,10 @@ function safeUrl(u) {
 /** O slug vem de /r/<slug> ou de ?b=<slug>. */
 function readSlug() {
   var m = location.pathname.match(/\/r\/([^/?#]+)/);
-  if (m) return decodeURIComponent(m[1]);
-  return new URLSearchParams(location.search).get('b') || '';
+  var s = '';
+  try { s = m ? decodeURIComponent(m[1]) : (new URLSearchParams(location.search).get('b') || ''); } catch (e) { s = ''; }
+  // It goes into relay topics: '+' or '#' would subscribe to everything.
+  return SLUG_RE.test(s) ? s : '';
 }
 
 function stats() {
@@ -389,20 +466,68 @@ function connect() {
       if (cb) { delete mailResolvers[topic]; try { client.unsubscribe(topic); } catch (e) {} cb(s); }
       return;
     }
+    queue = queue.then(function () { return handle(topic, s, p); }).catch(function () {});
+  });
+}
+
+async function handle(topic, s, p) {
     try {
-      if (p[1] === 'reply') { if (!s) delete replies[p[3]]; else replies[p[3]] = JSON.parse(s); }
+      if (!SLUG_RE.test(p[2] || '')) return;
+      if (p[1] !== 'b' && (p.length !== 4 || !ID_RE.test(p[3]))) return;
+      var owner = owners[p[2]];
+      if (p[1] === 'reply') {
+        if (!s) { if (!owner) delete replies[p[3]]; }
+        else {
+          var rr = cleanReply(JSON.parse(s));
+          if (!rr) return;
+          if (owner) { if (!(await verifyFields(owner, replyFields(p[2], p[3], rr), rr.sig))) return; rr.verified = true; replies[p[3]] = rr; }
+          else { held.replies[p[3]] = rr; if (!rr.sig) replies[p[3]] = rr; }
+        }
+      }
       else if (!slug) {
-        if (p[1] === 'b') { if (!s) delete dirBiz[p[2]]; else dirBiz[p[2]] = JSON.parse(s); }
+        if (p[1] === 'b') { if (!s) { if (!owner) delete dirBiz[p[2]]; } else { var db = await checkListing(p[2], JSON.parse(s)); if (db) dirBiz[p[2]] = db; } }
         else if (p[1] === 'r') {
           if (!dirRev[p[2]]) dirRev[p[2]] = {};
-          if (!s) delete dirRev[p[2]][p[3]]; else dirRev[p[2]][p[3]] = JSON.parse(s);
+          if (!s) delete dirRev[p[2]][p[3]]; else { var dr = cleanReview(JSON.parse(s)); if (dr) dirRev[p[2]][p[3]] = dr; }
         }
-      } else if (topic === 'hreview/b/' + slug) { biz = s ? JSON.parse(s) : null; }
-      else if (p[1] === 'r') { if (!s) delete revs[p[3]]; else revs[p[3]] = JSON.parse(s); }
-      else if (p[1] === 'p') { if (!s) delete pics[p[3]]; else pics[p[3]] = s; }
+      } else if (topic === 'hreview/b/' + slug) {
+        if (!s) { if (!owner) biz = null; else disputed = true; }
+        else {
+          var got = await checkListing(slug, JSON.parse(s));
+          if (got) {
+            biz = got; signedListing = !!got.signed;
+            if (got.signed) await settle(owners[slug]);
+          }
+        }
+      }
+      else if (p[1] === 'r') { if (!s) delete revs[p[3]]; else { var r = cleanReview(JSON.parse(s)); if (r) revs[p[3]] = r; } }
+      else if (p[1] === 'p') {
+        if (!s) { if (!owner) delete pics[p[3]]; }
+        else {
+          var d = s, psig = '';
+          if (s.charAt(0) === '{') { var po = JSON.parse(s); if (!po || typeof po.d !== 'string' || typeof po.sig !== 'string') return; d = po.d; psig = po.sig; }
+          if (!okPic(d)) return;
+          if (owner) { if (!(await verifyFields(owner, photoFields(slug, p[3], d), psig))) return; pics[p[3]] = d; }
+          else { held.pics[p[3]] = { d: d, sig: psig }; if (!psig) pics[p[3]] = d; }
+        }
+      }
       draw();
     } catch (e) { /* malformed message from another client */ }
-  });
+}
+
+/* Once the listing's key is known, what arrived before it is checked. */
+async function settle(pk) {
+  for (var k in pics) if (!(held.pics[k] && held.pics[k].sig)) delete pics[k];
+  for (var id in replies) if (!replies[id].verified) delete replies[id];
+  for (var pid in held.pics) {
+    var it = held.pics[pid];
+    if (it.sig && await verifyFields(pk, photoFields(slug, pid, it.d), it.sig)) pics[pid] = it.d;
+  }
+  for (var rid_ in held.replies) {
+    var r = held.replies[rid_];
+    if (r.sig && await verifyFields(pk, replyFields(slug, rid_, r), r.sig)) { r.verified = true; replies[rid_] = r; }
+  }
+  held = { pics: {}, replies: {} };
 }
 
 /* Retained messages all arrive at once — batch them into a single render. */
@@ -438,11 +563,12 @@ function render() {
     : '<span class="cnt">be the first to review it</span>';
 
   $('hero').innerHTML =
-    (photos.length ? '<img src="' + photos[0] + '" alt="">' : '') +
+    (photos.length ? '<img src="' + esc(photos[0]) + '" alt="">' : '') +
     '<div class="veil"></div><div class="inner">' +
     (biz.cat ? '<div class="kick">' + esc(biz.cat) + '</div>' : '') +
     '<h1>' + esc(biz.name || '') + '</h1>' +
     (biz.desc ? '<div class="sub">' + esc(biz.desc) + '</div>' : '') +
+    (disputed ? '<div class="sub">⚠ Someone tried to replace or remove this listing with one its owner did not sign. You are seeing the owner\'s version.</div>' : '') +
     '<div class="rate">' + rateHtml + '</div></div>';
 
   document.title = (biz.name || 'Business') + ' — reviews';
@@ -475,13 +601,14 @@ function render() {
   }).join(''), true);
 
   $('gal-card').className = photos.length > 1 ? 'card' : 'card hidden';
-  $('gal').innerHTML = photos.slice(1).map(function (p) { return '<img src="' + p + '" alt="">'; }).join('');
+  $('gal').innerHTML = photos.slice(1).map(function (p) { return '<img src="' + esc(p) + '" alt="">'; }).join('');
 
   var ids = Object.keys(revs).sort(function (a, b) { return (revs[b].at || 0) - (revs[a].at || 0); });
   $('list').innerHTML = ids.length ? ids.map(function (id) {
     var r = revs[id], rep = replies[id];
     var who = esc(r.name || 'Anonymous') + (r.loc ? ' <span class="loc">· ' + esc(r.loc) + '</span>' : '');
-    var reply = rep ? '<div class="ownerreply"><div class="orl">Reply from the business</div>' + esc(rep.text) + '</div>' : '';
+    var label = rep && rep.verified ? 'Reply from the business' : 'Reply, unverified — this listing has no owner signature yet';
+    var reply = rep ? '<div class="ownerreply"><div class="orl">' + label + '</div>' + esc(rep.text) + '</div>' : '';
     return '<div class="rev"><div class="rh"><span class="ra">' + who + '</span>' +
       '<span class="st">' + starRow(r.stars) + '</span></div>' +
       '<div class="rd">' + when(r.at) + '</div>' +
