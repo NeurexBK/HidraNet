@@ -64,8 +64,9 @@ jobs:
     # Every namespace suite, twice in a row: the client, the service, two
     # hops, open admission, the browser's module against a real service, the
     # anonymity suite with packet captures, and the passes of phases 5 and 6
-    # (two hops with a pass exit included). The hosted runner has IPv6, so
-    # the anonymity suite's IPv6 checks must run here, not be skipped.
+    # (two hops with a pass exit included), and IPv6 through the tunnel. The
+    # hosted runner has IPv6, so every IPv6 check must run here, not be
+    # skipped.
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -107,7 +108,7 @@ jobs:
                      test-admission-netns test-browser-netns test-directory \
                      test-node-installer test-client-installer test-anonymity-netns \
                      test-passes-netns test-refill-netns test-unit-sandbox-netns \
-                     test-fuzz-netns test-load-netns; do
+                     test-fuzz-netns test-load-netns test-ipv6-netns; do
               echo "::group::round $round: $t"
               sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
               echo "::endgroup::"
