@@ -326,12 +326,21 @@ mod node {
                     let ok = r.is_ok();
                     (r, ok)
                 })??;
-                // Into the running device too, if there is one.
-                match crate::wg::open_existing(&cfg.interface) {
-                    Ok(dev) => dev.add_peer(&lease.public_key, lease.ip)?,
-                    Err(e) => warn!("the node is not running ({e}); the client is admitted the next time it starts"),
-                }
-                println!("{}", invite_for(&cfg, &lease)?.to_json());
+                // Into the running device too, if there is one. Its IPv6 is
+                // what the running node set up; a node that is not running
+                // hands out IPv4 only, and the client gets IPv6 with its
+                // next invite.
+                let v6 = match crate::wg::open_existing(&cfg.interface, cfg.tunnel_network6()?) {
+                    Ok(dev) => {
+                        dev.add_peer(&lease.public_key, lease.ip)?;
+                        dev.ipv6()
+                    }
+                    Err(e) => {
+                        warn!("the node is not running ({e}); the client is admitted the next time it starts");
+                        None
+                    }
+                };
+                println!("{}", invite_for(&cfg, &lease, v6)?.to_json());
             }
             Cmd::Revoke { pubkey } => {
                 require_root()?;
@@ -342,7 +351,7 @@ mod node {
                 })? {
                     return Err(anyhow!("that key is not admitted"));
                 }
-                if let Ok(dev) = crate::wg::open_existing(&cfg.interface) {
+                if let Ok(dev) = crate::wg::open_existing(&cfg.interface, None) {
                     dev.remove_peer(&pubkey)?;
                 }
                 println!("revoked");
@@ -353,7 +362,10 @@ mod node {
                 let lease = leases
                     .find(&pubkey)
                     .ok_or_else(|| anyhow!("that key is not admitted"))?;
-                println!("{}", invite_for(&cfg, lease)?.to_json());
+                let v6 = crate::wg::open_existing(&cfg.interface, cfg.tunnel_network6()?)
+                    .ok()
+                    .and_then(|d| d.ipv6());
+                println!("{}", invite_for(&cfg, lease, v6)?.to_json());
             }
             Cmd::DnsCheck { name, dns } => {
                 let upstreams = if dns.is_empty() {
@@ -369,8 +381,8 @@ mod node {
                 require_root()?;
                 let cfg = NodeConfig::load(&cli.config)?;
                 let leases = Leases::load()?;
-                let dev =
-                    crate::wg::open_existing(&cfg.interface).context("the node is not running")?;
+                let dev = crate::wg::open_existing(&cfg.interface, None)
+                    .context("the node is not running")?;
                 let stats = dev.peer_stats()?;
                 println!(
                     "{:<16} {:>14} {:>12} {:>12}",
@@ -458,13 +470,18 @@ mod node {
         }
     }
 
-    fn invite_for(cfg: &NodeConfig, lease: &crate::leases::Lease) -> Result<Invite> {
+    fn invite_for(
+        cfg: &NodeConfig,
+        lease: &crate::leases::Lease,
+        v6: Option<crate::config::TunnelNet6>,
+    ) -> Result<Invite> {
         let net = cfg.tunnel_network()?;
         Ok(Invite {
             node_name: cfg.name.clone(),
             node_public_key: cfg.public_key()?,
             endpoint: cfg.public_endpoint.to_string(),
             client_address: format!("{}/{}", lease.ip, net.prefix),
+            client_address6: v6.map(|n| format!("{}/{}", n.address_for(lease.ip), n.prefix)),
             dns: net.node_ip,
             allowed_ips: vec!["0.0.0.0/0".into(), "::/0".into()],
             mtu: 1420,
@@ -497,19 +514,40 @@ mod node {
             None => crate::nat::default_interface()?,
         };
 
+        // IPv6 for clients when the settings allow it and the host has an
+        // IPv6 route out; otherwise their IPv6 stays blocked on their side.
+        let net6 = match cfg.tunnel_network6()? {
+            Some(n) if crate::nat::host_has_ipv6_route() => Some(n),
+            Some(_) => {
+                info!("this host has no IPv6 default route; clients get IPv4 only");
+                None
+            }
+            None => None,
+        };
         let forwarding_was_on = crate::nat::enable_forwarding()?;
-        let dev = crate::wg::bring_up(&cfg, &net).await?;
+        let dev = crate::wg::bring_up(&cfg, &net, net6).await?;
         info!(
             "tunnel interface {} up ({} WireGuard), listening on UDP {}",
             cfg.interface,
             dev.backend_name(),
             cfg.listen_port
         );
-
-        crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &cfg.role)?;
+        let forwarding6 = match dev.ipv6() {
+            Some(_) => Some(crate::nat::enable_forwarding6(&out_if)?),
+            None => None,
+        };
+        let cidr6 = dev.ipv6().map(|n| n.cidr());
+        crate::nat::apply(
+            &cfg.interface,
+            &out_if,
+            &net.cidr,
+            &cfg.role,
+            cidr6.as_deref(),
+        )?;
         info!(
-            "forwarding and NAT set through {out_if} (role: {})",
-            cfg.role
+            "forwarding and NAT set through {out_if} (role: {}; IPv6 for clients: {})",
+            cfg.role,
+            if cidr6.is_some() { "yes" } else { "no" }
         );
 
         let leases = Leases::load()?;
@@ -659,7 +697,7 @@ mod node {
                             Ok(Ok((lease, count))) => match dev
                                 .add_peer(&lease.public_key, lease.ip)
                                 .map_err(|e| format!("could not admit: {e:#}"))
-                                .and_then(|()| invite_for(&cfg, &lease).map_err(|e| format!("{e:#}")))
+                                .and_then(|()| invite_for(&cfg, &lease, dev.ipv6()).map_err(|e| format!("{e:#}")))
                             {
                                 Ok(invite) => {
                                     info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, count);
@@ -745,6 +783,11 @@ mod node {
         }
         if let Err(e) = crate::nat::restore_forwarding(forwarding_was_on) {
             warn!("restoring IPv4 forwarding: {e}");
+        }
+        if let Some(f) = &forwarding6 {
+            if let Err(e) = crate::nat::restore_forwarding6(f) {
+                warn!("restoring IPv6 forwarding: {e}");
+            }
         }
         dev.tear_down();
         Ok(())

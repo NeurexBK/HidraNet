@@ -13,13 +13,17 @@ use anyhow::{anyhow, Context, Result};
 use tracing::info;
 use wireguard_control::{Backend, Device, DeviceUpdate, InterfaceName, Key, PeerConfigBuilder};
 
-use crate::config::{NodeConfig, TunnelNet};
+use crate::config::{NodeConfig, TunnelNet, TunnelNet6};
 use crate::userspace::{socket_path, UserspaceDevice};
 
 pub struct WgDevice {
     iface: InterfaceName,
     backend: Backend,
     userspace: Option<UserspaceDevice>,
+    /// The IPv6 subnet this node carries for its clients, when it does: the
+    /// interface holds the node's address in it, and every peer is allowed
+    /// its own address there besides its IPv4 one.
+    v6: Option<TunnelNet6>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -45,8 +49,14 @@ fn run(cmd: &str, args: &[&str]) -> Result<()> {
 }
 
 impl WgDevice {
-    /// Creates and configures the interface for this node.
-    pub async fn bring_up(cfg: &NodeConfig, net: &TunnelNet) -> Result<Self> {
+    /// Creates and configures the interface for this node, with IPv6 when
+    /// `net6` is given and the kernel's WireGuard runs it (the userspace one
+    /// carries IPv4 only).
+    pub async fn bring_up(
+        cfg: &NodeConfig,
+        net: &TunnelNet,
+        net6: Option<TunnelNet6>,
+    ) -> Result<Self> {
         let iface = InterfaceName::from_str(&cfg.interface)
             .map_err(|e| anyhow!("bad interface name: {e}"))?;
         let key = Key::from_base64(&cfg.private_key).map_err(|_| anyhow!("invalid private key"))?;
@@ -65,10 +75,35 @@ impl WgDevice {
                     "ip",
                     &["link", "set", "dev", &cfg.interface, "mtu", "1420", "up"],
                 )?;
+                let v6 = match net6 {
+                    Some(n) => {
+                        let addr6 = format!("{}/{}", n.node_ip, n.prefix);
+                        match run(
+                            "ip",
+                            &[
+                                "-6",
+                                "address",
+                                "replace",
+                                &addr6,
+                                "dev",
+                                &cfg.interface,
+                                "nodad",
+                            ],
+                        ) {
+                            Ok(()) => Some(n),
+                            Err(_) => {
+                                info!("the tunnel interface took no IPv6 address; clients get IPv4 only");
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 Ok(Self {
                     iface,
                     backend: Backend::Kernel,
                     userspace: None,
+                    v6,
                 })
             }
             Err(e) => {
@@ -83,17 +118,22 @@ impl WgDevice {
                 tokio::task::spawn_blocking(move || upd.apply(&iface2, Backend::Userspace))
                     .await
                     .context("configuring userspace WireGuard")??;
+                if net6.is_some() {
+                    info!("WireGuard in userspace carries IPv4 only; clients get IPv4 only");
+                }
                 Ok(Self {
                     iface,
                     backend: Backend::Userspace,
                     userspace: Some(dev),
+                    v6: None,
                 })
             }
         }
     }
 
     /// Talks to the interface a running node created, from another process.
-    pub fn open_existing(name: &str) -> Result<Self> {
+    /// It carries IPv6 when the running node gave it its address in `net6`.
+    pub fn open_existing(name: &str, net6: Option<TunnelNet6>) -> Result<Self> {
         let iface =
             InterfaceName::from_str(name).map_err(|e| anyhow!("bad interface name: {e}"))?;
         let backend = if socket_path(name).exists() {
@@ -102,11 +142,18 @@ impl WgDevice {
             Backend::Kernel
         };
         Device::get(&iface, backend).map_err(|e| anyhow!("no running node on {name}: {e}"))?;
+        let v6 = net6.filter(|n| interface_has(name, n.node_ip));
         Ok(Self {
             iface,
             backend,
             userspace: None,
+            v6,
         })
+    }
+
+    /// The IPv6 subnet this node carries for clients, when it does.
+    pub fn ipv6(&self) -> Option<TunnelNet6> {
+        self.v6
     }
 
     pub fn backend_name(&self) -> &'static str {
@@ -130,16 +177,19 @@ impl WgDevice {
         }
     }
 
+    /// Admits a key with its IPv4 tunnel address, and the IPv6 one that goes
+    /// with it when this node carries IPv6: a client can send from those and
+    /// nothing else.
     pub fn add_peer(&self, public_key: &str, ip: Ipv4Addr) -> Result<()> {
         let key = Key::from_base64(public_key.trim()).map_err(|_| anyhow!("invalid public key"))?;
-        self.apply(
-            DeviceUpdate::new().add_peer(
-                PeerConfigBuilder::new(&key)
-                    .replace_allowed_ips()
-                    .add_allowed_ip(IpAddr::V4(ip), 32),
-            ),
-        )
-        .context("adding the peer")
+        let mut peer = PeerConfigBuilder::new(&key)
+            .replace_allowed_ips()
+            .add_allowed_ip(IpAddr::V4(ip), 32);
+        if let Some(n) = self.v6 {
+            peer = peer.add_allowed_ip(IpAddr::V6(n.address_for(ip)), 128);
+        }
+        self.apply(DeviceUpdate::new().add_peer(peer))
+            .context("adding the peer")
     }
 
     pub fn remove_peer(&self, public_key: &str) -> Result<()> {
@@ -189,10 +239,27 @@ impl WgDevice {
     }
 }
 
-pub async fn bring_up(cfg: &NodeConfig, net: &TunnelNet) -> Result<WgDevice> {
-    WgDevice::bring_up(cfg, net).await
+pub async fn bring_up(
+    cfg: &NodeConfig,
+    net: &TunnelNet,
+    net6: Option<TunnelNet6>,
+) -> Result<WgDevice> {
+    WgDevice::bring_up(cfg, net, net6).await
 }
 
-pub fn open_existing(name: &str) -> Result<WgDevice> {
-    WgDevice::open_existing(name)
+pub fn open_existing(name: &str, net6: Option<TunnelNet6>) -> Result<WgDevice> {
+    WgDevice::open_existing(name, net6)
+}
+
+/// Whether the interface holds this IPv6 address.
+fn interface_has(name: &str, addr: std::net::Ipv6Addr) -> bool {
+    std::process::Command::new("ip")
+        .args(["-6", "-o", "address", "show", "dev", name])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .any(|w| w.split('/').next() == Some(&addr.to_string()))
+        })
+        .unwrap_or(false)
 }

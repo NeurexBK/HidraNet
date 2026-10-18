@@ -1040,6 +1040,7 @@ impl Daemon {
             hops_detail: Vec::new(),
             same_operator: None,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            ipv6: false,
         })
     }
 
@@ -1110,6 +1111,7 @@ impl Daemon {
                         .collect(),
                     same_operator,
                     version: env!("CARGO_PKG_VERSION").to_string(),
+                    ipv6: s.ipv6,
                 })
             }
         }
@@ -1412,6 +1414,7 @@ mod tests {
             node_public_key: ClientKey::generate().unwrap().public_base64(),
             endpoint: endpoint.into(),
             client_address: "10.77.0.2/16".into(),
+            client_address6: None,
             dns: std::net::Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu: 1420,

@@ -222,6 +222,10 @@ pub struct StatusReport {
     /// newer signed release exists. Empty from a service older than this.
     #[serde(default)]
     pub version: String,
+    /// IPv6 goes through the exit (it gave the tunnel an address); false
+    /// when it is blocked while connected, or from an older service.
+    #[serde(default)]
+    pub ipv6: bool,
 }
 
 impl StatusReport {
@@ -1005,6 +1009,7 @@ mod tests {
                 .public_base64(),
             endpoint: endpoint.into(),
             client_address: "10.77.0.2/16".into(),
+            client_address6: None,
             dns: std::net::Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu: 1420,
@@ -1098,6 +1103,7 @@ mod tests {
             }],
             same_operator: None,
             version: String::new(),
+            ipv6: false,
         };
         let r = Response::with_status(s).noting("rotated");
         let line = serde_json::to_string(&r).unwrap();
@@ -1152,6 +1158,7 @@ mod tests {
             ],
             same_operator: None,
             version: String::new(),
+            ipv6: false,
         };
         let p = s.explanation().unwrap();
         assert!(p.contains("no node sees both"));

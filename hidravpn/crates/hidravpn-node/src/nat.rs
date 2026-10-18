@@ -31,6 +31,81 @@ pub fn restore_forwarding(was_on: bool) -> Result<()> {
     Ok(())
 }
 
+const IP6_FORWARD: &str = "/proc/sys/net/ipv6/conf/all/forwarding";
+
+/// How the host's IPv6 was before the node turned forwarding on, so that
+/// `restore_forwarding6` can put it back.
+#[derive(Debug, Clone)]
+pub struct Forwarding6 {
+    was_on: bool,
+    /// The outside interface's `accept_ra` when it was 1, which forwarding
+    /// would turn into "ignore router advertisements": a host that gets its
+    /// IPv6 route from them would lose it. It is set to 2 (take them even
+    /// while forwarding) and put back.
+    accept_ra: Option<(String, String)>,
+}
+
+fn accept_ra_path(iface: &str) -> String {
+    format!("/proc/sys/net/ipv6/conf/{iface}/accept_ra")
+}
+
+/// Whether this host can carry IPv6 for clients: it has IPv6 at all, and an
+/// IPv6 default route out.
+pub fn host_has_ipv6_route() -> bool {
+    if !std::path::Path::new(IP6_FORWARD).exists() {
+        return false;
+    }
+    std::process::Command::new("ip")
+        .args(["-6", "route", "show", "default"])
+        .output()
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Turns IPv6 forwarding on, keeping the outside interface's router
+/// advertisements working, and says how it was.
+pub fn enable_forwarding6(out_if: &str) -> Result<Forwarding6> {
+    let was_on = std::fs::read_to_string(IP6_FORWARD)
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    let mut accept_ra = None;
+    if interface_name_ok(out_if) {
+        let p = accept_ra_path(out_if);
+        if std::fs::read_to_string(&p)
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+        {
+            std::fs::write(&p, "2\n")
+                .context("keeping router advertisements on the outside interface")?;
+            accept_ra = Some((p, "1\n".into()));
+        }
+    }
+    std::fs::write(IP6_FORWARD, "1\n").context("enabling IPv6 forwarding")?;
+    Ok(Forwarding6 { was_on, accept_ra })
+}
+
+/// Puts IPv6 forwarding and the outside interface back as they were.
+pub fn restore_forwarding6(f: &Forwarding6) -> Result<()> {
+    if !f.was_on {
+        std::fs::write(IP6_FORWARD, "0\n").context("restoring IPv6 forwarding")?;
+    }
+    if let Some((p, v)) = &f.accept_ra {
+        std::fs::write(p, v).context("restoring router advertisements")?;
+    }
+    Ok(())
+}
+
+/// An interface name that is safe in a /proc path and a ruleset.
+fn interface_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && name != "."
+        && name != ".."
+}
+
 /// The interface the default route leaves through.
 pub fn default_interface() -> Result<String> {
     let out = std::process::Command::new("ip")
@@ -46,7 +121,7 @@ pub fn default_interface() -> Result<String> {
         .ok_or_else(|| anyhow!("no default route: set out_interface in the settings"))
 }
 
-fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
+fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str, cidr6: Option<&str>) -> String {
     // What may leave the tunnel. An entry carries nothing but WireGuard to
     // other nodes, and the one request a client makes to an exit's admission
     // port through it — so the exit is asked from the entry's address, never
@@ -73,6 +148,11 @@ fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
 "#
         )
     };
+    // Clients' IPv6 leaves with the host's own address, as their IPv4 does;
+    // the unique local subnet is never seen outside.
+    let nat6 = cidr6
+        .map(|c| format!("    ip6 saddr {c} oifname \"{out_if}\" masquerade\n"))
+        .unwrap_or_default();
     format!(
         r#"table {TABLE} {{
   chain input {{
@@ -80,6 +160,7 @@ fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
     iifname "{tun_if}" udp dport 53 accept comment "the node's DNS forwarder"
     iifname "{tun_if}" tcp dport 53 accept comment "the node's DNS forwarder"
     iifname "{tun_if}" icmp type echo-request accept comment "a client may ping the node"
+    iifname "{tun_if}" icmpv6 type echo-request accept comment "a client may ping the node"
     iifname "{tun_if}" drop comment "no other service of this host is reachable from the tunnel"
   }}
   chain forward {{
@@ -91,7 +172,7 @@ fn ruleset(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> String {
   chain postrouting {{
     type nat hook postrouting priority srcnat; policy accept;
     ip saddr {cidr} oifname "{out_if}" masquerade
-  }}
+{nat6}  }}
 }}
 "#
     )
@@ -115,10 +196,16 @@ fn nft(input: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply(tun_if: &str, out_if: &str, cidr: &str, role: &str) -> Result<()> {
+pub fn apply(
+    tun_if: &str,
+    out_if: &str,
+    cidr: &str,
+    role: &str,
+    cidr6: Option<&str>,
+) -> Result<()> {
     // Replace, never stack: a table from an earlier run is dropped first.
     let _ = remove();
-    nft(&ruleset(tun_if, out_if, cidr, role))
+    nft(&ruleset(tun_if, out_if, cidr, role, cidr6))
 }
 
 pub fn remove() -> Result<()> {
@@ -131,18 +218,39 @@ mod tests {
 
     #[test]
     fn the_ruleset_isolates_clients_and_masquerades_their_subnet() {
-        let r = ruleset("hvpn0", "eth0", "10.77.0.0/16", "both");
+        let r = ruleset("hvpn0", "eth0", "10.77.0.0/16", "both", None);
         assert!(r.contains(r#"iifname "hvpn0" oifname "hvpn0" drop"#));
         assert!(r.contains(r#"ip saddr 10.77.0.0/16 oifname "eth0" masquerade"#));
         assert!(r.starts_with("table inet hidravpn {"));
+        assert!(!r.contains("ip6 saddr"), "no IPv6 translation unless asked");
+    }
+
+    #[test]
+    fn clients_ipv6_leaves_with_the_hosts_own_address() {
+        let r = ruleset(
+            "hvpn0",
+            "eth0",
+            "10.77.0.0/16",
+            "exit",
+            Some("fd68:6964:7261:7670::/64"),
+        );
+        assert!(r.contains(r#"ip6 saddr fd68:6964:7261:7670::/64 oifname "eth0" masquerade"#));
+        // The same isolation and exit policy hold for IPv6: the forward
+        // rules name no address family.
+        assert!(r.contains(r#"iifname "hvpn0" oifname "hvpn0" drop"#));
+        assert!(r.contains("tcp dport { 25, 135-139, 445, 1433, 3389 } drop"));
+        assert!(r.contains("icmpv6 type echo-request accept"));
+        assert!(
+            !interface_name_ok("../all") && !interface_name_ok("") && interface_name_ok("eth0")
+        );
     }
 
     #[test]
     fn an_exit_forwards_the_internet_minus_abuse_ports_and_an_entry_only_wireguard() {
-        let exit = ruleset("hvpn0", "eth0", "10.77.0.0/16", "exit");
+        let exit = ruleset("hvpn0", "eth0", "10.77.0.0/16", "exit", None);
         assert!(exit.contains("tcp dport { 25, 135-139, 445, 1433, 3389 } drop"));
         assert!(exit.contains(r#"iifname "hvpn0" oifname "eth0" accept"#));
-        let entry = ruleset("hvpn0", "eth0", "10.77.0.0/16", "entry");
+        let entry = ruleset("hvpn0", "eth0", "10.77.0.0/16", "entry", None);
         assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" udp dport 51820 accept"#));
         assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" tcp dport 51821 accept"#));
         assert!(entry.contains(r#"iifname "hvpn0" oifname "eth0" drop"#));

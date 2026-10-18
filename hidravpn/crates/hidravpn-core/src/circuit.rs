@@ -252,6 +252,8 @@ pub struct CircuitStatus {
     pub mode: Mode,
     /// Entry first (if any), exit last.
     pub hops: Vec<HopStatus>,
+    /// IPv6 goes through the exit; otherwise it is blocked while connected.
+    pub ipv6: bool,
 }
 
 impl CircuitStatus {
@@ -318,6 +320,7 @@ struct Steps {
     inner: Option<Hop>,
     plan: Option<RevertPlan>,
     kill_switch: bool,
+    ipv6: bool,
 }
 
 impl Steps {
@@ -344,6 +347,7 @@ pub struct Circuit {
     inner: Hop,
     plan: RevertPlan,
     kill_switch: bool,
+    ipv6: bool,
 }
 
 impl Circuit {
@@ -371,6 +375,7 @@ impl Circuit {
                 inner: steps.inner.take().expect("the inner hop is up"),
                 plan: steps.plan.take().expect("the plan is applied"),
                 kill_switch: steps.kill_switch,
+                ipv6: steps.ipv6,
             }),
             Err(e) => {
                 steps.undo().await;
@@ -444,15 +449,25 @@ impl Circuit {
             None => outer_name,
         };
         let (ip, prefix) = spec.exit.client_ip()?;
+        // The exit's IPv6 address for this client, when it carries IPv6. On
+        // Windows the interface is made with it; on Linux it is added below.
+        let ip6 = spec.exit.client_ip6()?;
         let tun = hidravpn_tun::open(&TunConfig {
             name: inner_name.clone(),
             ipv4: (ip, prefix),
-            ipv6: None,
+            ipv6: if cfg!(windows) { ip6 } else { None },
             mtu: spec.inner_mtu(),
         })
         .context("the tunnel interface")?;
         let inner_ifname = hidravpn_tun::name(&tun).unwrap_or(inner_name);
         netcfg::check_address(&inner_ifname, ip)?;
+        // A machine with IPv6 switched off takes no address: its IPv6 is then
+        // blocked, as with an exit that carries none.
+        let tunnel_ipv6 = match ip6 {
+            Some((a, p)) => netcfg::assign_ipv6(&inner_ifname, a, p).ok().map(|()| a),
+            None => None,
+        };
+        steps.ipv6 = tunnel_ipv6.is_some();
 
         // 3. The network plan.
         let (node_ip, via_tunnel) = match (&spec.entry, &steps.outer) {
@@ -513,7 +528,7 @@ impl Circuit {
                 allow_lan: opts.allow_lan,
                 extra_interface,
                 outer_peer,
-                tunnel_ipv6: None,
+                tunnel_ipv6,
             })
             .context("could not arm the kill switch; connection refused")?;
             steps.kill_switch = true;
@@ -568,6 +583,7 @@ impl Circuit {
             connected: hops.iter().all(|h| h.tunnel.connected),
             mode: self.spec.mode(),
             hops,
+            ipv6: self.ipv6,
         }
     }
 
@@ -1081,6 +1097,7 @@ mod tests {
             node_public_key: ClientKey::generate().unwrap().public_base64(),
             endpoint: endpoint.into(),
             client_address: "10.77.0.2/16".into(),
+            client_address6: None,
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allowed_ips: vec!["0.0.0.0/0".into()],
             mtu,
