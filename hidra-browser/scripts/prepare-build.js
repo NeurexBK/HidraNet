@@ -17,8 +17,23 @@ for (const dir of [BUILD, BIN_DIR, ICONS_DIR]) {
 
 // ── 2. Generate PNG icon from embedded data ──
 // 512x512 PNG with HidraNet logo (generated inline, no external deps)
+// The HidraNet logo, from brand/logo/ at the top of the repository. The
+// drawing below is only a fallback for a checkout without it.
+const BRAND = path.join(ROOT, '..', 'brand', 'logo');
+
 function generateIcon() {
   const iconPath = path.join(BUILD, 'icon.png');
+  if (fs.existsSync(path.join(BRAND, 'hidranet-icon-1024.png'))) {
+    fs.copyFileSync(path.join(BRAND, 'hidranet-icon-1024.png'), iconPath);
+    for (const s of [16, 32, 48, 64, 128, 256, 512]) {
+      fs.copyFileSync(path.join(BRAND, 'hidranet-icon-' + s + '.png'), path.join(ICONS_DIR, s + 'x' + s + '.png'));
+    }
+    for (const f of ['hidranet.ico', 'hidranet.icns']) {
+      fs.copyFileSync(path.join(BRAND, f), path.join(BUILD, f.replace('hidranet', 'icon')));
+    }
+    console.log('[ok] icons copied from brand/logo');
+    return;
+  }
   if (fs.existsSync(iconPath) && fs.statSync(iconPath).size > 1000) {
     console.log('[ok] icon.png already exists');
     return;

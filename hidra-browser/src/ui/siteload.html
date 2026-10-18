@@ -27,7 +27,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Loading .hidra site…</title>
+<link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-site.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
@@ -44,6 +46,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .center.err h2{color:#ff5c6c}
 .center p{color:#5b6480;font-size:.9em;max-width:380px;line-height:1.6}
 .hidden{display:none!important}
+.legacy{padding:8px 14px;background:#2a1d08;border-bottom:1px solid #5a3d10;color:#f5c26b;font-size:.8em;line-height:1.5;flex-shrink:0}
 </style>
 </head>
 <body>
@@ -51,6 +54,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <span class="lock">🔒</span><code id="addr">—</code>
   <span class="st" id="st">connecting…</span>
 </div>
+<div class="legacy hidden" id="legacy">This site was published by an older version of HidraNet, without a signature: anyone who knows its address can replace what it shows. Do not trust it with anything that matters. Sites published now have a 32-character address and are signed.</div>
 <div class="center" id="loading">
   <div class="spin"></div>
   <h2>Looking for the site on the HidraNet network</h2>
@@ -90,7 +94,17 @@ async function start(){
     if(done) return;
     var plain=await D(key,payload.toString()).catch(function(){return null;});
     if(plain===null){ fail('Could not decrypt (wrong address).'); return; }
-    try{ bundle=JSON.parse(plain); }catch(e){ fail('Invalid content.'); return; }
+    // Shown only if the key the address is made of signed it. Anyone who
+    // knows an address can publish under it; only its owner can sign.
+    var got=await hidraSite.openFiles(addr,plain);
+    if(!got.ok){ fail('This copy of the site was refused: '+got.reason+'. The owner\'s copy is republished every minute; try again shortly.'); return; }
+    // An older signed copy, replayed over a newer one this browser has seen.
+    var seenKey='hsite-ts:'+addr, seenTs=0;
+    try{ seenTs=parseInt(localStorage.getItem(seenKey)||'0',10)||0; }catch(e){}
+    if(got.signed&&got.ts<seenTs){ fail('This is an older copy of the site than one already seen here. The owner\'s current copy is republished every minute; try again shortly.'); return; }
+    if(got.signed){ try{ localStorage.setItem(seenKey,String(got.ts)); }catch(e){} }
+    bundle=got.files;
+    if(!got.signed) $('legacy').classList.remove('hidden');
     done=true;
     render('index.html');
     $('loading').classList.add('hidden'); $('frame').classList.remove('hidden'); $('st').textContent='online';

@@ -28,10 +28,11 @@ const UI_ROOT_URL = pathToFileURL(path.join(ROOT, 'src', 'ui') + path.sep).href;
 // What a page can see of window.hidra: its top-level keys, and the vault's.
 const SHAPE = `JSON.stringify(window.hidra
   ? { keys: Object.keys(window.hidra).sort(),
-      vault: window.hidra.vault ? Object.keys(window.hidra.vault).sort() : null }
+      vault: window.hidra.vault ? Object.keys(window.hidra.vault).sort() : null,
+      vpn: window.hidra.vpn ? Object.keys(window.hidra.vpn).sort() : null }
   : null)`;
 
-async function shapeAt(url, appsOrigin) {
+async function shapeAt(url, appOrigins) {
   const win = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -39,7 +40,7 @@ async function shapeAt(url, appsOrigin) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      additionalArguments: [`--hidra-ui-root=${UI_ROOT_URL}`, `--hidra-apps-origin=${appsOrigin}`],
+      additionalArguments: [`--hidra-ui-root=${UI_ROOT_URL}`, `--hidra-app-origins=${appOrigins}`],
     },
   });
   try {
@@ -75,25 +76,39 @@ app.whenReady().then(async () => {
 
   const apps = await serve();
   const other = await serve();
-  const APPS = `http://127.0.0.1:${apps.address().port}`;
+  // Each app on an origin of its own, as tab-manager.js passes them: the
+  // ones that hold an identity.
+  const appAt = (name) => `http://${name}.localhost:${apps.address().port}`;
+  const APPS = ['chat', 'mail', 'forum', 'publish'].map(appAt).join(',');
   const OTHER = `http://127.0.0.1:${other.address().port}`;
 
   const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault', 'vpn'];
-  const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status';
+  // The VPN goes to its own page; the new tab page reads the status for its
+  // badge; every other page of ours gets no VPN at all.
+  const VPN_ALL = ['checkRelease', 'connect', 'disconnect', 'fetchList', 'getPasses', 'importNodes', 'install',
+    'leakTest', 'newIdentity', 'nodes', 'refill', 'setPassToken', 'status', 'uninstall', 'verifyFile'];
+  const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === 'status';
+  const vpnPage = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === VPN_ALL.join();
+  const noVpn = (s) => s && s.keys.join() === FULL.filter((k) => k !== 'vpn').join() && s.vpn === null;
   const vaultOnly = (s) => s && s.keys.join() === 'vault' && s.vault.join() === 'get,set,status';
   const none = (s) => s === null;
 
   const cases = [
-    ['our own newtab.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'newtab.html')).href, full, 'the full API'],
+    ['our own newtab.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'newtab.html')).href, full, 'the full API, with the VPN status only'],
+    ['our own hidravpn.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidravpn.html')).href, vpnPage, 'the full API, with the whole VPN'],
+    ['our own hidrachat.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidrachat.html')).href, noVpn, 'no VPN'],
+    ['our own hidramail.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidramail.html')).href, noVpn, 'no VPN'],
     ['a downloaded file', pathToFileURL(downloaded).href, none, 'nothing'],
     ['..' + ' out of the ui directory', `${UI_ROOT_URL}../../${path.basename(downloaded)}`, none, 'nothing'],
     ['a remote page', 'data:text/html,<p>x', none, 'nothing'],
-    ['HidraMail on the apps origin', `${APPS}/mail`, vaultOnly, 'the vault only'],
-    ['HidraChat on the apps origin', `${APPS}/`, vaultOnly, 'the vault only'],
-    ['the forum on the apps origin', `${APPS}/forum?x=1`, vaultOnly, 'the vault only'],
-    ['the publisher on the apps origin', `${APPS}/sites`, vaultOnly, 'the vault only'],
-    ['search on the apps origin', `${APPS}/search?q=x`, none, 'nothing'],
-    ['the site viewer on the apps origin', `${APPS}/site?addr=x`, none, 'nothing'],
+    ['HidraMail on its origin', `${appAt('mail')}/`, vaultOnly, 'the vault only'],
+    ['HidraChat on its origin', `${appAt('chat')}/`, vaultOnly, 'the vault only'],
+    ['the forum on its origin', `${appAt('forum')}/?x=1`, vaultOnly, 'the vault only'],
+    ['the publisher on its origin', `${appAt('publish')}/`, vaultOnly, 'the vault only'],
+    ['search on its origin', `${appAt('search')}/?q=x`, none, 'nothing'],
+    ['the site viewer on its origin', `${appAt('site')}/?addr=x`, none, 'nothing'],
+    ['a .localhost host that is not an app', `${appAt('evil')}/`, none, 'nothing'],
+    ['the old shared origin', `http://127.0.0.1:${apps.address().port}/mail`, none, 'nothing'],
     ['a website at /mail', `${OTHER}/mail`, none, 'nothing'],
   ];
 

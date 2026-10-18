@@ -57,7 +57,37 @@ wrong is high.
   A Ping body is not logged either — it arrives from a peer, and echoing it
   would let anyone else write an operator's log file.
 
+- **Someone posing as a `.hidra` service.** A service registers with an
+  introduction relay only with a fresh signature by the key its address is
+  made of, and every session opens with the client challenging the service:
+  the service answers with that key's signature over a fresh key exchange,
+  checked against the signed descriptor, and the rest of the session is
+  sealed end to end. A relay that hands the circuit to anyone else, the relay
+  itself included, fails the challenge and can read nothing.
+- **An exit pointed inward.** A relay connects for others only to public
+  addresses: never to its own loopback, its LAN, link-local space (where a
+  cloud host's metadata service sits) or any other reserved range, for an
+  exit destination or a circuit's next hop. A name is resolved once and every
+  address it gives is checked before the connection is made to that address.
+- **Someone replacing another person's content on the public relay.**
+  Anyone can publish under any MQTT topic, so what the browser's apps show is
+  checked, not trusted: a `.hidra` site is signed by the key its address is
+  made of and shown only if the signature holds; forum posts and chat
+  messages are signed; a HidraReview listing, its photos and its owner's
+  replies are signed by the owner's key, and a browser keeps the first key
+  it saw for each listing. Everything a stranger sends is escaped before it
+  is shown, and each app runs on an origin of its own, so a script that got
+  into one would still have nothing of another's.
+
 ## What it does not defend against
+
+- **The first sight of a forum name or a review listing.** A browser that
+  has never seen a listing or a forum name believes the first key it is
+  shown. Someone who overwrites a listing before your browser first loads it
+  is believed by your browser; browsers that saw the real one keep it and say
+  that someone tried. The forum has a registrar for names; HidraReview does
+  not yet. Sites published before signing (26-character addresses) carry no
+  key at all, and the viewer says so.
 
 - **An adversary who can watch both ends.** Someone observing the traffic
   entering the network near you and leaving it near your destination can

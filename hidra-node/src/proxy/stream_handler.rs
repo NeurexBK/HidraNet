@@ -107,14 +107,15 @@ async fn handle_inner(
             .ok_or_else(|| HidraError::Circuit(
                 format!("hidden service not found: {host}")
             ))?;
-        let (intro_points, _service_pubkey) = descriptor;
+        let (intro_points, service_pubkey) = descriptor;
         info!(
             intro_points = intro_points.len(),
             "found hidden service descriptor"
         );
         let mut circuit = connect_service_with_failover(
             pool,
-            &service_hash,
+            &intro_points,
+            &service_pubkey,
             &target_domain,
             client_addr,
         )
@@ -239,16 +240,25 @@ async fn connect_with_failover(
     }))
 }
 
+/// Reaches a hidden service through one of its introduction points and has
+/// it prove, with the key from its signed descriptor, that it is the service
+/// the address names. A relay that hands the circuit to anyone else fails the
+/// proof, and the next introduction point is tried.
 async fn connect_service_with_failover(
     pool: &CircuitPool,
-    service_hash: &[u8; 20],
+    intro_points: &[SocketAddr],
+    service_pubkey: &[u8; 32],
     target_domain: &str,
     client_addr: SocketAddr,
 ) -> Result<StreamingCircuit> {
+    if intro_points.is_empty() {
+        return Err(HidraError::Circuit("the service names no introduction point".into()));
+    }
     let mut backoff = Duration::from_millis(INITIAL_BACKOFF_MS);
     let mut last_error = None;
     for attempt in 0..MAX_RETRIES {
-        let mut circuit = match pool.get_circuit().await {
+        let intro = intro_points[attempt % intro_points.len()];
+        let mut circuit = match pool.build_circuit_via(intro).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(
@@ -264,7 +274,7 @@ async fn connect_service_with_failover(
                 continue;
             }
         };
-        match circuit.connect_service(service_hash.to_vec()).await {
+        match circuit.connect_service_authenticated(service_pubkey).await {
             Ok(()) => return Ok(circuit),
             Err(e) => {
                 warn!(

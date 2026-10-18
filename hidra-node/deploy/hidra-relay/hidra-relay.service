@@ -1,0 +1,30 @@
+# systemd unit for hidra-relay. Put the binary in /usr/local/bin, create the
+# hidra-relay user, fill in the registrar's public key, then:
+#   systemctl enable --now hidra-relay
+[Unit]
+Description=HidraRelay, the chat and forum relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hidra-relay
+Group=hidra-relay
+ExecStart=/usr/local/bin/hidra-relay \
+    --listen 127.0.0.1:1884 \
+    --data /var/lib/hidra-relay \
+    --registrar-key REGISTRY_PUBKEY_FROM_FORUM_HTML
+Restart=always
+RestartSec=2
+StateDirectory=hidra-relay
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

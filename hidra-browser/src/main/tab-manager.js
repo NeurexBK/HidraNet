@@ -4,11 +4,8 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
-
-// HidraNet apps (chat, mail, forum, search, sites) are served by main.js on this
-// port — not by the hidra-node engine, so they work even when the engine is not
-// running. Keep in sync with CHAT_PORT in main.js.
-const APPS_PORT = 8090;
+const { LOOPBACK_ONLY } = require('./proxy-manager');
+const { APPS, ORIGINS, appOrigin, appOfUrl } = require('./app-origins');
 
 // Trailing slash matters: without it, a sibling directory whose name merely
 // starts with "ui" would match the prefix too.
@@ -35,31 +32,19 @@ const INTERNAL_PAGES = {
 // address from the one behind the new tab page's Mail card.
 const INTERNAL_BY_NAME = {
   newtab: 'newtab.html',
-  mail: '/mail',
-  chat: '/',
-  forum: '/forum',
-  reviews: '/reviews',
-  publish: '/publish',
-  donate: '/donate',
+  mail: 'app:mail',
+  chat: 'app:chat',
+  forum: 'app:forum',
+  reviews: 'app:reviews',
+  publish: 'app:publish',
+  donate: 'app:donate',
   // The VPN page comes from disk like the new tab page: it holds no identity
   // and needs the privileged bridge, which only our own pages get.
   vpn: 'hidravpn.html',
 };
 
-// The same, for the pages the apps server hands out on the loopback port.
-const APPS_ROUTES = {
-  '': 'chat',
-  '/mail': 'mail',
-  '/forum': 'forum',
-  '/donate': 'donate',
-  '/sites': 'publish',
-  '/publish': 'publish',
-  '/site': 'site',
-  '/search': 'search',
-  '/reviews': 'reviews',
-};
-const APPS_ORIGIN = `http://127.0.0.1:${APPS_PORT}`;
-const SEARCH_URL = `${APPS_ORIGIN}/search`;
+
+const SEARCH_URL = `${appOrigin('search')}/`;
 
 // HidraNet's own apps keep what they store. Websites do not.
 //
@@ -77,26 +62,13 @@ const SEARCH_URL = `${APPS_ORIGIN}/search`;
 // in a throwaway partition like any website.
 const APPS_PARTITION = 'persist:hidra-apps';
 
-// Each app that holds an identity, by the path it is served on. The name is
-// also the app's compartment in the vault (main.js, vault.js), so the forum
-// cannot read the mail keys, and a page on any other path reads nothing.
-const APP_NAMESPACES = {
-  '/': 'chat',
-  '/mail': 'mail',
-  '/forum': 'forum',
-  '/publish': 'publish',
-  '/sites': 'publish',
-};
-
+// Each app that holds an identity has a compartment in the vault (main.js,
+// vault.js) named after it, so the forum cannot read the mail keys, and a
+// page on any other origin reads nothing. The app is told by the exact
+// origin of the URL (app-origins.js): each app has an origin of its own.
 function appNamespace(rawUrl) {
-  let u;
-  try {
-    u = new URL(rawUrl);
-  } catch {
-    return null;
-  }
-  if (u.origin !== APPS_ORIGIN) return null;
-  return APP_NAMESPACES[u.pathname.replace(/\/+$/, '') || '/'] || null;
+  const name = appOfUrl(rawUrl);
+  return name ? APPS[name].vault : null;
 }
 
 function wantsAppStorage(rawUrl) {
@@ -149,7 +121,7 @@ class TabManager {
 
   async _applyProxy(tabSession) {
     if (this.proxyRules) {
-      await tabSession.setProxy({ proxyRules: this.proxyRules, proxyBypassRules: '<local>' });
+      await tabSession.setProxy({ proxyRules: this.proxyRules, proxyBypassRules: LOOPBACK_ONLY });
       return;
     }
     await this.proxyManager.configure(tabSession);
@@ -251,7 +223,7 @@ class TabManager {
         // work either out for itself.
         additionalArguments: [
           `--hidra-ui-root=${UI_ROOT_URL}`,
-          `--hidra-apps-origin=${APPS_ORIGIN}`,
+          `--hidra-app-origins=${ORIGINS.filter((o) => APPS[appOfUrl(o)].vault).join(',')}`,
         ],
         contextIsolation: true,
         nodeIntegration: false,
@@ -354,7 +326,8 @@ class TabManager {
     view.webContents.on('did-fail-load', (_e, errorCode, _desc, failedUrl, isMainFrame) => {
       if (!isMainFrame || errorCode !== -20) return;
       if (!this.networkLock || !this.networkLock.engaged) return;
-      const reason = this.networkLock.reason || 'the anonymous connection is not ready';
+      const reason = String(this.networkLock.reason || 'the anonymous connection is not ready')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       view.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
         `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><style>
           body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -449,12 +422,8 @@ class TabManager {
       return name ? `hidra://${name}` : 'hidra://newtab';
     }
 
-    if (rawUrl.startsWith(APPS_ORIGIN)) {
-      const rest = rawUrl.slice(APPS_ORIGIN.length);
-      const path = rest.split(/[?#]/)[0].replace(/\/+$/, '');
-      const name = APPS_ROUTES[path] || APPS_ROUTES[''] || null;
-      return name ? `hidra://${name}` : rawUrl;
-    }
+    const app = appOfUrl(rawUrl);
+    if (app) return `hidra://${app}`;
 
     return rawUrl;
   }
@@ -493,7 +462,7 @@ class TabManager {
     if (route) {
       const tail = rest.slice(name.length);
       const query = /^[?#]/.test(tail) ? tail : '';
-      return { kind: 'url', url: APPS_ORIGIN + route + query, finalUrl };
+      return { kind: 'url', url: appOrigin(route.slice(4)) + '/' + query, finalUrl };
     }
 
     return { kind: 'domain', url: finalUrl, finalUrl };
@@ -729,9 +698,10 @@ class TabManager {
 
   _injectSevenNinePublish(view) {
     try {
-      const code = fs.readFileSync(
-        path.join(__dirname, '..', 'renderer', 'sevennine-publish.js'), 'utf8'
-      );
+      // hidra-site.js first: it is what signs a site, so the publish script
+      // makes sites the viewer can check, the same as the Sites app does.
+      const code = fs.readFileSync(path.join(__dirname, '..', 'ui', 'hidra-site.js'), 'utf8')
+        + '\n;\n' + fs.readFileSync(path.join(__dirname, '..', 'renderer', 'sevennine-publish.js'), 'utf8');
       view.webContents.executeJavaScript(code).catch(() => {});
     } catch (e) {}
   }
@@ -756,7 +726,7 @@ class TabManager {
     // Network .hidra address (encrypted site on the relay): long base32 label.
     const label = hostname.replace('.hidra', '');
     if (label.length >= 24 && /^[a-z2-7]+$/.test(label)) {
-      this._loadLater(tab, seq, APPS_ORIGIN + '/site?addr=' + encodeURIComponent(hostname));
+      this._loadLater(tab, seq, appOrigin('site') + '/?addr=' + encodeURIComponent(hostname));
       return;
     }
 
@@ -772,7 +742,7 @@ class TabManager {
         @keyframes spin { to { transform: rotate(360deg); } }
       </style></head><body><div class="resolving">
         <div class="spinner"></div>
-        <h2>Resolving ${hostname}</h2>
+        <h2>Resolving ${hostname.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</h2>
         <p>Querying HidraNet DHT...</p>
       </div></body></html>`
     ));
@@ -826,7 +796,7 @@ class TabManager {
     // against the network — if it does not exist, it says so with a way back
     // to the directory, instead of a dead end.
     this._loadLater(tab, seq, 
-      `${APPS_ORIGIN}/reviews?b=${encodeURIComponent(siteName)}`
+      `${appOrigin('reviews')}/?b=${encodeURIComponent(siteName)}`
     );
   }
 
@@ -855,6 +825,5 @@ module.exports = {
   appNamespace,
   vaultNamespaceOf,
   APPS_PARTITION,
-  APPS_ORIGIN,
   UI_ROOT_URL,
 };

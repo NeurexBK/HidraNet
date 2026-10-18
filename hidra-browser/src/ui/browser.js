@@ -18,6 +18,15 @@ function createTabElement(tabId, title) {
   tab.className = 'tab';
   tab.dataset.tabId = tabId;
 
+  // The logo, on HidraNet's own pages only. A website's own favicon is not
+  // fetched here: loading it into the browser's window would be a request
+  // to that site from outside the tab, past everything that isolates it.
+  const icon = document.createElement('img');
+  icon.className = 'tab-icon';
+  icon.src = 'img/favicon.png';
+  icon.alt = '';
+  icon.hidden = true;
+
   const titleSpan = document.createElement('span');
   titleSpan.className = 'tab-title';
   titleSpan.textContent = title || 'New Tab';
@@ -30,6 +39,7 @@ function createTabElement(tabId, title) {
     window.hidra.tab.close(tabId);
   });
 
+  tab.appendChild(icon);
   tab.appendChild(titleSpan);
   tab.appendChild(closeBtn);
 
@@ -56,6 +66,12 @@ function removeTabElement(tabId) {
 function updateTabTitle(tabId, title) {
   const el = tabsContainer.querySelector(`[data-tab-id="${tabId}"] .tab-title`);
   if (el) el.textContent = title;
+}
+
+// hidra://… is what the address bar shows for HidraNet's own pages and apps.
+function updateTabIcon(tabId, url) {
+  const el = tabsContainer.querySelector(`[data-tab-id="${tabId}"] .tab-icon`);
+  if (el) el.hidden = !/^hidra:\/\//.test(url || '');
 }
 
 function setTabLoading(tabId, loading) {
@@ -220,6 +236,7 @@ window.hidra.on('tab:closed', (data) => {
 
 window.hidra.on('tab:activated', (data) => {
   setActiveTab(data.tabId);
+  updateTabIcon(data.tabId, data.url);
   urlInput.value = data.url || '';
   btnBack.disabled = !data.canGoBack;
   btnForward.disabled = !data.canGoForward;
@@ -230,6 +247,7 @@ window.hidra.on('tab:title', (data) => {
 });
 
 window.hidra.on('tab:navigated', (data) => {
+  updateTabIcon(data.tabId, data.url);
   if (data.tabId === activeTabId) {
     urlInput.value = data.url || '';
     btnBack.disabled = !data.canGoBack;

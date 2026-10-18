@@ -166,7 +166,13 @@ class TorManager {
     this.dataDir = torData;
 
     const args = [
-      '--SocksPort', String(this.socksPort),
+      // A circuit per destination. Chromium sends no SOCKS credentials, so
+      // Tor's usual isolation by them cannot separate one tab from another;
+      // without this, every site visited within ten minutes left through the
+      // same exit, which links them for anyone watching that exit or
+      // comparing what the sites saw. Each destination address now gets a
+      // circuit of its own.
+      '--SocksPort', `${this.socksPort} IsolateDestAddr`,
       // Needed for "new identity": SIGNAL NEWNYM tears down the current
       // circuits so the next request leaves through a different exit.
       '--ControlPort', String(this.controlPort),

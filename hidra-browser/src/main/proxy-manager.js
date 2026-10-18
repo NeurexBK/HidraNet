@@ -3,6 +3,13 @@ const net = require('net');
 const http = require('http');
 const path = require('path');
 
+// What goes around the proxy: this machine, and nothing else. Chromium's
+// '<local>', used here before, also sends every hostname without a dot
+// (http://intranet/, http://router/) straight out, DNS lookup included, to
+// whatever resolver the local network hands out — past Tor and past the lock.
+// *.localhost is listed too: it is where the apps live (app-origins.js).
+const LOOPBACK_ONLY = 'localhost,*.localhost,127.0.0.1,[::1]';
+
 const NODE_API_PORT = 9051;
 const SEVENNINE_PORT = 8084;
 
@@ -64,7 +71,7 @@ class ProxyManager {
       const proxyUrl = `socks5://${this.host}:${this.port}`;
       await electronSession.setProxy({
         proxyRules: proxyUrl,
-        proxyBypassRules: '<local>',
+        proxyBypassRules: LOOPBACK_ONLY,
       });
     } else {
       await electronSession.setProxy({
@@ -460,4 +467,4 @@ class ProxyManager {
   }
 }
 
-module.exports = { ProxyManager };
+module.exports = { ProxyManager, LOOPBACK_ONLY };

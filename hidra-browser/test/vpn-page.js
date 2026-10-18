@@ -72,18 +72,26 @@ expect('the page has an address-bar name', /'hidravpn\.html': 'vpn'/.test(tabs),
 expect('hidra://vpn loads the page from disk', /vpn: 'hidravpn\.html'/.test(tabs), 'INTERNAL_BY_NAME lacks vpn');
 
 // ── The bridge: our pages only, refused again in the main process ───────
+const guard = read(ROOT, 'src', 'main', 'ipc-guard.js');
 const internalStart = preload.indexOf('if (isInternalPage) {');
 const appsStart = preload.indexOf('if (isAppPage && !isInternalPage) {');
-const vpnAt = preload.indexOf('vpn: {');
-expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && vpnAt > internalStart && vpnAt < appsStart, `positions: internal ${internalStart}, vpn ${vpnAt}, apps ${appsStart}`);
+const bridgeAt = preload.indexOf('const vpnBridge = ');
+const bridgeEnd = preload.indexOf(': null;', bridgeAt);
+const bridge = preload.slice(bridgeAt, bridgeEnd);
+expect('the full VPN bridge goes to hidravpn.html only, the new tab page gets the status alone',
+  bridgeAt !== -1 && /^const vpnBridge = uiPage === 'hidravpn\.html' \? \{/.test(bridge)
+    && /: uiPage === 'newtab\.html' \? \{\s*status: \(\) => ipcRenderer\.invoke\('vpn:status'\),\s*\}\s*$/.test(bridge),
+  'vpnBridge is not keyed on the exact page names');
+expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && preload.indexOf('vpnBridge ? { vpn: vpnBridge }') > internalStart && preload.indexOf('vpnBridge ? { vpn: vpnBridge }') < appsStart, 'the bridge is offered outside the internal-page branch');
 expect('the apps branch does not offer vpn', !preload.slice(appsStart).includes('vpn:'), 'vpn appears after the apps branch starts');
 const handlers = [...main.matchAll(/ipcMain\.handle\('vpn:([a-z-]+)', (?:async )?\((event[^)]*)\) => \{\s*vpnOnlyOurs\(event\);/g)].map((m) => m[1]).sort();
-expect('every vpn handler checks who asked before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'get-passes', 'import-nodes', 'install', 'leak-test', 'new-identity', 'nodes', 'refill', 'set-pass-token', 'status', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('every vpn handler but the status checks for the VPN page before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'get-passes', 'import-nodes', 'install', 'leak-test', 'new-identity', 'nodes', 'refill', 'set-pass-token', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('the status is read by the VPN page or the new tab page, nothing else', /ipcMain\.handle\('vpn:status', \(event\) => \{\s*if \(!isVpnPage\(event\)\) requirePage\(event, UI_ROOT_URL, \['newtab\.html'\], 'the VPN status'\);/.test(main), 'vpn:status is not gated on the two pages');
 const ungated = [...main.matchAll(/ipcMain\.handle\('vpn:[a-z-]+'/g)].length;
-expect('no vpn handler is without the check', ungated === handlers.length, `${ungated} handlers, ${handlers.length} gated`);
-expect('the check accepts only our own pages, by their path on disk', /function isInternalSender[\s\S]*?return url\.startsWith\(UI_ROOT_URL\);/.test(main), 'isInternalSender does not compare against UI_ROOT_URL alone');
-expect('no scheme is trusted by either gate', !/startsWith\('hidra:\/\/'\)/.test(main.slice(main.indexOf('function isInternalSender'), main.indexOf('function isInternalSender') + 600)) && !/href\.startsWith\('hidra:\/\/'\)/.test(preload), 'a hidra:// URL would get the bridge');
-expect('the check wants the main frame, not a frame inside a page', /frame !== event\.sender\.mainFrame\) return false/.test(main), 'a sub-frame could ask');
+expect('no vpn handler is without the check', ungated === handlers.length + 1, `${ungated} handlers, ${handlers.length + 1} gated`);
+expect('the VPN check wants hidravpn.html by its exact name', /function isVpnPage\(event\) \{\s*return senderPage\(event, UI_ROOT_URL\) === 'hidravpn\.html';/.test(main) && /const vpnOnlyOurs = \(event\) => \{\s*if \(!isVpnPage\(event\)\) throw/.test(main), 'isVpnPage or vpnOnlyOurs is not the exact-page check');
+expect('no scheme is trusted by either gate', !/hidra:\/\//.test(guard.replace(/\/\/.*$/gm, '')) && !/href\.startsWith\('hidra:\/\/'\)/.test(preload), 'a hidra:// URL would get the bridge');
+expect('the check wants the main frame, not a frame inside a page', /frame !== event\.sender\.mainFrame\) return null/.test(guard), 'a sub-frame could ask');
 
 // ── The main process never hands the renderer a key ──────────────────────
 const manager = read(ROOT, 'src', 'main', 'vpn-manager.js');

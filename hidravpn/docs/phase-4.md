@@ -221,11 +221,18 @@ page that were still missing.
   `.sig`, checks the signature against the release key it carries **before
   parsing a byte of it**, downloads this platform's files into a fresh folder
   only this account can read, checks every file's size and SHA-256 against the
-  manifest, and only then asks the system for administrator rights — UAC on
-  Windows, `pkexec` on Linux — to run `hidravpn-service install --client
-  hidravpn [--user <this account>]` from that folder (`src/main/vpn-installer.js`).
-  The paths travel to the elevated process as data, never inside a command
-  string. A refused prompt is reported as cancelled; nothing is half-installed.
+  manifest, and only then asks the system for administrator rights, once —
+  UAC on Windows, `pkexec` on Linux. With those rights a fixed script copies
+  the files into a folder only an administrator can write (`/var/lib` on
+  Linux, Program Files on Windows), checks each copy's SHA-256 against the
+  signed manifest again, and only then runs `hidravpn-service install
+  --client hidravpn [--user <this account>]` from that copy
+  (`src/main/vpn-installer.js`). The second check is what stops another
+  program running as this user from swapping a file in the download folder
+  after the first one: whatever was swapped in would otherwise run as root or
+  Administrator. Names, paths and hashes travel to the elevated script as
+  data, never inside it. A refused prompt is reported as cancelled; nothing is
+  half-installed.
 - **Update and remove, from the same page.** "Check for an update" reads the
   signed manifest and compares its version with the one the service now
   reports in `status` (`version`); "Install the update" runs the same path, and

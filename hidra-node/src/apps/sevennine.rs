@@ -87,6 +87,21 @@ struct ApiResponse {
 
 // ─── Site Manager ────────────────────────────────────────────────────────────
 
+/// A site name as `create_site` accepts it, and so a single path component.
+///
+/// Every call that takes a site name joins it onto the sites directory. Only
+/// `create_site` used to check it, so `DELETE /api/sites/..` named the
+/// directory above, and `remove_dir_all` was one `exists()` away from it.
+/// The browser's Sites app, which publishes through this API. The page this
+/// server serves itself is allowed too, on whatever port it runs.
+const SITES_APP_ORIGIN: &str = "http://publish.localhost:8090";
+
+fn site_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 pub struct SiteManager {
     sites: Arc<RwLock<HashMap<String, SiteRecord>>>,
     base_dir: PathBuf,
@@ -194,6 +209,7 @@ impl SiteManager {
 
     pub fn has_site_sync(&self, name: &str) -> bool {
         let name = name.trim().to_lowercase();
+        if !site_name_ok(&name) { return false; }
         let site_dir = self.base_dir.join("sites").join(&name);
         site_dir.exists() && site_dir.join(".sevennine-meta.json").exists()
     }
@@ -208,7 +224,7 @@ impl SiteManager {
         if name.is_empty() || name.len() > 32 {
             return Err("Name must be between 1 and 32 characters".into());
         }
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !site_name_ok(&name) {
             return Err("Name may contain only letters, numbers, - and _".into());
         }
 
@@ -292,6 +308,7 @@ impl SiteManager {
 
     pub async fn upload_file(&self, site_name: &str, filename: &str, content: &[u8]) -> Result<SiteInfo, String> {
         let site_name = site_name.trim().to_lowercase();
+        if !site_name_ok(&site_name) { return Err("Invalid site name".into()); }
 
         let safe_name = Path::new(filename)
             .file_name()
@@ -341,6 +358,7 @@ impl SiteManager {
 
     pub async fn delete_site(&self, name: &str) -> Result<(), String> {
         let name = name.trim().to_lowercase();
+        if !site_name_ok(&name) { return Err("Invalid site name".into()); }
         let site_dir = self.base_dir.join("sites").join(&name);
 
         let removed = {
@@ -387,6 +405,7 @@ impl SiteManager {
         source: &serde_json::Value,
     ) -> Result<SiteInfo, String> {
         let site_name = site_name.trim().to_lowercase();
+        if !site_name_ok(&site_name) { return Err("Invalid site name".into()); }
         let site_dir = self.base_dir.join("sites").join(&site_name);
         if !site_dir.exists() {
             return Err(format!("Site '{}' does not exist", site_name));
@@ -434,6 +453,7 @@ impl SiteManager {
         files: &[(String, String)],
     ) -> Result<SiteInfo, String> {
         let site_name = site_name.trim().to_lowercase();
+        if !site_name_ok(&site_name) { return Err("Invalid site name".into()); }
         let site_dir = self.base_dir.join("sites").join(&site_name);
         if !site_dir.exists() {
             return Err(format!("Site '{}' does not exist", site_name));
@@ -504,12 +524,14 @@ impl SiteManager {
 
     pub fn load_page(&self, name: &str) -> Option<String> {
         let name = name.trim().to_lowercase();
+        if !site_name_ok(&name) { return None; }
         let p = self.base_dir.join("sites").join(&name).join(".sevennine-page.json");
         std::fs::read_to_string(p).ok()
     }
 
     pub async fn serve_file(&self, site_name: &str, file_path: &str) -> Option<(Vec<u8>, String)> {
         let site_name = site_name.trim().to_lowercase();
+        if !site_name_ok(&site_name) { return None; }
         let file_path = if file_path.is_empty() || file_path == "/" { "index.html" } else { file_path };
         let safe_path = Path::new(file_path).file_name()?.to_str()?;
 
@@ -695,7 +717,15 @@ async fn handle_connection(
     // page on any site read this builder's site list and post to its API. The
     // publish UI does reach it from another local port, so the allowed origin
     // is echoed by name instead of wildcarded.
-    let allowed_origin = match crate::local_guard::screen(&request) {
+    // Its own page, and the browser's Sites app: the two things that publish.
+    // Not any loopback origin — every app and every .hidra site the browser
+    // shows is on one, and this API creates, overwrites and deletes sites.
+    let own = format!("http://127.0.0.1:{}", manager.get_port());
+    let own_named = format!("http://localhost:{}", manager.get_port());
+    let allowed_origin = match crate::local_guard::screen_for(
+        &request,
+        &[own.as_str(), own_named.as_str(), SITES_APP_ORIGIN],
+    ) {
         crate::local_guard::Access::Allow(origin) => origin,
         crate::local_guard::Access::Deny => {
             send_response(
@@ -2527,3 +2557,38 @@ function toast(msg){
 // Auto-refresh
 setInterval(loadSites, 10000);
 "##;
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    fn scratch() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sevennine-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn a_name_that_climbs_out_of_the_sites_directory_is_refused() {
+        let base = scratch();
+        let mgr = SiteManager::new(&base, 0);
+        std::fs::write(base.join("keep.txt"), b"x").unwrap();
+        for bad in ["..", ".", "../..", "a/b", "a\\b", "", "../sites"] {
+            assert!(mgr.delete_site(bad).await.is_err(), "delete {bad:?} accepted");
+            assert!(mgr.upload_file(bad, "f.txt", b"x").await.is_err(), "upload {bad:?} accepted");
+            assert!(mgr.serve_file(bad, "keep.txt").await.is_none(), "serve {bad:?} accepted");
+            assert!(mgr.load_page(bad).is_none());
+            assert!(!mgr.has_site_sync(bad));
+        }
+        assert!(base.join("keep.txt").exists(), "the directory above the sites was touched");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn ordinary_names_pass() {
+        for ok in ["blog", "my-site", "a_b", "x1"] {
+            assert!(site_name_ok(ok));
+        }
+    }
+}

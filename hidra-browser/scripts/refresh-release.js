@@ -23,7 +23,7 @@ const path   = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { inflateRawSync } = require('zlib');
-const { readZip } = require('./lib/zip');
+const { readZip, validDosDate } = require('./lib/zip');
 const { download } = require('./lib/net');
 const { patchZip } = require('./patch-zip');
 
@@ -54,6 +54,12 @@ const ENGINE_IN_ZIP = 'resources/bin/hidra-node.exe';
 // the browser opens with nothing connecting. See vendor/linux-x64/README.md.
 const LIBEVENT_LOCAL  = path.join(ROOT, 'vendor', 'linux-x64', 'libevent-2.1.so.7');
 const LIBEVENT_IN_ZIP = 'resources/bin/tor/libevent-2.1.so.7';
+
+// HidraNet's icon for the macOS bundle, from brand/logo/ at the top of the
+// repository (made from the master logo by the same script as every other
+// icon).
+const MAC_ICON_LOCAL  = path.join(ROOT, '..', 'brand', 'logo', 'hidranet.icns');
+const MAC_ICON_IN_ZIP = 'HidraNet.app/Contents/Resources/electron.icns';
 
 /**
  * The engine that goes in the Windows package.
@@ -117,6 +123,10 @@ function verify(file) {
 
   console.log('\n  ' + name);
   check(es.every(e => e.filename.indexOf('\\') === -1), 'every path uses forward slashes');
+  // Windows' own zip support refuses an archive with an impossible date
+  // (1980-00-00, which a zeroed timestamp decodes to): the package would not
+  // open on double-click. See lib/zip.js.
+  check(es.every(e => validDosDate(e.dosDate)), 'every entry has a real date (Windows opens the zip)');
   check(by.has(tor), 'Tor is in the package (' + (by.has(tor) ? by.get(tor).uncompSz : 0) + ' bytes)');
   if (!win) check(mode(tor) === '755', 'Tor is executable (mode ' + mode(tor) + ')');
   check(by.has(res + '/bin/tor/geoip'), 'Tor geoip data present');
@@ -190,7 +200,11 @@ function verify(file) {
   console.log('\n  patching\n');
   for (const n of NAMES) {
     const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
-    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL } : {};
+    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
+      // The bundle's icon: Electron's own until now. The binary is not
+      // touched, only the picture the Dock and the Finder show for it.
+      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
+      : {};
     patchZip(path.join(inDir, n), path.join(outDir, n), { binaries, extras });
   }
 

@@ -116,6 +116,20 @@ pub struct NodeConfig {
 pub struct NetworkConfig {
     pub listen_addr: String,
     pub listen_port: u16,
+    /// Let circuits continue to relays on loopback or private addresses.
+    ///
+    /// Off by default: the next hop is chosen by whoever built the circuit,
+    /// and on a relay open to the internet that is anyone. Turn it on only
+    /// for a network whose relays all live on one machine or one LAN.
+    #[serde(default)]
+    pub allow_private_hops: bool,
+    /// Let the exit connect to loopback or private destinations.
+    ///
+    /// Off by default, and dangerous on: it lets anyone who reaches this
+    /// relay use it to reach the operator's own machine and network,
+    /// including a cloud host's metadata service. See `relay::exit_policy`.
+    #[serde(default)]
+    pub allow_private_targets: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

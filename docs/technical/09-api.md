@@ -239,23 +239,31 @@ fetch('https://example.com', { agent });
 
 ## 6. Browser applications — port 8090
 
-Served by the browser process. They only answer requests with their own `Host`
-and `Origin` — protection against DNS rebinding.
+Served by the browser process, each app on an origin of its own under
+`.localhost` (`src/main/app-origins.js`), so a script that got into one app
+has nothing of another's: not its storage, not its routes. A request is
+answered only with one of these `Host`s, which stops DNS rebinding, and only
+from the same app's `Origin`.
 
-| Path | Method | Description |
+| Origin | Description | Vault compartment |
 |---|---|---|
-| `/` | GET | HidraChat |
-| `/mail` | GET | HidraMail |
-| `/forum` | GET | Forum |
-| `/search` | GET | HidraSearch |
-| `/reviews` | GET | HidraReview |
-| `/sites`, `/publish` | GET | Publishing |
-| `/site?addr=` | GET | View a `.hidra` site |
-| `/prefs` | GET, POST | Preferences |
-| `/search/api?q=&p=&lang=` | GET | Search (JSON) |
+| `http://chat.localhost:8090` | HidraChat | `chat` |
+| `http://mail.localhost:8090` | HidraMail | `mail` |
+| `http://forum.localhost:8090` | Forum | `forum` |
+| `http://publish.localhost:8090` | Publishing | `publish` |
+| `http://site.localhost:8090/?addr=` | View a `.hidra` site | none |
+| `http://search.localhost:8090` | HidraSearch, with `/search/api` and `GET /prefs` | none |
+| `http://reviews.localhost:8090` | HidraReview | none |
+| `http://donate.localhost:8090` | Donate | none |
+
+Every app serves its page at `/`, plus the shared scripts (`/vendor/…`,
+`/hidra-store.js`, `/hidrachat-crypto.js`, `/hidra-site.js`). There is no
+`POST /prefs`: preferences change through the browser's own window. The old
+addresses on `127.0.0.1:8090` (`/mail`, `/forum`, …) answer with a redirect
+to the app's own origin.
 
 ```bash
-curl "http://127.0.0.1:8090/search/api?q=example&p=1&lang=en-US"
+curl -H "Host: search.localhost:8090" "http://127.0.0.1:8090/search/api?q=example&p=1&lang=en-US"
 ```
 
 ```json

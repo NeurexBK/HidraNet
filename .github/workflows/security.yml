@@ -37,6 +37,11 @@ jobs:
         # an exception has to be written down to exist.
         run: cargo audit --deny warnings
 
+      - name: Audit HidraVPN dependencies
+        working-directory: hidravpn
+        # Same rule, its own list: hidravpn/.cargo/audit.toml.
+        run: cargo audit --deny warnings
+
   anonymity:
     name: anonymity invariants
     runs-on: ubuntu-latest

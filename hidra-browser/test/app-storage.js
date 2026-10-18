@@ -20,7 +20,9 @@ const {
   APPS_PARTITION,
 } = require('../src/main/tab-manager');
 
-const APPS = 'http://127.0.0.1:8090';
+// Each app has an origin of its own (src/main/app-origins.js).
+const A = (name) => `http://${name}.localhost:8090`;
+const OLD = 'http://127.0.0.1:8090';
 let failed = 0;
 const check = (ok, label, detail) => {
   if (!ok) failed++;
@@ -30,15 +32,13 @@ const check = (ok, label, detail) => {
 // ── Which pages keep their storage ───────────────────────────────────────
 
 const KEPT = [
-  [`${APPS}/mail`, 'mail'],
-  [`${APPS}/mail?x=1#y`, 'mail, with a query and fragment'],
-  [`${APPS}/`, 'chat, at the root'],
-  [`${APPS}`, 'chat, with no slash'],
-  [`${APPS}/?room=x`, 'chat, with a query'],
-  [`${APPS}/forum`, 'the forum'],
-  [`${APPS}/forum/`, 'the forum, trailing slash'],
-  [`${APPS}/publish`, 'the site publisher'],
-  [`${APPS}/sites`, 'the site publisher, by its other name'],
+  [`${A('mail')}/`, 'mail'],
+  [`${A('mail')}/?x=1#y`, 'mail, with a query and fragment'],
+  [`${A('chat')}/`, 'chat'],
+  [`${A('chat')}`, 'chat, with no slash'],
+  [`${A('chat')}/?room=x`, 'chat, with a query'],
+  [`${A('forum')}/`, 'the forum'],
+  [`${A('publish')}/`, 'the site publisher'],
 ];
 for (const [url, label] of KEPT) {
   check(wantsAppStorage(url) === true, `kept: ${label}`, `${url} would get a throwaway partition`);
@@ -47,15 +47,17 @@ for (const [url, label] of KEPT) {
 const THROWAWAY = [
   ['https://example.com/', 'a website'],
   ['http://example.com/mail', 'a website with an app-like path'],
-  ['http://localhost:8090/mail', 'the apps port under another name (another origin)'],
-  ['http://127.0.0.1:8091/mail', 'another loopback port'],
-  ['https://127.0.0.1:8090/mail', 'the apps host over https (another origin)'],
+  [`${OLD}/mail`, 'the old shared origin, which now only redirects'],
+  ['http://localhost:8090/mail', 'the apps port under another name'],
+  ['http://mail.localhost:8091/', 'an app host on another port'],
+  ['https://mail.localhost:8090/', 'an app host over https (another origin)'],
+  ['http://evil.localhost:8090/', 'a .localhost host that is not one of the apps'],
+  ['http://mail.localhost.evil.com:8090/', 'a host that only starts like an app'],
   ['http://127.0.0.1:8084/', 'SevenNine, which serves sites people build'],
-  [`${APPS}/site?addr=x.hidra`, 'the site viewer, which shows other people\'s content'],
-  [`${APPS}/search?q=x`, 'search'],
-  [`${APPS}/reviews`, 'reviews'],
-  [`${APPS}/donate`, 'donate'],
-  [`${APPS}/mailbox`, 'a path that only starts like an app'],
+  [`${A('site')}/?addr=x.hidra`, 'the site viewer, which shows other people\'s content'],
+  [`${A('search')}/?q=x`, 'search'],
+  [`${A('reviews')}/`, 'reviews'],
+  [`${A('donate')}/`, 'donate'],
   ['file:///tmp/download.html', 'a file on disk'],
   ['data:text/html,hi', 'a data URL'],
   ['not a url', 'something that is not a URL'],
@@ -77,7 +79,7 @@ const belongs = (u) => TabManager.prototype._belongsInApps.call(null, resolve(u)
 
 for (const name of ['mail', 'chat', 'forum', 'publish']) {
   const r = resolve(`hidra://${name}`);
-  check(r.kind === 'url' && r.url.startsWith(APPS + '/') && belongs(`hidra://${name}`),
+  check(r.kind === 'url' && r.url === A(name) + '/' && belongs(`hidra://${name}`),
     `hidra://${name} opens the app from the apps server, in the kept partition`,
     JSON.stringify(r));
 }
@@ -85,15 +87,30 @@ for (const name of Object.keys(INTERNAL_BY_NAME)) {
   const r = resolve(`hidra://${name}`);
   // Pages served from disk (the new tab page, the VPN page) resolve to a
   // file; every app resolves to the apps server.
-  const ok = INTERNAL_BY_NAME[name].endsWith('.html') ? r.kind === 'file' : r.kind === 'url' && r.url.startsWith(APPS);
+  const ok = INTERNAL_BY_NAME[name].endsWith('.html') ? r.kind === 'file' : r.kind === 'url' && r.url.startsWith(A(name));
   check(ok, `hidra://${name} resolves`, JSON.stringify(r));
 }
-check(resolve('hidra://reviews?b=cafe').url === `${APPS}/reviews?b=cafe`,
+check(resolve('hidra://reviews?b=cafe').url === `${A('reviews')}/?b=cafe`,
   'a query on a typed name is carried through', resolve('hidra://reviews?b=cafe').url);
 check(!belongs('hidra://search?q=hello'), 'a search stays out of the kept partition');
 check(!belongs('example.com'), 'a typed website stays out of it');
 check(resolve('example.com').url === 'https://example.com', 'a bare host becomes https');
-check(resolve('some words').url.startsWith(`${APPS}/search?q=`), 'words become a search');
+check(resolve('some words').url.startsWith(`${A('search')}/?q=`), 'words become a search');
+
+// ── Each app is an origin of its own ─────────────────────────────────────
+//
+// They used to share one, so a script that got into any app had the storage
+// and same-origin requests of all of them.
+const { appOrigin, legacyTarget, ORIGINS } = require('../src/main/app-origins');
+check(new Set(ORIGINS).size === ORIGINS.length && ORIGINS.every((o) => new URL(o).origin === o),
+  'every app has a distinct origin', JSON.stringify(ORIGINS));
+check(new URL(appOrigin('mail')).origin !== new URL(appOrigin('forum')).origin, 'mail and the forum do not share one');
+check(legacyTarget('127.0.0.1:8090', '/mail') === `${A('mail')}/` && legacyTarget('127.0.0.1:8090', '/') === `${A('chat')}/`
+  && legacyTarget('127.0.0.1:8090', '/site?addr=x.hidra') === `${A('site')}/?addr=x.hidra`
+  && legacyTarget('127.0.0.1:8090', '/reviews?b=cafe') === `${A('reviews')}/?b=cafe`,
+  'an old address is sent on to its app\'s own origin');
+check(legacyTarget('127.0.0.1:8090', '/vendor/mqtt.min.js') === null && legacyTarget('evil.com', '/mail') === null,
+  'and only an old app address is');
 check(resolve('shop.hidra').kind === 'domain', 'a .hidra name is looked up');
 check(!belongs('shop.hidra'), 'and a .hidra name is never kept');
 

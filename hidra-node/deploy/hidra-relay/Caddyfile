@@ -1,0 +1,11 @@
+# TLS in front of hidra-relay. Caddy gets and renews the certificate on its
+# own; the relay listens on loopback in plain WebSocket. Replace the host
+# name with the relay's. The pages connect to wss://<host>/mqtt.
+relay.example.org {
+	reverse_proxy /mqtt 127.0.0.1:1884
+
+	# No access log: it would be the record of who connected and when.
+	log {
+		output discard
+	}
+}

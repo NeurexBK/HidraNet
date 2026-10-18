@@ -9,6 +9,7 @@ use hidra_node::client::circuit_pool::CircuitPool;
 use hidra_node::client::session::run_client_session;
 use hidra_node::client::streaming::StreamingCircuit;
 use hidra_node::network::listener::NodeListener;
+use hidra_node::relay::exit_policy::ExitPolicy;
 use hidra_node::relay::registry::RelayEntry;
 
 fn make_relays(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
@@ -56,9 +57,9 @@ async fn start_echo_server() -> SocketAddr {
 async fn start_three_relays() -> (SocketAddr, SocketAddr, SocketAddr) {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    let l1 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
-    let l2 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
-    let l3 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
+    let l1 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+    let l2 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+    let l3 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
 
     let a1 = l1.local_addr().unwrap();
     let a2 = l2.local_addr().unwrap();
@@ -102,9 +103,9 @@ async fn three_relay_onion_circuit() {
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    let listener1 = NodeListener::bind(addr, relay1_secret).await.unwrap();
-    let listener2 = NodeListener::bind(addr, relay2_secret).await.unwrap();
-    let listener3 = NodeListener::bind(addr, relay3_secret).await.unwrap();
+    let listener1 = NodeListener::bind(addr, relay1_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+    let listener2 = NodeListener::bind(addr, relay2_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+    let listener3 = NodeListener::bind(addr, relay3_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
 
     let addr1 = listener1.local_addr().unwrap();
     let addr2 = listener2.local_addr().unwrap();

@@ -46,7 +46,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage display-url english-only mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -60,7 +60,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

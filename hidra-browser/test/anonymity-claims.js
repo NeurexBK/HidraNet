@@ -120,6 +120,23 @@ if (/octets\[0\]\s*\+\s*['"]\.['"]\s*\+\s*octets\[1\]/.test(newtab)) {
   ok('relay display: keyed per-session fingerprints, no addresses');
 }
 
+// ── Sites are not linked by a shared exit ───────────────────────────────
+//
+// Chromium sends no SOCKS credentials, so Tor cannot tell one tab from
+// another; without stream isolation every site visited in the same ten
+// minutes left through one exit.
+const torManager = fs.readFileSync(path.join(MAIN, 'tor-manager.js'), 'utf8');
+if (/'--SocksPort',\s*`\$\{this\.socksPort\} IsolateDestAddr`/.test(torManager)) ok('each destination gets its own Tor circuit');
+else bad('each destination gets its own Tor circuit', 'tor-manager.js no longer starts Tor with IsolateDestAddr on its SocksPort');
+
+// ── Only this machine goes around Tor ───────────────────────────────────
+const lock = fs.readFileSync(path.join(MAIN, 'network-lock.js'), 'utf8');
+const proxy = fs.readFileSync(path.join(MAIN, 'proxy-manager.js'), 'utf8');
+if (/LOOPBACK_ONLY = 'localhost,\*\.localhost,127\.0\.0\.1,\[::1\]'/.test(proxy)) ok('only this machine goes around the proxy');
+else bad('only this machine goes around the proxy', 'proxy-manager.js bypasses the proxy for more than loopback');
+if (/endsWith\('\.localhost'\)/.test(lock)) ok('the apps\' own hosts count as this machine for the lock');
+else bad('the apps\' own hosts count as this machine for the lock', 'network-lock.js would block the apps');
+
 if (failed) {
   console.log('\n' + failed + ' claim(s) the browser does not keep');
   process.exit(1);

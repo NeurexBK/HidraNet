@@ -32,6 +32,44 @@ const isInternalPage = (() => {
   }
 })();
 
+// Which of our pages this is, by file name ("newtab.html"), when it is one.
+const uiPage = (() => {
+  if (!isInternalPage) return null;
+  try {
+    const u = new URL(window.location.href);
+    u.search = '';
+    u.hash = '';
+    return u.href.slice(uiRoot.length);
+  } catch {
+    return null;
+  }
+})();
+
+// HidraVPN: the browser drives the service installed on this machine
+// (src/main/vpn-manager.js). Connecting routes the whole machine and
+// uninstalling removes the service, so the bridge goes to the VPN page only;
+// the new tab page gets the status for its badge and nothing else. The main
+// process checks the caller again before it does anything.
+const vpnBridge = uiPage === 'hidravpn.html' ? {
+  status: () => ipcRenderer.invoke('vpn:status'),
+  connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
+  leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
+  checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
+  install: () => ipcRenderer.invoke('vpn:install'),
+  uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
+  disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
+  newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),
+  nodes: () => ipcRenderer.invoke('vpn:nodes'),
+  importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
+  fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
+  getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
+  setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
+  refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
+  verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
+} : uiPage === 'newtab.html' ? {
+  status: () => ipcRenderer.invoke('vpn:status'),
+} : null;
+
 if (isInternalPage) {
   contextBridge.exposeInMainWorld('hidra', {
     proxy: {
@@ -56,27 +94,7 @@ if (isInternalPage) {
     vault: {
       status: () => ipcRenderer.invoke('vault:status'),
     },
-    // HidraVPN: the browser drives the service installed on this machine
-    // (src/main/vpn-manager.js). Connecting routes the whole machine, so this
-    // is offered to our own pages only, and the main process checks the
-    // caller again before it does anything.
-    vpn: {
-      status: () => ipcRenderer.invoke('vpn:status'),
-      connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
-      leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
-      checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
-      install: () => ipcRenderer.invoke('vpn:install'),
-      uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
-      disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
-      newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),
-      nodes: () => ipcRenderer.invoke('vpn:nodes'),
-      importNodes: () => ipcRenderer.invoke('vpn:import-nodes'),
-      fetchList: () => ipcRenderer.invoke('vpn:fetch-list'),
-      getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
-      setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
-      refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
-      verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
-    },
+    ...(vpnBridge ? { vpn: vpnBridge } : {}),
   });
 }
 
@@ -90,17 +108,15 @@ if (isInternalPage) {
 // vault. The main process checks the sender of every call against the
 // frame's own URL, so a page that is not one of these gets a refusal even if
 // it somehow had the bridge.
-const APPS_FLAG = '--hidra-apps-origin=';
-const appsOrigin = (process.argv.find((a) => a.startsWith(APPS_FLAG)) || '')
-  .slice(APPS_FLAG.length);
-// Keep in step with APP_NAMESPACES in tab-manager.js.
-const APP_PATHS = new Set(['/', '/mail', '/forum', '/publish', '/sites']);
+// Each app has an origin of its own (app-origins.js); these are the ones
+// that hold an identity, passed in by tab-manager.js.
+const APPS_FLAG = '--hidra-app-origins=';
+const appOrigins = new Set((process.argv.find((a) => a.startsWith(APPS_FLAG)) || '')
+  .slice(APPS_FLAG.length).split(',').filter(Boolean));
 
 const isAppPage = (() => {
   try {
-    const u = new URL(window.location.href);
-    return Boolean(appsOrigin) && u.origin === appsOrigin
-      && APP_PATHS.has(u.pathname.replace(/\/+$/, '') || '/');
+    return appOrigins.has(new URL(window.location.href).origin);
   } catch {
     return false;
   }

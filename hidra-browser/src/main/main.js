@@ -1,14 +1,17 @@
-const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog } = require('electron');
+const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog, nativeImage, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
+const appOrigins = require('./app-origins');
+const { applyAppIcon, windowIcon } = require('./app-icon');
 const { VpnManager } = require('./vpn-manager');
 const { VpnInstaller } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
+const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
 const { VaultStore } = require('./vault');
-const { ProxyManager } = require('./proxy-manager');
+const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
 const { NetworkLock } = require('./network-lock');
 const { FingerprintEngine } = require('../fingerprint/engine');
@@ -19,20 +22,16 @@ const CHAT_PORT = 8090;
 const SEVENNINE_PORT = 8084;
 
 // The apps server is reachable by any page the user visits, so it only answers
-// requests that carry our own Host and Origin. The Host check is what stops DNS
-// rebinding, where a site points its own hostname at 127.0.0.1.
-const ALLOWED_HOSTS = new Set([`127.0.0.1:${CHAT_PORT}`, `localhost:${CHAT_PORT}`]);
-const ALLOWED_ORIGINS = new Set([`http://127.0.0.1:${CHAT_PORT}`, `http://localhost:${CHAT_PORT}`]);
-
+// requests that carry one of our own Hosts, and an Origin that is the same
+// app's. The Host check is what stops DNS rebinding, where a site points its
+// own hostname at 127.0.0.1; the Origin check is what keeps one app from
+// talking to another's routes now that each has an origin of its own.
 function isTrustedRequest(req) {
   const host = String(req.headers.host || '').toLowerCase();
-  if (!ALLOWED_HOSTS.has(host)) return false;
-
-  // Our own pages are same-origin, so they either omit Origin or send ours.
-  // Anything else is a page the user merely visited.
+  const app = appOrigins.appOfHost(host);
+  if (!app) return appOrigins.LEGACY_HOSTS.has(host) && !req.headers.origin;
   const origin = req.headers.origin;
-  if (origin && !ALLOWED_ORIGINS.has(origin)) return false;
-
+  if (origin && origin !== appOrigins.appOrigin(app)) return false;
   return true;
 }
 
@@ -131,16 +130,14 @@ function directProbe(url) {
   });
 }
 
-// Our own pages only: the frame that asked has to be the tab's main frame and
-// one of the pages shipped under src/ui (or a hidra:// page). The preload
-// offers the VPN bridge only there; this is what refuses if anything else
-// ever asks, because connecting re-routes the whole machine.
-function isInternalSender(event) {
-  const frame = event && event.senderFrame;
-  if (!frame || !event.sender || frame !== event.sender.mainFrame) return false;
-  // Only a page shipped under src/ui; never a scheme (see tab-preload.js).
-  const url = frame.url || '';
-  return url.startsWith(UI_ROOT_URL);
+// The VPN page itself, and nothing else: the main frame of its tab, at the
+// exact address of hidravpn.html. Connecting re-routes the whole machine and
+// uninstalling removes the service, so "any page under src/ui" was too wide:
+// a script that got into another of our pages (the chat once ran one through
+// a member's colour) could drive the VPN. The preload offers the bridge only
+// on this page; this is what refuses if anything else ever asks.
+function isVpnPage(event) {
+  return senderPage(event, UI_ROOT_URL) === 'hidravpn.html';
 }
 
 function pingLocalPort(port, urlPath, timeoutMs) {
@@ -177,7 +174,7 @@ let vault = null;
 // rules up through TabManager.setProxyRules.
 async function applyProxyEverywhere(proxyRules) {
   const config = proxyRules
-    ? { proxyRules, proxyBypassRules: '<local>' }
+    ? { proxyRules, proxyBypassRules: LOOPBACK_ONLY }
     : { mode: 'direct' };
 
   if (tabManager) tabManager.setProxyRules(proxyRules);
@@ -239,7 +236,7 @@ function detectExitIp(proxyRules) {
     // Tor precisely so it can confirm that Tor is working.
     const probe = session.fromPartition('hidra-exit-check');
     probe.closeAllConnections().catch(() => {});
-    probe.setProxy({ proxyRules, proxyBypassRules: '<local>' }).then(() => {
+    probe.setProxy({ proxyRules, proxyBypassRules: LOOPBACK_ONLY }).then(() => {
       const request = net.request({ url: 'https://check.torproject.org/api/ip', session: probe });
       let body = '';
       const timer = setTimeout(() => {
@@ -339,7 +336,9 @@ function httpsGet(url, timeoutMs) {
     url,
     method: 'GET',
     headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; HidraSearch/1.0)',
+      // The same string as httpsPost: a name of our own would tell the
+      // search engine which of the people behind a Tor exit use HidraNet.
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/html, */*',
       'Accept-Language': 'en-US,en;q=0.9',
     },
@@ -498,7 +497,7 @@ async function searchSearxng(query, pageNo, lang) {
   const enc = encodeURIComponent(query);
   for (const base of SEARX_INSTANCES) {
     try {
-      const url = `${base}/search?q=${enc}&format=json&pageno=${pageNo}&language=${lang}&safesearch=0&engines=general`;
+      const url = `${base}/search?q=${enc}&format=json&pageno=${pageNo}&language=${encodeURIComponent(lang)}&safesearch=0&engines=general`;
       const res = await httpsGet(url, 4000);
       if (!res.ok) continue;
       const data = JSON.parse(res.body);
@@ -518,7 +517,31 @@ async function searchSearxng(query, pageNo, lang) {
 }
 
 
+// A result comes from a search engine, or from whoever runs a public SearXNG
+// instance, and its link is shown for the user to click. Only a web address
+// goes through: a javascript: or data: link in a result would run in the
+// search page, which shares its origin with every one of the apps.
+function webResultsOnly(results) {
+  return results.filter((r) => {
+    try {
+      const u = new URL(String(r && r.url));
+      return u.protocol === 'https:' || u.protocol === 'http:';
+    } catch (e) {
+      return false;
+    }
+  }).map((r) => ({
+    title: String(r.title || ''),
+    url: new URL(String(r.url)).href,
+    snippet: String(r.snippet || ''),
+    engine: String(r.engine || ''),
+  }));
+}
+
 async function performSearch(query, page, searchLang) {
+  return webResultsOnly(await searchAnyEngine(query, page, searchLang));
+}
+
+async function searchAnyEngine(query, page, searchLang) {
   const pageNo = Math.max(1, page);
   const lang = (searchLang && searchLang !== 'all') ? searchLang : 'all';
 
@@ -547,6 +570,7 @@ function startChatServer(attempt) {
     try { return fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8'); }
     catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' not found</h1>'; }
   };
+  // By app name (app-origins.js): each is served on its own origin.
   const pages = { chat: load('hidrachat.html'), publish: load('sitepub.html'), site: load('siteload.html'), mail: load('hidramail.html'), forum: load('forum.html'), donate: load('donate.html'), search: load('hidrasearch.html'), reviews: load('hidrareview.html') };
   chatServer = http.createServer(async (req, res) => {
     if (!isTrustedRequest(req)) {
@@ -560,30 +584,32 @@ function startChatServer(attempt) {
     const p = qi >= 0 ? fullUrl.slice(0, qi) : fullUrl;
     const qs = qi >= 0 ? fullUrl.slice(qi + 1) : '';
 
-    // Prefs GET
-    if (p === '/prefs' && req.method === 'GET') {
+    // An address from when the apps shared one origin: sent on to the app's
+    // own. Bookmarks, old links and the cards on cached new tab pages keep
+    // working.
+    const app = appOrigins.appOfHost(req.headers.host);
+    if (!app) {
+      const target = appOrigins.legacyTarget(req.headers.host, fullUrl);
+      if (target && req.method === 'GET') {
+        res.writeHead(302, { Location: target, 'Cache-Control': 'no-store' });
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
+      res.end();
+      return;
+    }
+
+    // The search page's preferences, for the search page.
+    if (p === '/prefs' && req.method === 'GET' && app === 'search') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(userPrefs));
       return;
     }
 
-    // Prefs POST
-    if (p === '/prefs' && req.method === 'POST') {
-      let body = '';
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
-        try {
-          const update = JSON.parse(body);
-          if (update.theme) userPrefs.theme = update.theme;
-          if (update.searchLang !== undefined) userPrefs.searchLang = update.searchLang;
-          if (update.autoConnect !== undefined) userPrefs.autoConnect = !!update.autoConnect;
-          savePrefs();
-        } catch(e) {}
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      });
-      return;
-    }
+    // There is no POST /prefs. Preferences change through the browser's own
+    // window (the prefs IPC below), never over HTTP: every app and every
+    // .hidra site shown in the site viewer shares this origin, and a route
+    // here let any of them switch off connecting to Tor at startup.
 
     // Third-party libraries, served from the application bundle.
     //
@@ -593,20 +619,40 @@ function startChatServer(attempt) {
     // anyone controlling that response read everything in plaintext. Now the
     // file comes from disk, at the version that was reviewed.
     //
-    // The shim the apps load to reach their vault compartment. A fixed name,
-    // like the vendor files below: nothing concatenates the request path.
-    if (p === '/hidra-store.js') {
+    // The shim the apps load to reach their vault compartment, and the room
+    // cryptography the chat page loads. Fixed names, like the vendor files
+    // below: nothing concatenates the request path.
+    const SHARED = { '/hidra-store.js': 'hidra-store.js', '/hidrachat-crypto.js': 'hidrachat-crypto.js', '/hidra-site.js': 'hidra-site.js' };
+    if (Object.prototype.hasOwnProperty.call(SHARED, p)) {
       try {
-        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', 'hidra-store.js'));
+        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', SHARED[p]));
         res.writeHead(200, {
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'no-cache',
         });
         res.end(body);
       } catch (e) {
-        console.error('[srv] hidra-store.js', e.message);
+        console.error('[srv]', SHARED[p], e.message);
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('could not read hidra-store.js');
+        res.end('could not read ' + SHARED[p]);
+      }
+      return;
+    }
+
+    // The HidraNet logo and the tab icon, for every app. A fixed list again.
+    const IMAGES = {
+      '/img/favicon.png': 'favicon.png',
+      '/img/hidranet-logo.png': 'hidranet-logo.png',
+      '/img/hidranet-icon.png': 'hidranet-icon.png',
+    };
+    if (Object.prototype.hasOwnProperty.call(IMAGES, p)) {
+      try {
+        const body = fs.readFileSync(path.join(__dirname, '..', 'ui', 'img', IMAGES[p]));
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' });
+        res.end(body);
+      } catch (e) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('not found');
       }
       return;
     }
@@ -640,7 +686,7 @@ function startChatServer(attempt) {
     }
 
     // Async search API — must return before html fallback
-    if (p === '/search/api') {
+    if (p === '/search/api' && app === 'search') {
       const params = new URLSearchParams(qs);
       const q = (params.get('q') || '').trim();
       const page = Math.max(1, parseInt(params.get('p') || '1', 10));
@@ -671,14 +717,13 @@ function startChatServer(attempt) {
       return;
     }
 
-    let html = pages.chat;
-    if (p.indexOf('/mail') === 0) html = pages.mail;
-    else if (p.indexOf('/forum') === 0) html = pages.forum;
-    else if (p.indexOf('/donate') === 0) html = pages.donate;
-    else if (p === '/sites' || p.indexOf('/publish') === 0) html = pages.publish;
-    else if (p.indexOf('/site') === 0) html = pages.site;
-    else if (p.indexOf('/search') === 0) html = pages.search;
-    else if (p.indexOf('/reviews') === 0) html = pages.reviews;
+    // Each app's page, on its own origin, at its root and nowhere else.
+    const html = (p === '/' || p === '/index.html') ? pages[app] : null;
+    if (!html) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not found');
+      return;
+    }
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-cache',
@@ -737,6 +782,7 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 app.whenReady().then(async () => {
+  applyAppIcon({ app, nativeImage, shell });
   loadPrefs();
   vault = new VaultStore(path.join(app.getPath('userData'), 'vault'), safeStorage);
   startChatServer();
@@ -797,6 +843,7 @@ function createMainWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'HidraNet Browser',
+    icon: windowIcon(nativeImage),
     backgroundColor: '#0a0a0f',
     frame: false,
     show: false,
@@ -812,11 +859,28 @@ function createMainWindow() {
   return win;
 }
 
-function setupIPC(tabs, proxy) {
+function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.webContents : null)) {
+  // Every handler names the pages that call it, and refuses everything else
+  // before it does anything (see ipc-guard.js). The browser's own bar is
+  // browser.html in the main window; the other pages are tabs.
+  const fromPages = (event, pages, what) => requirePage(event, UI_ROOT_URL, pages, what);
+  const fromChrome = (event, what) => {
+    const contents = chromeContents();
+    if (!contents || event.sender !== contents || senderPage(event, UI_ROOT_URL) !== 'browser.html') {
+      throw new Error(`refused: ${what} is for the browser's own bar`);
+    }
+  };
+  // Either the bar or one of the named pages.
+  const fromChromeOr = (event, pages, what) => {
+    const contents = chromeContents();
+    if (contents && event.sender === contents && senderPage(event, UI_ROOT_URL) === 'browser.html') return;
+    fromPages(event, pages, what);
+  };
+
   // The vault. Which compartment a page may open is decided here, from the
   // URL of the frame that asked — never from anything the page sent. The
   // preload only offers the bridge; this is what refuses.
-  const refused = () => new Error('only HidraNet apps have a vault compartment');
+  const refused = () => new Error('refused: only HidraNet apps have a vault compartment');
 
   ipcMain.handle('vault:get', (event) => {
     const ns = vaultNamespaceOf(event);
@@ -834,44 +898,54 @@ function setupIPC(tabs, proxy) {
   // Whether the keychain is protecting the data is not a secret, but it is
   // still only for our own pages: the apps, and the new tab page's panel.
   ipcMain.handle('vault:status', (event) => {
+    // Narrowed from "any page under src/ui" to the one that shows it.
     const url = event.senderFrame ? event.senderFrame.url : '';
-    if (!appNamespace(url) && !url.startsWith(UI_ROOT_URL)) throw refused();
+    if (!appNamespace(url) && senderPage(event, UI_ROOT_URL) !== 'newtab.html') throw refused();
     return vault.status();
   });
 
-  ipcMain.handle('tab:create', async (_event, url) => {
+  ipcMain.handle('tab:create', async (event, url) => {
+    fromChrome(event, 'tab:create');
     return await tabs.createTab(url || 'hidra://newtab');
   });
 
-  ipcMain.handle('tab:close', (_event, tabId) => {
+  ipcMain.handle('tab:close', (event, tabId) => {
+    fromChrome(event, 'tab:close');
     tabs.closeTab(tabId);
   });
 
-  ipcMain.handle('tab:navigate', (_event, tabId, url) => {
+  ipcMain.handle('tab:navigate', (event, tabId, url) => {
+    fromChrome(event, 'tab:navigate');
     tabs.navigate(tabId, url);
   });
 
-  ipcMain.handle('tab:go-back', (_event, tabId) => {
+  ipcMain.handle('tab:go-back', (event, tabId) => {
+    fromChrome(event, 'tab:go-back');
     tabs.goBack(tabId);
   });
 
-  ipcMain.handle('tab:go-forward', (_event, tabId) => {
+  ipcMain.handle('tab:go-forward', (event, tabId) => {
+    fromChrome(event, 'tab:go-forward');
     tabs.goForward(tabId);
   });
 
-  ipcMain.handle('tab:reload', (_event, tabId) => {
+  ipcMain.handle('tab:reload', (event, tabId) => {
+    fromChrome(event, 'tab:reload');
     tabs.reload(tabId);
   });
 
-  ipcMain.handle('tab:activate', (_event, tabId) => {
+  ipcMain.handle('tab:activate', (event, tabId) => {
+    fromChrome(event, 'tab:activate');
     tabs.activateTab(tabId);
   });
 
-  ipcMain.handle('tab:list', () => {
+  ipcMain.handle('tab:list', (event) => {
+    fromChrome(event, 'tab:list');
     return tabs.listTabs();
   });
 
-  ipcMain.handle('proxy:status', () => {
+  ipcMain.handle('proxy:status', (event) => {
+    fromChromeOr(event, ['newtab.html'], 'proxy:status');
     const base = proxy.getStatus();
     const tor = torManager.getStatus();
     const connected = tor.state === 'ready';
@@ -887,16 +961,21 @@ function setupIPC(tabs, proxy) {
 
   // SevenNine is the engine's .hidra site builder, not a browser-served app, so
   // it only runs when the user actually opens it.
-  ipcMain.handle('sevennine:start', async () => {
+  ipcMain.handle('sevennine:start', async (event) => {
+    fromPages(event, ['newtab.html'], 'sevennine:start');
     const result = await proxy.startSevenNine();
     return result.ok
       ? { ok: true, url: `http://127.0.0.1:${SEVENNINE_PORT}/` }
       : { ok: false, msg: result.error };
   });
 
-  ipcMain.handle('sevennine:stop', async () => proxy.stopSevenNine());
+  ipcMain.handle('sevennine:stop', async (event) => {
+    fromPages(event, ['newtab.html'], 'sevennine:stop');
+    return proxy.stopSevenNine();
+  });
 
-  ipcMain.handle('tor:new-identity', async () => {
+  ipcMain.handle('tor:new-identity', async (event) => {
+    fromChromeOr(event, ['newtab.html'], 'tor:new-identity');
     const previous = torManager.exitIp;
     const result = await torManager.newIdentity();
     if (!result.ok) return { ok: false, msg: result.error };
@@ -944,9 +1023,13 @@ function setupIPC(tabs, proxy) {
   // Connecting means Tor, not the HidraNet engine. The engine's circuit runs
   // over relays that config.toml points at 127.0.0.1, so it never changes the
   // exit IP; Tor's volunteer network is what actually anonymises the traffic.
-  ipcMain.handle('proxy:connect', () => connectTor());
+  ipcMain.handle('proxy:connect', (event) => {
+    fromPages(event, ['newtab.html'], 'proxy:connect');
+    return connectTor();
+  });
 
-  ipcMain.handle('proxy:disconnect', async () => {
+  ipcMain.handle('proxy:disconnect', async (event) => {
+    fromPages(event, ['newtab.html'], 'proxy:disconnect');
     await torManager.stop();
     networkLock.engage('disconnected by the user');
     await applyProxyEverywhere(null);
@@ -957,7 +1040,8 @@ function setupIPC(tabs, proxy) {
   // The new tab page lives on file://, so it cannot probe the apps ports with
   // fetch — the responses are cross-origin and get blocked, which made every
   // app show as "Offline" even while running. Probe from the main process.
-  ipcMain.handle('apps:status', async () => {
+  ipcMain.handle('apps:status', async (event) => {
+    fromPages(event, ['newtab.html'], 'apps:status');
     const [chat, sevennine] = await Promise.all([
       pingLocalPort(CHAT_PORT, '/'),
       pingLocalPort(SEVENNINE_PORT, '/'),
@@ -970,10 +1054,11 @@ function setupIPC(tabs, proxy) {
   // HidraVPN. The service picks the nodes and holds the tunnel; the browser
   // only asks. Every handler checks who asked before it talks to the service.
   const vpnOnlyOurs = (event) => {
-    if (!isInternalSender(event)) throw new Error('only HidraNet pages may drive the VPN');
+    if (!isVpnPage(event)) throw new Error('refused: only the HidraVPN page may drive the VPN');
   };
+  // Reading the state is also offered to the new tab page, for its badge.
   ipcMain.handle('vpn:status', (event) => {
-    vpnOnlyOurs(event);
+    if (!isVpnPage(event)) requirePage(event, UI_ROOT_URL, ['newtab.html'], 'the VPN status');
     return vpnManager.status();
   });
   ipcMain.handle('vpn:connect', (event, mode, options) => {
@@ -1083,9 +1168,13 @@ function setupIPC(tabs, proxy) {
     return { ...result, file: path.basename(file) };
   });
 
-  ipcMain.handle('prefs:get', () => ({ ...userPrefs }));
+  ipcMain.handle('prefs:get', (event) => {
+    fromPages(event, ['newtab.html'], 'prefs:get');
+    return { ...userPrefs };
+  });
 
-  ipcMain.handle('prefs:save', (_event, update) => {
+  ipcMain.handle('prefs:save', (event, update) => {
+    fromPages(event, ['newtab.html'], 'prefs:save');
     if (update && typeof update === 'object') {
       if (update.theme) userPrefs.theme = update.theme;
       if (update.searchLang !== undefined) userPrefs.searchLang = update.searchLang;
@@ -1095,11 +1184,13 @@ function setupIPC(tabs, proxy) {
     return { ok: true };
   });
 
-  ipcMain.handle('window:minimize', () => {
+  ipcMain.handle('window:minimize', (event) => {
+    fromChrome(event, 'window:minimize');
     if (mainWindow) mainWindow.minimize();
   });
 
-  ipcMain.handle('window:maximize', () => {
+  ipcMain.handle('window:maximize', (event) => {
+    fromChrome(event, 'window:maximize');
     if (mainWindow) {
       if (mainWindow.isMaximized()) {
         mainWindow.unmaximize();
@@ -1109,7 +1200,12 @@ function setupIPC(tabs, proxy) {
     }
   });
 
-  ipcMain.handle('window:close', () => {
+  ipcMain.handle('window:close', (event) => {
+    fromChrome(event, 'window:close');
     if (mainWindow) mainWindow.close();
   });
 }
+
+// For test/ipc-senders.js, which loads this file with a stand-in for Electron
+// and calls every handler with forged senders. Electron itself ignores it.
+module.exports = { setupIPC };

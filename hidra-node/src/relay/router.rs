@@ -18,6 +18,7 @@ use crate::network::connection::{
 };
 use crate::network::listener::PROTO_FORWARDED_CELL;
 use crate::onion::cell::{LayerHeader, RelayCommand};
+use crate::relay::exit_policy::ExitPolicy;
 use crate::onion::layer::{
     decrypt_stream, encrypt_stream, peel_layer, wrap_layer,
 };
@@ -43,6 +44,7 @@ pub struct RelayRouter {
     circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     static_secret_bytes: Arc<[u8; 32]>,
     intro_registry: IntroRegistry,
+    policy: ExitPolicy,
 }
 
 impl RelayRouter {
@@ -51,7 +53,14 @@ impl RelayRouter {
             circuits: Arc::new(Mutex::new(HashMap::new())),
             static_secret_bytes,
             intro_registry: Arc::new(Mutex::new(HashMap::new())),
+            policy: ExitPolicy::STRICT,
         }
+    }
+
+    /// Where this relay will connect for others. Strict unless changed.
+    pub fn with_policy(mut self, policy: ExitPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub async fn handle_client_connection(
@@ -63,12 +72,13 @@ impl RelayRouter {
         let span = tracing::info_span!(
             "relay_session",
             session_id = %session_id,
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
             role = "relay_responder",
         );
         let circuits = Arc::clone(&self.circuits);
         let secret_bytes = Arc::clone(&self.static_secret_bytes);
         let intro_reg = Arc::clone(&self.intro_registry);
+        let policy = self.policy;
         tokio::spawn(
             async move {
                 info!("client connection — starting Noise handshake");
@@ -77,6 +87,7 @@ impl RelayRouter {
                     &secret_bytes,
                     circuits,
                     intro_reg,
+                    policy,
                 )
                 .await
                 {
@@ -94,15 +105,16 @@ impl RelayRouter {
     ) {
         let span = tracing::info_span!(
             "forwarded_cell",
-            remote_addr = %remote_addr,
+            remote_addr = %sensitive(&remote_addr),
         );
         let circuits = Arc::clone(&self.circuits);
         let intro_reg = Arc::clone(&self.intro_registry);
+        let policy = self.policy;
         tokio::spawn(
             async move {
                 debug!("forwarded cell connection");
                 if let Err(e) =
-                    handle_forwarded(stream, circuits, intro_reg).await
+                    handle_forwarded(stream, circuits, intro_reg, policy).await
                 {
                     warn!(error = %e, "forwarded cell processing failed");
                 }
@@ -117,6 +129,7 @@ async fn handle_noise_session(
     secret_bytes: &[u8; 32],
     circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     intro_registry: IntroRegistry,
+    policy: ExitPolicy,
 ) -> Result<()> {
     let mut sb = *secret_bytes;
     let secret = StaticSecret::from(sb);
@@ -174,7 +187,7 @@ async fn handle_noise_session(
                     Some(next_addr) => {
                         info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding to next relay");
                         let mut next_stream =
-                            connect_to_next(next_addr).await?;
+                            connect_to_next(next_addr, policy).await?;
                         let relay_msg = Message::Relay {
                             circuit_id,
                             data: inner,
@@ -226,6 +239,7 @@ async fn handle_noise_session(
                                 circuit_id,
                                 &key,
                                 &intro_registry,
+                                policy,
                             )
                             .await?;
                             break;
@@ -274,6 +288,7 @@ async fn handle_forwarded(
     mut stream: TcpStream,
     circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     intro_registry: IntroRegistry,
+    policy: ExitPolicy,
 ) -> Result<()> {
     let frame = read_frame(&mut stream).await?;
     let msg = Message::deserialize(&frame)?;
@@ -298,7 +313,7 @@ async fn handle_forwarded(
                 Some(next_addr) => {
                     info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding further");
                     let mut next_stream =
-                        connect_to_next(next_addr).await?;
+                        connect_to_next(next_addr, policy).await?;
                     let relay_msg = Message::Relay {
                         circuit_id,
                         data: inner,
@@ -350,6 +365,7 @@ async fn handle_forwarded(
                             circuit_id,
                             &key,
                             &intro_registry,
+                            policy,
                         )
                         .await?;
                     } else {
@@ -395,13 +411,15 @@ async fn handle_exit_command(
     circuit_id: u32,
     key: &[u8; 32],
     intro_registry: &IntroRegistry,
+    policy: ExitPolicy,
 ) -> Result<()> {
     match cmd {
         RelayCommand::Connect { host, port } => {
             info!(circuit_id, host = %sensitive(&host), port, "exit relay — connecting to target");
             let target_addr = format!("{host}:{port}");
+            let resolved = policy.resolve_target(&host, port).await;
             let mut target =
-                match TcpStream::connect(&target_addr).await {
+                match exit_connect(resolved).await {
                     Ok(t) => {
                         info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected to target");
                         t
@@ -440,7 +458,20 @@ async fn handle_exit_command(
             exit_streaming_loop(conn, &mut target, circuit_id, key)
                 .await
         }
-        RelayCommand::RegisterService { service_hash } => {
+        RelayCommand::RegisterService { service_hash, service_pubkey, timestamp, signature } => {
+            if let Err(e) = crate::crypto::service_auth::verify_registration(
+                &service_hash,
+                &service_pubkey,
+                timestamp,
+                &signature,
+            ) {
+                warn!(circuit_id, error = %e, "intro relay — registration refused");
+                let fail = RelayCommand::ConnectFailed(format!("{e}"));
+                let fail_data = fail.serialize_bincode()?;
+                let wrapped = wrap_layer(key, &LayerHeader { next_hop: None }, &fail_data)?;
+                conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await?;
+                return Ok(());
+            }
             info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — registering hidden service");
             let (pipe_tx, mut pipe_rx) = mpsc::channel::<ClientPipe>(16);
             {
@@ -558,9 +589,11 @@ async fn handle_exit_command(
             let addr_str = format!("{hostname}:0");
             let addresses: Vec<String> =
                 match tokio::net::lookup_host(&addr_str).await {
-                    Ok(addrs) => {
-                        addrs.map(|a| a.ip().to_string()).collect()
-                    }
+                    Ok(addrs) => policy
+                        .filter_answer(addrs.map(|a| a.ip()).collect())
+                        .into_iter()
+                        .map(|ip| ip.to_string())
+                        .collect(),
                     Err(e) => {
                         warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                         Vec::new()
@@ -593,11 +626,25 @@ async fn handle_exit_forwarded(
     circuit_id: u32,
     key: &[u8; 32],
     intro_registry: &IntroRegistry,
+    policy: ExitPolicy,
 ) -> Result<()> {
     match cmd {
-        RelayCommand::RegisterService { service_hash } => {
+        RelayCommand::RegisterService { service_hash, service_pubkey, timestamp, signature } => {
+            if let Err(e) = crate::crypto::service_auth::verify_registration(
+                &service_hash,
+                &service_pubkey,
+                timestamp,
+                &signature,
+            ) {
+                warn!(circuit_id, error = %e, "intro relay — registration refused");
+                let fail = RelayCommand::ConnectFailed(format!("{e}"));
+                let fail_data = fail.serialize_bincode()?;
+                let wrapped = wrap_layer(key, &LayerHeader { next_hop: None }, &fail_data)?;
+                write_frame(upstream, &Message::Relay { circuit_id, data: wrapped }.serialize()).await?;
+                return Ok(());
+            }
             info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay (forwarded) — registering service");
-            let (pipe_tx, pipe_rx) = mpsc::channel::<ClientPipe>(16);
+            let (pipe_tx, mut pipe_rx) = mpsc::channel::<ClientPipe>(16);
             {
                 let mut reg = intro_registry.lock().await;
                 reg.insert(service_hash.clone(), pipe_tx);
@@ -612,11 +659,30 @@ async fn handle_exit_forwarded(
             let msg = Message::Relay { circuit_id, data: wrapped };
             write_frame(upstream, &msg.serialize()).await?;
             info!(circuit_id, "intro relay (forwarded) — service registered, waiting");
+            // Stay registered and hand each client over, one at a time, the
+            // way the direct path does. This used to deregister straight
+            // after the acknowledgement, so a service behind a full circuit
+            // was never reachable at all.
+            while let Some(mut client_pipe) = pipe_rx.recv().await {
+                info!(circuit_id, "intro relay (forwarded) — bridging client to service");
+                let to_client = client_pipe.to_client.clone();
+                if let Err(e) = bridge_forwarded_client_to_service(
+                    upstream,
+                    circuit_id,
+                    key,
+                    to_client,
+                    &mut client_pipe.from_client,
+                )
+                .await
+                {
+                    warn!(error = %e, "service bridge session ended");
+                    break;
+                }
+            }
             {
                 let mut reg = intro_registry.lock().await;
                 reg.remove(&service_hash);
             }
-            drop(pipe_rx);
             Ok(())
         }
         RelayCommand::ConnectService { service_hash } => {
@@ -682,8 +748,9 @@ async fn handle_exit_forwarded(
         RelayCommand::Connect { host, port } => {
             info!(circuit_id, host = %sensitive(&host), port, "exit relay (forwarded) — connecting to target");
             let target_addr = format!("{host}:{port}");
+            let resolved = policy.resolve_target(&host, port).await;
             let mut target =
-                match TcpStream::connect(&target_addr).await {
+                match exit_connect(resolved).await {
                     Ok(t) => {
                         info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected");
                         t
@@ -733,9 +800,11 @@ async fn handle_exit_forwarded(
             let addr_str = format!("{hostname}:0");
             let addresses: Vec<String> =
                 match tokio::net::lookup_host(&addr_str).await {
-                    Ok(addrs) => {
-                        addrs.map(|a| a.ip().to_string()).collect()
-                    }
+                    Ok(addrs) => policy
+                        .filter_answer(addrs.map(|a| a.ip()).collect())
+                        .into_iter()
+                        .map(|ip| ip.to_string())
+                        .collect(),
                     Err(e) => {
                         warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
                         Vec::new()
@@ -1110,7 +1179,21 @@ async fn bridge_forwarded_client_to_service(
     Ok(())
 }
 
-async fn connect_to_next(addr: SocketAddr) -> Result<TcpStream> {
+/// Connect to an exit destination the policy has already resolved and checked.
+async fn exit_connect(resolved: std::result::Result<SocketAddr, String>) -> std::io::Result<TcpStream> {
+    match resolved {
+        Ok(addr) => TcpStream::connect(addr).await,
+        Err(why) => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, why)),
+    }
+}
+
+async fn connect_to_next(addr: SocketAddr, policy: ExitPolicy) -> Result<TcpStream> {
+    // The next hop is named by whoever built the circuit; without this a
+    // circuit could be pointed at the relay's own loopback or network.
+    if !policy.permits_hop(&addr) {
+        warn!("next hop refused by this relay's policy: not a public address");
+        return Err(HidraError::Relay("next hop refused by relay policy".into()));
+    }
     let mut stream =
         TcpStream::connect(addr).await.map_err(|e| {
             HidraError::Relay(format!(

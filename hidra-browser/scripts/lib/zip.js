@@ -52,6 +52,8 @@ function readZip(buf) {
     const fnLen         = buf.readUInt16LE(pos + 28);
     const exLen         = buf.readUInt16LE(pos + 30);
     const cmLen         = buf.readUInt16LE(pos + 32);
+    const dosTime       = buf.readUInt16LE(pos + 12);
+    const dosDate       = buf.readUInt16LE(pos + 14);
     const extAttr       = buf.readUInt32LE(pos + 38);
     const lhOffset      = buf.readUInt32LE(pos + 42);
     const filename      = buf.slice(pos + 46, pos + 46 + fnLen).toString('utf8');
@@ -62,14 +64,38 @@ function readZip(buf) {
     const dataStart = lhOffset + 30 + lhFnLen + lhExLen;
     const rawData  = Buffer.from(buf.slice(dataStart, dataStart + compSz));
 
-    entries.push({ filename, method, crc, compSz, uncompSz, extAttr, versionMadeBy, rawData });
+    entries.push({ filename, method, crc, compSz, uncompSz, extAttr, versionMadeBy, rawData, dosTime, dosDate });
     pos += 46 + fnLen + exLen + cmLen;
   }
   return entries;
 }
 
+// ── Timestamps ────────────────────────────────────────────────────────────────
+//
+// Every entry used to be written with time and date zero, which decodes as
+// 1980-00-00: month 0, day 0, a date that does not exist. 7-Zip, unzip and
+// macOS shrug; Windows' own zip support refuses the whole archive ("Access to
+// the Compressed (zipped) Folder is denied"), so the Windows package could
+// not be opened by double-clicking it. An entry now keeps the date it came
+// with; a new or replaced one gets the time the archive is written.
+
+function dosStamp(d) {
+  const year = Math.max(1980, Math.min(2107, d.getFullYear()));
+  return {
+    dosDate: ((year - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+    dosTime: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+  };
+}
+
+function validDosDate(date) {
+  const month = (date >> 5) & 0x0f;
+  const day = date & 0x1f;
+  return month >= 1 && month <= 12 && day >= 1;
+}
+
 // ── ZIP Writer ────────────────────────────────────────────────────────────────
 function writeZip(entries) {
+  const now = dosStamp(new Date());
   const lhParts = [];
   const cdParts = [];
   let offset = 0;
@@ -83,7 +109,11 @@ function writeZip(entries) {
     lh.writeUInt16LE(20, 4);
     lh.writeUInt16LE(0, 6);
     lh.writeUInt16LE(e.method, 8);
-    lh.writeUInt32LE(0, 10);       // mod time/date (zero)
+    const keep = e.dosDate !== undefined && validDosDate(e.dosDate);
+    const dosTime = keep ? e.dosTime : now.dosTime;
+    const dosDate = keep ? e.dosDate : now.dosDate;
+    lh.writeUInt16LE(dosTime, 10);
+    lh.writeUInt16LE(dosDate, 12);
     lh.writeUInt32LE(e.crc, 14);
     lh.writeUInt32LE(e.compSz, 18);
     lh.writeUInt32LE(e.uncompSz, 22);
@@ -99,7 +129,8 @@ function writeZip(entries) {
     cd.writeUInt16LE(20, 6);
     cd.writeUInt16LE(0, 8);
     cd.writeUInt16LE(e.method, 10);
-    cd.writeUInt32LE(0, 12);
+    cd.writeUInt16LE(dosTime, 12);
+    cd.writeUInt16LE(dosDate, 14);
     cd.writeUInt32LE(e.crc, 16);
     cd.writeUInt32LE(e.compSz, 20);
     cd.writeUInt32LE(e.uncompSz, 24);
@@ -171,8 +202,11 @@ function patchEntry(e, newFilename, newData) {
     crc:       crc32(newData),
     compSz:    useComp ? comp.length : newData.length,
     uncompSz:  newData.length,
-    rawData:   useComp ? comp : newData
+    rawData:   useComp ? comp : newData,
+    // New content, new date: writeZip stamps it with the time of writing.
+    dosTime:   undefined,
+    dosDate:   undefined
   });
 }
 
-module.exports = { crc32, readZip, writeZip, mkFile, mkDir, patchEntry, UNIX_VER };
+module.exports = { crc32, readZip, writeZip, mkFile, mkDir, patchEntry, UNIX_VER, validDosDate };

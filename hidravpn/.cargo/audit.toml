@@ -1,0 +1,24 @@
+# Advisories accepted rather than fixed. Each one needs a reason here, so an
+# exception cannot exist without someone having written down why.
+
+[advisories]
+ignore = [
+    # rsa: Marvin attack, timing side channel on private-key operations
+    # (RUSTSEC-2023-0071). The advisory names every version, with no fix.
+    #
+    # It matters here more than most places: the pass issuer signs blinded
+    # messages its clients chose, the exact setting in which a timing leak in
+    # the private-key operation could be measured. What we depend on is not
+    # the rsa 0.9 the advisory was written against but the 0.10 release
+    # candidate pinned by blind-rsa-signatures, whose arithmetic is
+    # crypto-bigint's constant-time BoxedUint (see docs/phase-5.md). Move to
+    # rsa 0.10 final when it ships, and drop this line when the advisory
+    # records 0.10 as unaffected.
+    "RUSTSEC-2023-0071",
+
+    # paste is unmaintained (RUSTSEC-2024-0436). A proc-macro: it runs in the
+    # compiler and generates identifiers, and nothing of it is in the binary
+    # or sees input at run time. It arrives through tun-rs's netlink stack;
+    # it leaves when that does.
+    "RUSTSEC-2024-0436",
+]
