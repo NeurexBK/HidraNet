@@ -98,6 +98,8 @@ const WORDS = new RegExp(
       // reads and passes on.
       'tigre', 'vento', 'pedra', 'nuvem', 'aguia', 'prata', 'folha', 'chama',
       'noite',
+      // Found later, in the landing page's section labels.
+      'obter', 'acesso', 'ecossistema',
     ].join('|') +
     ')\\b',
   'i'
@@ -234,7 +236,10 @@ for (const file of files) {
         }
         const s = raw.trim();
         if (s.length < 3) continue;
-        if (/^https?:|^\/\/|^#|^var\(/.test(s)) continue;
+        // A protocol-relative URL is skipped; a label that only starts with
+        // two slashes ("// Get access", the landing page's section kickers)
+        // is text, and is read like any other.
+        if (/^https?:|^\/\/[\w-]+(?:\.[\w-]+)+|^#|^var\(/.test(s)) continue;
         let probe = s;
         for (const ok of ALLOW_WORD) probe = probe.replace(ok, ' ');
         if (

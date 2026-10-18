@@ -518,6 +518,17 @@
             <span class="app-desc">Support HidraNet with $HNET</span>
             <span class="app-badge online">HNET</span>
           </a>
+          <a class="app-shortcut" href="#" data-url="hidravpn.html" id="app-vpn">
+            <div class="app-icon" style="background: linear-gradient(135deg, #00d4aa, #3df5c4); color: #032018;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+            </div>
+            <span class="app-name">HidraVPN</span>
+            <span class="app-desc">Whole machine. Strong privacy, not anonymity</span>
+            <span class="app-badge" id="vpn-badge">Checking…</span>
+          </a>
           <a class="app-shortcut" href="#" data-url="http://127.0.0.1:8090/search">
             <div class="app-icon search-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -683,6 +694,13 @@
               <span class="setting-desc" id="identity-desc">Switches your circuit — the exit IP changes</span>
             </div>
             <button id="btn-new-identity" class="setting-select" type="button">New circuit</button>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Count me on the network</span>
+              <span class="setting-desc" id="beacon-desc">Off: this browser sends no presence signal</span>
+            </div>
+            <button id="btn-beacon" class="setting-select" type="button" aria-pressed="false">Turn on</button>
           </div>
           <div class="setting-row">
             <div class="setting-info">
@@ -991,7 +1009,37 @@
       return { chat: false, sevennine: false, error: null };
     }
 
+    // The VPN badge says what the service on this machine says, and nothing
+    // when there is no service to ask: a fixed "On" would be a promise this
+    // page cannot keep.
+    async function detectVpn() {
+      var badge = document.getElementById('vpn-badge');
+      if (!badge) return;
+      if (!(window.hidra && window.hidra.vpn)) {
+        badge.textContent = 'Unavailable'; badge.className = 'app-badge offline'; return;
+      }
+      try {
+        var s = await window.hidra.vpn.status();
+        if (s.state === 'connected') {
+          badge.textContent = s.report && s.report.mode === 'privado' ? 'On, two hops' : 'On, one hop';
+          badge.className = 'app-badge online';
+        } else if (s.state === 'connecting') {
+          badge.textContent = 'Connecting'; badge.className = 'app-badge';
+        } else if (s.state === 'disconnected') {
+          badge.textContent = 'Off'; badge.className = 'app-badge offline';
+        } else if (s.state === 'not-installed') {
+          badge.textContent = 'Not installed'; badge.className = 'app-badge offline';
+        } else {
+          badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
+        }
+        badge.title = s.error || '';
+      } catch (e) {
+        badge.textContent = 'Service unavailable'; badge.className = 'app-badge offline';
+      }
+    }
+
     async function detectApps() {
+      detectVpn();
       var status = await appsStatus();
       var chatOk = status.chat;
       var chatBadge = document.getElementById('chat-badge');
@@ -1365,7 +1413,11 @@
      passwords — only a random code, the version and a timestamp. It used to
      send an approximate location by IP and whether Tor was in use; both are
      gone, because on a public channel they amount to telling anyone watching
-     where an unprotected machine is. */
+     where an unprotected machine is.
+
+     It is off until the person turns it on in Anonymity Settings ("Count me
+     on the network"), and stays off after an update: being counted is a
+     choice, not a default, and the privacy policy says so. */
   (function () {
     'use strict';
     var TOPIC = 'hidra/node/v1';
@@ -1408,15 +1460,43 @@
       timer = setInterval(beat, 30000);
     }
 
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      try { if (cli && cli.connected) cli.publish(TOPIC, JSON.stringify({ cid: cid, leave: 1 }), { qos: 0 }); } catch (e) {}
+      try { if (cli) cli.end(true); } catch (e) {}
+      cli = null;
+    }
+
     window.addEventListener('beforeunload', function () {
       try { if (cli && cli.connected) cli.publish(TOPIC, JSON.stringify({ cid: cid, leave: 1 }), { qos: 0 }); } catch (e) {}
     });
+
+    // The choice, kept on this machine only. Anything but an explicit "1"
+    // means off, so a missing or unreadable setting never turns it on.
+    var KEY = 'hidra_beacon_optin';
+    function optedIn() { try { return localStorage.getItem(KEY) === '1'; } catch (e) { return false; } }
+    var btn = document.getElementById('btn-beacon'), desc = document.getElementById('beacon-desc');
+    function show(on) {
+      if (!btn || !desc) return;
+      btn.textContent = on ? 'Turn off' : 'Turn on';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      desc.textContent = on
+        ? 'On: a random code, the version and the time, every 30 s'
+        : 'Off: this browser sends no presence signal';
+    }
+    if (btn) btn.addEventListener('click', function () {
+      var on = !optedIn();
+      try { if (on) localStorage.setItem(KEY, '1'); else localStorage.removeItem(KEY); } catch (e) {}
+      show(on);
+      if (on) { if (typeof mqtt !== 'undefined' && !cli) start(); } else { stop(); }
+    });
+    show(optedIn());
 
     // grabGeo() used to run here and attach an IP-derived location to the
     // beacon. It is gone, and so are its two calls — they outlived the
     // function and threw a ReferenceError right here, before start(), so
     // the beacon never connected and this node stopped being counted.
-    if (typeof mqtt !== 'undefined') { start(); }
+    if (optedIn() && typeof mqtt !== 'undefined') { start(); }
   })();
   </script>
 <script>

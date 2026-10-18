@@ -124,14 +124,18 @@ different brands. The decision and the verified contrast ratios are in
 A verified accessibility note: teal **fails** on white (1.91:1) — use `#00695c`
 on light backgrounds and in print.
 
-### 6. ⚠️ A HIDRA token and MiCA
+### 6. ⚠️ HNET and MiCA
 
-Under the MiCA regulation, an EU-based company that issues a token takes on a
+HNET exists: a Solana token, described in the
+[HNET whitepaper](../landing/token/index.html). Its role is decided: it is the
+way to pay for HidraVPN and other services inside the HidraNet network. It is
+not a reward for running a node and not a promise of returns.
+
+Under the MiCA regulation, a token tied to an EU-based company carries a
 significant regulatory burden, with an impact on timelines, compliance cost and
-its relationship with banks.
-
-It is not covered in these documents, by a scoping decision. **Obtain specialist
-legal advice before any announcement or issuance.**
+its relationship with banks. **Obtain specialist legal advice before payments
+in HNET go live**, and keep HNET payments apart from the billing of
+HidraReview ([10 §5](business/10-legal-and-regulatory-risk.md)).
 
 ---
 

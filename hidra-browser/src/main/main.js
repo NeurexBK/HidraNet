@@ -1,8 +1,12 @@
-const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage } = require('electron');
+const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
+const { VpnManager } = require('./vpn-manager');
+const { VpnInstaller } = require('./vpn-installer');
+const { runLeakTest } = require('./vpn-leaktest');
+const releaseVerify = require('./release-verify');
 const { VaultStore } = require('./vault');
 const { ProxyManager } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
@@ -30,6 +34,113 @@ function isTrustedRequest(req) {
   if (origin && !ALLOWED_ORIGINS.has(origin)) return false;
 
   return true;
+}
+
+// The VPN service on this machine, when there is one. Nothing is opened
+// until a page asks.
+const vpnManager = new VpnManager();
+// Where the maintainers publish the signed node list (nodes.json and
+// nodes.json.sig beside it). The browser only fetches the two files; the
+// service checks the signature against the list key built into it, so a
+// list from anywhere else is refused however it arrived.
+const VPN_LIST_URL = 'https://hidranet.org/vpn/nodes.json';
+// The signed release manifest the VPN page installs and updates from
+// (vpn-installer.js); its .sig sits beside it.
+const VPN_RELEASE_URL = 'https://hidranet.org/vpn/release/manifest.json';
+const VPN_LIST_MAX_BYTES = 1024 * 1024;
+// What the VPN page's own requests say they are: the same short string for
+// every HidraNet user, never this browser's name, version or system, and no
+// cookies either way, so two fetches cannot be tied to one person.
+const VPN_FETCH_UA = 'Mozilla/5.0';
+const VPN_FETCH_OPTS = { cache: 'no-store', credentials: 'omit', headers: { 'User-Agent': VPN_FETCH_UA } };
+
+// The list and the release files go through the browser's own Tor route.
+// Whether the net module honours the network lock's webRequest filter
+// depends on the Electron version, so it is checked here too: with Tor not
+// ready these requests are refused rather than sent from this machine's own
+// address.
+function vpnFetchAllowed(url) {
+  if (networkLock.engaged) throw new Error(`${url}: blocked until Tor is ready (${networkLock.reason})`);
+}
+
+async function fetchText(url, maxBytes) {
+  vpnFetchAllowed(url);
+  const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const tooBig = new Error(`${url}: far larger than a node list`);
+  const declared = Number(res.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw tooBig;
+  // Read with the cap, so a server that lies about its length (or sends no
+  // length) cannot make this process buffer more than a node list.
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw tooBig; }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+// The same, for a release file: bytes, capped at what the signed manifest
+// says the file weighs, so a server cannot make this process buffer more.
+async function fetchBuffer(url, maxBytes) {
+  vpnFetchAllowed(url);
+  const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(10 * 60 * 1000) });
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw new Error(`${url}: larger than the signed manifest says`); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+
+// The leak test has to see what every other program on this machine sees,
+// not what the browser's own Tor route sees, so it asks from a session with
+// no proxy at all. Used only when the person presses the button, and only
+// once runLeakTest has seen the kill switch armed and the tunnel alive, so
+// what the address service learns is the exit's address. It is told nothing
+// else: a generic user agent, no cookies, an in-memory session.
+function directProbe(url) {
+  return new Promise((resolve, reject) => {
+    const probe = session.fromPartition('hidravpn-leak-test');
+    probe.setUserAgent(VPN_FETCH_UA);
+    probe.setProxy({ mode: 'direct' }).then(() => {
+      const request = net.request({ url, session: probe, useSessionCookies: false, credentials: 'omit' });
+      request.setHeader('User-Agent', VPN_FETCH_UA);
+      let body = '';
+      const timer = setTimeout(() => { try { request.abort(); } catch (e) {} reject(new Error('timeout')); }, 10000);
+      request.on('response', (res) => {
+        res.on('data', (c) => { if (body.length < 4096) body += c; });
+        res.on('end', () => { clearTimeout(timer); resolve(body); });
+      });
+      request.on('error', (e) => { clearTimeout(timer); reject(e); });
+      request.end();
+    }).catch(reject);
+  });
+}
+
+// Our own pages only: the frame that asked has to be the tab's main frame and
+// one of the pages shipped under src/ui (or a hidra:// page). The preload
+// offers the VPN bridge only there; this is what refuses if anything else
+// ever asks, because connecting re-routes the whole machine.
+function isInternalSender(event) {
+  const frame = event && event.senderFrame;
+  if (!frame || !event.sender || frame !== event.sender.mainFrame) return false;
+  // Only a page shipped under src/ui; never a scheme (see tab-preload.js).
+  const url = frame.url || '';
+  return url.startsWith(UI_ROOT_URL);
 }
 
 function pingLocalPort(port, urlPath, timeoutMs) {
@@ -854,6 +965,122 @@ function setupIPC(tabs, proxy) {
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
     return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error };
+  });
+
+  // HidraVPN. The service picks the nodes and holds the tunnel; the browser
+  // only asks. Every handler checks who asked before it talks to the service.
+  const vpnOnlyOurs = (event) => {
+    if (!isInternalSender(event)) throw new Error('only HidraNet pages may drive the VPN');
+  };
+  ipcMain.handle('vpn:status', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.status();
+  });
+  ipcMain.handle('vpn:connect', (event, mode, options) => {
+    vpnOnlyOurs(event);
+    const allowLan = Boolean(options && typeof options === 'object' && options.allowLan === true);
+    // Two hops under one operator only with the person's explicit tick.
+    const allowSameOperator = Boolean(options && typeof options === 'object' && options.allowSameOperator === true);
+    return vpnManager.connect(mode, { allowLan, allowSameOperator });
+  });
+  ipcMain.handle('vpn:leak-test', async (event) => {
+    vpnOnlyOurs(event);
+    return runLeakTest(await vpnManager.status(), directProbe);
+  });
+  // Install, update and remove. Each asks the person for administrator
+  // rights through the system's own prompt; nothing runs that the release
+  // key did not sign.
+  ipcMain.handle('vpn:check-release', (event) => {
+    vpnOnlyOurs(event);
+    return vpnInstaller.checkRelease();
+  });
+  ipcMain.handle('vpn:install', async (event) => {
+    vpnOnlyOurs(event);
+    // Downloads go under the browser's own data folder, not /tmp: /tmp is
+    // mounted noexec on many Linux systems, and the checked service has to
+    // run from where it was checked.
+    const root = path.join(app.getPath('userData'), 'vpn-install');
+    await fs.promises.mkdir(root, { recursive: true, mode: 0o700 });
+    vpnInstaller.tmpRoot = root;
+    return vpnInstaller.install();
+  });
+  ipcMain.handle('vpn:uninstall', async (event, purge) => {
+    vpnOnlyOurs(event);
+    // A clean disconnect first, so the network comes back before the
+    // service that holds it goes away.
+    await vpnManager.disconnect().catch(() => {});
+    return vpnInstaller.uninstall(purge === true);
+  });
+  ipcMain.handle('vpn:disconnect', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.disconnect();
+  });
+  ipcMain.handle('vpn:new-identity', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.newIdentity();
+  });
+  ipcMain.handle('vpn:nodes', (event) => {
+    vpnOnlyOurs(event);
+    return vpnManager.nodes();
+  });
+  // The person chooses the files; the page never names a path. The list and
+  // its .sig go to the service, which checks the signature before anything
+  // is read from the list.
+  ipcMain.handle('vpn:import-nodes', async (event) => {
+    vpnOnlyOurs(event);
+    const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+    const picked = await dialog.showOpenDialog(owner, {
+      title: 'Choose the signed node list (its .sig must be beside it)',
+      filters: [{ name: 'Node list', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths.length) return { ok: false, cancelled: true };
+    return vpnManager.importNodesFromFiles(picked.filePaths[0]);
+  });
+  // The maintainers' list, from where they publish it. The browser carries
+  // the bytes; the service decides, with the list key it embeds.
+  ipcMain.handle('vpn:fetch-list', async (event) => {
+    vpnOnlyOurs(event);
+    let list;
+    let signature;
+    try {
+      [list, signature] = await Promise.all([
+        fetchText(VPN_LIST_URL, VPN_LIST_MAX_BYTES),
+        fetchText(VPN_LIST_URL + '.sig', 4096),
+      ]);
+    } catch (e) {
+      return { ok: false, error: `could not fetch the node list from ${VPN_LIST_URL}: ${(e && e.message) || e}`, url: VPN_LIST_URL };
+    }
+    const r = await vpnManager.importNodesFromTexts(list, signature);
+    return { ...r, url: VPN_LIST_URL };
+  });
+  // Passes: the service asks the issuer with the token it keeps; the page
+  // hands the token over once and never gets it back.
+  ipcMain.handle('vpn:get-passes', (event, count) => {
+    vpnOnlyOurs(event);
+    return vpnManager.getPasses(Number.isInteger(count) ? count : 10);
+  });
+  ipcMain.handle('vpn:set-pass-token', (event, token) => {
+    vpnOnlyOurs(event);
+    return vpnManager.setPassToken(typeof token === 'string' ? token : '');
+  });
+  ipcMain.handle('vpn:refill', (event, enabled) => {
+    vpnOnlyOurs(event);
+    return vpnManager.refill(typeof enabled === 'boolean' ? enabled : undefined);
+  });
+  // Checks a downloaded release file against FILE.sig with the release key
+  // this build embeds. With no key embedded it says so and accepts nothing.
+  ipcMain.handle('vpn:verify-file', async (event) => {
+    vpnOnlyOurs(event);
+    const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+    const picked = await dialog.showOpenDialog(owner, {
+      title: 'Choose the downloaded file (its .sig must be beside it)',
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths.length) return { ok: false, cancelled: true };
+    const file = picked.filePaths[0];
+    const result = await releaseVerify.verifyFile(file);
+    return { ...result, file: path.basename(file) };
   });
 
   ipcMain.handle('prefs:get', () => ({ ...userPrefs }));

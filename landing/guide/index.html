@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HidraNet User Guide</title>
+<meta name="description" content="HidraNet user guide: connecting through Tor, HidraChat, HidraMail, SevenNine sites, the forum, HidraSearch and good practice.">
+<meta name="theme-color" content="#070809">
+<link rel="icon" type="image/png" href="../assets/hidranet-logo.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="../guide/" class="on">User guide</a>
+      <a href="../privacy/">Privacy</a>
+      <a href="../terms/">Terms</a>
+      <a href="../whitepaper/">Whitepaper</a>
+      <a href="../">Home</a>
+    </nav>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>User guide &middot; version 1.1 &middot; October 2026</span>
+  <h1>Using <span class="hl">HidraNet Browser</span></h1>
+  <p class="lede">How to connect, chat, send mail, publish a .hidra site and stay safe. Button names are quoted as they appear on screen.</p>
+  <div class="meta"><span><b>Version</b> 1.1</span><span><b>Updated</b> October 2026</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#start">1. Getting started</a>
+    <a href="#chat">2. HidraChat</a>
+    <a href="#mail">3. HidraMail</a>
+    <a href="#sites">4. SevenNine: your own .hidra site</a>
+    <a href="#forum">5. Forum</a>
+    <a href="#search">6. HidraSearch</a>
+    <a href="#practice">7. Good practice</a>
+    <a href="#help">8. Help</a>
+  </nav>
+
+  <article>
+
+    <section id="start">
+      <h2>1. Getting started</h2>
+      <h3>Connect and confirm</h3>
+      <p>When you open the browser, the Tor connection starts by itself and the new tab page shows the progress. Wait until it reaches 100% and an address appears under <strong>Exit IP</strong>. Until then, the browser holds web traffic back rather than let it leave unprotected.</p>
+      <p>If the circuit is ready but no exit IP appears, the browser could not confirm the address with check.torproject.org. The browser will not promise what it has not verified; try again with <strong>New identity</strong>.</p>
+      <h3>New identity</h3>
+      <p><strong>New identity</strong>, in Anonymity Settings, asks Tor for a new circuit. Your next requests leave through another relay, with another address. Use it to separate one activity from the one before.</p>
+      <h3>Tabs</h3>
+      <p>Every website tab is a sealed compartment: its own cookies, its own memory and its own fingerprint. What you do in one tab is not visible from another, and when you close the tab, everything it stored is deleted. If you log into an account in one tab, the other tabs are not logged in.</p>
+      <h3>What the browser refuses on its own</h3>
+      <p>Requests for location, camera, microphone, notifications and MIDI are denied without asking you. WebRTC, which can reveal your real address, is held to the proxy.</p>
+      <h3>Being counted (optional)</h3>
+      <p><strong>Count me on the network</strong>, in Anonymity Settings, is off by default. If you turn it on, the browser sends a random code, its version and the time every 30 seconds, so the project can count how many browsers are running. It sends no location and nothing about what you do.</p>
+    </section>
+
+    <section id="chat">
+      <h2>2. HidraChat</h2>
+      <p>End-to-end encrypted chat rooms. Content is encrypted on your computer before it leaves, and only people with the room password can read it.</p>
+      <h3>Joining a room</h3>
+      <ol>
+        <li>Open HidraChat from the new tab page.</li>
+        <li>Type your nickname.</li>
+        <li>Type the room password, agreed beforehand with the people you will talk to. The same password always leads to the same room.</li>
+        <li>Press <strong>Join room</strong>.</li>
+      </ol>
+      <h3>Golden rules</h3>
+      <ul>
+        <li>Agree on the password through another channel, in person if possible. Anyone with the password reads everything.</li>
+        <li>A long password is far safer than a short one: use at least four unrelated words.</li>
+        <li>Recent rooms appear in a list, so you can rejoin with one click.</li>
+      </ul>
+      <h3>Good to know</h3>
+      <p>In this version, encrypted messages travel through public message brokers run by third parties. They can see that traffic exists, but cannot read it.</p>
+    </section>
+
+    <section id="mail">
+      <h2>3. HidraMail</h2>
+      <p>Mail between network addresses, end-to-end encrypted and signed by the sender. Each message is encrypted to the recipient's public key with a key made for that message only.</p>
+      <h3>Creating an address</h3>
+      <ol>
+        <li>Open HidraMail.</li>
+        <li>Press <strong>Generate a new anonymous address</strong>.</li>
+        <li>The address appears under <strong>My addresses</strong>. Use <strong>Copy</strong> to share it.</li>
+      </ol>
+      <p>You can have several addresses and use one per context.</p>
+      <h3>Sending and receiving</h3>
+      <p><strong>Compose</strong> opens a new message. Fill in the recipient, the subject and the text, and press <strong>Send</strong>. Received messages appear in the <strong>Inbox</strong>; <strong>Reply</strong>, <strong>Spam</strong> and <strong>Delete</strong> are at the top of each message.</p>
+      <h3>Good to know</h3>
+      <p>Your addresses' private keys exist only on your computer, sealed with your system's keychain where there is one. If you delete the browser data, you lose the addresses and the messages: there is no recovery, because nobody else holds the keys.</p>
+    </section>
+
+    <section id="sites">
+      <h2>4. SevenNine: your own .hidra site</h2>
+      <h3>Create</h3>
+      <p>Open SevenNine and choose a name with letters, numbers, hyphen or underscore, up to 32 characters. The site gets a readable address, such as mysite.hidra, and a 40-character cryptographic address derived from the site's key.</p>
+      <h3>Edit</h3>
+      <p>The visual editor composes pages, previews them in phone format and uploads files: up to 2 MB per page and 5 MB of files in total.</p>
+      <h3>Publish</h3>
+      <ol>
+        <li>Press <strong>Publish to the network</strong>.</li>
+        <li>Under <strong>1. Choose the site</strong>, pick the site.</li>
+        <li>Under <strong>2. Publish</strong>, confirm.</li>
+        <li>The site appears under <strong>My published sites</strong>. Use <strong>Copy</strong> to share its address.</li>
+      </ol>
+      <h3>Good to know</h3>
+      <p>The readable address is resolved on your computer and is not unique on the network: someone else may use the same name. To be found unambiguously, share the cryptographic address.</p>
+    </section>
+
+    <section id="forum">
+      <h2>5. Forum</h2>
+      <p>Public discussions, organised in categories. Only your nickname appears. <strong>New topic</strong> opens a discussion: pick the category, write the title and message, and press <strong>Post topic</strong>. <strong>Reply</strong> answers an existing topic.</p>
+      <p>Everything posted on the forum is public and stored on third-party message brokers. Do not post anything that could identify you.</p>
+    </section>
+
+    <section id="search">
+      <h2>6. HidraSearch</h2>
+      <p>Search that queries several engines, such as DuckDuckGo, SearXNG and Brave Search, always through Tor. The engine sees the request coming from a Tor exit relay, not from your address. The browser keeps no search history; each engine's logging policy is its own.</p>
+    </section>
+
+    <section id="practice">
+      <h2>7. Good practice</h2>
+      <ul>
+        <li>Wait for 100% and an exit IP before browsing.</li>
+        <li>Use different tabs for different identities.</li>
+        <li>Do not log into personal accounts in the session where you want to stay anonymous.</li>
+        <li>Keep the browser updated: new versions fix security flaws.</li>
+        <li>If you use HidraMail, keep an encrypted backup of the data folder.</li>
+        <li>Be careful with downloaded files: a document opened outside the browser may connect to the internet directly, without Tor.</li>
+      </ul>
+    </section>
+
+    <section id="help">
+      <h2>8. Help</h2>
+      <p>Technical problems: the <a href="https://github.com/NeurexBK/HidraNet/issues" rel="noopener noreferrer">issue tracker</a> on GitHub. Security matters: <a href="mailto:security@hidranet.org">security@hidranet.org</a>. How the network works: the <a href="../whitepaper/">Technical Whitepaper</a>.</p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HidraNet User Guide &middot; HidraNet &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>

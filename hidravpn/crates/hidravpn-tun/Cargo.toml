@@ -1,0 +1,13 @@
+[package]
+name = "hidravpn-tun"
+description = "The TUN interface, per operating system: tun on Linux, utun on macOS, wintun on Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+tun-rs = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

@@ -418,7 +418,7 @@ pub mod server {
                     if let Err(e) = handle_connection(stream, peer, st).await
                     {
                         debug!(
-                            peer = %peer,
+                            peer = %sensitive(&peer),
                             error = %e,
                             "connection ended"
                         );

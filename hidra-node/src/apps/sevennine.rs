@@ -17,10 +17,17 @@ use base64::Engine as _;
 use chrono::Utc;
 use crate::safelog::sensitive;
 
-#[derive(Debug, Clone)]
-pub struct DhtAnnouncement {
-    pub service_hash: [u8; 20],
-    pub service_pubkey: [u8; 32],
+/// What SevenNine asks the DHT to do with a site. Publishing carries the
+/// site's own key, because the descriptor that says where the site is must be
+/// signed by it; the key never leaves this process.
+#[derive(Clone)]
+pub enum DhtAnnouncement {
+    Publish {
+        service_hash: [u8; 20],
+        service_key: Box<SigningKey>,
+    },
+    /// The site was deleted: stop republishing it.
+    Withdraw { service_hash: [u8; 20] },
 }
 
 // ─── Data Types ──────────────────────────────────────────────────────────────
@@ -172,9 +179,9 @@ impl SiteManager {
             let mut address_hash = [0u8; 20];
             address_hash.copy_from_slice(&full_hash.as_bytes()[..20]);
 
-            let announcement = DhtAnnouncement {
+            let announcement = DhtAnnouncement::Publish {
                 service_hash: address_hash,
-                service_pubkey: pub_bytes,
+                service_key: Box::new(SigningKey::from_bytes(&record.signing_key_bytes)),
             };
             if tx.try_send(announcement).is_ok() {
                 count += 1;
@@ -266,9 +273,9 @@ impl SiteManager {
 
         // Publish to DHT if available
         if let Some(ref tx) = self.dht_tx {
-            let announcement = DhtAnnouncement {
+            let announcement = DhtAnnouncement::Publish {
                 service_hash: address_hash,
-                service_pubkey: pub_bytes,
+                service_key: Box::new(signing_key.clone()),
             };
             if tx.try_send(announcement).is_ok() {
                 tracing::info!(
@@ -336,9 +343,22 @@ impl SiteManager {
         let name = name.trim().to_lowercase();
         let site_dir = self.base_dir.join("sites").join(&name);
 
-        {
+        let removed = {
             let mut sites = self.sites.write().await;
-            sites.remove(&name);
+            sites.remove(&name)
+        };
+        // Stop republishing it in the DHT; other nodes forget it within the hour.
+        if let (Some(record), Some(tx)) = (removed, self.dht_tx.as_ref())
+            && record.signing_key_bytes != [0u8; 32]
+        {
+            let key = SigningKey::from_bytes(&record.signing_key_bytes);
+            let pk = VerifyingKey::from(&key).to_bytes();
+            let full_hash = blake3::hash(&pk);
+            let mut service_hash = [0u8; 20];
+            service_hash.copy_from_slice(&full_hash.as_bytes()[..20]);
+            // Waits for room rather than dropping it: a lost withdraw would
+            // keep the deleted site published until the next restart.
+            let _ = tx.send(DhtAnnouncement::Withdraw { service_hash }).await;
         }
 
         if site_dir.exists() {

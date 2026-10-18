@@ -82,6 +82,17 @@ wrong is high.
 - **Traffic analysis by shape.** Packets are not padded to a fixed size and
   there is no cover traffic, so the size and timing pattern of a page load
   crosses the network largely intact.
+- **A Sybil operator in the DHT.** Node IDs cost proof of work (24 bits,
+  bound to the node's key); a node is seated only at an address it answered
+  from, as it describes itself; lookups walk three disjoint paths, and
+  service lookups the sixty closest nodes they can reach; a bucket seats at
+  most two nodes from one /24; and a `.hidra` descriptor must be signed by
+  the service's own key, expires an hour after it was signed, and is kept by
+  a storer unless sixty networks are closer to the service. Together they
+  mean an operator with many identities can withhold a service's record, not
+  forge it. With enough hardware and addresses in many networks it can still
+  hide a service, from some clients or from all, and a node that relays an
+  honest node's signed answers can sit between a client and that node.
 - **A DHT peer you talk to.** `.hidra` names are resolved over a Kademlia
   DHT that the client speaks to directly, so a peer it queries learns its IP.
   The client no longer *listens* on a predictable port — it binds an ephemeral

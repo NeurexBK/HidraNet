@@ -1,12 +1,15 @@
-use std::net::SocketAddr;
-
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HidraError, Result};
+use crate::p2p::dht::descriptor::ServiceDescriptor;
 use crate::p2p::dht::node::{NodeId, NodeInfo};
 
-const MAGIC: &[u8; 4] = b"HDHT";
+/// Version 2 of the wire format: node IDs carry their puzzle nonce and
+/// service descriptors their service's signature. A version-1 node drops
+/// these packets at the magic instead of misreading them, and the other way
+/// round.
+const MAGIC: &[u8; 4] = b"HDT2";
 const SIGNATURE_LEN: usize = 64;
 const PUBKEY_LEN: usize = 32;
 const HEADER_LEN: usize = 4 + SIGNATURE_LEN + PUBKEY_LEN;
@@ -16,7 +19,9 @@ pub enum DhtMessage {
     Ping { request_id: u64, sender: NodeInfo },
     Pong { request_id: u64, sender: NodeInfo },
     FindNode { request_id: u64, sender: NodeInfo, target: NodeId },
-    FindNodeResponse { request_id: u64, nodes: Vec<NodeInfo> },
+    /// `sender` is the answering node's own description, signed with the
+    /// packet: what gets seated, never a third party's copy of it.
+    FindNodeResponse { request_id: u64, sender: NodeInfo, nodes: Vec<NodeInfo> },
     Store { request_id: u64, sender: NodeInfo, key: NodeId, value: Vec<u8> },
     StoreResponse { request_id: u64, stored: bool },
     AnnounceRelay { request_id: u64, sender: NodeInfo },
@@ -24,8 +29,7 @@ pub enum DhtMessage {
         request_id: u64,
         sender: NodeInfo,
         service_hash: [u8; 20],
-        intro_points: Vec<SocketAddr>,
-        service_pubkey: [u8; 32],
+        descriptor: ServiceDescriptor,
     },
     LookupService {
         request_id: u64,
@@ -34,13 +38,30 @@ pub enum DhtMessage {
     },
     LookupServiceResponse {
         request_id: u64,
-        intro_points: Vec<SocketAddr>,
-        service_pubkey: [u8; 32],
-        found: bool,
+        sender: NodeInfo,
+        descriptor: Option<ServiceDescriptor>,
     },
 }
 
 impl DhtMessage {
+    /// The node that claims to have sent this. Every message but
+    /// STORE_RESPONSE carries one, and `verify_and_bind` holds it to the key
+    /// that signed the packet.
+    pub fn sender(&self) -> Option<&NodeInfo> {
+        match self {
+            Self::Ping { sender, .. }
+            | Self::Pong { sender, .. }
+            | Self::FindNode { sender, .. }
+            | Self::FindNodeResponse { sender, .. }
+            | Self::Store { sender, .. }
+            | Self::AnnounceRelay { sender, .. }
+            | Self::AnnounceService { sender, .. }
+            | Self::LookupService { sender, .. }
+            | Self::LookupServiceResponse { sender, .. } => Some(sender),
+            Self::StoreResponse { .. } => None,
+        }
+    }
+
     pub fn request_id(&self) -> u64 {
         match self {
             Self::Ping { request_id, .. }
@@ -106,6 +127,26 @@ pub fn sign_and_serialize(
     Ok(packet)
 }
 
+/// Verifies the packet's signature AND binds the sender to the key that made
+/// it: the sender's public key is the signing key, and its ID is the one that
+/// key and its puzzle nonce derive, with the puzzle solved at `id_bits`. A
+/// message whose sender claims another key, another ID, or an ID nobody paid
+/// for is refused. This is what the DHT calls on every packet.
+pub fn verify_and_bind(packet: &[u8], id_bits: u32) -> Result<(DhtMessage, [u8; 32])> {
+    let (msg, pubkey) = verify_and_deserialize(packet)?;
+    if let Some(sender) = msg.sender()
+        && (sender.public_key != pubkey || !sender.id_is_valid(id_bits))
+    {
+        return Err(HidraError::Protocol(
+            "DHT sender id does not match the signing key".into(),
+        ));
+    }
+    Ok((msg, pubkey))
+}
+
+/// Verifies the packet's signature only; `verify_and_bind` is what the DHT
+/// uses, because a valid signature alone does not tie the sender's claimed
+/// ID to the key.
 pub fn verify_and_deserialize(
     packet: &[u8],
 ) -> Result<(DhtMessage, [u8; 32])> {
@@ -158,18 +199,25 @@ pub fn verify_and_deserialize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p2p::dht::node::ID_LEN;
+    use crate::p2p::dht::node::{solve_id_puzzle, ID_LEN};
     use rand_core::OsRng;
 
-    fn test_node_info() -> NodeInfo {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let pubkey = signing_key.verifying_key().to_bytes();
+    const BITS: u32 = 6;
+
+    fn info_for(key: &SigningKey) -> NodeInfo {
+        let pubkey = key.verifying_key().to_bytes();
+        let nonce = solve_id_puzzle(&pubkey, BITS);
         NodeInfo {
-            id: NodeId::from_public_key(&pubkey),
+            id: NodeId::for_node(&pubkey, nonce),
             dht_addr: "127.0.0.1:7000".parse().unwrap(),
             relay_addr: None,
             public_key: pubkey,
+            id_nonce: nonce,
         }
+    }
+
+    fn test_node_info() -> NodeInfo {
+        info_for(&SigningKey::generate(&mut OsRng))
     }
 
     #[test]
@@ -186,6 +234,71 @@ mod tests {
 
         assert_eq!(decoded.request_id(), 42);
         assert_eq!(pubkey, signing_key.verifying_key().to_bytes());
+    }
+
+    #[test]
+    fn sender_id_must_match_the_signing_key() {
+        // Signed with key A, claiming the ID (and public key) of key B: a
+        // valid signature, and still refused.
+        let key_a = SigningKey::generate(&mut OsRng);
+        let key_b = SigningKey::generate(&mut OsRng);
+        let claimed = info_for(&key_b);
+        let msg = DhtMessage::Ping {
+            request_id: 7,
+            sender: claimed.clone(),
+        };
+        let packet = sign_and_serialize(&msg, &key_a).unwrap();
+        assert!(verify_and_deserialize(&packet).is_ok(), "the signature itself is fine");
+        let err = verify_and_bind(&packet, BITS).unwrap_err().to_string();
+        assert!(err.contains("does not match the signing key"), "{err}");
+
+        // The same ID claimed by its real holder passes.
+        let honest = sign_and_serialize(&msg, &key_b).unwrap();
+        assert!(verify_and_bind(&honest, BITS).is_ok());
+
+        // The right ID but another public key in the NodeInfo: refused too,
+        // or the routing table would remember a key nobody holds.
+        let mut mixed = claimed;
+        mixed.public_key = key_a.verifying_key().to_bytes();
+        let msg = DhtMessage::Ping {
+            request_id: 8,
+            sender: mixed,
+        };
+        let packet = sign_and_serialize(&msg, &key_b).unwrap();
+        assert!(verify_and_bind(&packet, BITS).is_err());
+
+        // A response carries no sender; it is matched by request id and the
+        // signature alone is checked.
+        let resp = DhtMessage::StoreResponse {
+            request_id: 9,
+            stored: true,
+        };
+        let packet = sign_and_serialize(&resp, &key_a).unwrap();
+        assert!(verify_and_bind(&packet, BITS).is_ok());
+    }
+
+    #[test]
+    fn a_sender_whose_id_skipped_the_puzzle_is_refused() {
+        let key = SigningKey::generate(&mut OsRng);
+        let pubkey = key.verifying_key().to_bytes();
+        let unpaid = (0..u64::MAX)
+            .find(|n| !crate::p2p::dht::node::id_puzzle_ok(&pubkey, *n, BITS))
+            .unwrap();
+        let free = NodeInfo {
+            id: NodeId::for_node(&pubkey, unpaid),
+            dht_addr: "127.0.0.1:7000".parse().unwrap(),
+            relay_addr: None,
+            public_key: pubkey,
+            id_nonce: unpaid,
+        };
+        let msg = DhtMessage::Ping {
+            request_id: 1,
+            sender: free,
+        };
+        let packet = sign_and_serialize(&msg, &key).unwrap();
+        assert!(verify_and_deserialize(&packet).is_ok(), "signed by its own key");
+        assert!(verify_and_bind(&packet, BITS).is_err(), "but its ID was never earned");
+        assert!(verify_and_bind(&packet, 0).is_ok(), "at zero difficulty it would pass");
     }
 
     #[test]

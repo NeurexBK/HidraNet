@@ -83,7 +83,9 @@ for (const name of ['mail', 'chat', 'forum', 'publish']) {
 }
 for (const name of Object.keys(INTERNAL_BY_NAME)) {
   const r = resolve(`hidra://${name}`);
-  const ok = name === 'newtab' ? r.kind === 'file' : r.kind === 'url' && r.url.startsWith(APPS);
+  // Pages served from disk (the new tab page, the VPN page) resolve to a
+  // file; every app resolves to the apps server.
+  const ok = INTERNAL_BY_NAME[name].endsWith('.html') ? r.kind === 'file' : r.kind === 'url' && r.url.startsWith(APPS);
   check(ok, `hidra://${name} resolves`, JSON.stringify(r));
 }
 check(resolve('hidra://reviews?b=cafe').url === `${APPS}/reviews?b=cafe`,

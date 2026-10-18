@@ -1,0 +1,272 @@
+# HidraVPN — build, check and (once a certificate exists) sign the Windows
+# binaries from the checked-in source. This workflow only touches hidravpn/;
+# it does not build or change the browser, the relay engine or the site.
+#
+# Signing is off until a SignPath Foundation project exists. To turn it on,
+# add the repository variable SIGNPATH_ENABLED=true, the secret
+# SIGNPATH_API_TOKEN, and the SIGNPATH_* variables the SignPath project gives
+# you. Until then the build and checks run and the sign job is skipped.
+name: HidraVPN build
+
+on:
+  push:
+    branches: [feature/hidravpn, main]
+    # A tag hidravpn-vX.Y.Z runs this too and, once signing is on, cuts the
+    # Windows release (release-windows below). Path filters do not apply to
+    # tag pushes, so a tag always builds.
+    tags: ['hidravpn-v*']
+    paths:
+      - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
+      - '.github/workflows/hidravpn-build.yml'
+  pull_request:
+    paths:
+      - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
+      - '.github/workflows/hidravpn-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: format, lint and tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: format
+        run: cargo fmt --manifest-path hidravpn/Cargo.toml --all --check
+      - name: clippy
+        run: cargo clippy --manifest-path hidravpn/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: tests
+        run: cargo test --manifest-path hidravpn/Cargo.toml --workspace
+      # The scripts parse, and the node installer's dry run says what it
+      # would do. The network suites (scripts/test-*-netns.sh) need root and
+      # network namespaces; run them on a throwaway machine or container.
+      - name: scripts parse
+        run: for f in hidravpn/scripts/*.sh hidravpn/scripts/test/*.sh; do bash -n "$f" || exit 1; done
+      - name: node installer (dry run)
+        run: bash hidravpn/scripts/test-node-installer.sh
+
+  netns:
+    name: who can see what, end to end (Linux namespaces, as root, with IPv6)
+    # Every namespace suite, twice in a row: the client, the service, two
+    # hops, open admission, the browser's module against a real service, the
+    # anonymity suite with packet captures, and the passes of phases 5 and 6
+    # (two hops with a pass exit included). The hosted runner has IPv6, so
+    # the anonymity suite's IPv6 checks must run here, not be skipped.
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: tools the suites use
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3 wireguard-tools
+      - name: build the release binaries
+        run: cargo build --release --manifest-path hidravpn/Cargo.toml --workspace
+      # The suites give each namespace its own resolv.conf the way `ip netns
+      # exec` does it: /etc/netns/NAME/resolv.conf mounted over
+      # /etc/resolv.conf. On this runner /etc/resolv.conf is a link to
+      # systemd-resolved's stub, so the mount lands on the stub, the client
+      # changes a file the suite never reads, and glibc asks systemd-resolved
+      # (outside the namespace) before DNS. A plain file and no resolved, as
+      # on a machine without it; the suites need nothing from the internet.
+      - name: a plain resolv.conf, as the namespace suites assume
+        run: |
+          sudo systemctl stop systemd-resolved
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+      - name: every suite, twice
+        env:
+          HIDRAVPN_REQUIRE_IPV6: "1"
+        run: |
+          set -e
+          for round in 1 2; do
+            for t in test-netns test-killswitch test-service-netns test-multihop-netns \
+                     test-admission-netns test-browser-netns test-directory \
+                     test-node-installer test-client-installer test-anonymity-netns \
+                     test-passes-netns test-refill-netns test-unit-sandbox-netns \
+                     test-fuzz-netns test-load-netns; do
+              echo "::group::round $round: $t"
+              sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
+              echo "::endgroup::"
+            done
+          done
+
+  windows-tests:
+    name: unit tests (Windows)
+    # The Windows code paths (the WFP kill switch, routes, the pipe) compile
+    # and their unit tests run here. Nothing in this job arms a firewall: a
+    # kill switch on a hosted runner would cut the runner off from GitHub.
+    # The run-time checks stay with scripts/windows/*.ps1, on a real PC.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: tests
+        run: cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-service -p hidravpn
+
+  build-windows:
+    name: build Windows executables
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: MinGW cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: build the client, the service and the release verifier
+        run: >
+          cargo build --release
+          --manifest-path hidravpn/Cargo.toml
+          --target x86_64-pc-windows-gnu
+          -p hidravpn -p hidravpn-service -p hidravpn-sign
+      - name: collect
+        # No checksums here: signing changes the bytes, so SHA256SUMS is made
+        # from the signed files in the release job.
+        run: |
+          mkdir -p dist
+          cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn.exe dist/
+          cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn-service.exe dist/
+          cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn-sign.exe dist/
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidravpn-windows-unsigned
+          path: dist/
+          if-no-files-found: error
+
+  sign-windows:
+    name: sign with SignPath
+    needs: build-windows
+    # Off until the SignPath Foundation project is approved and configured.
+    # Only main and release tags are signed (a push, or Run workflow on
+    # them): a pull request or a side branch never spends a signing request.
+    if: >-
+      ${{ vars.SIGNPATH_ENABLED == 'true' && github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/hidravpn-v')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The exact action version and the *-slug values come from the SignPath
+      # project you register; SignPath gives you the snippet to paste here.
+      - name: submit the build for signing
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_SLUG }}
+          github-artifact-id: ${{ needs.build-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hidravpn-windows-signed
+          path: signed/
+          if-no-files-found: error
+
+  release-windows:
+    name: Windows release (hidravpn-v* tag, signed builds only)
+    needs: [check, netns, windows-tests, sign-windows]
+    # Only a tag makes a release, and only a signed build is ever released:
+    # an unsigned HidraVPN must never reach a download page.
+    if: ${{ startsWith(github.ref, 'refs/tags/hidravpn-v') && vars.SIGNPATH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      WINTUN_VERSION: 0.14.1
+      # SHA-256 of the official wintun-0.14.1.zip from wintun.net. The
+      # repository variable WINTUN_SHA256 overrides it. A mismatch fails the
+      # release rather than ship a wrong driver.
+      WINTUN_SHA256: ${{ vars.WINTUN_SHA256 }}
+      WINTUN_SHA256_DEFAULT: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: hidravpn-windows-signed
+          path: signed
+      - name: fetch and verify wintun.dll (the WireGuard LLC-signed driver)
+        run: |
+          set -euo pipefail
+          want="${WINTUN_SHA256:-$WINTUN_SHA256_DEFAULT}"
+          curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
+          got=$(sha256sum wintun.zip | cut -d' ' -f1)
+          if [ "$got" != "$want" ]; then
+            echo "wintun-${WINTUN_VERSION}.zip SHA-256 mismatch"
+            echo "  expected $want"
+            echo "  got      $got"
+            echo "Confirm the official hash (Get-FileHash on a Windows machine) and set the repository variable WINTUN_SHA256."
+            exit 1
+          fi
+          unzip -q wintun.zip "wintun/bin/amd64/wintun.dll"
+          unzip -q -o wintun.zip "wintun/LICENSE.txt" || true
+      - name: assemble the release folder
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          out="hidravpn-windows-${tag}"
+          mkdir -p "$out"
+          cp signed/hidravpn.exe signed/hidravpn-service.exe signed/hidravpn-sign.exe "$out/"
+          cp wintun/bin/amd64/wintun.dll "$out/"
+          [ -f wintun/LICENSE.txt ] && cp wintun/LICENSE.txt "$out/LICENSE-wintun.txt"
+          cp hidravpn/scripts/windows/release-readme.txt "$out/README.txt"
+          (cd "$out" && sha256sum hidravpn.exe hidravpn-service.exe hidravpn-sign.exe wintun.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          zip -qr "${out}.zip" "$out"
+          cp "$out/SHA256SUMS.txt" "SHA256SUMS-${tag}.txt"
+          echo "ZIP=${out}.zip" >> "$GITHUB_ENV"
+          echo "SUMS=SHA256SUMS-${tag}.txt" >> "$GITHUB_ENV"
+      - name: publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: HidraVPN ${{ github.ref_name }} (Windows)
+          files: |
+            ${{ env.ZIP }}
+            ${{ env.SUMS }}
+          body: |
+            Windows build of HidraVPN, code-signed through SignPath.io under the SignPath Foundation programme, built by GitHub Actions from the public source at this tag.
+
+            **Inside the zip:** `hidravpn.exe` (client), `hidravpn-service.exe` (background service), `hidravpn-sign.exe` (download verifier), `wintun.dll` (the WireGuard LLC-signed driver), `README.txt`, `SHA256SUMS.txt`.
+
+            **Verify before running:** compare hashes with `SHA256SUMS.txt`; check the Authenticode signature of each `.exe` with `Get-AuthenticodeSignature`; and, once the maintainer attaches `SHA256SUMS-*.txt.sig`, run `hidravpn-sign verify --pubkey <project public key> SHA256SUMS-*.txt`.

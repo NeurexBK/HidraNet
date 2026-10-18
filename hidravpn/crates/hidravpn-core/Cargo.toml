@@ -1,0 +1,36 @@
+[package]
+name = "hidravpn-core"
+description = "The tunnel: WireGuard data plane, keys, routing and DNS on the client side"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+hidravpn-tun = { path = "../hidravpn-tun" }
+boringtun = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+blind-rsa-signatures = { workspace = true }
+hex = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_WindowsFilteringPlatform",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Security",
+  "Win32_System_Rpc",
+] }

@@ -158,8 +158,10 @@ associated with anonymity. Privacy companies are refused by banks regularly.
 2. **Do not mix billing entities**: B2B SaaS is a perfectly conventional business
    in a bank's eyes.
 3. **Have an alternative processor ready** before you need it.
-4. **Do not issue a token or accept crypto at the start.** It multiplies
-   compliance scrutiny and narrows the banking options further.
+4. **Keep HNET away from the SaaS billing.** HNET pays for HidraVPN and other
+   HidraNet services; HidraReview is billed in euros, by its own entity or
+   account. Mixing them multiplies compliance scrutiny and narrows the banking
+   options further. Legal advice on MiCA comes before payments in HNET go live.
 
 ---
 
