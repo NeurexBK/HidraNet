@@ -1,0 +1,39 @@
+# TEMPORARY, for the IPv6 work only: runs the IPv6 namespace suite on every
+# push to this branch, since the machine the work is done on has no IPv6.
+# Removed before the branch is merged.
+name: HidraVPN IPv6 (dev)
+
+on:
+  push:
+    branches: [hidravpn-ipv6]
+
+permissions:
+  contents: read
+
+jobs:
+  ipv6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidravpn
+      - name: tools the suites use
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends nftables iproute2 tcpdump curl dnsutils python3 wireguard-tools
+      - name: build the release binaries
+        run: cargo build --release --manifest-path hidravpn/Cargo.toml --workspace
+      - name: a plain resolv.conf, as the namespace suites assume
+        run: |
+          sudo systemctl stop systemd-resolved
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+      - name: the IPv6 suite
+        env:
+          HIDRAVPN_REQUIRE_IPV6: "1"
+        run: sudo -E env "PATH=$PATH" bash hidravpn/scripts/test-ipv6-netns.sh
