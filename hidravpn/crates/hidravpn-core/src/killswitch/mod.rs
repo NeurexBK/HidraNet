@@ -12,9 +12,10 @@
 //! carries it to the exit).
 //!
 //! On Windows the rules apply to connections this machine opens
-//! (`ALE_AUTH_CONNECT`). A program listening for connections from the local
-//! network can still answer one off the tunnel; whoever connected already
-//! knows this machine's address. Linux drops those too.
+//! (`ALE_AUTH_CONNECT`) and to those it receives (`ALE_AUTH_RECV_ACCEPT`): a
+//! program listening on this machine is reached only through the tunnel,
+//! from loopback, by a DHCP answer, or from the local network with "Allow
+//! LAN", as on Linux.
 //!
 //! Like the rest of the client's network changes, this touches only a table of
 //! our own, so removing it removes everything and nothing else on the machine

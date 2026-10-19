@@ -133,7 +133,13 @@ fn main() -> Result<()> {
         Cmd::Install { client, user } => {
             require_admin()?;
             install::install(&install::InstallOptions { client, user })?;
-            println!("HidraVPN service installed and started");
+            if answers_within(STARTUP_WAIT) {
+                println!("HidraVPN service installed and started");
+            } else {
+                println!(
+                    "HidraVPN service installed; it is starting but has not answered yet: `hidravpn-service status` says when it is ready"
+                );
+            }
             Ok(())
         }
         Cmd::Uninstall { purge } => {
@@ -152,7 +158,13 @@ fn main() -> Result<()> {
         Cmd::Start => {
             require_admin()?;
             install::start()?;
-            println!("started");
+            if answers_within(STARTUP_WAIT) {
+                println!("started");
+            } else {
+                println!(
+                    "starting, but the service has not answered yet: `hidravpn-service status` says when it is ready"
+                );
+            }
             Ok(())
         }
         Cmd::Stop => {
@@ -313,6 +325,34 @@ fn read_invite(path: &std::path::Path) -> Result<Invite> {
 }
 
 /// Runs an async client command on a small runtime.
+/// How long `install` and `start` wait for the new service to answer.
+const STARTUP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Waits until the service answers on its control channel. The OS starts
+/// it in the background, so without this a client run right after
+/// `install` finds no service yet and connects on its own, in the
+/// foreground, instead of through it.
+fn answers_within(limit: std::time::Duration) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    rt.block_on(async {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            if matches!(ipc::call(ipc::Command::Ping).await, Ok(r) if r.ok) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    })
+}
+
 fn client<F>(fut: F) -> Result<()>
 where
     F: std::future::Future<Output = Result<()>>,
