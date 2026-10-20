@@ -442,8 +442,12 @@ impl std::fmt::Debug for IssueRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueResponse {
     pub signatures: Vec<String>,
+    /// How many the account has left: today, or in all for a prepaid one.
     #[serde(default)]
     pub remaining_today: u32,
+    /// A prepaid account (bought passes): `remaining_today` is its balance.
+    #[serde(default)]
+    pub prepaid: bool,
 }
 
 /// What a fetch brought back: the passes, how many the account has left
@@ -452,6 +456,7 @@ pub struct IssueResponse {
 pub struct Fetched {
     pub passes: Vec<Pass>,
     pub remaining_today: u32,
+    pub prepaid: bool,
     pub stopped: Option<String>,
 }
 
@@ -484,6 +489,7 @@ pub async fn fetch(
     let mut got = Fetched {
         passes: Vec::with_capacity(nodes.len()),
         remaining_today: 0,
+        prepaid: false,
         stopped: None,
     };
     for chunk in nodes.chunks(MAX_PER_REQUEST) {
@@ -496,7 +502,10 @@ pub async fn fetch(
             break;
         }
         match fetch_one(&url, &issuer, token, chunk, &mut got.passes).await {
-            Ok(left) => got.remaining_today = left,
+            Ok((left, prepaid)) => {
+                got.remaining_today = left;
+                got.prepaid = prepaid;
+            }
             Err(e) if got.passes.is_empty() => return Err(e),
             Err(e) => {
                 got.stopped = Some(format!("{e:#}"));
@@ -514,7 +523,7 @@ async fn fetch_one(
     token: &str,
     chunk: &[String],
     out: &mut Vec<Pass>,
-) -> Result<u32> {
+) -> Result<(u32, bool)> {
     let mut pending = Vec::with_capacity(chunk.len());
     let mut blinded = Vec::with_capacity(chunk.len());
     for n in chunk {
@@ -546,7 +555,7 @@ async fn fetch_one(
     for (p, sig) in pending.into_iter().zip(resp.signatures) {
         out.push(p.finalize(issuer, &sig)?);
     }
-    Ok(resp.remaining_today)
+    Ok((resp.remaining_today, resp.prepaid))
 }
 
 // ---- the wallet --------------------------------------------------------------
@@ -762,6 +771,7 @@ mod tests {
             let body = serde_json::to_string(&IssueResponse {
                 signatures,
                 remaining_today: 9,
+                prepaid: false,
             })
             .unwrap();
             s.write_all(&crate::admission::http_response(200, &body))
@@ -819,6 +829,7 @@ mod tests {
                 let body = serde_json::to_string(&IssueResponse {
                     signatures,
                     remaining_today: 9,
+                    prepaid: false,
                 })
                 .unwrap();
                 let _ = s
