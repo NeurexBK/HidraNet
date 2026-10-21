@@ -764,18 +764,20 @@ async fn bridge(
     Ok(())
 }
 
-/// Connect to an exit destination the policy has already resolved and checked.
-async fn exit_connect(resolved: std::result::Result<SocketAddr, String>) -> std::io::Result<TcpStream> {
-    match resolved {
-        Ok(addr) => match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-            Ok(r) => r,
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "exit connection timed out",
-            )),
-        },
-        Err(why) => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, why)),
+/// Connect to an exit destination the policy has already resolved and
+/// checked, trying its addresses in order until one answers: a name's first
+/// address can be one this exit cannot reach (IPv6 on an IPv4-only host).
+async fn exit_connect(resolved: std::result::Result<Vec<SocketAddr>, String>) -> std::io::Result<TcpStream> {
+    let addrs = resolved.map_err(|why| std::io::Error::new(std::io::ErrorKind::PermissionDenied, why))?;
+    let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, "destination did not resolve");
+    for addr in addrs {
+        match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(e)) => last = e,
+            Err(_) => last = std::io::Error::new(std::io::ErrorKind::TimedOut, "exit connection timed out"),
+        }
     }
+    Err(last)
 }
 
 /// Opens the link to the next hop on a circuit: a Noise XX session, so what
@@ -830,5 +832,35 @@ async fn dial(addr: SocketAddr, source: Option<IpAddr>) -> std::io::Result<TcpSt
             socket.connect(addr).await
         }
         None => TcpStream::connect(addr).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name whose first address this exit cannot reach — IPv6 on an
+    /// IPv4-only host — still connects through the next one. It used to fail
+    /// outright, which is what broke reaching "localhost" on a machine where
+    /// it resolves to ::1 first.
+    #[tokio::test]
+    async fn the_exit_tries_each_address_until_one_answers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap();
+        // A port on ::1 nothing listens on (or no IPv6 at all): refused either way.
+        let unreachable: SocketAddr = format!("[::1]:{}", open.port()).parse().unwrap();
+        let accept = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
+        let stream = exit_connect(Ok(vec![unreachable, open])).await;
+        assert!(stream.is_ok(), "the second address was never tried: {:?}", stream.err());
+        assert!(accept.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_exit_reports_the_last_failure_when_none_answers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed = listener.local_addr().unwrap();
+        drop(listener);
+        assert!(exit_connect(Ok(vec![closed])).await.is_err());
+        assert!(exit_connect(Err("refused by policy".into())).await.is_err());
     }
 }
