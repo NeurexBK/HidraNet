@@ -248,6 +248,7 @@ footer{padding:12px 20px;background:var(--bg2);border-top:1px solid var(--border
 <div class="copied-toast" id="toast">Copied!</div>
 
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-relays.js"></script>
 <script src="hidra-store.js"></script>
 <script src="hidrachat-crypto.js"></script>
 <script>
@@ -270,11 +271,12 @@ var typingUsers={}, soundEnabled=true;
 // come and go, and ciphertext. Every message is signed by the session that
 // sent it and checked here before it is shown.
 var mode='ws';                 // 'ws' = direct/LAN server | 'relay' = public relay (MQTT)
-var mqttClient=null, relayTopic='', relayFails=0, relayTimer=null, relayClosed=false, relayDown=false;
+var relays=null, relayTopic='', relayClosed=false, relayDown=false;
 var me=null, myColor='', peers={}, presenceTimer=null;
 var trust=null, guard=null, lastDropNotice=0;
-// Tried in turn: a relay that is down or unreachable is not the end of the
-// room, the next one in the list is.
+// All at once (hidra-relays.js): the room is on every one of them, so a relay
+// that is down or unreachable is not the end of the room, and nobody is left
+// on one while the others are on another.
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 // Public headcount channel. The broker is public, so anyone at all can
 // subscribe to this — which is why the beacon carries an ephemeral id and a
@@ -288,7 +290,7 @@ var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884
 // subscriber cannot pair a beacon with the room ciphertext that left a
 // moment earlier and learn which session sits in which room.
 var PRESENCE_TOPIC='hidra/presence/v1', beaconId='', beaconTimer=null;
-function gpub(obj){ if(mqttClient&&mqttClient.connected){ try{ mqttClient.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }catch(e){} } }
+function gpub(obj){ if(relays) relays.publish(PRESENCE_TOPIC, JSON.stringify(obj), {qos:0}); }
 function scheduleBeacon(){
   clearTimeout(beaconTimer);
   beaconTimer=setTimeout(function(){ gpub({cid:beaconId,t:Date.now()}); scheduleBeacon(); },15000+Math.floor(Math.random()*20000));
@@ -322,68 +324,54 @@ async function connectRelay(){
 }
 
 function relayOpen(){
-  if(typeof mqtt==='undefined'){
+  if(typeof mqtt==='undefined'||typeof hidraRelays==='undefined'){
     $('connStatus').textContent='No network';$('connStatus').className='status';
     addSys('⚠️ Could not load the messaging layer. Check your connection and reload the page (↻).');
     return;
   }
   var topic='hidra/'+relayTopic;
-  var url=MQTT_BROKERS[Math.floor(relayFails/2)%MQTT_BROKERS.length];
   $('connStatus').textContent='Connecting…';$('connStatus').className='status';
-  var c;
-  try{
-    c=mqtt.connect(url,{
-      clientId:'hidra_'+hidraRoom.toHex(crypto.getRandomValues(new Uint8Array(8))),
-      clean:true, connectTimeout:9000, reconnectPeriod:0, keepalive:30
-    });
-  }catch(e){
-    relayFails++; scheduleRelayRetry(); return;
-  }
-  mqttClient=c;
-  c.on('connect',function(){
-    if(c!==mqttClient) return;
-    relayFails=0;
+  relays=hidraRelays(MQTT_BROKERS,{
+    options:function(){ return { clientId:'hidra_'+hidraRoom.toHex(crypto.getRandomValues(new Uint8Array(8))), clean:true }; },
+    onMessage:function(t,payload){ if(t===topic) onRelayMessage(payload.toString()); },
+    // Announced on each relay as it comes up, to the people reading that one.
+    onUp:function(i){ relayPublish({k:'join',nick:nick,color:myColor}, i); scheduleBeacon(); },
+    onChange:showRelays
+  });
+  relays.subscribe(topic,{qos:0});
+  relays.start();
+}
+
+// The relays are the only way out; there is no quiet fall-back to anything
+// else. When none answers, the room says so, once, and keeps trying.
+function showRelays(up,total,fails){
+  if(relayClosed) return;
+  if(up>0){
     if(relayDown){ relayDown=false; addSys('Connected to the relay again.'); }
-    $('connStatus').textContent='Connected ('+(/broker\.(emqx|hivemq)\./.test(url)?'public relay':'HidraRelay')+')';
+    $('connStatus').textContent='Connected ('+(up===total?'':up+' of ')+total+' relays)';
     $('connStatus').className='status on';
-    c.subscribe(topic,{qos:0});
-    relayPublish({k:'join',nick:nick,color:myColor});
-    scheduleBeacon();
-  });
-  c.on('message',function(t,payload){ if(c===mqttClient&&t===topic) onRelayMessage(payload.toString()); });
-  c.on('error',function(){});
-  c.on('close',function(){
-    if(c!==mqttClient||relayClosed) return;
-    $('connStatus').textContent='Reconnecting…';$('connStatus').className='status';
-    relayFails++;
-    scheduleRelayRetry();
-  });
-}
-
-// The relay is the only way out; there is no quiet fall-back to another.
-// When it does not answer, the room says so, once, and keeps trying.
-function scheduleRelayRetry(){
-  clearTimeout(relayTimer);
-  var delay=Math.min(2000*Math.pow(1.5,Math.min(relayFails,8)),20000);
-  if(relayFails>=2){
-    if(!relayDown){ relayDown=true; addSys('⚠️ The relay is not answering. Retrying; nothing is sent or received until it is back.'); }
-    $('connStatus').textContent='Relay not answering, retrying…';$('connStatus').className='status';
+    return;
   }
-  relayTimer=setTimeout(function(){
-    var old=mqttClient; mqttClient=null;
-    try{ if(old) old.end(true); }catch(e){}
-    relayOpen();
-  },delay);
+  if(fails>=2){
+    if(!relayDown){ relayDown=true; addSys('⚠️ The relays are not answering. Retrying; nothing is sent or received until one is back.'); }
+    $('connStatus').textContent='Relays not answering, retrying…';
+  }else{
+    $('connStatus').textContent='Reconnecting…';
+  }
+  $('connStatus').className='status';
 }
 
-// Seals and publishes. Returns the message as sent, for the local echo, or
-// null when the relay is not up: a message that could not be sent is not
-// shown as if it had been.
-async function relayPublish(obj){
+// Seals once and publishes the same bytes to every relay that is up (or to
+// relay `only`), so the copies are one message to the replay guard. Returns
+// the message as sent, for the local echo, or null when no relay is up: a
+// message that could not be sent is not shown as if it had been.
+async function relayPublish(obj, only){
   if(!cryptoKey||!me) return null;
   var sealed=await hidraRoom.seal(cryptoKey, me, obj);
-  if(!mqttClient||!mqttClient.connected) return null;
-  try{ mqttClient.publish('hidra/'+relayTopic, sealed.wire, {qos:0}); }catch(e){ return null; }
+  if(!relays||!relays.anyUp()) return null;
+  var topic='hidra/'+relayTopic;
+  if(typeof only==='number') relays.publishTo(only, topic, sealed.wire, {qos:0});
+  else relays.publish(topic, sealed.wire, {qos:0});
   return sealed.msg;
 }
 
@@ -420,6 +408,8 @@ async function onRelayMessage(wire){
   var nk=hidraRoom.normalizeNick(o.nick)||'Anon';
   var color=hidraRoom.safeColor(o.color, hidraRoom.colorFor(nk));
   var fp=await fingerprintOf(o.cid,o.pk);
+  // A session announces itself on each relay it reaches; it joined once.
+  var wasHere=Object.prototype.hasOwnProperty.call(peers,o.cid);
   peers[o.cid]={nick:nk,key:hidraRoom.nickKey(nk),color:color,last:Date.now(),fp:fp};
   updatePresence();
   var label=labelOf(o.cid);
@@ -429,7 +419,7 @@ async function onRelayMessage(wire){
       beep();
       break;
     case 'join':
-      addSys(label+' joined the room');
+      if(!wasHere) addSys(label+' joined the room');
       break;
     case 'leave':
       delete peers[o.cid];updatePresence();clearTyping(o.cid);addSys(label+' left the room');
