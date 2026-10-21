@@ -252,7 +252,7 @@ function httpsGet(url, timeoutMs) {
     headers: {
       // The same string as httpsPost: a name of our own would tell the
       // search engine which of the people behind a Tor exit use HidraNet.
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
       'Accept': 'application/json, text/html, */*',
       'Accept-Language': 'en-US,en;q=0.9',
     },
@@ -265,7 +265,7 @@ function httpsPost(url, body, headers, timeoutMs) {
     url,
     method: 'POST',
     headers: Object.assign({
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
       'Accept': 'text/html,application/xhtml+xml,*/*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Content-Type': 'application/x-www-form-urlencoded',

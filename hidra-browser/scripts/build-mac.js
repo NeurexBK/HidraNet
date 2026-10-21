@@ -21,7 +21,7 @@ const { readZip, writeZip, mkFile, mkDir, patchEntry } = require('./lib/zip');
 const { launcherScript, readmeText, patchPlist } = require('./lib/mac-extras');
 const { download } = require('./lib/net');
 
-const ELECTRON_VER = '33.4.11';
+const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'HidraNet';
 const APP_ID       = 'net.hidra.browser';
 const VERSION      = '1.0.0';
