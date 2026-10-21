@@ -109,7 +109,7 @@ jobs:
                      test-admission-netns test-browser-netns test-directory \
                      test-node-installer test-client-installer test-anonymity-netns \
                      test-passes-netns test-refill-netns test-unit-sandbox-netns \
-                     test-fuzz-netns test-load-netns test-ipv6-netns; do
+                     test-fuzz-netns test-load-netns test-ipv6-netns test-pay-netns; do
               echo "::group::round $round: $t"
               sudo -E env "PATH=$PATH" bash "hidravpn/scripts/$t.sh"
               echo "::endgroup::"

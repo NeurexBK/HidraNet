@@ -1,0 +1,78 @@
+# HidraVPN pass issuer — systemd unit.
+#
+# The issuer signs passes blind for accounts and, with a wallet and packs
+# given below, sells them for HNET (hidravpn/docs/phase-7-payments.md). It
+# holds its signing key (/etc/hidravpn-issuer/issuer-key.json), the accounts
+# and the orders (/var/lib/hidravpn-issuer), and nothing else: no key to
+# the wallet, no WireGuard. It speaks plain HTTP on 127.0.0.1:8730 and sits
+# behind a TLS proxy on the same machine (Caddy, nginx) that serves
+# https://<issuer host>/ to the clients.
+#
+# Install: copy this file to /etc/systemd/system/, the binary to
+# /usr/local/bin/hidravpn-issuer, make the user and the key:
+#   useradd --system --home /var/lib/hidravpn-issuer --shell /usr/sbin/nologin hidravpn-issuer
+#   mkdir -p /etc/hidravpn-issuer && hidravpn-issuer keygen --out /etc/hidravpn-issuer/issuer-key.json > pass-key.json
+#   chown -R hidravpn-issuer:hidravpn-issuer /etc/hidravpn-issuer
+# then set the wallet and the packs in ExecStart, and
+#   systemctl daemon-reload && systemctl enable --now hidravpn-issuer
+[Unit]
+Description=HidraVPN pass issuer
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=hidravpn-issuer
+Group=hidravpn-issuer
+# Without --pay-wallet and --pay-pack the issuer only serves hand-made
+# accounts. The wallet is a public address. A price is whole HNET (10=50)
+# or dollars (150=5.99usd), turned into HNET at the going rate, fetched
+# every five minutes from api.dexscreener.com (--pay-price-url for another
+# feed); a move of more than 30 % is held until the feed says it three
+# times in a row, and a rate older than an hour sells nothing.
+ExecStart=/usr/local/bin/hidravpn-issuer \
+    --accounts /var/lib/hidravpn-issuer/accounts.json \
+    --orders /var/lib/hidravpn-issuer/orders.json \
+    run --key /etc/hidravpn-issuer/issuer-key.json --listen 127.0.0.1:8730 \
+    --pay-wallet CHANGE-ME-THE-RECEIVING-WALLET \
+    --pay-pack 150=5.99usd
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+StateDirectory=hidravpn-issuer
+StateDirectoryMode=0700
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_LOG=hidravpn_issuer=info
+
+# Hardening: no capabilities, the system read-only but its state directory,
+# no other users' homes, no devices, only IP sockets (the proxy in front,
+# the chain's RPC out), no new privileges.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

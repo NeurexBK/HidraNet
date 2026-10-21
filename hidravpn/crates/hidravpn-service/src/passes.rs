@@ -444,9 +444,10 @@ async fn fetch_for(
     let n = got.passes.len();
     wallet.passes.extend(got.passes);
     let mut line = format!(
-        "{n} pass(es) for {} node(s); the account has {} left today",
+        "{n} pass(es) for {} node(s); the account has {} left{}",
         wants.len(),
-        got.remaining_today
+        got.remaining_today,
+        if got.prepaid { "" } else { " today" }
     );
     if let Some(why) = got.stopped {
         line.push_str(&format!(
@@ -766,4 +767,229 @@ mod tests {
         assert!(read_token(&tok).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ---- buying passes with HNET (phase 7) ---------------------------------------------
+
+/// An order the client opened and has not claimed: what to pay, where, and
+/// by when. Kept beside the pocket (`order.json`, root only) until claimed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Order {
+    pub passes: u32,
+    pub amount: String,
+    pub amount_raw: u64,
+    pub decimals: u8,
+    pub mint: String,
+    pub wallet: String,
+    pub expires: String,
+    pub issuer: String,
+    /// For a pack priced in dollars: the price and the rate it was turned
+    /// into tokens at, fixed for this order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<String>,
+}
+
+pub fn order_path(pocket_path: &Path) -> std::path::PathBuf {
+    pocket_path.with_file_name("order.json")
+}
+
+/// The open order, if there is one.
+pub fn load_order(pocket_path: &Path) -> Result<Option<Order>> {
+    match std::fs::read_to_string(order_path(pocket_path)) {
+        Ok(s) => serde_json::from_str(&s)
+            .map(Some)
+            .context("the order file beside the pocket is unreadable"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("reading the order beside the pocket"),
+    }
+}
+
+/// How an order reads to the person: what to send, where, by when, and
+/// what comes next.
+pub fn describe_order(o: &Order) -> String {
+    let token = if o.mint == hidravpn_core::payment::HNET_MINT {
+        "HNET".to_string()
+    } else {
+        format!("the token {}", o.mint)
+    };
+    let in_dollars = match (&o.usd, &o.rate) {
+        (Some(usd), Some(rate)) => {
+            format!(" ({usd} USD at {rate} USD for one {token}, fixed for this order)")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "Send exactly {amount} {token}{in_dollars} to\n  {wallet}\nfrom any Solana wallet, by {expires} (UTC).\n\
+         The amount must match to the last digit: it is what tells your payment apart.\n\
+         Then: hidravpn passes claim <transaction signature>\n\
+         (the signature is in the wallet's transaction details, or on a Solana explorer).\n\
+         Payments on Solana are public. To keep this one apart from the rest of what you do,\n\
+         pay from a wallet you use for nothing else.",
+        amount = o.amount,
+        wallet = o.wallet,
+        expires = o.expires
+    )
+}
+
+/// The account token for purchases: the one kept, or a new one made and
+/// kept now (32 random bytes, as the issuer's own `account add` makes
+/// them). Says whether it was made.
+pub fn token_for_purchase(token_path: &Path) -> Result<(String, bool)> {
+    match read_token(token_path) {
+        Ok(t) => Ok((t, false)),
+        Err(_) if !token_path.exists() => {
+            let mut raw = [0u8; 32];
+            getrandom::fill(&mut raw).map_err(|e| anyhow!("no randomness available: {e}"))?;
+            let token =
+                base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, raw);
+            crate::daemon::write_private_atomic(token_path, token.as_bytes())?;
+            Ok((token, true))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What the issuer sells.
+pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksResponse> {
+    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
+        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
+    })?;
+    let url = hidravpn_core::http::Url::parse(&issuer.url)
+        .context("the pass issuer's address")?
+        .with_path("/packs");
+    let (status, answer) = hidravpn_core::http::call(&url, "GET", "").await?;
+    if status != 200 {
+        return Err(anyhow!(refused("sells no passes", status, &answer)));
+    }
+    serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")
+}
+
+/// Opens an order for `passes` with the issuer the pocket's list names,
+/// for the account `token`, and keeps it beside the pocket.
+pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) -> Result<Order> {
+    use sha2::Digest;
+    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
+        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
+    })?;
+    let url = hidravpn_core::http::Url::parse(&issuer.url)
+        .context("the pass issuer's address")?
+        .with_path("/quote");
+    // Only the token's hash goes: the token itself travels at the claim,
+    // over TLS or to this machine, as `check_for_token` sees to.
+    url.check_for_token()?;
+    let body = serde_json::to_string(&hidravpn_core::payment::QuoteRequest {
+        token_sha256: hex::encode(sha2::Sha256::digest(token.trim().as_bytes())),
+        passes,
+    })?;
+    let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
+    if status != 200 {
+        return Err(anyhow!(refused("did not open the order", status, &answer)));
+    }
+    let q: hidravpn_core::payment::QuoteResponse =
+        serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
+    // Checked before anyone is told to pay: the amount is what the issuer
+    // says, written the way it is read back; the wallet is an address.
+    hidravpn_core::payment::check_address(&q.wallet)
+        .context("the issuer named a receiving wallet that is not one")?;
+    if hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
+        || q.passes != passes
+    {
+        return Err(anyhow!(
+            "the issuer's order does not add up; nothing to pay"
+        ));
+    }
+    let order = Order {
+        passes: q.passes,
+        amount: q.amount,
+        amount_raw: q.amount_raw,
+        decimals: q.decimals,
+        mint: q.mint,
+        wallet: q.wallet,
+        expires: q.expires,
+        issuer: issuer.url.clone(),
+        usd: q.usd,
+        rate: q.rate,
+    };
+    crate::daemon::write_private_atomic(
+        &order_path(pocket_path),
+        serde_json::to_string_pretty(&order)?.as_bytes(),
+    )?;
+    Ok(order)
+}
+
+/// What a claim did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Claimed {
+    /// The open order is paid: the pack is on the account, the order file
+    /// is gone.
+    Credited { passes: u32, balance: u32 },
+    /// The open order had been paid by this transaction already (a claim
+    /// that was cut off before it was written down): nothing credited
+    /// twice, the order file is gone.
+    AlreadyCredited { balance: u32 },
+    /// The transaction paid an earlier order of this token, not the open
+    /// one, which stays open; `already` says whether that earlier claim
+    /// was made before.
+    EarlierOrder {
+        passes: u32,
+        balance: u32,
+        already: bool,
+    },
+}
+
+/// Claims the open order with the transaction that paid it.
+pub async fn claim(
+    pocket_path: &Path,
+    order: &Order,
+    token: &str,
+    signature: &str,
+) -> Result<Claimed> {
+    let signature = hidravpn_core::payment::check_signature(signature)?;
+    let url = hidravpn_core::http::Url::parse(&order.issuer)
+        .context("the pass issuer's address")?
+        .with_path("/claim");
+    url.check_for_token()?;
+    let body = serde_json::to_string(&hidravpn_core::payment::ClaimRequest {
+        token: token.trim().to_string(),
+        signature,
+    })?;
+    let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
+    if status != 200 {
+        return Err(anyhow!(refused("did not take the claim", status, &answer)));
+    }
+    let c: hidravpn_core::payment::ClaimResponse =
+        serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
+    if c.amount_raw != order.amount_raw {
+        return Ok(Claimed::EarlierOrder {
+            passes: c.passes,
+            balance: c.balance,
+            already: c.already_claimed,
+        });
+    }
+    std::fs::remove_file(order_path(pocket_path))
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+        .context("the order is paid, but its file beside the pocket could not be removed")?;
+    Ok(if c.already_claimed {
+        Claimed::AlreadyCredited { balance: c.balance }
+    } else {
+        Claimed::Credited {
+            passes: c.passes,
+            balance: c.balance,
+        }
+    })
+}
+
+fn refused(what: &str, status: u16, answer: &str) -> String {
+    let why = serde_json::from_str::<hidravpn_core::admission::Refusal>(answer)
+        .map(|r| r.error)
+        .unwrap_or_else(|_| answer.trim().chars().take(200).collect());
+    format!("the pass issuer {what} ({status}): {why}")
 }
