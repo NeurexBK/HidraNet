@@ -19,9 +19,10 @@ const path  = require('path');
 const { inflateRawSync } = require('zlib');
 const { readZip, writeZip, mkFile, mkDir, patchEntry } = require('./lib/zip');
 const { launcherScript, readmeText, patchPlist } = require('./lib/mac-extras');
-const { download } = require('./lib/net');
+const { buildJson } = require('./lib/build-stamp');
+const { electronZip } = require('./lib/electron');
+const { torDir, verifyTorDir } = require('./lib/tor');
 
-const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'HidraNet';
 const APP_ID       = 'net.hidra.browser';
 const VERSION      = '1.0.0';
@@ -29,6 +30,12 @@ const ROOT         = path.join(__dirname, '..');
 const DIST         = path.join(ROOT, 'dist');
 const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
 const ARCH_ARG     = process.argv[2] || 'all';
+
+// HidraNet's icon for the bundle, from brand/logo/ at the top of the
+// repository. Electron's Info.plist names electron.icns, so the file keeps
+// that name and only its picture changes; without this the Dock and the
+// Finder show Electron's atom.
+const MAC_ICON = path.join(ROOT, '..', 'brand', 'logo', 'hidranet.icns');
 
 function scanDir(dir, base) {
   base = base || dir;
@@ -52,22 +59,9 @@ async function buildArch(arch) {
   console.log('  macOS ' + arch);
   console.log('─'.repeat(54));
 
-  const cacheDir = path.join(DIST, 'electron-cache');
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  const zipName  = 'electron-v' + ELECTRON_VER + '-darwin-' + arch + '.zip';
-  const zipCache = path.join(cacheDir, zipName);
-  const dlUrl    = 'https://github.com/electron/electron/releases/download/v' +
-                   ELECTRON_VER + '/' + zipName;
-
-  if (!fs.existsSync(zipCache)) {
-    console.log('  Downloading ' + zipName + ' ...');
-    console.log('  (GitHub → ~100 MB, this can take a while)');
-    await download(dlUrl, zipCache);
-    console.log('  Cached at: ' + zipCache);
-  } else {
-    console.log('  Cache: ' + zipName);
-  }
+  // Downloaded once, and checked against Electron's published SHA-256 on
+  // every build (lib/electron.js).
+  const zipCache = await electronZip('darwin', arch, path.join(DIST, 'electron-cache'));
 
   console.log('  Lendo ZIP ...');
   const srcBuf     = fs.readFileSync(zipCache);
@@ -79,6 +73,8 @@ async function buildArch(arch) {
   const ePlist = hPfx + 'Contents/Info.plist';
   const eBin   = hPfx + 'Contents/MacOS/Electron';
   const hBin   = hPfx + 'Contents/MacOS/' + APP_NAME;
+  const eIcon  = hPfx + 'Contents/Resources/electron.icns';
+  let iconDone = false;
 
   const outEntries = [];
 
@@ -120,8 +116,16 @@ async function buildArch(arch) {
       continue;
     }
 
+    if (name === eIcon && fs.existsSync(MAC_ICON)) {
+      outEntries.push(patchEntry(e, eIcon, fs.readFileSync(MAC_ICON)));
+      iconDone = true;
+      continue;
+    }
+
     outEntries.push(Object.assign({}, e, { filename: name }));
   }
+  console.log(iconDone ? '  HidraNet icon in the bundle'
+                       : '  [!!] HidraNet icon NOT in the bundle — it shows Electron\'s');
 
   // ── Add our app source ────────────────────────────────────────────────────
   console.log('  Adicionando fonte do app ...');
@@ -144,24 +148,22 @@ async function buildArch(arch) {
       outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
     }
   });
+  outEntries.push(mkFile(resPfx + 'app/build.json', buildJson()));
 
   // ── Tor daemon — what actually anonymises the browsing ───────────────────
   // Without it the package opens, but every request leaves from the user's
   // real IP.
-  var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'darwin-' + arch);
-  if (fs.existsSync(path.join(torDir, 'tor'))) {
-    outEntries.push(mkDir(resPfx + 'bin'));
-    outEntries.push(mkDir(resPfx + 'bin/tor'));
-    ['tor', 'geoip', 'geoip6'].forEach(function(f) {
-      var abs = path.join(torDir, f);
-      if (!fs.existsSync(abs)) return;
-      outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
-    });
-    console.log('  Tor included (darwin-' + arch + ')');
-  } else {
-    console.log('  [!!] Tor MISSING for darwin-' + arch + ' — this package gives no anonymity.');
-    console.log('       node scripts/fetch-tor.js --platform darwin --arch ' + arch);
-  }
+  // Refused rather than left out: a package without it opens and then sends
+  // everything from the user's own address. And only the pinned Tor
+  // (lib/tor.js) goes in.
+  var tor = torDir(ROOT, 'darwin', arch);
+  verifyTorDir(tor, 'darwin', arch);
+  outEntries.push(mkDir(resPfx + 'bin'));
+  outEntries.push(mkDir(resPfx + 'bin/tor'));
+  ['tor', 'geoip', 'geoip6'].forEach(function(f) {
+    outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(path.join(tor, f)), f === 'tor' ? 0o755 : 0o644));
+  });
+  console.log('  Tor included (darwin-' + arch + '), every file matches its pin');
 
   // ── Launcher + README (shared with scripts/patch-zip.js) ──────────────────
   var launcher = launcherScript(APP_NAME);
