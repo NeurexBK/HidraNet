@@ -533,10 +533,11 @@ function startChatServer(attempt) {
     // anyone controlling that response read everything in plaintext. Now the
     // file comes from disk, at the version that was reviewed.
     //
-    // The shim the apps load to reach their vault compartment, and the room
-    // cryptography the chat page loads. Fixed names, like the vendor files
-    // below: nothing concatenates the request path.
-    const SHARED = { '/hidra-store.js': 'hidra-store.js', '/hidrachat-crypto.js': 'hidrachat-crypto.js', '/hidra-site.js': 'hidra-site.js' };
+    // The shim the apps load to reach their vault compartment, the room
+    // cryptography the chat page loads, and the relay connections the chat,
+    // mail and forum share. Fixed names, like the vendor files below: nothing
+    // concatenates the request path.
+    const SHARED = { '/hidra-store.js': 'hidra-store.js', '/hidrachat-crypto.js': 'hidrachat-crypto.js', '/hidra-site.js': 'hidra-site.js', '/hidra-relays.js': 'hidra-relays.js' };
     if (Object.prototype.hasOwnProperty.call(SHARED, p)) {
       try {
         const body = fs.readFileSync(path.join(__dirname, '..', 'ui', SHARED[p]));

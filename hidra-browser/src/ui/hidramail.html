@@ -29,6 +29,7 @@
 <title>HidraMail</title>
 <link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-relays.js"></script>
 <script src="hidra-store.js"></script>
 <style>
 :root{--bg:#06070d;--bg2:#0b0d16;--card:#10131f;--card2:#161a2b;--border:#1c2133;--txt:#e9ecf5;--txt2:#9aa3bd;--txt3:#5b6480;--accent:#00d4aa;--accent2:#00a888;--blue:#4f8cff;--danger:#ff5c6c}
@@ -216,10 +217,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <script>
 'use strict';
 var $=function(id){return document.getElementById(id)};
+// Every one of them at once (hidra-relays.js). Mail used to know only the
+// first: with it down, nothing could be sent or received at all.
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var subtle=crypto.subtle, te=new TextEncoder(), td=new TextDecoder();
-var client=null, ready=false;
-var state={ ids:[], active:0, box:{inbox:[],sent:[],drafts:[],trash:[],spam:[]}, folder:'inbox', selId:null, search:'' };
+var relays=null, ready=false;
+// gone: ids of mail deleted for good, so that the copy a relay that was down
+// at the time still holds does not bring it back.
+var state={ ids:[], active:0, box:{inbox:[],sent:[],drafts:[],trash:[],spam:[]}, gone:{}, folder:'inbox', selId:null, search:'' };
+var GONE_KEPT=1000;
 var resolvers={};
 
 // ───────── crypto ─────────
@@ -387,12 +393,13 @@ function cleanMail(m,taken){
   if(taken) taken[m.mid]=1;
   return m;
 }
-function save(){ if(locked) return; hidraStore.save('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box})).catch(function(e){ toast('Could not save: '+e.message); }); }
+function save(){ if(locked) return; hidraStore.save('hmail_state', JSON.stringify({ids:state.ids,active:state.active,box:state.box,gone:state.gone})).catch(function(e){ toast('Could not save: '+e.message); }); }
 async function load(){
   var raw=null;
   try{ raw=await hidraStore.load('hmail_state'); }
   catch(e){ locked=true; $('cdot').className='dot'; $('ctxt').textContent='keys locked'; $('lock-why').textContent=e.message; $('m-locked').classList.remove('hidden'); return false; }
   try{ var s=JSON.parse(raw||'null'); if(s){ state.ids=s.ids||[]; state.active=s.active||0; state.box=s.box||{inbox:[],sent:[],drafts:[],trash:[],spam:[]}; for(var k in {inbox:1,sent:1,drafts:1,trash:1,spam:1}) if(!Array.isArray(state.box[k]))state.box[k]=[];
+    if(s.gone&&typeof s.gone==='object'){ for(var g in s.gone){ if(Object.prototype.hasOwnProperty.call(s.gone,g)&&MID_RE.test(g)&&typeof s.gone[g]==='number') state.gone[g]=s.gone[g]; } }
     // Mail stored by an earlier version was never checked; check it now.
     var taken={}; for(var f in state.box) state.box[f]=state.box[f].map(function(m){ return cleanMail(m,taken); }).filter(Boolean); } }catch(e){}
   return true;
@@ -412,15 +419,19 @@ function activeId(){ return state.ids[state.active]; }
 async function connect(){
   var id=activeId(); if(!id) return;
   $('ctxt').textContent='connecting…';
-  client=mqtt.connect(MQTT_BROKERS[0],{clientId:'hmail_'+id.client,clean:false,reconnectPeriod:4000,keepalive:30,protocolVersion:5,properties:{sessionExpiryInterval:86400}});
-  client.on('connect',async function(){
-    $('cdot').className='dot on'; $('ctxt').textContent='connected';
-    // subscribe to EVERY address of mine, so any alias receives
-    for(var i=0;i<state.ids.length;i++){ client.subscribe(await inboxTopic(state.ids[i].addr)+'/+',{qos:1}); }
-    publishDirs();
+  var everUp=false;
+  relays=hidraRelays(MQTT_BROKERS,{
+    options:function(){ return {clientId:'hmail_'+id.client,clean:false,protocolVersion:5,properties:{sessionExpiryInterval:86400}}; },
+    onMessage:onMessage,
+    onUp:function(i){ everUp=true; publishDirs(i); },
+    onChange:function(up,total){
+      $('cdot').className=up?'dot on':'dot';
+      $('ctxt').textContent=up?(up===total?'connected':'connected ('+up+' of '+total+' relays)'):(everUp?'reconnecting…':'connecting…');
+    }
   });
-  client.on('reconnect',function(){ $('cdot').className='dot'; $('ctxt').textContent='reconnecting…'; });
-  client.on('message',onMessage);
+  // subscribe to EVERY address of mine, so any alias receives
+  for(var i=0;i<state.ids.length;i++){ relays.subscribe(await inboxTopic(state.ids[i].addr)+'/+',{qos:1}); }
+  relays.start();
   ready=true;
 }
 // The directory entry carries both public keys. A sender resolves it and
@@ -428,16 +439,34 @@ async function connect(){
 // entry cannot redirect mail — at worst it stops delivery, which is visible,
 // rather than diverting it, which is not.
 function dirEntry(id){ return JSON.stringify({v:MAIL_VERSION,e:id.pubRaw,s:id.sigPubRaw}); }
-function publishDirs(){
+// To relay `only` when it has just come up, otherwise to all of them.
+function publishDirs(only){
   state.ids.forEach(async function(id){
     if(!id.sigPubRaw) return; // legacy identity: receive-only, never advertised
-    try{ client.publish(await dirTopic(id.addr), dirEntry(id), {qos:0,retain:true}); }catch(e){}
+    var t=await dirTopic(id.addr);
+    if(typeof only==='number') relays.publishTo(only, t, dirEntry(id), {qos:0,retain:true});
+    else relays.publish(t, dirEntry(id), {qos:0,retain:true});
   });
 }
-setInterval(function(){ if(client&&client.connected) publishDirs(); }, 120000);
+setInterval(function(){ if(relays&&relays.anyUp()) publishDirs(); }, 120000);
 
-async function onMessage(topic,payload){
-  if(topic.indexOf('hmaildir/')===0){ var cb=resolvers[topic]; if(cb){ delete resolvers[topic]; try{client.unsubscribe(topic)}catch(e){} cb(payload.toString()); } return; }
+// Takes a retained copy off relay `i`: mail this mailbox has deleted, still
+// held by a relay that was down when it was.
+function clearOn(i,topic){ if(typeof i==='number'&&relays) relays.publishTo(i, topic, '', {qos:1,retain:true}); }
+function findByMid(mid){ for(var fk in state.box){ var x=state.box[fk].filter(function(y){return y.mid===mid;})[0]; if(x) return x; } return null; }
+// True when this mail is one the mailbox already has, or deleted for good.
+// A copy of mail sitting in trash or spam, or deleted, is taken off the
+// relay that delivered it.
+function known(m,relay,topic){
+  if(typeof m.mid!=='string') return false;
+  var have=findByMid(m.mid);
+  if(have){ if(have.folder==='trash'||have.folder==='spam') clearOn(relay,topic); return true; }
+  if(Object.prototype.hasOwnProperty.call(state.gone,m.mid)){ clearOn(relay,topic); return true; }
+  return false;
+}
+
+async function onMessage(topic,payload,relay){
+  if(topic.indexOf('hmaildir/')===0){ var cb=resolvers[topic]; if(cb) cb(payload.toString()); return; }
   // mail in one of my boxes (topic = inbox/<mid>, retained on the relay)
   var ps=payload.toString(); if(!ps) return; // empty message = deleted (tombstone)
   for(var i=0;i<state.ids.length;i++){
@@ -445,7 +474,7 @@ async function onMessage(topic,payload){
     if(topic.indexOf(t+'/')===0){
       try{
         var m=JSON.parse(await decryptFor(id, ps));
-        for(var fk in state.box){ if(state.box[fk].some(function(x){return x.mid===m.mid;})) return; } // already have it
+        if(known(m,relay,topic)) return; // already have it
         // Signed over `to` as well, so check it against the box this landed
         // in before verifying — otherwise a message addressed elsewhere could
         // be replayed here with its signature intact.
@@ -454,6 +483,10 @@ async function onMessage(topic,payload){
           console.warn('[hidramail] dropped a message whose sender could not be proven');
           return;
         }
+        // Each relay delivers its own copy, and both may be on their way at
+        // once. Nothing below waits, so the first copy to get here is the
+        // only one that goes in.
+        if(known(m,relay,topic)) return;
         var taken={}; for(var tf in state.box) state.box[tf].forEach(function(x){ taken[x.mid]=1; });
         if(!cleanMail(m,taken)) return;
         m.read=false; m.folder='inbox'; m._t=topic; m.verified=true;
@@ -463,18 +496,30 @@ async function onMessage(topic,payload){
     }
   }
 }
+// Each relay answers with its own copy of the entry. The first one that
+// proves itself (its keys make this address) is taken, so a bad entry on one
+// relay cannot stop mail that the other relay can deliver. If none proves
+// itself in time, the first one is returned and sendMail says what is wrong.
 function dirResolve(addr){
   return new Promise(async function(res){
-    var t=await dirTopic(addr); var done=false;
-    resolvers[t]=function(payload){ done=true; res(payload); };
-    client.subscribe(t,{qos:0});
-    setTimeout(function(){ if(!done){ delete resolvers[t]; try{client.unsubscribe(t)}catch(e){} res(null); } },7000);
+    var t=await dirTopic(addr); var done=false, first=null;
+    function finish(v){ if(done) return; done=true; delete resolvers[t]; relays.unsubscribe(t); res(v); }
+    resolvers[t]=async function(payload){
+      if(first===null) first=payload;
+      if(await dirEntryFits(addr,payload)) finish(payload);
+    };
+    relays.subscribe(t,{qos:0});
+    setTimeout(function(){ finish(first); },7000);
   });
+}
+async function dirEntryFits(addr,raw){
+  try{ var e=JSON.parse(raw); return !!(e&&e.v===MAIL_VERSION&&e.e&&e.s&&(await addrFrom(b64d(e.e),b64d(e.s)))===addr); }
+  catch(err){ return false; }
 }
 
 async function sendMail(to,subject,body){
   to=to.trim().toLowerCase(); if(to.indexOf('@hidra')<0) to=to+'@hidra';
-  if(!ready||!client.connected) return {ok:false,err:'No connection to the network.'};
+  if(!ready||!relays||!relays.anyUp()) return {ok:false,err:'No connection to the network.'};
   var me=activeId();
   if(!me||!me.sigPrivJwk) return {ok:false,err:'This address predates message signing and can only receive. Switch to a newer address to send.'};
 
@@ -499,7 +544,10 @@ async function sendMail(to,subject,body){
   var ct=await encryptTo(recipEnc, JSON.stringify(payload));
   if(ct.length>800000) return {ok:false,err:'Message too large (max ~500 KB).'};
   var toTopic=await inboxTopic(to)+'/'+mid;
-  await new Promise(function(r){ client.publish(toTopic, ct, {qos:1, retain:true}, function(){ r(); }); });
+  // Held by every relay that is up, so it reaches the recipient through
+  // whichever one they can reach. One relay taking it is enough to call it sent.
+  if(!(await relays.publish(toTopic, ct, {qos:1, retain:true})))
+    return {ok:false,err:'No relay took the message. Try again in a moment.'};
   state.box.sent.unshift({ mid:mid, from:activeId().addr, to:to, subject:subject, body:body, date:Date.now(), read:true, folder:'sent' });
   save();
   return {ok:true};
@@ -557,8 +605,15 @@ function openMail(mid){
   renderAll();
 }
 window.reply=function(){ var m=findMail(state.selId); if(!m)return; openCompose({to:(m.folder==='sent'?m.to:m.from),subject:(/^re:/i.test(m.subject||'')?m.subject:'Re: '+(m.subject||'')),body:'\n\n--- '+(m.from||'')+' wrote ---\n'+(m.body||'')}); };
-function clearRetained(m){ try{ if(m&&m._t&&client&&client.connected){ client.publish(m._t,'',{qos:1,retain:true}); m._t=null; } }catch(e){} }
-window.trash=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); if(f!=='trash'){ m.folder='trash'; state.box.trash.unshift(m); } break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; renderAll(); };
+// Off every relay that is up. One that is down keeps its copy until it is
+// back and delivers it again; known() takes it off then.
+function clearRetained(m){ if(m&&m._t&&relays&&relays.anyUp()){ relays.publish(m._t,'',{qos:1,retain:true}); m._t=null; } }
+function forget(mid){
+  state.gone[mid]=Date.now();
+  var ids=Object.keys(state.gone);
+  if(ids.length>GONE_KEPT){ ids.sort(function(a,b){ return state.gone[a]-state.gone[b]; }); ids.slice(0,ids.length-GONE_KEPT).forEach(function(k){ delete state.gone[k]; }); }
+}
+window.trash=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); if(f!=='trash'){ m.folder='trash'; state.box.trash.unshift(m); } else forget(m.mid); break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; renderAll(); };
 window.spam=function(mid){ for(var f in state.box){ var i=state.box[f].findIndex(function(x){return x.mid===mid;}); if(i>=0){ var m=state.box[f].splice(i,1)[0]; clearRetained(m); m.folder='spam'; state.box.spam.unshift(m); break; } } state.selId=null; save(); $('view').innerHTML='<div class="center-msg"><div class="big">✉️</div><div>Select an email.</div></div>'; renderAll(); };
 
 function openCompose(pre){ pre=pre||{}; $('c-to').value=pre.to||''; $('c-subj').value=pre.subject||''; $('c-body').value=pre.body||''; $('m-compose').classList.remove('hidden'); (pre.to?$('c-subj'):$('c-to')).focus(); }
@@ -579,9 +634,9 @@ async function doSend(){
 async function switchAlias(i){ state.active=i; save(); renderAll(); }
 async function newAddress(){
   var id=await genId(); state.ids.push(id); state.active=state.ids.length-1; save();
-  if(client&&client.connected){
-    client.subscribe(await inboxTopic(id.addr)+'/+',{qos:1});
-    client.publish(await dirTopic(id.addr), dirEntry(id), {qos:0,retain:true});
+  if(relays){
+    relays.subscribe(await inboxTopic(id.addr)+'/+',{qos:1});
+    relays.publish(await dirTopic(id.addr), dirEntry(id), {qos:0,retain:true});
   }
   renderAll(); renderSettings(); toast('New address created: '+id.addr);
 }
