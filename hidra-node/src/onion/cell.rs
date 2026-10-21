@@ -44,6 +44,24 @@ pub enum RelayCommand {
     ServiceRegistered,
     ConnectService { service_hash: Vec<u8> },
     ServiceConnected,
+    /// Circuit extension (telescoping). The client, to add a hop without ever
+    /// opening a direct connection to it, asks the circuit's current last hop
+    /// to open a link to `to` and carry this Noise handshake message (A) to
+    /// it. The carrying hop holds neither party's key, so it cannot read the
+    /// handshake; it only pipes the frames, and the new hop sees the carrying
+    /// hop's address, never the client's.
+    Extend { to: SocketAddr, frame: Vec<u8> },
+    /// The new hop's Noise reply (message B), carried back to the client.
+    Extended { frame: Vec<u8> },
+    /// The client's final Noise message (C) and its CreateCircuit, already
+    /// sealed with the key the two just agreed, carried to the new hop in one
+    /// step. The carrying hop cannot read either.
+    ExtendFinish { frame_c: Vec<u8>, frame_create: Vec<u8> },
+    /// The new hop's sealed CircuitCreated, carried back to the client.
+    ExtendDone { frame_created: Vec<u8> },
+    /// Extension refused at the current last hop: a non-public next address,
+    /// or the new hop would not answer.
+    ExtendError(String),
 }
 
 impl RelayCommand {

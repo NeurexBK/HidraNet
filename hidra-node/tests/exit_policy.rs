@@ -10,27 +10,16 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand_core::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use x25519_dalek::StaticSecret;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use hidra_node::client::streaming::StreamingCircuit;
 use hidra_node::network::listener::NodeListener;
 use hidra_node::relay::exit_policy::ExitPolicy;
 use hidra_node::relay::registry::RelayEntry;
-
-fn make_relays(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
-    addrs
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| RelayEntry {
-            name: format!("relay-{}", i + 1),
-            addr: *addr,
-            noise_pubkey_b64: String::new(),
-        })
-        .collect()
-}
 
 /// A service only this machine should reach, as an operator would run one.
 async fn local_service() -> (SocketAddr, tokio::sync::mpsc::Receiver<()>) {
@@ -49,18 +38,22 @@ async fn local_service() -> (SocketAddr, tokio::sync::mpsc::Receiver<()>) {
     (addr, rx)
 }
 
-async fn relays(policy: ExitPolicy) -> Vec<SocketAddr> {
+async fn relays(policy: ExitPolicy) -> Vec<RelayEntry> {
     let mut out = Vec::new();
-    for _ in 0..3 {
-        let l = NodeListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            StaticSecret::random_from_rng(OsRng),
-        )
-        .await
-        .unwrap()
-        .with_exit_policy(policy);
-        out.push(l.local_addr().unwrap());
+    for i in 0..3 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = BASE64.encode(PublicKey::from(&secret).to_bytes());
+        let l = NodeListener::bind("127.0.0.1:0".parse().unwrap(), secret)
+            .await
+            .unwrap()
+            .with_exit_policy(policy);
+        let addr = l.local_addr().unwrap();
         tokio::spawn(async move { l.accept_loop().await });
+        out.push(RelayEntry {
+            name: format!("relay-{}", i + 1),
+            addr,
+            noise_pubkey_b64: key,
+        });
     }
     out
 }
@@ -75,10 +68,9 @@ const ONE_MACHINE: ExitPolicy = ExitPolicy {
 async fn the_exit_refuses_the_operators_loopback() {
     let (service, mut hits) = local_service().await;
     let addrs = relays(ONE_MACHINE).await;
-    let mut circuit =
-        StreamingCircuit::build(&make_relays(&addrs), StaticSecret::random_from_rng(OsRng))
-            .await
-            .unwrap();
+    let mut circuit = StreamingCircuit::build(&addrs, StaticSecret::random_from_rng(OsRng))
+        .await
+        .unwrap();
     let res = circuit
         .connect(&service.ip().to_string(), service.port())
         .await;
@@ -95,10 +87,9 @@ async fn the_exit_refuses_the_operators_loopback() {
 async fn the_exit_refuses_localhost_by_name() {
     let (service, mut hits) = local_service().await;
     let addrs = relays(ONE_MACHINE).await;
-    let mut circuit =
-        StreamingCircuit::build(&make_relays(&addrs), StaticSecret::random_from_rng(OsRng))
-            .await
-            .unwrap();
+    let mut circuit = StreamingCircuit::build(&addrs, StaticSecret::random_from_rng(OsRng))
+        .await
+        .unwrap();
     assert!(circuit.connect("localhost", service.port()).await.is_err());
     assert!(
         hits.try_recv().is_err(),
@@ -109,10 +100,9 @@ async fn the_exit_refuses_localhost_by_name() {
 #[tokio::test]
 async fn the_exit_refuses_cloud_metadata_without_trying() {
     let addrs = relays(ONE_MACHINE).await;
-    let mut circuit =
-        StreamingCircuit::build(&make_relays(&addrs), StaticSecret::random_from_rng(OsRng))
-            .await
-            .unwrap();
+    let mut circuit = StreamingCircuit::build(&addrs, StaticSecret::random_from_rng(OsRng))
+        .await
+        .unwrap();
     // Refused by the policy, not by a timeout: this must come back at once.
     let res = tokio::time::timeout(
         Duration::from_secs(5),
@@ -129,22 +119,30 @@ async fn a_relay_refuses_a_private_next_hop() {
     // The middle relay is a public relay with the default policy; the circuit
     // asks it to continue to an address on its loopback.
     let first = relays(ONE_MACHINE).await;
-    let strict = NodeListener::bind(
-        "127.0.0.1:0".parse().unwrap(),
-        StaticSecret::random_from_rng(OsRng),
-    )
-    .await
-    .unwrap();
+    let strict_secret = StaticSecret::random_from_rng(OsRng);
+    let strict_key = BASE64.encode(PublicKey::from(&strict_secret).to_bytes());
+    let strict = NodeListener::bind("127.0.0.1:0".parse().unwrap(), strict_secret)
+        .await
+        .unwrap();
     let strict_addr = strict.local_addr().unwrap();
     tokio::spawn(async move { strict.accept_loop().await });
-    let path = make_relays(&[first[0], strict_addr, first[2]]);
+    let path = vec![
+        first[0].clone(),
+        RelayEntry {
+            name: "strict".into(),
+            addr: strict_addr,
+            noise_pubkey_b64: strict_key,
+        },
+        first[2].clone(),
+    ];
     let (service, mut hits) = local_service().await;
     let built = StreamingCircuit::build(&path, StaticSecret::random_from_rng(OsRng)).await;
     if let Ok(mut c) = built {
-        assert!(c
-            .connect(&service.ip().to_string(), service.port())
-            .await
-            .is_err());
+        assert!(
+            c.connect(&service.ip().to_string(), service.port())
+                .await
+                .is_err()
+        );
     }
     assert!(hits.try_recv().is_err());
 }
@@ -153,10 +151,9 @@ async fn a_relay_refuses_a_private_next_hop() {
 async fn a_one_machine_network_opted_in_still_works() {
     let (service, mut hits) = local_service().await;
     let addrs = relays(ExitPolicy::ALLOW_PRIVATE).await;
-    let mut circuit =
-        StreamingCircuit::build(&make_relays(&addrs), StaticSecret::random_from_rng(OsRng))
-            .await
-            .unwrap();
+    let mut circuit = StreamingCircuit::build(&addrs, StaticSecret::random_from_rng(OsRng))
+        .await
+        .unwrap();
     circuit
         .connect(&service.ip().to_string(), service.port())
         .await

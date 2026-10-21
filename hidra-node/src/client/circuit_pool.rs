@@ -81,21 +81,30 @@ impl CircuitPool {
     /// The other two hops are picked as usual from the rest.
     pub async fn build_circuit_via(&self, exit: std::net::SocketAddr) -> Result<StreamingCircuit> {
         let relays = self.relays.lock().await.clone();
-        let last = relays.iter().find(|r| r.addr == exit).cloned().unwrap_or(RelayEntry {
-            name: "intro".into(),
-            addr: exit,
-            noise_pubkey_b64: String::new(),
-        });
-        let others: Vec<RelayEntry> = relays.into_iter().filter(|r| r.addr != exit).collect();
+        // The introduction point is a hop like any other: it must be a relay
+        // whose identity key the client knows, or it cannot be authenticated.
+        let last = relays
+            .iter()
+            .find(|r| r.addr == exit && !r.noise_pubkey_b64.trim().is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                HidraError::Circuit(
+                    "the introduction point is not a relay with a known identity key".into(),
+                )
+            })?;
+        let mut others: Vec<RelayEntry> = relays
+            .into_iter()
+            .filter(|r| r.addr != exit && !r.noise_pubkey_b64.trim().is_empty())
+            .collect();
         if others.len() < 2 {
             return Err(HidraError::Circuit(format!(
-                "need two relays besides the introduction point, have {}",
+                "need two relays with a known identity key besides the introduction point, have {}",
                 others.len()
             )));
         }
+        others.shuffle(&mut rand::thread_rng());
+        others.truncate(2);
         let mut path = others;
-        path.shuffle(&mut rand::thread_rng());
-        path.truncate(2);
         path.push(last);
 
         let mut sb = self.secret_bytes;
@@ -149,13 +158,21 @@ impl CircuitPool {
 }
 
 fn select_relays(all: &[RelayEntry]) -> Result<Vec<RelayEntry>> {
-    if all.len() < 3 {
+    // Only a relay whose identity key the client knows can be authenticated in
+    // the handshake, so only such relays can be circuit hops; one discovered by
+    // address alone (no key on record) is never used, or it could be
+    // impersonated by the relay carrying its handshake.
+    let mut selected: Vec<RelayEntry> = all
+        .iter()
+        .filter(|r| !r.noise_pubkey_b64.trim().is_empty())
+        .cloned()
+        .collect();
+    if selected.len() < 3 {
         return Err(HidraError::Circuit(format!(
-            "need at least 3 relays, have {}",
-            all.len()
+            "need at least 3 relays with a known identity key, have {}",
+            selected.len()
         )));
     }
-    let mut selected = all.to_vec();
     selected.shuffle(&mut rand::thread_rng());
     selected.truncate(3);
     Ok(selected)

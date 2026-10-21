@@ -7,11 +7,10 @@
 //! with no proof, with a forged one or with someone else's; and the client
 //! refuses to talk to a service that cannot prove the address's key.
 
-use std::net::SocketAddr;
-
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
-use x25519_dalek::StaticSecret;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use hidra_node::client::streaming::StreamingCircuit;
 use hidra_node::crypto::service_auth::answer_hello;
@@ -20,36 +19,28 @@ use hidra_node::p2p::dht::descriptor::service_hash_of;
 use hidra_node::relay::exit_policy::ExitPolicy;
 use hidra_node::relay::registry::RelayEntry;
 
-async fn relays() -> Vec<SocketAddr> {
+async fn relays() -> Vec<RelayEntry> {
     let mut out = Vec::new();
-    for _ in 0..3 {
-        let l = NodeListener::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            StaticSecret::random_from_rng(OsRng),
-        )
-        .await
-        .unwrap()
-        .with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-        out.push(l.local_addr().unwrap());
+    for i in 0..3 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = BASE64.encode(PublicKey::from(&secret).to_bytes());
+        let l = NodeListener::bind("127.0.0.1:0".parse().unwrap(), secret)
+            .await
+            .unwrap()
+            .with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+        let addr = l.local_addr().unwrap();
         tokio::spawn(async move { l.accept_loop().await });
+        out.push(RelayEntry {
+            name: format!("r{i}"),
+            addr,
+            noise_pubkey_b64: key,
+        });
     }
     out
 }
 
-fn path(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
-    addrs
-        .iter()
-        .enumerate()
-        .map(|(i, a)| RelayEntry {
-            name: format!("r{i}"),
-            addr: *a,
-            noise_pubkey_b64: String::new(),
-        })
-        .collect()
-}
-
-async fn circuit(addrs: &[SocketAddr]) -> StreamingCircuit {
-    StreamingCircuit::build(&path(addrs), StaticSecret::random_from_rng(OsRng))
+async fn circuit(relays: &[RelayEntry]) -> StreamingCircuit {
+    StreamingCircuit::build(relays, StaticSecret::random_from_rng(OsRng))
         .await
         .unwrap()
 }
@@ -88,7 +79,7 @@ async fn the_real_service_registers_and_its_clients_reach_it() {
     serve(svc, key);
 
     // The client's circuit ends at the introduction point: the same last relay.
-    let mut client = circuit(&[r[1], r[0], r[2]]).await;
+    let mut client = circuit(&[r[1].clone(), r[0].clone(), r[2].clone()]).await;
     client
         .connect_service_authenticated(&pk)
         .await
@@ -104,9 +95,9 @@ async fn the_real_service_registers_and_its_clients_reach_it() {
     // end at the introduction point the descriptor names.
     let pool = hidra_node::client::circuit_pool::CircuitPool::new(
         StaticSecret::random_from_rng(OsRng).to_bytes(),
-        path(&r),
+        r.clone(),
     );
-    let mut via = pool.build_circuit_via(r[2]).await.unwrap();
+    let mut via = pool.build_circuit_via(r[2].addr).await.unwrap();
     via.connect_service_authenticated(&pk)
         .await
         .expect("the pool's circuit reaches the service");
@@ -134,7 +125,7 @@ async fn an_impostor_cannot_register_someone_elses_address() {
     );
 
     // And the real address still reaches the real service.
-    let mut client = circuit(&[r[0], r[1], r[2]]).await;
+    let mut client = circuit(&[r[0].clone(), r[1].clone(), r[2].clone()]).await;
     client
         .connect_service_authenticated(&real_pk)
         .await

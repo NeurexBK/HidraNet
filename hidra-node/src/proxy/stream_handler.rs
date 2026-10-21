@@ -95,7 +95,8 @@ async fn handle_inner(
     if matches!(routing, resolver::TargetResolution::HidraInternal) {
         let service_hash = parse_hidra_address(&host).ok_or_else(|| {
             HidraError::Protocol(format!(
-                "{host} ends in .hidra but is not a service address"
+                "{} ends in .hidra but is not a service address",
+                sensitive(&host)
             ))
         })?;
         info!(
@@ -105,7 +106,7 @@ async fn handle_inner(
         );
         let descriptor = dht.lookup_service(&service_hash).await?
             .ok_or_else(|| HidraError::Circuit(
-                format!("hidden service not found: {host}")
+                format!("hidden service not found: {}", sensitive(&host))
             ))?;
         let (intro_points, service_pubkey) = descriptor;
         info!(
@@ -127,7 +128,7 @@ async fn handle_inner(
             client_ip = %sensitive(&client_addr),
             target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
-            relay_chain = %relay_chain,
+            relay_chain = %sensitive(&relay_chain),
             "circuit connected to hidden service"
         );
         socks5::send_success(browser).await?;
@@ -144,7 +145,7 @@ async fn handle_inner(
             client_ip = %sensitive(&client_addr),
             target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
-            relay_chain = %relay_chain,
+            relay_chain = %sensitive(&relay_chain),
             bytes_sent, bytes_received,
             "hidden service session completed"
         );
@@ -166,7 +167,7 @@ async fn handle_inner(
         client_ip = %sensitive(&client_addr),
         target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
-        relay_chain = %relay_chain,
+        relay_chain = %sensitive(&relay_chain),
         "circuit connected to target"
     );
     socks5::send_success(browser).await?;
@@ -183,7 +184,7 @@ async fn handle_inner(
         client_ip = %sensitive(&client_addr),
         target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
-        relay_chain = %relay_chain,
+        relay_chain = %sensitive(&relay_chain),
         bytes_sent, bytes_received,
         "SOCKS5 session completed"
     );

@@ -16,6 +16,12 @@ pub enum Message {
     CreateCircuit { circuit_id: u32 },
     CircuitCreated { circuit_id: u32 },
     Relay { circuit_id: u32, data: Vec<u8> },
+    /// Like `Relay`, but it marks the cell that opens the data stream: a relay
+    /// that forwards a `StreamBegin` relays the one reply and then switches
+    /// that circuit from control (one request, one reply) to streaming (data
+    /// flowing both ways). Control cells before it — circuit extension — stay
+    /// `Relay`, so a relay never streams until the stream actually begins.
+    StreamBegin { circuit_id: u32, data: Vec<u8> },
 }
 
 impl Message {
@@ -52,6 +58,13 @@ impl Message {
                 buf.extend_from_slice(data);
                 buf
             }
+            Self::StreamBegin { circuit_id, data } => {
+                let mut buf = Vec::with_capacity(5 + data.len());
+                buf.push(0x21);
+                buf.extend_from_slice(&circuit_id.to_be_bytes());
+                buf.extend_from_slice(data);
+                buf
+            }
         }
     }
 
@@ -82,6 +95,16 @@ impl Message {
                 }
                 let circuit_id = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
                 Ok(Self::Relay {
+                    circuit_id,
+                    data: data[5..].to_vec(),
+                })
+            }
+            0x21 => {
+                if data.len() < 5 {
+                    return Err(HidraError::Protocol("StreamBegin message too short".into()));
+                }
+                let circuit_id = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
+                Ok(Self::StreamBegin {
                     circuit_id,
                     data: data[5..].to_vec(),
                 })

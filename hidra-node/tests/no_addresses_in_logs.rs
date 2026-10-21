@@ -22,6 +22,7 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "remote_addr",
     "next_hop",
     "hostname",
+    "host",
     "peer",
     "target",
     "relay",

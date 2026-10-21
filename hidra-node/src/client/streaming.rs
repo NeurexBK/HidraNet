@@ -2,20 +2,19 @@ use crate::safelog::sensitive;
 use std::net::SocketAddr;
 
 use rand::Rng;
+use rand_core::OsRng;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{debug, info};
-use x25519_dalek::StaticSecret;
-use zeroize::Zeroize;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::service_auth::{ClientHandshake, SealedChannel};
 use crate::error::{HidraError, Result};
-use crate::network::connection::{
-    read_frame, write_frame, Message, SecureConnection,
-};
+use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::network::listener::PROTO_NOISE_SESSION;
 use crate::onion::builder::{build_onion, peel_response_layers};
-use crate::crypto::service_auth::{ClientHandshake, SealedChannel};
 use crate::onion::cell::RelayCommand;
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::onion::layer::{decrypt_stream, encrypt_stream};
@@ -25,75 +24,44 @@ pub struct StreamingCircuit {
     conn: SecureConnection,
     circuit: Circuit,
     relay_addrs: Vec<SocketAddr>,
-    #[allow(dead_code)]
-    extra_conns: Vec<SecureConnection>,
     /// Set once a hidden service has proven itself: everything sent and
     /// received after that is sealed end to end, past the relay bridging it.
     sealed: Option<SealedChannel>,
 }
 
 impl StreamingCircuit {
-    pub async fn build(
-        relays: &[RelayEntry],
-        client_secret: StaticSecret,
-    ) -> Result<Self> {
+    pub async fn build(relays: &[RelayEntry], client_secret: StaticSecret) -> Result<Self> {
         if relays.len() < 3 {
             return Err(HidraError::Circuit(
                 "need at least 3 relays for streaming circuit".into(),
             ));
         }
-        let circuit_id: u32 = rand::thread_rng().r#gen();
-        info!(circuit_id, "building streaming circuit");
-        let mut hops = Vec::with_capacity(3);
-        let mut connections: Vec<SecureConnection> =
-            Vec::with_capacity(3);
-        for (i, relay) in relays.iter().take(3).enumerate() {
-            let mut secret_bytes = client_secret.to_bytes();
-            let hop_secret = StaticSecret::from(secret_bytes);
-            secret_bytes.zeroize();
-            let (conn, session_key) = handshake_with_relay(
-                relay.addr,
-                hop_secret,
-                circuit_id,
-            )
-            .await?;
-            hops.push(CircuitHop {
-                addr: relay.addr,
-                session_key,
-            });
-            connections.push(conn);
-            info!(hop = i, relay = %sensitive(&relay.name), "streaming circuit hop established");
-        }
-        let relay_addrs: Vec<SocketAddr> =
-            relays.iter().take(3).map(|r| r.addr).collect();
-        let circuit = Circuit::new(circuit_id, hops);
-        let mut iter = connections.into_iter();
-        let entry_conn = iter.next().ok_or_else(|| {
-            HidraError::Circuit("no entry connection".into())
-        })?;
-        let extra_conns: Vec<SecureConnection> = iter.collect();
+        // The long-term client key is never shown to a relay any more: each
+        // hop gets its own throwaway key (see `build_telescoped`), so no relay
+        // can recognise the client or link two of its circuits. The parameter
+        // stays for the callers that still hold one.
+        drop(client_secret);
+        let (conn, circuit) = build_telescoped(relays).await?;
+        let relay_addrs: Vec<SocketAddr> = relays.iter().take(3).map(|r| r.addr).collect();
         Ok(Self {
-            conn: entry_conn,
+            conn,
             circuit,
             relay_addrs,
-            extra_conns,
             sealed: None,
         })
     }
 
-    pub async fn connect(
-        &mut self,
-        host: &str,
-        port: u16,
-    ) -> Result<()> {
+    pub async fn connect(&mut self, host: &str, port: u16) -> Result<()> {
         let cmd = RelayCommand::Connect {
             host: host.to_string(),
             port,
         };
         let cmd_data = cmd.serialize_bincode()?;
         let onion_data = build_onion(&self.circuit, &cmd_data)?;
+        // The cell that opens the stream: each hop relays the one reply and
+        // then switches this circuit to streaming.
         self.conn
-            .send_message(&Message::Relay {
+            .send_message(&Message::StreamBegin {
                 circuit_id: self.circuit.id,
                 data: onion_data,
             })
@@ -107,21 +75,15 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted = peel_response_layers(
-            &self.circuit,
-            response_data,
-        )?;
-        let resp_cmd =
-            RelayCommand::deserialize_bincode(&decrypted)?;
+        let decrypted = peel_response_layers(&self.circuit, response_data)?;
+        let resp_cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match resp_cmd {
             RelayCommand::Connected => {
-                info!(circuit_id = self.circuit.id, host, port, "streaming circuit connected to target");
+                info!(circuit_id = self.circuit.id, host = %sensitive(host), port, "streaming circuit connected to target");
                 Ok(())
             }
             RelayCommand::ConnectFailed(reason) => {
-                Err(HidraError::Circuit(format!(
-                    "connect failed: {reason}"
-                )))
+                Err(HidraError::Circuit(format!("connect failed: {reason}")))
             }
             other => Err(HidraError::Circuit(format!(
                 "unexpected connect response: {other:?}"
@@ -129,40 +91,58 @@ impl StreamingCircuit {
         }
     }
 
-    pub async fn connect_service(
-        &mut self,
-        service_hash: Vec<u8>,
-    ) -> Result<()> {
-        match self.request(&RelayCommand::ConnectService { service_hash }).await? {
-            RelayCommand::ServiceConnected => {
-                info!(circuit_id = self.circuit.id, "connected to hidden service");
-                Ok(())
-            }
-            RelayCommand::ConnectFailed(reason) => {
-                Err(HidraError::Circuit(format!(
-                    "service connect failed: {reason}"
-                )))
-            }
-            other => Err(HidraError::Circuit(format!(
-                "unexpected service connect response: {other:?}"
-            ))),
-        }
-    }
-
-    /// Sends one command to the circuit's last relay and returns its answer.
+    /// Sends one command to the circuit's last relay as the cell that opens a
+    /// stream, and returns its first answer. Used by tests to send commands by
+    /// hand.
+    #[allow(dead_code)]
     pub async fn request(&mut self, cmd: &RelayCommand) -> Result<RelayCommand> {
-        let cmd_data = cmd.serialize_bincode()?;
-        let onion_data = build_onion(&self.circuit, &cmd_data)?;
+        let onion = build_onion(&self.circuit, &cmd.serialize_bincode()?)?;
         self.conn
-            .send_message(&Message::Relay { circuit_id: self.circuit.id, data: onion_data })
+            .send_message(&Message::StreamBegin {
+                circuit_id: self.circuit.id,
+                data: onion,
+            })
             .await?;
         let data = match self.conn.recv_message().await? {
             Message::Relay { data, .. } => data,
             other => {
-                return Err(HidraError::Circuit(format!("expected Relay response, got: {other:?}")));
+                return Err(HidraError::Circuit(format!(
+                    "expected Relay response, got: {other:?}"
+                )));
             }
         };
         RelayCommand::deserialize_bincode(&peel_response_layers(&self.circuit, data)?)
+    }
+
+    pub async fn connect_service(&mut self, service_hash: Vec<u8>) -> Result<()> {
+        let cmd = RelayCommand::ConnectService { service_hash };
+        let onion_data = build_onion(&self.circuit, &cmd.serialize_bincode()?)?;
+        self.conn
+            .send_message(&Message::StreamBegin {
+                circuit_id: self.circuit.id,
+                data: onion_data,
+            })
+            .await?;
+        let data = match self.conn.recv_message().await? {
+            Message::Relay { data, .. } => data,
+            other => {
+                return Err(HidraError::Circuit(format!(
+                    "expected Relay response, got: {other:?}"
+                )));
+            }
+        };
+        match RelayCommand::deserialize_bincode(&peel_response_layers(&self.circuit, data)?)? {
+            RelayCommand::ServiceConnected => {
+                info!(circuit_id = self.circuit.id, "connected to hidden service");
+                Ok(())
+            }
+            RelayCommand::ConnectFailed(reason) => Err(HidraError::Circuit(format!(
+                "service connect failed: {reason}"
+            ))),
+            other => Err(HidraError::Circuit(format!(
+                "unexpected service connect response: {other:?}"
+            ))),
+        }
     }
 
     /// Connects to a hidden service and makes it prove it is the one its
@@ -192,11 +172,16 @@ impl StreamingCircuit {
         let (service_pubkey, timestamp, signature) =
             crate::crypto::service_auth::registration_proof(service_key);
         let service_hash = crate::p2p::dht::descriptor::service_hash_of(&service_pubkey).to_vec();
-        let cmd = RelayCommand::RegisterService { service_hash, service_pubkey, timestamp, signature };
+        let cmd = RelayCommand::RegisterService {
+            service_hash,
+            service_pubkey,
+            timestamp,
+            signature,
+        };
         let cmd_data = cmd.serialize_bincode()?;
         let onion_data = build_onion(&self.circuit, &cmd_data)?;
         self.conn
-            .send_message(&Message::Relay {
+            .send_message(&Message::StreamBegin {
                 circuit_id: self.circuit.id,
                 data: onion_data,
             })
@@ -210,22 +195,16 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted = peel_response_layers(
-            &self.circuit,
-            response_data,
-        )?;
-        let resp_cmd =
-            RelayCommand::deserialize_bincode(&decrypted)?;
+        let decrypted = peel_response_layers(&self.circuit, response_data)?;
+        let resp_cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match resp_cmd {
             RelayCommand::ServiceRegistered => {
                 info!(circuit_id = self.circuit.id, "service registered at intro point");
                 Ok(())
             }
-            RelayCommand::ConnectFailed(reason) => {
-                Err(HidraError::Circuit(format!(
-                    "service registration failed: {reason}"
-                )))
-            }
+            RelayCommand::ConnectFailed(reason) => Err(HidraError::Circuit(format!(
+                "service registration failed: {reason}"
+            ))),
             other => Err(HidraError::Circuit(format!(
                 "unexpected register response: {other:?}"
             ))),
@@ -256,8 +235,7 @@ impl StreamingCircuit {
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<()> {
         let cmd = RelayCommand::Data(data.to_vec());
         let cmd_data = cmd.serialize_bincode()?;
-        let encrypted =
-            wrap_all_stream_layers(&self.circuit, &cmd_data)?;
+        let encrypted = wrap_all_stream_layers(&self.circuit, &cmd_data)?;
         self.conn
             .send_message(&Message::Relay {
                 circuit_id: self.circuit.id,
@@ -266,9 +244,7 @@ impl StreamingCircuit {
             .await
     }
 
-    pub async fn recv_raw(
-        &mut self,
-    ) -> Result<Option<Vec<u8>>> {
+    pub async fn recv_raw(&mut self) -> Result<Option<Vec<u8>>> {
         let msg = self.conn.recv_message().await?;
         let data = match msg {
             Message::Relay { data, .. } => data,
@@ -278,10 +254,8 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted =
-            peel_all_stream_layers(&self.circuit, data)?;
-        let cmd =
-            RelayCommand::deserialize_bincode(&decrypted)?;
+        let decrypted = peel_all_stream_layers(&self.circuit, data)?;
+        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match cmd {
             RelayCommand::Data(payload) => Ok(Some(payload)),
             RelayCommand::End => Ok(None),
@@ -294,8 +268,7 @@ impl StreamingCircuit {
     pub async fn send_end(&mut self) -> Result<()> {
         let cmd = RelayCommand::End;
         let cmd_data = cmd.serialize_bincode()?;
-        let encrypted =
-            wrap_all_stream_layers(&self.circuit, &cmd_data)?;
+        let encrypted = wrap_all_stream_layers(&self.circuit, &cmd_data)?;
         self.conn
             .send_message(&Message::Relay {
                 circuit_id: self.circuit.id,
@@ -317,65 +290,112 @@ impl StreamingCircuit {
             .iter()
             .map(|a| a.to_string())
             .collect::<Vec<_>>()
-            .join(" → ")
+            .join(" -> ")
     }
 }
 
-fn wrap_all_stream_layers(
-    circuit: &Circuit,
-    data: &[u8],
-) -> Result<Vec<u8>> {
-    let mut current = data.to_vec();
-    for hop in circuit.hops.iter().rev() {
-        current = encrypt_stream(&hop.session_key, &current)?;
+/// The Noise static identity key the client expects a relay to prove. It comes
+/// from the relay list the client trusts (the operator's config); a relay with
+/// no key on record cannot be authenticated, so it is refused rather than used
+/// unverified.
+fn expected_key(relay: &RelayEntry) -> Result<PublicKey> {
+    let b64 = relay.noise_pubkey_b64.trim();
+    if b64.is_empty() {
+        return Err(HidraError::Circuit(
+            "a relay on the circuit has no identity key on record; refusing to build an unauthenticated circuit"
+                .into(),
+        ));
     }
-    Ok(current)
+    let bytes = BASE64
+        .decode(b64)
+        .map_err(|_| HidraError::Circuit("a relay's identity key is not valid base64".into()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| HidraError::Circuit("a relay's identity key is not 32 bytes".into()))?;
+    Ok(PublicKey::from(arr))
 }
 
-fn peel_all_stream_layers(
-    circuit: &Circuit,
-    data: Vec<u8>,
-) -> Result<Vec<u8>> {
-    let mut current = data;
-    for hop in &circuit.hops {
-        current = decrypt_stream(&hop.session_key, &current)?;
+/// Confirms the peer proved possession of the key the client pinned for it.
+/// Noise XX binds the responder's static key into the shared secret, so a relay
+/// that lacks the private half cannot complete the handshake and one that used a
+/// different key is caught here; either way the circuit is refused.
+fn check_identity(handshake: &HandshakeState, expected: &PublicKey) -> Result<()> {
+    match handshake.remote_static_public() {
+        Some(got) if got.as_bytes() == expected.as_bytes() => Ok(()),
+        _ => Err(HidraError::Circuit(
+            "a relay presented an identity key that does not match the one on record; refusing the circuit"
+                .into(),
+        )),
     }
-    Ok(current)
 }
 
-async fn handshake_with_relay(
+/// Builds a three-hop circuit without ever opening a direct connection to any
+/// hop but the first (the guard). The guard is reached directly - it always
+/// sees the client, as a guard must. Each later hop is reached *through* the
+/// circuit already built: the client drives a Noise handshake with it whose
+/// messages are carried, unread, by the hops in between, so the new hop sees
+/// the hop before it, never the client. Every hop gets its own ephemeral key.
+pub(crate) async fn build_telescoped(
+    relays: &[RelayEntry],
+) -> Result<(SecureConnection, Circuit)> {
+    let circuit_id: u32 = rand::thread_rng().r#gen();
+    info!(circuit_id, "building circuit by extension");
+    let chosen: Vec<&RelayEntry> = relays.iter().take(3).collect();
+
+    let guard_expected = expected_key(chosen[0])?;
+    let (mut conn, guard_key) =
+        direct_handshake(chosen[0].addr, &guard_expected, circuit_id).await?;
+    let mut hops = vec![CircuitHop {
+        addr: chosen[0].addr,
+        session_key: guard_key,
+    }];
+    info!(hop = 0, relay = %sensitive(&chosen[0].name), "guard hop established (direct)");
+
+    for (i, relay) in chosen.iter().enumerate().skip(1) {
+        let expected = expected_key(relay)?;
+        let partial = Circuit::new(circuit_id, hops.clone());
+        let key = extend_to(&mut conn, &partial, relay.addr, &expected).await?;
+        hops.push(CircuitHop {
+            addr: relay.addr,
+            session_key: key,
+        });
+        info!(hop = i, relay = %sensitive(&relay.name), "hop extended through the circuit");
+    }
+
+    Ok((conn, Circuit::new(circuit_id, hops)))
+}
+
+/// A direct Noise XX handshake with the guard, then registers the circuit.
+/// The key is a fresh throwaway, so the guard cannot tie this circuit to any
+/// other.
+async fn direct_handshake(
     addr: SocketAddr,
-    static_secret: StaticSecret,
+    expected: &PublicKey,
     circuit_id: u32,
 ) -> Result<(SecureConnection, [u8; 32])> {
-    let mut stream =
-        TcpStream::connect(addr).await.map_err(|e| {
-            HidraError::Relay(format!(
-                "failed to connect to relay {addr}: {e}"
-            ))
-        })?;
+    let mut stream = TcpStream::connect(addr)
+        .await
+        // The guard's address is the client's own entry point; keep it out of
+        // any error string that might later be logged.
+        .map_err(|_| HidraError::Relay("could not connect to the guard".into()))?;
     stream.write_all(&[PROTO_NOISE_SESSION]).await?;
-    let mut handshake =
-        HandshakeState::new(Role::Initiator, static_secret);
-    let msg_a = handshake.write_message_a()?;
-    write_frame(&mut stream, &msg_a).await?;
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let mut handshake = HandshakeState::new(Role::Initiator, secret);
+    write_frame(&mut stream, &handshake.write_message_a()?).await?;
     let msg_b = read_frame(&mut stream).await?;
     handshake.read_message_b(&msg_b)?;
-    let msg_c = handshake.write_message_c()?;
-    write_frame(&mut stream, &msg_c).await?;
+    // The guard proved possession of this key's private half in the handshake;
+    // refuse it if it is not the relay we meant to reach.
+    check_identity(&handshake, expected)?;
+    write_frame(&mut stream, &handshake.write_message_c()?).await?;
     debug!(relay = %sensitive(&addr), "handshake done");
     let (send_cipher, recv_cipher) = handshake.into_transport()?;
     let session_key = send_cipher.session_key()?;
-    let mut conn =
-        SecureConnection::new(stream, send_cipher, recv_cipher);
-    conn.send_message(&Message::CreateCircuit { circuit_id })
-        .await?;
-    let response = conn.recv_message().await?;
-    match response {
-        Message::CircuitCreated {
-            circuit_id: cid, ..
-        } if cid == circuit_id => {
-            debug!(circuit_id, "circuit registered at relay");
+    let mut conn = SecureConnection::new(stream, send_cipher, recv_cipher);
+    conn.send_message(&Message::CreateCircuit { circuit_id }).await?;
+    match conn.recv_message().await? {
+        Message::CircuitCreated { circuit_id: cid } if cid == circuit_id => {
+            debug!(circuit_id, "guard registered the circuit");
         }
         other => {
             return Err(HidraError::Circuit(format!(
@@ -384,4 +404,117 @@ async fn handshake_with_relay(
         }
     }
     Ok((conn, session_key))
+}
+
+/// Extends the circuit by one hop, through the hops already in it. Drives a
+/// Noise XX handshake with the new hop as initiator; the handshake messages
+/// ride as `Extend`/`ExtendFinish` control cells, which the carrying hops pipe
+/// without being able to read. Returns the new hop's layer key.
+async fn extend_to(
+    conn: &mut SecureConnection,
+    partial: &Circuit,
+    to: SocketAddr,
+    expected: &PublicKey,
+) -> Result<[u8; 32]> {
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let mut handshake = HandshakeState::new(Role::Initiator, secret);
+    let msg_a = handshake.write_message_a()?;
+
+    // Round one: message A out, message B back.
+    let msg_b = match control_round(conn, partial, &RelayCommand::Extend { to, frame: msg_a }).await? {
+        RelayCommand::Extended { frame } => frame,
+        RelayCommand::ExtendError(why) => {
+            return Err(HidraError::Circuit(format!("could not extend the circuit: {why}")));
+        }
+        other => {
+            return Err(HidraError::Circuit(format!(
+                "unexpected reply to extend: {other:?}"
+            )));
+        }
+    };
+    handshake.read_message_b(&msg_b)?;
+    // The new hop proved possession of this key's private half; a carrying
+    // relay that answered in its place (or any other mismatch) is refused here,
+    // before the handshake finishes, so the circuit is never built through it.
+    check_identity(&handshake, expected)?;
+    let msg_c = handshake.write_message_c()?;
+    let (mut send_cipher, mut recv_cipher) = handshake.into_transport()?;
+    let session_key = send_cipher.session_key()?;
+
+    // The new hop expects CreateCircuit next, sealed with the key just agreed.
+    // We seal it here; the carrying hops cannot read it.
+    let sealed_create =
+        send_cipher.encrypt(&Message::CreateCircuit { circuit_id: partial.id }.serialize())?;
+
+    // Round two: message C and the sealed CreateCircuit out, the sealed
+    // CircuitCreated back.
+    let sealed_created = match control_round(
+        conn,
+        partial,
+        &RelayCommand::ExtendFinish {
+            frame_c: msg_c,
+            frame_create: sealed_create,
+        },
+    )
+    .await?
+    {
+        RelayCommand::ExtendDone { frame_created } => frame_created,
+        RelayCommand::ExtendError(why) => {
+            return Err(HidraError::Circuit(format!("could not finish extending: {why}")));
+        }
+        other => {
+            return Err(HidraError::Circuit(format!(
+                "unexpected reply to extend-finish: {other:?}"
+            )));
+        }
+    };
+    match Message::deserialize(&recv_cipher.decrypt(&sealed_created)?)? {
+        Message::CircuitCreated { circuit_id: cid } if cid == partial.id => {}
+        other => {
+            return Err(HidraError::Circuit(format!(
+                "the new hop did not confirm the circuit: {other:?}"
+            )));
+        }
+    }
+    Ok(session_key)
+}
+
+/// Sends one control command onion-wrapped for the hops built so far and
+/// returns the one reply, peeled back.
+async fn control_round(
+    conn: &mut SecureConnection,
+    partial: &Circuit,
+    cmd: &RelayCommand,
+) -> Result<RelayCommand> {
+    let onion = build_onion(partial, &cmd.serialize_bincode()?)?;
+    conn.send_message(&Message::Relay {
+        circuit_id: partial.id,
+        data: onion,
+    })
+    .await?;
+    let data = match conn.recv_message().await? {
+        Message::Relay { data, .. } => data,
+        other => {
+            return Err(HidraError::Circuit(format!(
+                "expected a relay reply, got: {other:?}"
+            )));
+        }
+    };
+    RelayCommand::deserialize_bincode(&peel_response_layers(partial, data)?)
+}
+
+fn wrap_all_stream_layers(circuit: &Circuit, data: &[u8]) -> Result<Vec<u8>> {
+    let mut current = data.to_vec();
+    for hop in circuit.hops.iter().rev() {
+        current = encrypt_stream(&hop.session_key, &current)?;
+    }
+    Ok(current)
+}
+
+fn peel_all_stream_layers(circuit: &Circuit, data: Vec<u8>) -> Result<Vec<u8>> {
+    let mut current = data;
+    for hop in &circuit.hops {
+        current = decrypt_stream(&hop.session_key, &current)?;
+    }
+    Ok(current)
 }

@@ -76,7 +76,10 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
                     &static_relays,
                 )
                 .await;
-                if relays.len() >= MIN_RELAYS {
+                // Only replace the pool's relays when the new set still has
+                // enough usable (keyed) relays, so a working set is never
+                // overwritten by one that cannot build a circuit.
+                if keyed_count(&relays) >= MIN_RELAYS {
                     pool_bg.update_relays(relays).await;
                     relay_refresh = Instant::now();
                 }
@@ -103,33 +106,27 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     }
 }
 
+fn keyed_count(relays: &[RelayEntry]) -> usize {
+    relays
+        .iter()
+        .filter(|r| !r.noise_pubkey_b64.trim().is_empty())
+        .count()
+}
+
 async fn discover_relays(
     dht: &DhtNode,
     static_relays: &[RelayEntry],
 ) -> Vec<RelayEntry> {
+    // The configured relays carry their identity keys, so they are the ones a
+    // circuit can actually use (each hop is pinned to its key); keep them
+    // always. DHT discovery adds reach, but a discovered relay has no key on
+    // record yet and so cannot be a hop until a directory distributes relay
+    // keys. So the keyed static relays are never dropped for unkeyed ones.
+    let mut all = static_relays.to_vec();
     match dht.find_relays(MIN_RELAYS).await {
-        Ok(nodes) if nodes.len() >= MIN_RELAYS => {
-            let entries: Vec<RelayEntry> = nodes
-                .into_iter()
-                .map(|n| RelayEntry {
-                    name: format!("{}", n.id),
-                    addr: n.relay_addr.unwrap_or(n.dht_addr),
-                    noise_pubkey_b64: String::new(),
-                })
-                .collect();
-            info!(count = entries.len(), "discovered relays via DHT");
-            entries
-        }
         Ok(nodes) => {
-            warn!(
-                dht_found = nodes.len(),
-                static_count = static_relays.len(),
-                "DHT has too few relays, augmenting with static"
-            );
-            let mut all = static_relays.to_vec();
             for n in nodes {
-                let addr =
-                    n.relay_addr.unwrap_or(n.dht_addr);
+                let addr = n.relay_addr.unwrap_or(n.dht_addr);
                 if !all.iter().any(|r| r.addr == addr) {
                     all.push(RelayEntry {
                         name: format!("{}", n.id),
@@ -138,6 +135,11 @@ async fn discover_relays(
                     });
                 }
             }
+            info!(
+                total = all.len(),
+                keyed = keyed_count(&all),
+                "relay set (configured keyed relays plus DHT reach)"
+            );
             all
         }
         Err(e) => {
