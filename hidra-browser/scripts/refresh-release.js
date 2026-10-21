@@ -192,10 +192,10 @@ function verify(file) {
   check(!!b && contents(b).toString() === fs.readFileSync(BUILD_JSON, 'utf8'),
         'says which build it is (' + (b ? JSON.parse(contents(b).toString()).build : 'none') + ')');
 
-  // HidraVPN is not released; its half of the browser is parked in
-  // hidravpn/browser/ and must not ride along in a package.
-  const vpn = es.filter(e => e.filename.startsWith(pfx) && /vpn|release-verify/i.test(e.filename.slice(pfx.length)));
-  check(vpn.length === 0, 'HidraVPN is not in the package' + (vpn.length ? ' (' + vpn.map(e => e.filename).join(', ') + ')' : ''));
+  // HidraVPN is back in the browser: its control-channel module, the page
+  // and the installer must ride along, or hidra://vpn is a dead link.
+  check(by.has(pfx + 'main/vpn-manager.js') && by.has(pfx + 'ui/hidravpn.html') && by.has(pfx + 'main/vpn-installer.js'),
+        'HidraVPN is in the package');
 }
 
 (async function main() {

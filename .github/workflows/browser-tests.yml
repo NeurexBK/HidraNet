@@ -1,9 +1,10 @@
 # The browser's tests, on every change to the browser or to what its tests
 # read: the English-only sweep (which also reads hidra-node and the landing
-# page), the storage and vault tests, who may call each handler, and the
-# Electron-only tests under Xvfb — among them the preload boundary, which
-# proves a downloaded .html or a website gets no bridge to Tor or the vault.
-# HidraVPN is not in the browser yet; its half is tested in hidravpn-build.yml.
+# page), the storage and vault tests, the VPN control-channel module against a
+# stand-in service, the VPN page lint (which reads the service's ipc.rs), the
+# release-signature verifier, and the Electron-only tests under Xvfb — among
+# them the preload boundary, which proves a downloaded .html or a website gets
+# no bridge to Tor, the vault or the VPN.
 name: Browser tests
 
 on:
@@ -13,6 +14,8 @@ on:
       - "hidra-node/src/**"
       - "hidra-node/assets/**"
       - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
   pull_request:
     paths:
@@ -20,6 +23,8 @@ on:
       - "hidra-node/src/**"
       - "hidra-node/assets/**"
       - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
 
 jobs:
@@ -41,7 +46,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault ipc-senders tor-connect; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"

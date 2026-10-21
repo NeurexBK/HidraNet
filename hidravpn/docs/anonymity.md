@@ -219,10 +219,9 @@ system.
 **Fixed.** The test runs only with the kill switch armed and an exit
 handshake in the last three minutes. With the kill switch off it asks no
 website anything and says why. The probe sends a generic user agent and no
-cookies (`vpn-leaktest.js`, and the browser's VPN wiring, parked until
-HidraVPN ships: `browser/README.md`).
+cookies (`vpn-leaktest.js`, `directProbe()` in `hidra-browser/src/main/main.js`).
 
-**Tests:** `hidravpn/browser/test/vpn-leaktest.js` (9), `test/vpn-page.js` (54).
+**Tests:** `hidra-browser/test/vpn-leaktest.js` (9), `test/vpn-page.js` (54).
 
 ### 9. Low — the list and release fetches named the browser
 

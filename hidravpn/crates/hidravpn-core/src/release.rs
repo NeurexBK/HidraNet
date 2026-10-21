@@ -16,7 +16,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 /// Base64 of the 32-byte public key, exactly as `hidravpn-sign keygen` printed
 /// it. Keep it identical to RELEASE_PUBLIC_KEY in
-/// hidravpn/browser/src/main/release-verify.js; a test checks the two match.
+/// hidra-browser/src/main/release-verify.js; a test checks the two match.
 pub const RELEASE_PUBLIC_KEY_B64: &str = "denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=";
 
 /// The key that signs node lists: a different one, so the release key can

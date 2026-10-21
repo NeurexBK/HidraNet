@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 4, end to end: the browser's half of the control channel against a
 # REAL service and a real node — the three namespaces of test-service-netns.sh,
-# driven through browser/src/main/vpn-manager.js (the module the VPN page
+# driven through hidra-browser/src/main/vpn-manager.js (the module the VPN page
 # uses) instead of the command line. It proves:
 #
 #   - the service picks the node from the pocket (`connect`), so the browser
@@ -24,7 +24,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
-BROWSER="$HERE/../browser"
+BROWSER="$HERE/../../hidra-browser"
 DRIVER="$BROWSER/test/vpn-live.js"
 WORK=""
 C="ip netns exec hv-client"

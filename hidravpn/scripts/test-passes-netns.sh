@@ -173,7 +173,7 @@ svc '{"cmd":"down"}' >/dev/null
 
 # ── The browser's module: hands the token over, asks for passes ────────────
 cat > "$WORK/browser.js" <<JS
-const { VpnManager } = require('$HERE/../browser/src/main/vpn-manager.js');
+const { VpnManager } = require('$HERE/../../hidra-browser/src/main/vpn-manager.js');
 (async () => {
   const vpn = new VpnManager({ timeoutMs: 30000 });
   const t = await vpn.setPassToken(process.argv[2]);
