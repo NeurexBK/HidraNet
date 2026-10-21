@@ -14,8 +14,19 @@ use crate::relay::exit_policy::ExitPolicy;
 use crate::relay::router::RelayRouter;
 use crate::safelog::sensitive;
 
-pub const PROTO_NOISE_SESSION: u8 = 0x00;
-pub const PROTO_FORWARDED_CELL: u8 = 0x01;
+/// The first byte of every connection to a relay says what it is.
+///
+/// A Noise session with a client — directly, or piped by the hop before during
+/// a circuit extension. Version 2: circuits on it use the counting layers of
+/// `onion::layer`.
+pub const PROTO_NOISE_SESSION: u8 = 0x02;
+/// A link from the relay before this one on a circuit. Version 2: a Noise
+/// session too. Version 1 (0x01) carried cells in the clear.
+pub const PROTO_RELAY_LINK: u8 = 0x03;
+/// What version 1 sent: a client session with the old layers (0x00), and a
+/// relay link in the clear (0x01). Refused, and said so in the log, so a relay
+/// or client that was not upgraded fails plainly instead of mid-circuit.
+const PROTO_V1: [u8; 2] = [0x00, 0x01];
 
 /// How long a freshly accepted connection has to send its single protocol
 /// byte before its handler task gives up, so a client that connects and then
@@ -93,8 +104,11 @@ impl NodeListener {
                     PROTO_NOISE_SESSION => {
                         router.handle_client_connection(stream, remote_addr).await;
                     }
-                    PROTO_FORWARDED_CELL => {
-                        router.handle_forwarded_cell(stream, remote_addr).await;
+                    PROTO_RELAY_LINK => {
+                        router.handle_relay_link(stream, remote_addr).await;
+                    }
+                    old if PROTO_V1.contains(&old) => {
+                        warn!(proto = old, "a peer speaks circuit protocol v1, which this relay no longer accepts; it needs upgrading");
                     }
                     other => {
                         warn!(proto = other, "unknown protocol byte, dropping connection");

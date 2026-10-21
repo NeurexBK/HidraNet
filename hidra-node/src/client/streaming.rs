@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, info};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
 use crate::crypto::handshake::{HandshakeState, Role};
 use crate::crypto::service_auth::{ClientHandshake, SealedChannel};
@@ -17,7 +18,7 @@ use crate::network::listener::PROTO_NOISE_SESSION;
 use crate::onion::builder::{build_onion, peel_response_layers};
 use crate::onion::cell::RelayCommand;
 use crate::onion::circuit::{Circuit, CircuitHop};
-use crate::onion::layer::{decrypt_stream, encrypt_stream};
+use crate::onion::layer::LayerCipher;
 use crate::relay::registry::RelayEntry;
 
 pub struct StreamingCircuit {
@@ -57,7 +58,7 @@ impl StreamingCircuit {
             port,
         };
         let cmd_data = cmd.serialize_bincode()?;
-        let onion_data = build_onion(&self.circuit, &cmd_data)?;
+        let onion_data = build_onion(&mut self.circuit, &cmd_data)?;
         // The cell that opens the stream: each hop relays the one reply and
         // then switches this circuit to streaming.
         self.conn
@@ -75,7 +76,7 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted = peel_response_layers(&self.circuit, response_data)?;
+        let decrypted = peel_response_layers(&mut self.circuit, response_data)?;
         let resp_cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match resp_cmd {
             RelayCommand::Connected => {
@@ -96,7 +97,7 @@ impl StreamingCircuit {
     /// hand.
     #[allow(dead_code)]
     pub async fn request(&mut self, cmd: &RelayCommand) -> Result<RelayCommand> {
-        let onion = build_onion(&self.circuit, &cmd.serialize_bincode()?)?;
+        let onion = build_onion(&mut self.circuit, &cmd.serialize_bincode()?)?;
         self.conn
             .send_message(&Message::StreamBegin {
                 circuit_id: self.circuit.id,
@@ -111,12 +112,12 @@ impl StreamingCircuit {
                 )));
             }
         };
-        RelayCommand::deserialize_bincode(&peel_response_layers(&self.circuit, data)?)
+        RelayCommand::deserialize_bincode(&peel_response_layers(&mut self.circuit, data)?)
     }
 
     pub async fn connect_service(&mut self, service_hash: Vec<u8>) -> Result<()> {
         let cmd = RelayCommand::ConnectService { service_hash };
-        let onion_data = build_onion(&self.circuit, &cmd.serialize_bincode()?)?;
+        let onion_data = build_onion(&mut self.circuit, &cmd.serialize_bincode()?)?;
         self.conn
             .send_message(&Message::StreamBegin {
                 circuit_id: self.circuit.id,
@@ -131,7 +132,7 @@ impl StreamingCircuit {
                 )));
             }
         };
-        match RelayCommand::deserialize_bincode(&peel_response_layers(&self.circuit, data)?)? {
+        match RelayCommand::deserialize_bincode(&peel_response_layers(&mut self.circuit, data)?)? {
             RelayCommand::ServiceConnected => {
                 info!(circuit_id = self.circuit.id, "connected to hidden service");
                 Ok(())
@@ -179,7 +180,7 @@ impl StreamingCircuit {
             signature,
         };
         let cmd_data = cmd.serialize_bincode()?;
-        let onion_data = build_onion(&self.circuit, &cmd_data)?;
+        let onion_data = build_onion(&mut self.circuit, &cmd_data)?;
         self.conn
             .send_message(&Message::StreamBegin {
                 circuit_id: self.circuit.id,
@@ -195,7 +196,7 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted = peel_response_layers(&self.circuit, response_data)?;
+        let decrypted = peel_response_layers(&mut self.circuit, response_data)?;
         let resp_cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match resp_cmd {
             RelayCommand::ServiceRegistered => {
@@ -235,7 +236,7 @@ impl StreamingCircuit {
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<()> {
         let cmd = RelayCommand::Data(data.to_vec());
         let cmd_data = cmd.serialize_bincode()?;
-        let encrypted = wrap_all_stream_layers(&self.circuit, &cmd_data)?;
+        let encrypted = wrap_all_stream_layers(&mut self.circuit, &cmd_data)?;
         self.conn
             .send_message(&Message::Relay {
                 circuit_id: self.circuit.id,
@@ -254,7 +255,7 @@ impl StreamingCircuit {
                 )));
             }
         };
-        let decrypted = peel_all_stream_layers(&self.circuit, data)?;
+        let decrypted = peel_all_stream_layers(&mut self.circuit, data)?;
         let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
         match cmd {
             RelayCommand::Data(payload) => Ok(Some(payload)),
@@ -268,7 +269,7 @@ impl StreamingCircuit {
     pub async fn send_end(&mut self) -> Result<()> {
         let cmd = RelayCommand::End;
         let cmd_data = cmd.serialize_bincode()?;
-        let encrypted = wrap_all_stream_layers(&self.circuit, &cmd_data)?;
+        let encrypted = wrap_all_stream_layers(&mut self.circuit, &cmd_data)?;
         self.conn
             .send_message(&Message::Relay {
                 circuit_id: self.circuit.id,
@@ -343,26 +344,33 @@ pub(crate) async fn build_telescoped(
     let chosen: Vec<&RelayEntry> = relays.iter().take(3).collect();
 
     let guard_expected = expected_key(chosen[0])?;
-    let (mut conn, guard_key) =
+    let (mut conn, mut guard_key) =
         direct_handshake(chosen[0].addr, &guard_expected, circuit_id).await?;
-    let mut hops = vec![CircuitHop {
-        addr: chosen[0].addr,
-        session_key: guard_key,
-    }];
+    // One circuit, grown in place: each hop's layer counts the cells it has
+    // carried, including the extension cells, so the hops built so far are
+    // never copied.
+    let mut circuit = Circuit::new(
+        circuit_id,
+        vec![CircuitHop {
+            addr: chosen[0].addr,
+            layer: LayerCipher::new(&guard_key),
+        }],
+    );
+    guard_key.zeroize();
     info!(hop = 0, relay = %sensitive(&chosen[0].name), "guard hop established (direct)");
 
     for (i, relay) in chosen.iter().enumerate().skip(1) {
         let expected = expected_key(relay)?;
-        let partial = Circuit::new(circuit_id, hops.clone());
-        let key = extend_to(&mut conn, &partial, relay.addr, &expected).await?;
-        hops.push(CircuitHop {
+        let mut key = extend_to(&mut conn, &mut circuit, relay.addr, &expected).await?;
+        circuit.hops.push(CircuitHop {
             addr: relay.addr,
-            session_key: key,
+            layer: LayerCipher::new(&key),
         });
+        key.zeroize();
         info!(hop = i, relay = %sensitive(&relay.name), "hop extended through the circuit");
     }
 
-    Ok((conn, Circuit::new(circuit_id, hops)))
+    Ok((conn, circuit))
 }
 
 /// A direct Noise XX handshake with the guard, then registers the circuit.
@@ -412,7 +420,7 @@ async fn direct_handshake(
 /// without being able to read. Returns the new hop's layer key.
 async fn extend_to(
     conn: &mut SecureConnection,
-    partial: &Circuit,
+    partial: &mut Circuit,
     to: SocketAddr,
     expected: &PublicKey,
 ) -> Result<[u8; 32]> {
@@ -421,7 +429,7 @@ async fn extend_to(
     let msg_a = handshake.write_message_a()?;
 
     // Round one: message A out, message B back.
-    let msg_b = match control_round(conn, partial, &RelayCommand::Extend { to, frame: msg_a }).await? {
+    let msg_b = match control_round(conn, &mut *partial, &RelayCommand::Extend { to, frame: msg_a }).await? {
         RelayCommand::Extended { frame } => frame,
         RelayCommand::ExtendError(why) => {
             return Err(HidraError::Circuit(format!("could not extend the circuit: {why}")));
@@ -450,7 +458,7 @@ async fn extend_to(
     // CircuitCreated back.
     let sealed_created = match control_round(
         conn,
-        partial,
+        &mut *partial,
         &RelayCommand::ExtendFinish {
             frame_c: msg_c,
             frame_create: sealed_create,
@@ -483,7 +491,7 @@ async fn extend_to(
 /// returns the one reply, peeled back.
 async fn control_round(
     conn: &mut SecureConnection,
-    partial: &Circuit,
+    partial: &mut Circuit,
     cmd: &RelayCommand,
 ) -> Result<RelayCommand> {
     let onion = build_onion(partial, &cmd.serialize_bincode()?)?;
@@ -503,18 +511,18 @@ async fn control_round(
     RelayCommand::deserialize_bincode(&peel_response_layers(partial, data)?)
 }
 
-fn wrap_all_stream_layers(circuit: &Circuit, data: &[u8]) -> Result<Vec<u8>> {
+fn wrap_all_stream_layers(circuit: &mut Circuit, data: &[u8]) -> Result<Vec<u8>> {
     let mut current = data.to_vec();
-    for hop in circuit.hops.iter().rev() {
-        current = encrypt_stream(&hop.session_key, &current)?;
+    for hop in circuit.hops.iter_mut().rev() {
+        current = hop.layer.seal_forward(&current)?;
     }
     Ok(current)
 }
 
-fn peel_all_stream_layers(circuit: &Circuit, data: Vec<u8>) -> Result<Vec<u8>> {
+fn peel_all_stream_layers(circuit: &mut Circuit, data: Vec<u8>) -> Result<Vec<u8>> {
     let mut current = data;
-    for hop in &circuit.hops {
-        current = decrypt_stream(&hop.session_key, &current)?;
+    for hop in circuit.hops.iter_mut() {
+        current = hop.layer.open_backward(&current)?;
     }
     Ok(current)
 }

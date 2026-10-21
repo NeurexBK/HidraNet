@@ -1,7 +1,7 @@
 use hidra_node::crypto::handshake::{HandshakeState, Role};
 use hidra_node::network::connection::{read_frame, write_frame};
 use hidra_node::onion::cell::LayerHeader;
-use hidra_node::onion::layer::{wrap_layer, peel_layer};
+use hidra_node::onion::layer::LayerCipher;
 use rand_core::OsRng;
 use x25519_dalek::StaticSecret;
 
@@ -50,10 +50,15 @@ async fn session_keys_match_and_layer_roundtrips() {
     assert_eq!(client_send_key, relay_recv_key, "client send = relay recv");
     assert_eq!(client_recv_key, relay_send_key, "client recv = relay send");
 
-    // Verify wrap/peel with the agreed key
+    // Both ends build the circuit layer from the key they agreed, as the
+    // client does for each hop and the relay on CreateCircuit.
+    let mut client_layer = LayerCipher::new(&client_send_key);
+    let mut relay_layer = LayerCipher::new(&relay_recv_key);
     let header = LayerHeader { next_hop: None };
-    let encrypted = wrap_layer(&client_send_key, &header, b"test payload").unwrap();
-    let (h, peeled) = peel_layer(&relay_recv_key, &encrypted).unwrap();
+    let sealed = client_layer.seal_forward_cell(&header, b"test payload").unwrap();
+    let (h, opened) = relay_layer.open_forward_cell(&sealed).unwrap();
     assert!(h.next_hop.is_none());
-    assert_eq!(peeled, b"test payload");
+    assert_eq!(opened, b"test payload");
+    let back = relay_layer.seal_backward(b"reply").unwrap();
+    assert_eq!(client_layer.open_backward(&back).unwrap(), b"reply");
 }
