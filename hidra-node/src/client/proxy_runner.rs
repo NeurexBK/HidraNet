@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::p2p::bootstrap::bootstrap;
 use crate::p2p::dht::DhtNode;
 use crate::proxy::stream_handler;
-use crate::relay::registry::RelayEntry;
+use crate::p2p::dht::descriptor::VerifiedRelay;
 use crate::safelog::sensitive;
 
 const RELAY_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -22,8 +22,8 @@ pub struct ProxyConfig {
     pub listen_addr: SocketAddr,
     pub dht_addr: SocketAddr,
     pub bootstrap_addrs: Vec<SocketAddr>,
-    pub secret_bytes: [u8; 32],
-    pub static_relays: Vec<RelayEntry>,
+    /// Relays whose keys the operator pinned in the configuration.
+    pub static_relays: Vec<VerifiedRelay>,
 }
 
 pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
@@ -56,10 +56,7 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     )
     .await;
     info!(relay_count = initial_relays.len(), "initial relay set loaded");
-    let pool = CircuitPool::new(
-        config.secret_bytes,
-        initial_relays,
-    );
+    let pool = CircuitPool::new(initial_relays);
     pool.maintain().await;
     info!(pool_size = pool.pool_size().await, "circuit pool initialized");
 
@@ -103,46 +100,35 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     }
 }
 
+/// Relays a circuit may use: the operator's pinned ones and every relay the
+/// DHT knows of whose descriptor verifies. A relay the DHT names without a
+/// descriptor signed by its own identity is left out — there is no key to hold
+/// it to, so it cannot be a hop.
 async fn discover_relays(
     dht: &DhtNode,
-    static_relays: &[RelayEntry],
-) -> Vec<RelayEntry> {
-    match dht.find_relays(MIN_RELAYS).await {
-        Ok(nodes) if nodes.len() >= MIN_RELAYS => {
-            let entries: Vec<RelayEntry> = nodes
-                .into_iter()
-                .map(|n| RelayEntry {
-                    name: format!("{}", n.id),
-                    addr: n.relay_addr.unwrap_or(n.dht_addr),
-                    noise_pubkey_b64: String::new(),
-                })
-                .collect();
-            info!(count = entries.len(), "discovered relays via DHT");
-            entries
-        }
+    static_relays: &[VerifiedRelay],
+) -> Vec<VerifiedRelay> {
+    let mut all = static_relays.to_vec();
+    match dht.find_relays(MIN_RELAYS * 4).await {
         Ok(nodes) => {
-            warn!(
-                dht_found = nodes.len(),
-                static_count = static_relays.len(),
-                "DHT has too few relays, augmenting with static"
-            );
-            let mut all = static_relays.to_vec();
+            let found = nodes.len();
+            let mut unsigned = 0usize;
             for n in nodes {
-                let addr =
-                    n.relay_addr.unwrap_or(n.dht_addr);
-                if !all.iter().any(|r| r.addr == addr) {
-                    all.push(RelayEntry {
-                        name: format!("{}", n.id),
-                        addr,
-                        noise_pubkey_b64: String::new(),
-                    });
+                match n.verified_relay() {
+                    Some(r) if !all.iter().any(|a| a.addr() == r.addr()) => all.push(r),
+                    Some(_) => {}
+                    None => unsigned += 1,
                 }
             }
-            all
+            info!(dht_found = found, unsigned, usable = all.len(), "relay set refreshed");
         }
-        Err(e) => {
-            warn!(error = %e, "DHT relay discovery failed");
-            static_relays.to_vec()
-        }
+        Err(e) => warn!(error = %e, "DHT relay discovery failed"),
     }
+    if all.len() < MIN_RELAYS {
+        warn!(
+            usable = all.len(),
+            "fewer verified relays than a circuit needs; circuits will fail until more are found"
+        );
+    }
+    all
 }

@@ -287,6 +287,7 @@ mod tests {
             relay_addr: None,
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         }
     }
 
@@ -297,6 +298,7 @@ mod tests {
             relay_addr: Some(format!("127.0.0.1:{relay_port}").parse().unwrap()),
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         }
     }
 
@@ -310,6 +312,7 @@ mod tests {
             relay_addr: None,
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         }
     }
 
@@ -417,6 +420,7 @@ mod tests {
                 relay_addr: None,
                 public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
             };
             table.update(node);
         }
@@ -492,6 +496,7 @@ mod tests {
             relay_addr: None,
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         };
 
         table.update(node1.clone());

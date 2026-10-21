@@ -224,8 +224,7 @@ losing control of it.
 Diagnostics:
 
 ```bash
-./hidra-node --dht-discover           # tests DHT discovery
-./hidra-node --connect 1.2.3.4:9150   # tests a connection to a peer
+./hidra-node --send hello --dht-discover   # builds a circuit through relays found in the DHT
 ```
 
 ### Ports

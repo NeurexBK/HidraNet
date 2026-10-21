@@ -1,4 +1,7 @@
-//! A hidden service's descriptor, signed by the service's own key.
+//! Descriptors: what a service or a relay says about itself, signed with its
+//! own key.
+//!
+//! # Service descriptors
 //!
 //! A `.hidra` address is the BLAKE3 of the service's Ed25519 public key, and
 //! the descriptor says where the service can be reached (its introduction
@@ -8,6 +11,15 @@
 //! points, so a node in the lookup path can withhold a descriptor or replay
 //! an older one, and nothing else. Lookups ask several disjoint paths and keep
 //! the highest revision they can verify.
+//!
+//! # Relay descriptors
+//!
+//! A relay signs, with its DHT identity key, the address it serves circuits on
+//! and the X25519 key it answers circuit handshakes with. A client builds a
+//! hop only to a relay whose descriptor verifies, and the handshake for that
+//! hop completes only with the holder of the key the descriptor names: a node
+//! that answers a lookup can hide a relay, but cannot put its own key in that
+//! relay's place.
 
 use std::net::SocketAddr;
 
@@ -135,10 +147,157 @@ impl ServiceDescriptor {
     }
 }
 
+const RELAY_DOMAIN: &[u8] = b"hidra/relay-descriptor/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDescriptor {
+    /// The relay's Ed25519 identity: the key its DHT node ID is bound to.
+    pub identity_key: [u8; 32],
+    /// Where it accepts links.
+    pub addr: SocketAddr,
+    /// The X25519 static key it answers link and circuit handshakes with.
+    pub transport_key: [u8; 32],
+    /// The signer's clock in seconds when it signed.
+    pub published: u64,
+    pub signature: Vec<u8>,
+}
+
+fn relay_signed_bytes(
+    identity_key: &[u8; 32],
+    addr: &SocketAddr,
+    transport_key: &[u8; 32],
+    published: u64,
+) -> Vec<u8> {
+    let a = addr.to_string();
+    let mut b = Vec::with_capacity(RELAY_DOMAIN.len() + 80 + a.len());
+    b.extend_from_slice(RELAY_DOMAIN);
+    b.extend_from_slice(identity_key);
+    b.push(a.len() as u8);
+    b.extend_from_slice(a.as_bytes());
+    b.extend_from_slice(transport_key);
+    b.extend_from_slice(&published.to_le_bytes());
+    b
+}
+
+impl RelayDescriptor {
+    pub fn sign(
+        identity: &SigningKey,
+        addr: SocketAddr,
+        transport_key: [u8; 32],
+        published: u64,
+    ) -> Self {
+        let identity_key = identity.verifying_key().to_bytes();
+        let signature = identity
+            .sign(&relay_signed_bytes(&identity_key, &addr, &transport_key, published))
+            .to_bytes()
+            .to_vec();
+        Self {
+            identity_key,
+            addr,
+            transport_key,
+            published,
+            signature,
+        }
+    }
+
+    pub fn sign_now(identity: &SigningKey, addr: SocketAddr, transport_key: [u8; 32]) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self::sign(identity, addr, transport_key, now)
+    }
+
+    /// The relay signed exactly this address and this key.
+    pub fn verify(&self) -> Result<VerifiedRelay> {
+        let sig: [u8; 64] = self.signature.as_slice().try_into().map_err(|_| {
+            HidraError::Protocol("relay descriptor: a signature is 64 bytes".into())
+        })?;
+        let key = VerifyingKey::from_bytes(&self.identity_key)
+            .map_err(|_| HidraError::Protocol("relay descriptor: not an Ed25519 key".into()))?;
+        key.verify_strict(
+            &relay_signed_bytes(&self.identity_key, &self.addr, &self.transport_key, self.published),
+            &Signature::from_bytes(&sig),
+        )
+        .map_err(|_| HidraError::Protocol("relay descriptor: the relay did not sign this".into()))?;
+        Ok(VerifiedRelay {
+            addr: self.addr,
+            transport_key: self.transport_key,
+        })
+    }
+}
+
+/// A relay a circuit may use: an address and the key that must answer there.
+///
+/// There are two ways to get one, and no other: a relay descriptor that
+/// verifies, or a key the operator of this node wrote into its configuration.
+/// The circuit code takes nothing else, so a relay whose key nobody vouched
+/// for cannot become a hop.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerifiedRelay {
+    addr: SocketAddr,
+    transport_key: [u8; 32],
+}
+
+impl VerifiedRelay {
+    /// A key pinned by whoever configured this node, not learned from the
+    /// network.
+    pub fn pinned(addr: SocketAddr, transport_key: [u8; 32]) -> Self {
+        Self { addr, transport_key }
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn transport_key(&self) -> &[u8; 32] {
+        &self.transport_key
+    }
+}
+
+/// Neither the address nor the key: a relay list in a log is a list of the
+/// hops a user picked.
+impl std::fmt::Debug for VerifiedRelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifiedRelay(..)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand_core::OsRng;
+
+    #[test]
+    fn a_relay_descriptor_verifies_only_as_the_relay_signed_it() {
+        let key = SigningKey::generate(&mut OsRng);
+        let addr: SocketAddr = "198.51.100.2:9001".parse().unwrap();
+        let d = RelayDescriptor::sign(&key, addr, [5; 32], 100);
+        let v = d.verify().unwrap();
+        assert_eq!(v.addr(), addr);
+        assert_eq!(v.transport_key(), &[5; 32]);
+
+        // Another transport key: the point of the whole thing.
+        let mut swapped = d.clone();
+        swapped.transport_key = [6; 32];
+        assert!(swapped.verify().is_err());
+
+        let mut moved = d.clone();
+        moved.addr = "203.0.113.9:9001".parse().unwrap();
+        assert!(moved.verify().is_err());
+
+        let mut older = d.clone();
+        older.published = 99;
+        assert!(older.verify().is_err());
+
+        // Re-signed by someone else but presented under the relay's identity.
+        let other = SigningKey::generate(&mut OsRng);
+        let mut forged = RelayDescriptor::sign(&other, addr, [6; 32], 100);
+        forged.identity_key = d.identity_key;
+        assert!(forged.verify().is_err());
+
+        assert_eq!(format!("{v:?}"), "VerifiedRelay(..)");
+    }
 
     fn intro() -> Vec<SocketAddr> {
         vec!["198.51.100.7:9001".parse().unwrap()]

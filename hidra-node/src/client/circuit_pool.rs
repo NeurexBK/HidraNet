@@ -1,15 +1,14 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rand::seq::SliceRandom;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
-use x25519_dalek::StaticSecret;
-use zeroize::Zeroize;
 
-use crate::client::streaming::StreamingCircuit;
+use crate::client::streaming::{StreamingCircuit, CIRCUIT_HOPS};
 use crate::error::{HidraError, Result};
-use crate::relay::registry::RelayEntry;
+use crate::p2p::dht::descriptor::VerifiedRelay;
 
 const CIRCUIT_TTL: Duration = Duration::from_secs(300);
 const POOL_TARGET_SIZE: usize = 3;
@@ -20,22 +19,25 @@ struct PoolEntry {
     created_at: Instant,
 }
 
+/// Circuits built ahead of time, through relays whose keys were verified.
+///
+/// The pool holds no key of the client's: every circuit's handshakes start
+/// from fresh ephemeral keys, so circuits taken from the pool share nothing a
+/// relay could link.
 pub struct CircuitPool {
     entries: Mutex<Vec<PoolEntry>>,
-    relays: Mutex<Vec<RelayEntry>>,
-    secret_bytes: [u8; 32],
+    relays: Mutex<Vec<VerifiedRelay>>,
 }
 
 impl CircuitPool {
-    pub fn new(secret_bytes: [u8; 32], relays: Vec<RelayEntry>) -> Arc<Self> {
+    pub fn new(relays: Vec<VerifiedRelay>) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(Vec::new()),
             relays: Mutex::new(relays),
-            secret_bytes,
         })
     }
 
-    pub async fn update_relays(&self, relays: Vec<RelayEntry>) {
+    pub async fn update_relays(&self, relays: Vec<VerifiedRelay>) {
         let mut r = self.relays.lock().await;
         info!(
             old_count = r.len(),
@@ -68,12 +70,31 @@ impl CircuitPool {
     pub async fn build_new_circuit(&self) -> Result<StreamingCircuit> {
         let relays = self.relays.lock().await.clone();
         let selected = select_relays(&relays)?;
+        StreamingCircuit::build(&selected).await
+    }
 
-        let mut sb = self.secret_bytes;
-        let secret = StaticSecret::from(sb);
-        sb.zeroize();
-
-        StreamingCircuit::build(&selected, secret).await
+    /// A fresh circuit whose last hop is the first of `exits` that is a
+    /// verified relay: how a client reaches a hidden service's introduction
+    /// point. The other two hops are picked at random. A pooled circuit will
+    /// not do, since its exit is wherever it happened to end.
+    pub async fn build_circuit_to(&self, exits: &[SocketAddr]) -> Result<StreamingCircuit> {
+        let relays = self.relays.lock().await.clone();
+        let exit = exits
+            .iter()
+            .find_map(|a| relays.iter().find(|r| r.addr() == *a))
+            .cloned()
+            .ok_or_else(|| {
+                HidraError::Circuit(
+                    "no introduction point of this service is a relay with a verified key".into(),
+                )
+            })?;
+        let others: Vec<VerifiedRelay> = relays
+            .into_iter()
+            .filter(|r| r.addr() != exit.addr() && r.transport_key() != exit.transport_key())
+            .collect();
+        let mut path = select_relays_n(&others, CIRCUIT_HOPS - 1)?;
+        path.push(exit);
+        StreamingCircuit::build(&path).await
     }
 
     pub async fn maintain(&self) {
@@ -120,15 +141,27 @@ impl CircuitPool {
     }
 }
 
-fn select_relays(all: &[RelayEntry]) -> Result<Vec<RelayEntry>> {
-    if all.len() < 3 {
+fn select_relays(all: &[VerifiedRelay]) -> Result<Vec<VerifiedRelay>> {
+    select_relays_n(all, CIRCUIT_HOPS)
+}
+
+fn select_relays_n(all: &[VerifiedRelay], n: usize) -> Result<Vec<VerifiedRelay>> {
+    let mut distinct: Vec<VerifiedRelay> = Vec::with_capacity(all.len());
+    for r in all {
+        if !distinct
+            .iter()
+            .any(|d| d.addr() == r.addr() || d.transport_key() == r.transport_key())
+        {
+            distinct.push(r.clone());
+        }
+    }
+    if distinct.len() < n {
         return Err(HidraError::Circuit(format!(
-            "need at least 3 relays, have {}",
-            all.len()
+            "need at least {n} verified relays, have {}",
+            distinct.len()
         )));
     }
-    let mut selected = all.to_vec();
-    selected.shuffle(&mut rand::thread_rng());
-    selected.truncate(3);
-    Ok(selected)
+    distinct.shuffle(&mut rand::thread_rng());
+    distinct.truncate(n);
+    Ok(distinct)
 }

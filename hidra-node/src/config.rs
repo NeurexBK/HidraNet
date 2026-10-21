@@ -116,6 +116,12 @@ pub struct NodeConfig {
 pub struct NetworkConfig {
     pub listen_addr: String,
     pub listen_port: u16,
+    /// The address clients reach this relay at, as it goes into the relay's
+    /// signed descriptor. Needed when `listen_addr` is a wildcard such as
+    /// 0.0.0.0: without it the relay cannot say where it is, publishes no
+    /// descriptor, and no client builds a circuit through it.
+    #[serde(default)]
+    pub public_addr: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

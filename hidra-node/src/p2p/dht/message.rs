@@ -5,11 +5,11 @@ use crate::error::{HidraError, Result};
 use crate::p2p::dht::descriptor::ServiceDescriptor;
 use crate::p2p::dht::node::{NodeId, NodeInfo};
 
-/// Version 2 of the wire format: node IDs carry their puzzle nonce and
-/// service descriptors their service's signature. A version-1 node drops
-/// these packets at the magic instead of misreading them, and the other way
-/// round.
-const MAGIC: &[u8; 4] = b"HDT2";
+/// Version 3 of the wire format: a relay's node record carries its signed
+/// relay descriptor (version 2 added puzzle nonces to node IDs and signatures
+/// to service descriptors). An older node drops these packets at the magic
+/// instead of misreading them, and the other way round.
+const MAGIC: &[u8; 4] = b"HDT3";
 const SIGNATURE_LEN: usize = 64;
 const PUBKEY_LEN: usize = 32;
 const HEADER_LEN: usize = 4 + SIGNATURE_LEN + PUBKEY_LEN;
@@ -213,6 +213,7 @@ mod tests {
             relay_addr: None,
             public_key: pubkey,
             id_nonce: nonce,
+            relay_descriptor: None,
         }
     }
 
@@ -290,6 +291,7 @@ mod tests {
             relay_addr: None,
             public_key: pubkey,
             id_nonce: unpaid,
+            relay_descriptor: None,
         };
         let msg = DhtMessage::Ping {
             request_id: 1,

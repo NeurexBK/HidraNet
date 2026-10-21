@@ -1,36 +1,44 @@
-use crate::safelog::sensitive;
+//! A relay's side of a circuit.
+//!
+//! Every link carries one circuit. The first message on it is a CREATE: the
+//! client's (or the previous relay's) handshake for this relay, answered with
+//! CREATED. After that, every RELAY cell has this relay's layer removed. What
+//! is underneath is either for the next hop, and goes out on the link to it
+//! under that link's own circuit id, or for this relay: a command, of which
+//! EXTEND is how a circuit grows.
+//!
+//! On EXTEND the relay dials the address it is given, brings the link up
+//! against the key it is given, and passes the client's handshake on in a
+//! CREATE. The handshake is between the client and the next relay; this one
+//! sees only opaque bytes going one way and opaque bytes coming back, and
+//! learns no key from them.
+//!
+//! What a relay knows about a circuit is the link it came in on and, once
+//! extended, the link it goes out on. Its log records neither the circuit ids
+//! (each link has its own, so they would let relays' logs be lined up) nor
+//! the address of anyone on either side.
+
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
+use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, warn, Instrument};
-use uuid::Uuid;
+use tracing::{debug, info, warn};
 use x25519_dalek::StaticSecret;
-use zeroize::Zeroize;
 
-use crate::crypto::handshake::{HandshakeState, Role};
+use crate::crypto::circuit_handshake::respond;
 use crate::error::{HidraError, Result};
-use crate::network::connection::{
-    read_frame, write_frame, Message, SecureConnection,
-};
-use crate::network::listener::PROTO_FORWARDED_CELL;
-use crate::onion::cell::{LayerHeader, RelayCommand};
-use crate::onion::layer::{
-    decrypt_stream, encrypt_stream, peel_layer, wrap_layer,
-};
+use crate::network::connection::{LinkWriter, Message};
+use crate::network::link;
+use crate::onion::cell::RelayCommand;
+use crate::onion::layer::{Peeled, RelayHop};
+use crate::safelog::sensitive;
 
-struct CircuitEntry {
-    session_key: [u8; 32],
-}
-
-impl Drop for CircuitEntry {
-    fn drop(&mut self) {
-        self.session_key.zeroize();
-    }
-}
+/// How long an exit waits for a target to accept a connection.
+const TARGET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub struct ClientPipe {
     pub from_client: mpsc::Receiver<Vec<u8>>,
@@ -39,8 +47,8 @@ pub struct ClientPipe {
 
 type IntroRegistry = Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<ClientPipe>>>>;
 
+#[derive(Clone)]
 pub struct RelayRouter {
-    circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
     static_secret_bytes: Arc<[u8; 32]>,
     intro_registry: IntroRegistry,
 }
@@ -48,1075 +56,409 @@ pub struct RelayRouter {
 impl RelayRouter {
     pub fn new(static_secret_bytes: Arc<[u8; 32]>) -> Self {
         Self {
-            circuits: Arc::new(Mutex::new(HashMap::new())),
             static_secret_bytes,
             intro_registry: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub async fn handle_client_connection(
-        &self,
-        stream: TcpStream,
-        remote_addr: SocketAddr,
-    ) {
-        let session_id = Uuid::new_v4().to_string();
-        let span = tracing::info_span!(
-            "relay_session",
-            session_id = %session_id,
-            remote_addr = %remote_addr,
-            role = "relay_responder",
-        );
-        let circuits = Arc::clone(&self.circuits);
-        let secret_bytes = Arc::clone(&self.static_secret_bytes);
-        let intro_reg = Arc::clone(&self.intro_registry);
-        tokio::spawn(
-            async move {
-                info!("client connection — starting Noise handshake");
-                if let Err(e) = handle_noise_session(
-                    stream,
-                    &secret_bytes,
-                    circuits,
-                    intro_reg,
-                )
-                .await
-                {
-                    warn!(error = %e, "relay session failed");
-                }
-            }
-            .instrument(span),
-        );
-    }
-
-    pub async fn handle_forwarded_cell(
-        &self,
-        stream: TcpStream,
-        remote_addr: SocketAddr,
-    ) {
-        let span = tracing::info_span!(
-            "forwarded_cell",
-            remote_addr = %remote_addr,
-        );
-        let circuits = Arc::clone(&self.circuits);
-        let intro_reg = Arc::clone(&self.intro_registry);
-        tokio::spawn(
-            async move {
-                debug!("forwarded cell connection");
-                if let Err(e) =
-                    handle_forwarded(stream, circuits, intro_reg).await
-                {
-                    warn!(error = %e, "forwarded cell processing failed");
-                }
-            }
-            .instrument(span),
-        );
+    /// Serves one link, after its protocol byte, until the circuit on it ends.
+    pub async fn handle_link(&self, stream: TcpStream) {
+        let secret = StaticSecret::from(*self.static_secret_bytes);
+        let result = serve_link(stream, &secret, &self.intro_registry).await;
+        drop(secret);
+        match result {
+            Ok(()) => debug!("circuit closed"),
+            Err(e) => debug!(error = %e, "circuit ended with an error"),
+        }
     }
 }
 
-async fn handle_noise_session(
-    mut stream: TcpStream,
-    secret_bytes: &[u8; 32],
-    circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
-    intro_registry: IntroRegistry,
-) -> Result<()> {
-    let mut sb = *secret_bytes;
-    let secret = StaticSecret::from(sb);
-    sb.zeroize();
-    let mut handshake = HandshakeState::new(Role::Responder, secret);
-    let msg_a = read_frame(&mut stream).await?;
-    handshake.read_message_a(&msg_a)?;
-    let msg_b = handshake.write_message_b()?;
-    write_frame(&mut stream, &msg_b).await?;
-    let msg_c = read_frame(&mut stream).await?;
-    handshake.read_message_c(&msg_c)?;
-    info!("relay Noise XX handshake completed");
-    let (send_cipher, recv_cipher) = handshake.into_transport()?;
-    let session_key = recv_cipher.session_key()?;
-    let mut conn =
-        SecureConnection::new(stream, send_cipher, recv_cipher);
+fn new_circuit_id() -> u32 {
+    rand::thread_rng().gen_range(1..=u32::MAX)
+}
 
-    loop {
-        let msg = match conn.recv_message().await {
-            Ok(m) => m,
-            Err(e) => {
-                debug!(error = %e, "connection closed or error");
-                break;
+/// The far side of an exit: what the circuit's data goes to.
+enum Exit {
+    None,
+    Tcp {
+        read: OwnedReadHalf,
+        write: OwnedWriteHalf,
+    },
+    /// A hidden service's circuit at its introduction point, waiting for
+    /// clients and bridging one at a time.
+    Service {
+        service_hash: Vec<u8>,
+        clients: mpsc::Receiver<ClientPipe>,
+        registered: mpsc::Sender<ClientPipe>,
+        current: Option<ClientPipe>,
+    },
+    /// A client's circuit at the introduction point, bridged to the service.
+    ToService {
+        to_service: mpsc::Sender<Vec<u8>>,
+        from_service: mpsc::Receiver<Vec<u8>>,
+    },
+}
+
+enum ExitEvent {
+    TargetData(Vec<u8>),
+    TargetClosed,
+    ClientArrived(ClientPipe),
+    ClientData(Vec<u8>),
+    ClientLeft,
+    ServiceData(Vec<u8>),
+    ServiceLeft,
+}
+
+async fn next_exit_event(exit: &mut Exit, buf: &mut [u8]) -> ExitEvent {
+    match exit {
+        Exit::None => std::future::pending().await,
+        Exit::Tcp { read, .. } => match read.read(buf).await {
+            Ok(0) | Err(_) => ExitEvent::TargetClosed,
+            Ok(n) => ExitEvent::TargetData(buf[..n].to_vec()),
+        },
+        Exit::Service { clients, current, .. } => match current {
+            None => match clients.recv().await {
+                Some(pipe) => ExitEvent::ClientArrived(pipe),
+                None => std::future::pending().await,
+            },
+            Some(pipe) => match pipe.from_client.recv().await {
+                Some(data) => ExitEvent::ClientData(data),
+                None => ExitEvent::ClientLeft,
+            },
+        },
+        Exit::ToService { from_service, .. } => match from_service.recv().await {
+            Some(data) => ExitEvent::ServiceData(data),
+            None => ExitEvent::ServiceLeft,
+        },
+    }
+}
+
+async fn recv_next(
+    next: &mut Option<(u32, LinkWriter, mpsc::Receiver<Result<Message>>)>,
+) -> Option<Result<Message>> {
+    match next {
+        Some((_, _, rx)) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// One circuit, from the relay's side.
+struct Hop<'a> {
+    in_cid: u32,
+    hop: RelayHop,
+    back: LinkWriter,
+    next: Option<(u32, LinkWriter, mpsc::Receiver<Result<Message>>)>,
+    exit: Exit,
+    intro_registry: &'a IntroRegistry,
+}
+
+impl Hop<'_> {
+    /// Sends a command this relay writes to the client.
+    async fn answer(&mut self, cmd: &RelayCommand) -> Result<()> {
+        let cell = self.hop.originate(&cmd.serialize_bincode()?)?;
+        self.back
+            .send_message(&Message::Relay { circuit_id: self.in_cid, data: cell })
+            .await
+    }
+
+    async fn from_client(&mut self, cell: &[u8]) -> Result<()> {
+        match self.hop.peel(cell)? {
+            Peeled::Onward(inner) => {
+                let Some((out_cid, writer, _)) = self.next.as_mut() else {
+                    return Err(HidraError::Circuit("a cell for a hop past this one, which is the last".into()));
+                };
+                writer
+                    .send_message(&Message::Relay { circuit_id: *out_cid, data: inner })
+                    .await
             }
+            Peeled::Here(body) => {
+                let cmd = RelayCommand::deserialize_bincode(&body)?;
+                self.command(cmd).await
+            }
+        }
+    }
+
+    async fn command(&mut self, cmd: RelayCommand) -> Result<()> {
+        match cmd {
+            RelayCommand::Extend { addr, transport_key, handshake } => {
+                if self.next.is_some() || !matches!(self.exit, Exit::None) {
+                    return Err(HidraError::Circuit("extend on a circuit already in use".into()));
+                }
+                match extend(addr, &transport_key, handshake).await {
+                    Ok((out_cid, writer, rx, answer)) => {
+                        self.next = Some((out_cid, writer, rx));
+                        info!("circuit extended");
+                        self.answer(&RelayCommand::Extended { handshake: answer }).await
+                    }
+                    Err(e) => {
+                        info!(error = %e, "extend failed");
+                        self.answer(&RelayCommand::ExtendFailed).await
+                    }
+                }
+            }
+            RelayCommand::Connect { host, port } => {
+                if self.next.is_some() || !matches!(self.exit, Exit::None) {
+                    return Err(HidraError::Circuit("connect on a circuit already in use".into()));
+                }
+                info!(host = %sensitive(&host), port, "exit relay — connecting to target");
+                let target = format!("{host}:{port}");
+                let attempt = tokio::time::timeout(TARGET_TIMEOUT, TcpStream::connect(&target)).await;
+                match attempt {
+                    Ok(Ok(stream)) => {
+                        let (read, write) = stream.into_split();
+                        self.exit = Exit::Tcp { read, write };
+                        self.answer(&RelayCommand::Connected).await
+                    }
+                    Ok(Err(e)) => {
+                        info!(error = %e, "exit relay — connect failed");
+                        self.answer(&RelayCommand::ConnectFailed(e.to_string())).await
+                    }
+                    Err(_) => self.answer(&RelayCommand::ConnectFailed("timed out".into())).await,
+                }
+            }
+            RelayCommand::ResolveDns { hostname } => {
+                info!(hostname = %sensitive(&hostname), "exit relay — DNS resolution");
+                let addresses = match tokio::net::lookup_host(format!("{hostname}:0")).await {
+                    Ok(addrs) => addrs.map(|a| a.ip().to_string()).collect(),
+                    Err(e) => {
+                        info!(error = %e, "DNS resolution failed");
+                        Vec::new()
+                    }
+                };
+                self.answer(&RelayCommand::DnsResolved { addresses }).await
+            }
+            RelayCommand::RegisterService { service_hash } => {
+                if self.next.is_some() || !matches!(self.exit, Exit::None) {
+                    return Err(HidraError::Circuit("register on a circuit already in use".into()));
+                }
+                info!(service = %sensitive(&hex(&service_hash)), "intro relay — registering hidden service");
+                let (tx, rx) = mpsc::channel::<ClientPipe>(16);
+                self.intro_registry.lock().await.insert(service_hash.clone(), tx.clone());
+                self.exit = Exit::Service {
+                    service_hash,
+                    clients: rx,
+                    registered: tx,
+                    current: None,
+                };
+                self.answer(&RelayCommand::ServiceRegistered).await
+            }
+            RelayCommand::ConnectService { service_hash } => {
+                if self.next.is_some() || !matches!(self.exit, Exit::None) {
+                    return Err(HidraError::Circuit("connect on a circuit already in use".into()));
+                }
+                info!(service = %sensitive(&hex(&service_hash)), "intro relay — client connecting to service");
+                let pipe_tx = self.intro_registry.lock().await.get(&service_hash).cloned();
+                let Some(pipe_tx) = pipe_tx else {
+                    return self
+                        .answer(&RelayCommand::ConnectFailed("service not found at this intro point".into()))
+                        .await;
+                };
+                let (to_service, from_client) = mpsc::channel::<Vec<u8>>(256);
+                let (to_client, from_service) = mpsc::channel::<Vec<u8>>(256);
+                if pipe_tx.send(ClientPipe { from_client, to_client }).await.is_err() {
+                    return self
+                        .answer(&RelayCommand::ConnectFailed("service handler disconnected".into()))
+                        .await;
+                }
+                self.exit = Exit::ToService { to_service, from_service };
+                self.answer(&RelayCommand::ServiceConnected).await
+            }
+            RelayCommand::Data(payload) => {
+                match &mut self.exit {
+                    Exit::Tcp { write, .. } => {
+                        if write.write_all(&payload).await.is_err() {
+                            self.exit = Exit::None;
+                            return self.answer(&RelayCommand::End).await;
+                        }
+                    }
+                    Exit::Service { current: Some(pipe), .. } => {
+                        let _ = pipe.to_client.send(payload).await;
+                    }
+                    Exit::ToService { to_service, .. } => {
+                        let _ = to_service.send(payload).await;
+                    }
+                    _ => debug!("data with nowhere to go"),
+                }
+                Ok(())
+            }
+            RelayCommand::End => {
+                match &mut self.exit {
+                    Exit::Service { current, .. } => *current = None,
+                    Exit::Tcp { .. } | Exit::ToService { .. } => self.exit = Exit::None,
+                    Exit::None => {}
+                }
+                debug!("stream ended by the client");
+                Ok(())
+            }
+            RelayCommand::Probe(bytes) => {
+                // The length, never the content.
+                info!(bytes = bytes.len(), "probe received");
+                self.answer(&RelayCommand::ProbeReply(b"Received, agent".to_vec())).await
+            }
+            other => Err(HidraError::Circuit(format!(
+                "a client does not send {}",
+                command_name(&other)
+            ))),
+        }
+    }
+
+    async fn from_exit(&mut self, event: ExitEvent) -> Result<()> {
+        match event {
+            ExitEvent::TargetData(data) | ExitEvent::ClientData(data) | ExitEvent::ServiceData(data) => {
+                self.answer(&RelayCommand::Data(data)).await
+            }
+            ExitEvent::TargetClosed | ExitEvent::ServiceLeft => {
+                self.exit = Exit::None;
+                self.answer(&RelayCommand::End).await
+            }
+            ExitEvent::ClientArrived(pipe) => {
+                if let Exit::Service { current, .. } = &mut self.exit {
+                    *current = Some(pipe);
+                }
+                info!("intro relay — bridging client to service");
+                Ok(())
+            }
+            ExitEvent::ClientLeft => {
+                if let Exit::Service { current, .. } = &mut self.exit {
+                    *current = None;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn teardown(mut self) {
+        if let Some((out_cid, mut writer, _)) = self.next.take() {
+            let _ = writer.send_message(&Message::Destroy { circuit_id: out_cid }).await;
+        }
+        if let Exit::Service { service_hash, registered, .. } = &self.exit {
+            let mut reg = self.intro_registry.lock().await;
+            if reg.get(service_hash).is_some_and(|tx| tx.same_channel(registered)) {
+                reg.remove(service_hash);
+                info!("intro relay — service deregistered");
+            }
+        }
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn command_name(cmd: &RelayCommand) -> &'static str {
+    match cmd {
+        RelayCommand::Connected => "CONNECTED",
+        RelayCommand::ConnectFailed(_) => "CONNECT_FAILED",
+        RelayCommand::DnsResolved { .. } => "DNS_RESOLVED",
+        RelayCommand::ServiceRegistered => "SERVICE_REGISTERED",
+        RelayCommand::ServiceConnected => "SERVICE_CONNECTED",
+        RelayCommand::Extended { .. } => "EXTENDED",
+        RelayCommand::ExtendFailed => "EXTEND_FAILED",
+        RelayCommand::ProbeReply(_) => "PROBE_REPLY",
+        _ => "this command",
+    }
+}
+
+/// Dials the next hop, brings the link up against its key, and runs the
+/// client's handshake with it. Returns the new link and the relay's answer.
+async fn extend(
+    addr: std::net::SocketAddr,
+    transport_key: &[u8; 32],
+    handshake: Vec<u8>,
+) -> Result<(u32, LinkWriter, mpsc::Receiver<Result<Message>>, Vec<u8>)> {
+    let conn = link::connect(addr, transport_key).await?;
+    let (reader, mut writer) = conn.into_split();
+    let mut rx = reader.spawn();
+    let out_cid = new_circuit_id();
+    writer
+        .send_message(&Message::Create { circuit_id: out_cid, handshake })
+        .await?;
+    let answer = tokio::time::timeout(link::LINK_TIMEOUT, rx.recv())
+        .await
+        .map_err(|_| HidraError::Relay("next hop did not answer CREATE".into()))?;
+    match answer {
+        Some(Ok(Message::Created { circuit_id, handshake })) if circuit_id == out_cid => {
+            Ok((out_cid, writer, rx, handshake))
+        }
+        Some(Err(e)) => Err(e),
+        _ => Err(HidraError::Relay("next hop refused CREATE".into())),
+    }
+}
+
+async fn serve_link(
+    stream: TcpStream,
+    secret: &StaticSecret,
+    intro_registry: &IntroRegistry,
+) -> Result<()> {
+    let conn = link::accept(stream, secret).await?;
+    let (reader, mut back) = conn.into_split();
+    let mut inbound = reader.spawn();
+
+    let first = tokio::time::timeout(link::LINK_TIMEOUT, inbound.recv())
+        .await
+        .map_err(|_| HidraError::Relay("no CREATE on a new link".into()))?;
+    let (in_cid, hop) = match first {
+        Some(Ok(Message::Create { circuit_id, handshake })) => {
+            let (answer, keys) = respond(secret, &handshake)?;
+            back.send_message(&Message::Created { circuit_id, handshake: answer })
+                .await?;
+            (circuit_id, RelayHop::new(keys))
+        }
+        Some(Ok(Message::Ping(_))) => {
+            return back.send_message(&Message::Pong(b"HidraPong".to_vec())).await;
+        }
+        Some(Err(e)) => return Err(e),
+        _ => return Err(HidraError::Protocol("a link must start with CREATE".into())),
+    };
+    info!("circuit created");
+
+    let mut hop = Hop {
+        in_cid,
+        hop,
+        back,
+        next: None,
+        exit: Exit::None,
+        intro_registry,
+    };
+    let mut buf = vec![0u8; 16 * 1024];
+    let result = loop {
+        let step = tokio::select! {
+            msg = inbound.recv() => match msg {
+                Some(Ok(Message::Relay { circuit_id, data })) if circuit_id == hop.in_cid => {
+                    hop.from_client(&data).await
+                }
+                Some(Ok(Message::Destroy { .. })) | None => break Ok(()),
+                Some(Ok(_)) => Err(HidraError::Protocol("unexpected message on a circuit link".into())),
+                Some(Err(e)) => Err(e),
+            },
+            msg = recv_next(&mut hop.next) => match msg {
+                Some(Ok(Message::Relay { circuit_id, data }))
+                    if hop.next.as_ref().is_some_and(|(id, _, _)| *id == circuit_id) =>
+                {
+                    match hop.hop.relay_back(&data) {
+                        Ok(cell) => hop.back
+                            .send_message(&Message::Relay { circuit_id: hop.in_cid, data: cell })
+                            .await,
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => {
+                    // The rest of the circuit is gone; so is this part of it.
+                    hop.next = None;
+                    let _ = hop.back.send_message(&Message::Destroy { circuit_id: hop.in_cid }).await;
+                    break Ok(());
+                }
+            },
+            event = next_exit_event(&mut hop.exit, &mut buf) => hop.from_exit(event).await,
         };
-        match msg {
-            Message::CreateCircuit { circuit_id } => {
-                info!(circuit_id, "creating circuit");
-                let mut map = circuits.lock().await;
-                map.insert(circuit_id, CircuitEntry { session_key });
-                conn.send_message(&Message::CircuitCreated {
-                    circuit_id,
-                })
-                .await?;
-                info!(circuit_id, "circuit created");
-            }
-            Message::Relay { circuit_id, data } => {
-                let key = {
-                    let map = circuits.lock().await;
-                    let entry =
-                        map.get(&circuit_id).ok_or_else(|| {
-                            HidraError::Circuit(format!(
-                                "unknown circuit {circuit_id}"
-                            ))
-                        })?;
-                    entry.session_key
-                };
-                let (header, inner) = peel_layer(&key, &data)?;
-                info!(
-                    circuit_id,
-                    has_next_hop = header.next_hop.is_some(),
-                    "peeled onion layer"
-                );
-                match header.next_hop {
-                    Some(next_addr) => {
-                        info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding to next relay");
-                        let mut next_stream =
-                            connect_to_next(next_addr).await?;
-                        let relay_msg = Message::Relay {
-                            circuit_id,
-                            data: inner,
-                        };
-                        write_frame(
-                            &mut next_stream,
-                            &relay_msg.serialize(),
-                        )
-                        .await?;
-                        let resp_frame =
-                            read_frame(&mut next_stream).await?;
-                        let resp_msg =
-                            Message::deserialize(&resp_frame)?;
-                        let resp_data = match resp_msg {
-                            Message::Relay { data, .. } => data,
-                            other => {
-                                return Err(HidraError::Relay(
-                                    format!("unexpected response from next hop: {other:?}"),
-                                ));
-                            }
-                        };
-                        let response_wrapped = wrap_layer(
-                            &key,
-                            &LayerHeader { next_hop: None },
-                            &resp_data,
-                        )?;
-                        conn.send_message(&Message::Relay {
-                            circuit_id,
-                            data: response_wrapped,
-                        })
-                        .await?;
-                        info!(circuit_id, "entering relay streaming loop");
-                        relay_streaming_loop(
-                            &mut conn,
-                            &mut next_stream,
-                            circuit_id,
-                            &key,
-                        )
-                        .await?;
-                        break;
-                    }
-                    None => {
-                        if let Ok(cmd) =
-                            RelayCommand::deserialize_bincode(&inner)
-                        {
-                            handle_exit_command(
-                                cmd,
-                                &mut conn,
-                                circuit_id,
-                                &key,
-                                &intro_registry,
-                            )
-                            .await?;
-                            break;
-                        }
-                        // The length, and never the content. This is traffic a
-                        // user sent through the circuit, decrypted at the exit:
-                        // writing it to the log puts what they said on an
-                        // operator's disk, which is worse than writing who they
-                        // are.
-                        info!(
-                            circuit_id,
-                            bytes = inner.len(),
-                            "exit node — received payload (legacy)"
-                        );
-                        let response_wrapped = wrap_layer(
-                            &key,
-                            &LayerHeader { next_hop: None },
-                            b"Received, agent",
-                        )?;
-                        conn.send_message(&Message::Relay {
-                            circuit_id,
-                            data: response_wrapped,
-                        })
-                        .await?;
-                        info!(circuit_id, "exit node — sent legacy response");
-                    }
-                }
-            }
-            Message::Ping(ref data) => {
-                info!(bytes = data.len(), "received Ping (legacy)");
-                conn.send_message(&Message::Pong(
-                    b"HidraPong".to_vec(),
-                ))
-                .await?;
-            }
-            other => {
-                warn!(?other, "unexpected message in relay session");
-            }
+        if let Err(e) = step {
+            let _ = hop.back.send_message(&Message::Destroy { circuit_id: hop.in_cid }).await;
+            break Err(e);
         }
+    };
+    hop.teardown().await;
+    if let Err(ref e) = result {
+        warn!(error = %e, "circuit torn down");
     }
-    info!("relay session ended");
-    Ok(())
-}
-
-async fn handle_forwarded(
-    mut stream: TcpStream,
-    circuits: Arc<Mutex<HashMap<u32, CircuitEntry>>>,
-    intro_registry: IntroRegistry,
-) -> Result<()> {
-    let frame = read_frame(&mut stream).await?;
-    let msg = Message::deserialize(&frame)?;
-    match msg {
-        Message::Relay { circuit_id, data } => {
-            let key = {
-                let map = circuits.lock().await;
-                let entry = map.get(&circuit_id).ok_or_else(|| {
-                    HidraError::Circuit(format!(
-                        "forwarded cell: unknown circuit {circuit_id}"
-                    ))
-                })?;
-                entry.session_key
-            };
-            let (header, inner) = peel_layer(&key, &data)?;
-            info!(
-                circuit_id,
-                has_next_hop = header.next_hop.is_some(),
-                "forwarded cell — peeled layer"
-            );
-            match header.next_hop {
-                Some(next_addr) => {
-                    info!(circuit_id, next_hop = %sensitive(&next_addr), "forwarding further");
-                    let mut next_stream =
-                        connect_to_next(next_addr).await?;
-                    let relay_msg = Message::Relay {
-                        circuit_id,
-                        data: inner,
-                    };
-                    write_frame(
-                        &mut next_stream,
-                        &relay_msg.serialize(),
-                    )
-                    .await?;
-                    let resp_frame =
-                        read_frame(&mut next_stream).await?;
-                    let resp_msg =
-                        Message::deserialize(&resp_frame)?;
-                    let resp_data = match resp_msg {
-                        Message::Relay { data, .. } => data,
-                        other => {
-                            return Err(HidraError::Relay(format!(
-                                "unexpected response: {other:?}"
-                            )));
-                        }
-                    };
-                    let response_wrapped = wrap_layer(
-                        &key,
-                        &LayerHeader { next_hop: None },
-                        &resp_data,
-                    )?;
-                    let out_msg = Message::Relay {
-                        circuit_id,
-                        data: response_wrapped,
-                    };
-                    write_frame(&mut stream, &out_msg.serialize())
-                        .await?;
-                    info!(circuit_id, "entering forwarded streaming loop");
-                    forwarded_streaming_loop(
-                        &mut stream,
-                        &mut next_stream,
-                        circuit_id,
-                        &key,
-                    )
-                    .await?;
-                }
-                None => {
-                    if let Ok(cmd) =
-                        RelayCommand::deserialize_bincode(&inner)
-                    {
-                        handle_exit_forwarded(
-                            cmd,
-                            &mut stream,
-                            circuit_id,
-                            &key,
-                            &intro_registry,
-                        )
-                        .await?;
-                    } else {
-                        // The length, and never the content. This is traffic a
-                        // user sent through the circuit, decrypted at the exit:
-                        // writing it to the log puts what they said on an
-                        // operator's disk, which is worse than writing who they
-                        // are.
-                        info!(
-                            circuit_id,
-                            bytes = inner.len(),
-                            "exit node — received payload (legacy)"
-                        );
-                        let response_wrapped = wrap_layer(
-                            &key,
-                            &LayerHeader { next_hop: None },
-                            b"Received, agent",
-                        )?;
-                        let out_msg = Message::Relay {
-                            circuit_id,
-                            data: response_wrapped,
-                        };
-                        write_frame(
-                            &mut stream,
-                            &out_msg.serialize(),
-                        )
-                        .await?;
-                        info!(circuit_id, "sent legacy response back");
-                    }
-                }
-            }
-        }
-        other => {
-            warn!(?other, "unexpected forwarded message type");
-        }
-    }
-    Ok(())
-}
-
-async fn handle_exit_command(
-    cmd: RelayCommand,
-    conn: &mut SecureConnection,
-    circuit_id: u32,
-    key: &[u8; 32],
-    intro_registry: &IntroRegistry,
-) -> Result<()> {
-    match cmd {
-        RelayCommand::Connect { host, port } => {
-            info!(circuit_id, host = %sensitive(&host), port, "exit relay — connecting to target");
-            let target_addr = format!("{host}:{port}");
-            let mut target =
-                match TcpStream::connect(&target_addr).await {
-                    Ok(t) => {
-                        info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected to target");
-                        t
-                    }
-                    Err(e) => {
-                        warn!(circuit_id, error = %e, target = %sensitive(&target_addr), "exit relay — connect failed");
-                        let fail = RelayCommand::ConnectFailed(
-                            format!("{e}"),
-                        );
-                        let fail_data = fail.serialize_bincode()?;
-                        let wrapped = wrap_layer(
-                            key,
-                            &LayerHeader { next_hop: None },
-                            &fail_data,
-                        )?;
-                        conn.send_message(&Message::Relay {
-                            circuit_id,
-                            data: wrapped,
-                        })
-                        .await?;
-                        return Ok(());
-                    }
-                };
-            let connected = RelayCommand::Connected;
-            let connected_data = connected.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &connected_data,
-            )?;
-            conn.send_message(&Message::Relay {
-                circuit_id,
-                data: wrapped,
-            })
-            .await?;
-            exit_streaming_loop(conn, &mut target, circuit_id, key)
-                .await
-        }
-        RelayCommand::RegisterService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — registering hidden service");
-            let (pipe_tx, mut pipe_rx) = mpsc::channel::<ClientPipe>(16);
-            {
-                let mut reg = intro_registry.lock().await;
-                reg.insert(service_hash.clone(), pipe_tx);
-            }
-            let ack = RelayCommand::ServiceRegistered;
-            let ack_data = ack.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &ack_data,
-            )?;
-            conn.send_message(&Message::Relay {
-                circuit_id,
-                data: wrapped,
-            })
-            .await?;
-            info!(circuit_id, "intro relay — service registered, waiting for clients");
-            while let Some(mut client_pipe) = pipe_rx.recv().await {
-                info!(circuit_id, "intro relay — bridging client to service");
-                if let Err(e) = bridge_service_session(
-                    conn,
-                    circuit_id,
-                    key,
-                    &mut client_pipe.from_client,
-                    &client_pipe.to_client,
-                )
-                .await
-                {
-                    warn!(error = %e, "service bridge session ended");
-                }
-            }
-            {
-                let mut reg = intro_registry.lock().await;
-                reg.remove(&service_hash);
-            }
-            info!(circuit_id, "intro relay — service deregistered");
-            Ok(())
-        }
-        RelayCommand::ConnectService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — client connecting to service");
-            let pipe_tx = {
-                let reg = intro_registry.lock().await;
-                reg.get(&service_hash).cloned()
-            };
-            let Some(pipe_tx) = pipe_tx else {
-                warn!(circuit_id, "intro relay — service not found");
-                let fail = RelayCommand::ConnectFailed(
-                    "service not found at this intro point".into(),
-                );
-                let fail_data = fail.serialize_bincode()?;
-                let wrapped = wrap_layer(
-                    key,
-                    &LayerHeader { next_hop: None },
-                    &fail_data,
-                )?;
-                conn.send_message(&Message::Relay {
-                    circuit_id,
-                    data: wrapped,
-                })
-                .await?;
-                return Ok(());
-            };
-            let (client_to_svc_tx, client_to_svc_rx) =
-                mpsc::channel::<Vec<u8>>(256);
-            let (svc_to_client_tx, mut svc_to_client_rx) =
-                mpsc::channel::<Vec<u8>>(256);
-            let client_pipe = ClientPipe {
-                from_client: client_to_svc_rx,
-                to_client: svc_to_client_tx,
-            };
-            if pipe_tx.send(client_pipe).await.is_err() {
-                warn!(circuit_id, "intro relay — service handler gone");
-                let fail = RelayCommand::ConnectFailed(
-                    "service handler disconnected".into(),
-                );
-                let fail_data = fail.serialize_bincode()?;
-                let wrapped = wrap_layer(
-                    key,
-                    &LayerHeader { next_hop: None },
-                    &fail_data,
-                )?;
-                conn.send_message(&Message::Relay {
-                    circuit_id,
-                    data: wrapped,
-                })
-                .await?;
-                return Ok(());
-            }
-            let ack = RelayCommand::ServiceConnected;
-            let ack_data = ack.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &ack_data,
-            )?;
-            conn.send_message(&Message::Relay {
-                circuit_id,
-                data: wrapped,
-            })
-            .await?;
-            info!(circuit_id, "intro relay — bridging client ↔ service");
-            bridge_client_to_service(
-                conn,
-                circuit_id,
-                key,
-                client_to_svc_tx,
-                &mut svc_to_client_rx,
-            )
-            .await
-        }
-        RelayCommand::ResolveDns { hostname } => {
-            info!(circuit_id, hostname = %sensitive(&hostname), "exit relay — DNS resolution");
-            let addr_str = format!("{hostname}:0");
-            let addresses: Vec<String> =
-                match tokio::net::lookup_host(&addr_str).await {
-                    Ok(addrs) => {
-                        addrs.map(|a| a.ip().to_string()).collect()
-                    }
-                    Err(e) => {
-                        warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
-                        Vec::new()
-                    }
-                };
-            let resp = RelayCommand::DnsResolved { addresses };
-            let resp_data = resp.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &resp_data,
-            )?;
-            conn.send_message(&Message::Relay {
-                circuit_id,
-                data: wrapped,
-            })
-            .await?;
-            Ok(())
-        }
-        other => {
-            warn!(circuit_id, cmd = ?other, "unexpected relay command at exit");
-            Ok(())
-        }
-    }
-}
-
-async fn handle_exit_forwarded(
-    cmd: RelayCommand,
-    upstream: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-    intro_registry: &IntroRegistry,
-) -> Result<()> {
-    match cmd {
-        RelayCommand::RegisterService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay (forwarded) — registering service");
-            let (pipe_tx, pipe_rx) = mpsc::channel::<ClientPipe>(16);
-            {
-                let mut reg = intro_registry.lock().await;
-                reg.insert(service_hash.clone(), pipe_tx);
-            }
-            let ack = RelayCommand::ServiceRegistered;
-            let ack_data = ack.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &ack_data,
-            )?;
-            let msg = Message::Relay { circuit_id, data: wrapped };
-            write_frame(upstream, &msg.serialize()).await?;
-            info!(circuit_id, "intro relay (forwarded) — service registered, waiting");
-            {
-                let mut reg = intro_registry.lock().await;
-                reg.remove(&service_hash);
-            }
-            drop(pipe_rx);
-            Ok(())
-        }
-        RelayCommand::ConnectService { service_hash } => {
-            info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay (forwarded) — client connecting");
-            let pipe_tx = {
-                let reg = intro_registry.lock().await;
-                reg.get(&service_hash).cloned()
-            };
-            let Some(pipe_tx) = pipe_tx else {
-                let fail = RelayCommand::ConnectFailed(
-                    "service not found".into(),
-                );
-                let fail_data = fail.serialize_bincode()?;
-                let wrapped = wrap_layer(
-                    key,
-                    &LayerHeader { next_hop: None },
-                    &fail_data,
-                )?;
-                let msg = Message::Relay { circuit_id, data: wrapped };
-                write_frame(upstream, &msg.serialize()).await?;
-                return Ok(());
-            };
-            let (client_to_svc_tx, client_to_svc_rx) =
-                mpsc::channel::<Vec<u8>>(256);
-            let (svc_to_client_tx, mut svc_to_client_rx) =
-                mpsc::channel::<Vec<u8>>(256);
-            let client_pipe = ClientPipe {
-                from_client: client_to_svc_rx,
-                to_client: svc_to_client_tx,
-            };
-            if pipe_tx.send(client_pipe).await.is_err() {
-                let fail = RelayCommand::ConnectFailed(
-                    "service handler disconnected".into(),
-                );
-                let fail_data = fail.serialize_bincode()?;
-                let wrapped = wrap_layer(
-                    key,
-                    &LayerHeader { next_hop: None },
-                    &fail_data,
-                )?;
-                let msg = Message::Relay { circuit_id, data: wrapped };
-                write_frame(upstream, &msg.serialize()).await?;
-                return Ok(());
-            }
-            let ack = RelayCommand::ServiceConnected;
-            let ack_data = ack.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &ack_data,
-            )?;
-            let msg = Message::Relay { circuit_id, data: wrapped };
-            write_frame(upstream, &msg.serialize()).await?;
-            bridge_forwarded_client_to_service(
-                upstream,
-                circuit_id,
-                key,
-                client_to_svc_tx,
-                &mut svc_to_client_rx,
-            )
-            .await
-        }
-        RelayCommand::Connect { host, port } => {
-            info!(circuit_id, host = %sensitive(&host), port, "exit relay (forwarded) — connecting to target");
-            let target_addr = format!("{host}:{port}");
-            let mut target =
-                match TcpStream::connect(&target_addr).await {
-                    Ok(t) => {
-                        info!(circuit_id, target = %sensitive(&target_addr), "exit relay — connected");
-                        t
-                    }
-                    Err(e) => {
-                        warn!(circuit_id, error = %e, "exit relay — connect failed");
-                        let fail = RelayCommand::ConnectFailed(
-                            format!("{e}"),
-                        );
-                        let fail_data = fail.serialize_bincode()?;
-                        let wrapped = wrap_layer(
-                            key,
-                            &LayerHeader { next_hop: None },
-                            &fail_data,
-                        )?;
-                        let msg = Message::Relay {
-                            circuit_id,
-                            data: wrapped,
-                        };
-                        write_frame(upstream, &msg.serialize())
-                            .await?;
-                        return Ok(());
-                    }
-                };
-            let connected = RelayCommand::Connected;
-            let connected_data = connected.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &connected_data,
-            )?;
-            let msg = Message::Relay {
-                circuit_id,
-                data: wrapped,
-            };
-            write_frame(upstream, &msg.serialize()).await?;
-            exit_forwarded_streaming_loop(
-                upstream,
-                &mut target,
-                circuit_id,
-                key,
-            )
-            .await
-        }
-        RelayCommand::ResolveDns { hostname } => {
-            info!(circuit_id, hostname = %sensitive(&hostname), "exit relay (forwarded) — DNS resolution");
-            let addr_str = format!("{hostname}:0");
-            let addresses: Vec<String> =
-                match tokio::net::lookup_host(&addr_str).await {
-                    Ok(addrs) => {
-                        addrs.map(|a| a.ip().to_string()).collect()
-                    }
-                    Err(e) => {
-                        warn!(circuit_id, hostname = %sensitive(&hostname), error = %e, "DNS resolution failed");
-                        Vec::new()
-                    }
-                };
-            let resp = RelayCommand::DnsResolved { addresses };
-            let resp_data = resp.serialize_bincode()?;
-            let wrapped = wrap_layer(
-                key,
-                &LayerHeader { next_hop: None },
-                &resp_data,
-            )?;
-            let msg = Message::Relay {
-                circuit_id,
-                data: wrapped,
-            };
-            write_frame(upstream, &msg.serialize()).await?;
-            Ok(())
-        }
-        other => {
-            warn!(circuit_id, cmd = ?other, "unexpected relay command (forwarded exit)");
-            Ok(())
-        }
-    }
-}
-
-async fn exit_streaming_loop(
-    conn: &mut SecureConnection,
-    target: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-) -> Result<()> {
-    let mut target_buf = vec![0u8; 16384];
-    loop {
-        tokio::select! {
-            msg_result = conn.recv_message() => {
-                let msg = match msg_result {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
-                        match cmd {
-                            RelayCommand::Data(payload) => {
-                                if target.write_all(&payload).await.is_err() { break; }
-                            }
-                            RelayCommand::End => {
-                                debug!(circuit_id, "exit relay — stream ended by client");
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            n = target.read(&mut target_buf) => {
-                match n {
-                    Ok(0) => {
-                        debug!(circuit_id, "exit relay — target closed connection");
-                        let end = RelayCommand::End;
-                        let end_data = end.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &end_data)?;
-                        let _ = conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await;
-                        break;
-                    }
-                    Ok(n) => {
-                        let data_cmd = RelayCommand::Data(target_buf[..n].to_vec());
-                        let data_bytes = data_cmd.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &data_bytes)?;
-                        conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await?;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-    info!(circuit_id, "exit streaming loop ended");
-    Ok(())
-}
-
-async fn exit_forwarded_streaming_loop(
-    upstream: &mut TcpStream,
-    target: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-) -> Result<()> {
-    let mut target_buf = vec![0u8; 16384];
-    loop {
-        tokio::select! {
-            frame_result = read_frame(upstream) => {
-                let frame = match frame_result {
-                    Ok(f) => f,
-                    Err(_) => break,
-                };
-                let msg = Message::deserialize(&frame)?;
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
-                        match cmd {
-                            RelayCommand::Data(payload) => {
-                                if target.write_all(&payload).await.is_err() { break; }
-                            }
-                            RelayCommand::End => {
-                                debug!(circuit_id, "exit forwarded — stream ended");
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            n = target.read(&mut target_buf) => {
-                match n {
-                    Ok(0) => {
-                        let end = RelayCommand::End;
-                        let end_data = end.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &end_data)?;
-                        let msg = Message::Relay { circuit_id, data: wrapped };
-                        let _ = write_frame(upstream, &msg.serialize()).await;
-                        break;
-                    }
-                    Ok(n) => {
-                        let data_cmd = RelayCommand::Data(target_buf[..n].to_vec());
-                        let data_bytes = data_cmd.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &data_bytes)?;
-                        let msg = Message::Relay { circuit_id, data: wrapped };
-                        write_frame(upstream, &msg.serialize()).await?;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-    info!(circuit_id, "exit forwarded streaming loop ended");
-    Ok(())
-}
-
-async fn relay_streaming_loop(
-    conn: &mut SecureConnection,
-    next_stream: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            msg_result = conn.recv_message() => {
-                let msg = match msg_result {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let relay_msg = Message::Relay { circuit_id, data: decrypted };
-                        write_frame(next_stream, &relay_msg.serialize()).await?;
-                    }
-                    _ => break,
-                }
-            }
-            frame_result = read_frame(next_stream) => {
-                let frame = match frame_result {
-                    Ok(f) => f,
-                    Err(_) => break,
-                };
-                let msg = Message::deserialize(&frame)?;
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let wrapped = encrypt_stream(key, &data)?;
-                        conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await?;
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-    info!(circuit_id, "relay streaming loop ended");
-    Ok(())
-}
-
-async fn forwarded_streaming_loop(
-    upstream: &mut TcpStream,
-    downstream: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            frame_result = read_frame(upstream) => {
-                let frame = match frame_result {
-                    Ok(f) => f,
-                    Err(_) => break,
-                };
-                let msg = Message::deserialize(&frame)?;
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let relay_msg = Message::Relay { circuit_id, data: decrypted };
-                        write_frame(downstream, &relay_msg.serialize()).await?;
-                    }
-                    _ => break,
-                }
-            }
-            frame_result = read_frame(downstream) => {
-                let frame = match frame_result {
-                    Ok(f) => f,
-                    Err(_) => break,
-                };
-                let msg = Message::deserialize(&frame)?;
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let wrapped = encrypt_stream(key, &data)?;
-                        let out_msg = Message::Relay { circuit_id, data: wrapped };
-                        write_frame(upstream, &out_msg.serialize()).await?;
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-    info!(circuit_id, "forwarded streaming loop ended");
-    Ok(())
-}
-
-async fn bridge_service_session(
-    conn: &mut SecureConnection,
-    circuit_id: u32,
-    key: &[u8; 32],
-    from_client: &mut mpsc::Receiver<Vec<u8>>,
-    to_client: &mpsc::Sender<Vec<u8>>,
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            msg_result = conn.recv_message() => {
-                let msg = match msg_result {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
-                        match cmd {
-                            RelayCommand::Data(payload) => {
-                                if to_client.send(payload).await.is_err() {
-                                    break;
-                                }
-                            }
-                            RelayCommand::End => break,
-                            _ => {}
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            data = from_client.recv() => {
-                match data {
-                    Some(payload) => {
-                        let cmd = RelayCommand::Data(payload);
-                        let cmd_data = cmd.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &cmd_data)?;
-                        conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await?;
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-    debug!(circuit_id, "service bridge session ended");
-    Ok(())
-}
-
-async fn bridge_client_to_service(
-    conn: &mut SecureConnection,
-    circuit_id: u32,
-    key: &[u8; 32],
-    to_service: mpsc::Sender<Vec<u8>>,
-    from_service: &mut mpsc::Receiver<Vec<u8>>,
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            msg_result = conn.recv_message() => {
-                let msg = match msg_result {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
-                        match cmd {
-                            RelayCommand::Data(payload) => {
-                                if to_service.send(payload).await.is_err() {
-                                    break;
-                                }
-                            }
-                            RelayCommand::End => break,
-                            _ => {}
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            data = from_service.recv() => {
-                match data {
-                    Some(payload) => {
-                        let cmd = RelayCommand::Data(payload);
-                        let cmd_data = cmd.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &cmd_data)?;
-                        conn.send_message(&Message::Relay { circuit_id, data: wrapped }).await?;
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-    debug!(circuit_id, "client-to-service bridge ended");
-    Ok(())
-}
-
-async fn bridge_forwarded_client_to_service(
-    upstream: &mut TcpStream,
-    circuit_id: u32,
-    key: &[u8; 32],
-    to_service: mpsc::Sender<Vec<u8>>,
-    from_service: &mut mpsc::Receiver<Vec<u8>>,
-) -> Result<()> {
-    loop {
-        tokio::select! {
-            frame_result = read_frame(upstream) => {
-                let frame = match frame_result {
-                    Ok(f) => f,
-                    Err(_) => break,
-                };
-                let msg = Message::deserialize(&frame)?;
-                match msg {
-                    Message::Relay { data, .. } => {
-                        let decrypted = decrypt_stream(key, &data)?;
-                        let cmd = RelayCommand::deserialize_bincode(&decrypted)?;
-                        match cmd {
-                            RelayCommand::Data(payload) => {
-                                if to_service.send(payload).await.is_err() {
-                                    break;
-                                }
-                            }
-                            RelayCommand::End => break,
-                            _ => {}
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            data = from_service.recv() => {
-                match data {
-                    Some(payload) => {
-                        let cmd = RelayCommand::Data(payload);
-                        let cmd_data = cmd.serialize_bincode()?;
-                        let wrapped = encrypt_stream(key, &cmd_data)?;
-                        let msg = Message::Relay { circuit_id, data: wrapped };
-                        write_frame(upstream, &msg.serialize()).await?;
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-    debug!(circuit_id, "forwarded client-to-service bridge ended");
-    Ok(())
-}
-
-async fn connect_to_next(addr: SocketAddr) -> Result<TcpStream> {
-    let mut stream =
-        TcpStream::connect(addr).await.map_err(|e| {
-            HidraError::Relay(format!(
-                "failed to connect to next hop {addr}: {e}"
-            ))
-        })?;
-    stream.write_all(&[PROTO_FORWARDED_CELL]).await?;
-    Ok(stream)
+    result
 }

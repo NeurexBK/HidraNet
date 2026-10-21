@@ -3,25 +3,13 @@ use std::net::SocketAddr;
 use rand_core::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use x25519_dalek::StaticSecret;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use hidra_node::client::circuit_pool::CircuitPool;
 use hidra_node::client::session::run_client_session;
 use hidra_node::client::streaming::StreamingCircuit;
 use hidra_node::network::listener::NodeListener;
-use hidra_node::relay::registry::RelayEntry;
-
-fn make_relays(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
-    addrs
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| RelayEntry {
-            name: format!("relay-{}", i + 1),
-            addr: *addr,
-            noise_pubkey_b64: String::new(),
-        })
-        .collect()
-}
+use hidra_node::p2p::dht::descriptor::VerifiedRelay;
 
 async fn start_echo_server() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -53,22 +41,18 @@ async fn start_echo_server() -> SocketAddr {
     addr
 }
 
-async fn start_three_relays() -> (SocketAddr, SocketAddr, SocketAddr) {
+/// Three relays on loopback, each pinned to the key it really holds.
+async fn start_three_relays() -> Vec<VerifiedRelay> {
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-
-    let l1 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
-    let l2 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
-    let l3 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap();
-
-    let a1 = l1.local_addr().unwrap();
-    let a2 = l2.local_addr().unwrap();
-    let a3 = l3.local_addr().unwrap();
-
-    tokio::spawn(async move { l1.accept_loop().await });
-    tokio::spawn(async move { l2.accept_loop().await });
-    tokio::spawn(async move { l3.accept_loop().await });
-
-    (a1, a2, a3)
+    let mut relays = Vec::new();
+    for _ in 0..3 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = PublicKey::from(&secret).to_bytes();
+        let l = NodeListener::bind(addr, secret).await.unwrap();
+        relays.push(VerifiedRelay::pinned(l.local_addr().unwrap(), key));
+        tokio::spawn(async move { l.accept_loop().await });
+    }
+    relays
 }
 
 /// A DHT the SOCKS handler can hold but will never consult.
@@ -95,44 +79,9 @@ async fn idle_dht() -> std::sync::Arc<hidra_node::p2p::dht::DhtNode> {
 
 #[tokio::test]
 async fn three_relay_onion_circuit() {
-    let relay1_secret = StaticSecret::random_from_rng(OsRng);
-    let relay2_secret = StaticSecret::random_from_rng(OsRng);
-    let relay3_secret = StaticSecret::random_from_rng(OsRng);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
+    let relays = start_three_relays().await;
 
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-
-    let listener1 = NodeListener::bind(addr, relay1_secret).await.unwrap();
-    let listener2 = NodeListener::bind(addr, relay2_secret).await.unwrap();
-    let listener3 = NodeListener::bind(addr, relay3_secret).await.unwrap();
-
-    let addr1 = listener1.local_addr().unwrap();
-    let addr2 = listener2.local_addr().unwrap();
-    let addr3 = listener3.local_addr().unwrap();
-
-    tokio::spawn(async move { listener1.accept_loop().await });
-    tokio::spawn(async move { listener2.accept_loop().await });
-    tokio::spawn(async move { listener3.accept_loop().await });
-
-    let relays = vec![
-        RelayEntry {
-            name: "relay-1".into(),
-            addr: addr1,
-            noise_pubkey_b64: String::new(),
-        },
-        RelayEntry {
-            name: "relay-2".into(),
-            addr: addr2,
-            noise_pubkey_b64: String::new(),
-        },
-        RelayEntry {
-            name: "relay-3".into(),
-            addr: addr3,
-            noise_pubkey_b64: String::new(),
-        },
-    ];
-
-    let response = run_client_session(&relays, client_secret, "Hello, hidden world")
+    let response = run_client_session(&relays, "Hello, hidden world")
         .await
         .unwrap();
 
@@ -141,15 +90,10 @@ async fn three_relay_onion_circuit() {
 
 #[tokio::test]
 async fn streaming_circuit_echo_through_three_relays() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = start_three_relays().await;
     let echo_addr = start_echo_server().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-
-    let mut circuit = StreamingCircuit::build(&relays, client_secret)
-        .await
-        .unwrap();
+    let mut circuit = StreamingCircuit::build(&relays).await.unwrap();
 
     circuit
         .connect(&echo_addr.ip().to_string(), echo_addr.port())
@@ -165,7 +109,12 @@ async fn streaming_circuit_echo_through_three_relays() {
     let large_data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
     circuit.send_data(&large_data).await.unwrap();
 
-    let received_large = circuit.recv_data().await.unwrap().unwrap();
+    // A stream, not messages: the echo server writes back in 4096-byte reads,
+    // so the bytes may come in more than one piece.
+    let mut received_large = Vec::new();
+    while received_large.len() < large_data.len() {
+        received_large.extend(circuit.recv_data().await.unwrap().unwrap());
+    }
     assert_eq!(received_large, large_data);
 
     circuit.send_end().await.unwrap();
@@ -173,14 +122,9 @@ async fn streaming_circuit_echo_through_three_relays() {
 
 #[tokio::test]
 async fn streaming_circuit_connect_refused() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = start_three_relays().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-
-    let mut circuit = StreamingCircuit::build(&relays, client_secret)
-        .await
-        .unwrap();
+    let mut circuit = StreamingCircuit::build(&relays).await.unwrap();
 
     let result = circuit.connect("127.0.0.1", 1).await;
     assert!(result.is_err());
@@ -190,14 +134,10 @@ async fn streaming_circuit_connect_refused() {
 
 #[tokio::test]
 async fn socks5_proxy_end_to_end() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = start_three_relays().await;
     let echo_addr = start_echo_server().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-    let secret_bytes = client_secret.to_bytes();
-
-    let pool = CircuitPool::new(secret_bytes, relays);
+    let pool = CircuitPool::new(relays);
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
@@ -247,12 +187,10 @@ async fn socks5_proxy_end_to_end() {
 
 #[tokio::test]
 async fn socks5_proxy_domain_name_no_local_dns() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = start_three_relays().await;
     let echo_addr = start_echo_server().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-    let pool = CircuitPool::new(client_secret.to_bytes(), relays);
+    let pool = CircuitPool::new(relays);
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
@@ -308,11 +246,8 @@ async fn socks5_proxy_domain_name_no_local_dns() {
 
 #[tokio::test]
 async fn circuit_pool_reuses_prebuilt_circuits() {
-    let (a1, a2, a3) = start_three_relays().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-    let pool = CircuitPool::new(client_secret.to_bytes(), relays);
+    let relays = start_three_relays().await;
+    let pool = CircuitPool::new(relays);
 
     // Pre-build circuits
     pool.maintain().await;
@@ -329,11 +264,8 @@ async fn circuit_pool_reuses_prebuilt_circuits() {
 
 #[tokio::test]
 async fn failover_retries_on_connect_failure() {
-    let (a1, a2, a3) = start_three_relays().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
-    let client_secret = StaticSecret::random_from_rng(OsRng);
-    let pool = CircuitPool::new(client_secret.to_bytes(), relays);
+    let relays = start_three_relays().await;
+    let pool = CircuitPool::new(relays);
 
     let echo_addr = start_echo_server().await;
 

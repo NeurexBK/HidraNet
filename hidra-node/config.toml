@@ -30,17 +30,12 @@ enabled = false
 local_port = 8080
 # app = "hidrachat"  # uncomment to run HidraChat on this node
 
-[[relays]]
-name = "relay-1"
-addr = "127.0.0.1:7001"
-noise_pubkey = ""
-
-[[relays]]
-name = "relay-2"
-addr = "127.0.0.1:7002"
-noise_pubkey = ""
-
-[[relays]]
-name = "relay-3"
-addr = "127.0.0.1:7003"
-noise_pubkey = ""
+# Relays this node may build circuits through, besides the ones it finds in
+# the DHT with a signed descriptor. Each needs the base64 X25519 key the relay
+# logs at startup ("noise_pubkey"); an entry without one is skipped, because
+# a circuit could not tell that relay from anyone else answering there.
+#
+# [[relays]]
+# name = "relay-1"
+# addr = "198.51.100.1:9150"
+# noise_pubkey = "<base64 key>"

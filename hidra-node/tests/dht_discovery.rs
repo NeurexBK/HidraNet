@@ -29,14 +29,14 @@ async fn spawn_dht_node(port: u16, relay_addr: Option<SocketAddr>) -> DhtNode {
 fn earned_info(key: &SigningKey, addr: SocketAddr, relay: Option<SocketAddr>) -> NodeInfo {
     let pk = key.verifying_key().to_bytes();
     let nonce = solve_id_puzzle(&pk, BITS);
-    NodeInfo { id: NodeId::for_node(&pk, nonce), dht_addr: addr, relay_addr: relay, public_key: pk, id_nonce: nonce }
+    NodeInfo { id: NodeId::for_node(&pk, nonce), dht_addr: addr, relay_addr: relay, public_key: pk, id_nonce: nonce, relay_descriptor: None }
 }
 
 /// A NodeInfo for `key` at `addr` with an ID nobody paid for.
 fn unearned_info(key: &SigningKey, addr: SocketAddr) -> NodeInfo {
     let pk = key.verifying_key().to_bytes();
     let nonce = (0..u64::MAX).find(|n| !id_puzzle_ok(&pk, *n, BITS)).unwrap();
-    NodeInfo { id: NodeId::for_node(&pk, nonce), dht_addr: addr, relay_addr: None, public_key: pk, id_nonce: nonce }
+    NodeInfo { id: NodeId::for_node(&pk, nonce), dht_addr: addr, relay_addr: None, public_key: pk, id_nonce: nonce, relay_descriptor: None }
 }
 
 async fn recv_msg(sock: &UdpSocket, wait: Duration) -> Option<(DhtMessage, SocketAddr)> {

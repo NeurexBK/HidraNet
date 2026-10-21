@@ -180,6 +180,7 @@ mod tests {
             relay_addr: None,
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         }
     }
 
@@ -190,6 +191,7 @@ mod tests {
             relay_addr: None,
             public_key: [0u8; 32],
             id_nonce: 0,
+            relay_descriptor: None,
         }
     }
 

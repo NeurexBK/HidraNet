@@ -115,18 +115,17 @@ async fn handle_inner(
         let mut circuit = connect_service_with_failover(
             pool,
             &service_hash,
+            &intro_points,
             &target_domain,
             client_addr,
         )
         .await?;
         let circuit_id = circuit.circuit_id();
         let hop_count = circuit.hop_count();
-        let relay_chain = circuit.relay_chain_display();
         info!(
             client_ip = %sensitive(&client_addr),
             target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
-            relay_chain = %relay_chain,
             "circuit connected to hidden service"
         );
         socks5::send_success(browser).await?;
@@ -139,11 +138,11 @@ async fn handle_inner(
             &mut bytes_received,
         )
         .await;
+        circuit.destroy().await;
         info!(
             client_ip = %sensitive(&client_addr),
             target_domain = %sensitive(&target_domain),
             circuit_id, hop_count,
-            relay_chain = %relay_chain,
             bytes_sent, bytes_received,
             "hidden service session completed"
         );
@@ -160,12 +159,10 @@ async fn handle_inner(
     .await?;
     let circuit_id = circuit.circuit_id();
     let hop_count = circuit.hop_count();
-    let relay_chain = circuit.relay_chain_display();
     info!(
         client_ip = %sensitive(&client_addr),
         target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
-        relay_chain = %relay_chain,
         "circuit connected to target"
     );
     socks5::send_success(browser).await?;
@@ -178,11 +175,11 @@ async fn handle_inner(
         &mut bytes_received,
     )
     .await;
+    circuit.destroy().await;
     info!(
         client_ip = %sensitive(&client_addr),
         target_domain = %sensitive(&target_domain),
         circuit_id, hop_count,
-        relay_chain = %relay_chain,
         bytes_sent, bytes_received,
         "SOCKS5 session completed"
     );
@@ -242,13 +239,14 @@ async fn connect_with_failover(
 async fn connect_service_with_failover(
     pool: &CircuitPool,
     service_hash: &[u8; 20],
+    intro_points: &[SocketAddr],
     target_domain: &str,
     client_addr: SocketAddr,
 ) -> Result<StreamingCircuit> {
     let mut backoff = Duration::from_millis(INITIAL_BACKOFF_MS);
     let mut last_error = None;
     for attempt in 0..MAX_RETRIES {
-        let mut circuit = match pool.get_circuit().await {
+        let mut circuit = match pool.build_circuit_to(intro_points).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(

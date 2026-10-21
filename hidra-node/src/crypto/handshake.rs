@@ -21,14 +21,23 @@ use crate::error::{HidraError, Result};
 // break would otherwise take the whole thing with it.
 //
 // Longer than HASHLEN, so it is hashed rather than padded, per the Noise spec.
+//
+// No circuit uses this handshake any more. In XX the initiator sends its
+// static key, and a client that ran it with every relay of a circuit, from
+// its own address, handed all three the same key to match their views by.
+// Circuits now use the NK handshake in `circuit_handshake`, which shares the
+// symmetric state below. XX stays as the mutually authenticated primitive,
+// with its tests, and is unused by the binary, hence the allows.
+#[allow(dead_code)]
 const PROTOCOL_NAME: &[u8] = b"Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3";
-const DH_LEN: usize = 32;
-const TAG_LEN: usize = 16;
+pub(crate) const DH_LEN: usize = 32;
+pub(crate) const TAG_LEN: usize = 16;
 /// ML-KEM-1024 encapsulation key, as it goes on the wire.
-const KEM_EK_LEN: usize = 1568;
+pub(crate) const KEM_EK_LEN: usize = 1568;
 /// ML-KEM-1024 ciphertext.
-const KEM_CT_LEN: usize = 1568;
+pub(crate) const KEM_CT_LEN: usize = 1568;
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Initiator,
@@ -125,17 +134,22 @@ impl CipherState {
 // ---------------------------------------------------------------------------
 // SymmetricState — manages chaining key, handshake hash, and cipher
 // ---------------------------------------------------------------------------
-struct SymmetricState {
+pub(crate) struct SymmetricState {
     h: [u8; 32],
     ck: [u8; 32],
     cipher: CipherState,
 }
 
 impl SymmetricState {
+    #[allow(dead_code)]
     fn initialize() -> Self {
-        // Noise: a protocol name longer than HASHLEN is hashed; one that fits
-        // is zero-padded. Ours is longer, so it is hashed.
-        let h = *blake3::hash(PROTOCOL_NAME).as_bytes();
+        Self::initialize_with(PROTOCOL_NAME)
+    }
+
+    /// Noise: a protocol name longer than HASHLEN is hashed; one that fits is
+    /// zero-padded. Every name used here is longer, so it is hashed.
+    pub(crate) fn initialize_with(protocol_name: &[u8]) -> Self {
+        let h = *blake3::hash(protocol_name).as_bytes();
         Self {
             ck: h,
             h,
@@ -143,20 +157,20 @@ impl SymmetricState {
         }
     }
 
-    fn mix_key(&mut self, ikm: &[u8]) {
+    pub(crate) fn mix_key(&mut self, ikm: &[u8]) {
         let (ck, temp_k) = hkdf(&self.ck, ikm);
         self.ck = ck;
         self.cipher = CipherState::from_key(temp_k);
     }
 
-    fn mix_hash(&mut self, data: &[u8]) {
+    pub(crate) fn mix_hash(&mut self, data: &[u8]) {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&self.h);
         hasher.update(data);
         self.h = *hasher.finalize().as_bytes();
     }
 
-    fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let ciphertext = if self.cipher.has_key() {
             self.cipher.encrypt(&self.h, plaintext)?
         } else {
@@ -166,7 +180,7 @@ impl SymmetricState {
         Ok(ciphertext)
     }
 
-    fn decrypt_and_hash(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn decrypt_and_hash(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         let plaintext = if self.cipher.has_key() {
             self.cipher.decrypt(&self.h, ciphertext)?
         } else {
@@ -176,7 +190,7 @@ impl SymmetricState {
         Ok(plaintext)
     }
 
-    fn split(mut self) -> (TransportCipher, TransportCipher) {
+    pub(crate) fn split(mut self) -> (TransportCipher, TransportCipher) {
         let (k1, k2) = hkdf(&self.ck, &[]);
         self.h.zeroize();
         self.ck.zeroize();
@@ -215,6 +229,7 @@ impl TransportCipher {
         self.0.decrypt(&[], ciphertext)
     }
 
+    #[allow(dead_code)]
     pub fn session_key(&self) -> Result<[u8; 32]> {
         self.0
             .key
@@ -225,6 +240,7 @@ impl TransportCipher {
 // ---------------------------------------------------------------------------
 // HandshakeState — Noise XX: -> e | <- e, ee, s, es | -> s, se
 // ---------------------------------------------------------------------------
+#[allow(dead_code)]
 pub struct HandshakeState {
     symmetric: Option<SymmetricState>,
     s: StaticSecret,
@@ -241,6 +257,7 @@ pub struct HandshakeState {
     re1: Option<EncapsulationKey>,
 }
 
+#[allow(dead_code)]
 impl HandshakeState {
     pub fn new(role: Role, static_secret: StaticSecret) -> Self {
         Self {

@@ -13,7 +13,6 @@ use std::time::Instant;
 use base64::Engine as _;
 use clap::Parser;
 use ed25519_dalek::SigningKey;
-use rand::RngCore;
 use tracing::{debug, info, warn};
 use x25519_dalek::StaticSecret;
 use zeroize::Zeroize;
@@ -157,9 +156,6 @@ struct Cli {
     #[arg(short, long, default_value = "config.toml")]
     config: String,
 
-    #[arg(short = 'C', long)]
-    connect: Option<String>,
-
     #[arg(short, long)]
     send: Option<String>,
 
@@ -188,7 +184,6 @@ struct Cli {
     sevennine: bool,
 }
 
-const LOCAL_RELAY_PORTS: [u16; 3] = [7001, 7002, 7003];
 const API_PORT: u16 = 9051;
 
 #[tokio::main]
@@ -245,15 +240,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } else if cli.chat {
         run_chat_standalone(&app_cfg).await?;
     } else if cli.server {
-        run_server_mode(&app_cfg, network_secret, signing_key).await?;
+        run_server_mode(&app_cfg, signing_key).await?;
     } else if cli.proxy {
-        run_proxy_mode(&app_cfg, network_secret, signing_key).await?;
+        run_proxy_mode(&app_cfg).await?;
     } else if let Some(ref payload) = cli.send {
-        run_send_mode(&app_cfg, network_secret, signing_key, payload, cli.dht_discover)
-            .await?;
-    } else if let Some(ref peer_addr) = cli.connect {
-        let addr: SocketAddr = peer_addr.parse()?;
-        network::listener::connect_to_peer(addr, network_secret).await?;
+        run_send_mode(&app_cfg, signing_key, payload, cli.dht_discover).await?;
     } else {
         run_relay_mode(&app_cfg, network_secret, signing_key).await?;
     }
@@ -262,45 +253,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn spawn_local_relays(
-) -> std::result::Result<Vec<relay::registry::RelayEntry>, Box<dyn std::error::Error>> {
-    let mut entries = Vec::with_capacity(LOCAL_RELAY_PORTS.len());
-
-    for (i, &port) in LOCAL_RELAY_PORTS.iter().enumerate() {
-        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
-
-        let mut rng_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut rng_bytes);
-        let relay_secret = StaticSecret::from(rng_bytes);
-        rng_bytes.zeroize();
-
-        let listener = network::listener::NodeListener::bind(addr, relay_secret).await?;
-        let relay_num = i + 1;
-
-        info!(relay = relay_num, addr = %addr, "local relay node started");
-
-        tokio::spawn(async move {
-            if let Err(e) = listener.accept_loop().await {
-                tracing::error!(relay = relay_num, error = %e, "local relay error");
+/// Relays a circuit may use: the ones pinned in the configuration, and the
+/// ones the DHT knows of whose signed descriptor verifies. Nothing else — in
+/// particular no relay started inside this process, which would put every hop
+/// of the circuit, and the exit, on the user's own machine.
+async fn verified_relays(
+    app_cfg: &config::AppConfig,
+    dht: Option<&p2p::dht::DhtNode>,
+) -> Vec<p2p::dht::descriptor::VerifiedRelay> {
+    let mut relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_else(|e| {
+        warn!(error = %e, "relay list in the configuration is invalid; ignoring it");
+        Vec::new()
+    });
+    if let Some(dht) = dht {
+        match dht.find_relays(12).await {
+            Ok(nodes) => {
+                for r in nodes.iter().filter_map(|n| n.verified_relay()) {
+                    if !relays.iter().any(|x| x.addr() == r.addr()) {
+                        relays.push(r);
+                    }
+                }
             }
-        });
-
-        entries.push(relay::registry::RelayEntry {
-            name: format!("local-relay-{relay_num}"),
-            addr,
-            noise_pubkey_b64: String::new(),
-        });
+            Err(e) => warn!(error = %e, "DHT relay discovery failed"),
+        }
     }
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    info!(
-        count = entries.len(),
-        ports = ?LOCAL_RELAY_PORTS,
-        "all local relay nodes ready"
-    );
-
-    Ok(entries)
+    relays
 }
 
 /// Room passphrase for a standalone chat server.
@@ -529,7 +506,6 @@ async fn run_mail_standalone(
 
 async fn run_server_mode(
     app_cfg: &config::AppConfig,
-    _network_secret: StaticSecret,
     _signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use crate::crypto::keys::ServiceKeys;
@@ -546,9 +522,6 @@ async fn run_server_mode(
         address = %sensitive(&hidra_address),
         "hidden service identity loaded"
     );
-
-    info!("spawning local relay nodes...");
-    let local_relays = spawn_local_relays().await?;
 
     let dht_addr: SocketAddr = format!("0.0.0.0:{}", app_cfg.dht.port).parse()?;
     let dht_signing_key = ed25519_dalek::SigningKey::generate(
@@ -569,54 +542,39 @@ async fn run_server_mode(
         }
     }
 
-    let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
-    for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
-        }
-    }
-    let relays = if config_relays.len() >= 3 {
-        config_relays
-    } else {
-        local_relays.clone()
-    };
-
+    let mut relays = verified_relays(app_cfg, Some(&dht)).await;
     if relays.len() < 3 {
-        return Err("need at least 3 relays for hidden service".into());
+        return Err(format!(
+            "need at least 3 verified relays for a hidden service, have {}",
+            relays.len()
+        )
+        .into());
+    }
+    {
+        use rand::seq::SliceRandom;
+        relays.shuffle(&mut rand::thread_rng());
     }
 
     let local_port = app_cfg.hidden_service.local_port;
 
-    let intro_addr = relays[0].addr;
-    // Signed by the service's own key: a node on the lookup path can
-    // withhold this descriptor but not swap its introduction points.
+    info!("building circuit to introduction point...");
+    let mut intro_circuit = client::streaming::StreamingCircuit::build(&relays).await?;
+    intro_circuit.register_service(service_hash.to_vec()).await?;
+    info!("registered at introduction point");
+
+    // The introduction point is the hop the service registered at: the last
+    // one of its circuit. Signed by the service's own key, so a node on the
+    // lookup path can withhold this descriptor but not swap it.
+    let intro_addr = relays[2].addr();
     if let Err(e) = dht.announce_signed_service(
         &service_keys.signing_key,
         vec![intro_addr],
     )
     .await {
-        warn!(error = %e, "failed to announce service in DHT, continuing with local registration");
+        warn!(error = %e, "failed to announce service in DHT");
+    } else {
+        info!("announced service in DHT");
     }
-
-    info!(
-        intro_point = %intro_addr,
-        "announced service in DHT"
-    );
-
-    let mut server_secret_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut server_secret_bytes);
-    let server_secret = StaticSecret::from(server_secret_bytes);
-    server_secret_bytes.zeroize();
-
-    info!("building circuit to introduction point...");
-    let mut intro_circuit = client::streaming::StreamingCircuit::build(
-        &relays,
-        server_secret,
-    )
-    .await?;
-
-    intro_circuit.register_service(service_hash.to_vec()).await?;
-    info!("registered at introduction point");
 
     let app_name = app_cfg.hidden_service.app.as_deref();
 
@@ -791,14 +749,8 @@ async fn run_server_mode(
 
 async fn run_proxy_mode(
     app_cfg: &config::AppConfig,
-    _network_secret: StaticSecret,
-    _signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     info!("=== HidraNet Proxy Mode ===");
-    info!("spawning local relay nodes for onion routing...");
-
-    let local_relays = spawn_local_relays().await?;
-    let relay_addrs: Vec<SocketAddr> = local_relays.iter().map(|r| r.addr).collect();
 
     let proxy_addr: SocketAddr =
         format!("{}:{}", app_cfg.proxy.listen_addr, app_cfg.proxy.port).parse()?;
@@ -822,32 +774,19 @@ async fn run_proxy_mode(
         .filter_map(|s| s.parse().ok())
         .collect();
 
-    let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
-
-    for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
-        }
-    }
-
-    let static_relays = if config_relays.len() >= 3 {
-        config_relays
-    } else {
-        local_relays.clone()
-    };
-
-    let mut proxy_secret_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut proxy_secret_bytes);
+    // Only relays whose keys are pinned here or signed in the DHT. There used
+    // to be three more, started inside this process, merged in whenever the
+    // configuration listed them: a circuit through them ran entirely on the
+    // user's own machine and left from the user's own address.
+    let static_relays = verified_relays(app_cfg, None).await;
+    let relay_addrs: Vec<SocketAddr> = static_relays.iter().map(|r| r.addr()).collect();
 
     let proxy_config = client::proxy_runner::ProxyConfig {
         listen_addr: proxy_addr,
         dht_addr,
         bootstrap_addrs,
-        secret_bytes: proxy_secret_bytes,
         static_relays,
     };
-
-    proxy_secret_bytes.zeroize();
 
     let api_addr: SocketAddr = format!("127.0.0.1:{API_PORT}").parse()?;
     // The circuit view needs a token the engine leaves in the keys
@@ -897,12 +836,11 @@ async fn run_proxy_mode(
 
 async fn run_send_mode(
     app_cfg: &config::AppConfig,
-    network_secret: StaticSecret,
     signing_key: SigningKey,
     payload: &str,
     dht_discover: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    if dht_discover && app_cfg.dht.enabled {
+    let relays = if dht_discover && app_cfg.dht.enabled {
         // Ephemeral, as in proxy mode: a one-shot send is a client.
         let dht_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let mut dht = p2p::dht::DhtNode::new(dht_addr, signing_key, None).await?;
@@ -916,53 +854,22 @@ async fn run_send_mode(
             .collect();
 
         p2p::bootstrap::bootstrap(&dht, &bootstrap_addrs).await?;
-
-        let relays = dht.find_relays(3).await?;
-        if relays.len() < 3 {
-            eprintln!("ERROR: DHT found only {} relays, need 3", relays.len());
-            std::process::exit(1);
-        }
-
-        let relay_entries: Vec<relay::registry::RelayEntry> = relays
-            .into_iter()
-            .map(|r| relay::registry::RelayEntry {
-                name: format!("{}", r.id),
-                addr: r.relay_addr.unwrap_or(r.dht_addr),
-                noise_pubkey_b64: String::new(),
-            })
-            .collect();
-
-        info!(relays = relay_entries.len(), "discovered relays via DHT");
-
-        let response =
-            client::session::run_client_session(&relay_entries, network_secret, payload)
-                .await?;
-
-        info!(bytes = response.len(), "onion circuit complete (DHT discovery)");
+        verified_relays(app_cfg, Some(&dht)).await
     } else {
-        let relay_list = relay::registry::load_relay_list(&app_cfg.relays)?;
+        verified_relays(app_cfg, None).await
+    };
 
-        if relay_list.len() < 3 {
-            eprintln!(
-                "ERROR: need at least 3 relays in config, found {}",
-                relay_list.len()
-            );
-            std::process::exit(1);
-        }
-
-        info!(
-            relays = relay_list.len(),
-            bytes = payload.len(),
-            "starting client onion session"
+    if relays.len() < 3 {
+        eprintln!(
+            "ERROR: need at least 3 relays with a verified key, found {}",
+            relays.len()
         );
-
-        let response =
-            client::session::run_client_session(&relay_list, network_secret, payload)
-                .await?;
-
-        info!(bytes = response.len(), "onion circuit complete");
+        std::process::exit(1);
     }
 
+    info!(relays = relays.len(), bytes = payload.len(), "starting client onion session");
+    let response = client::session::run_client_session(&relays, payload).await?;
+    info!(bytes = response.len(), "onion circuit complete");
     Ok(())
 }
 
@@ -977,12 +884,37 @@ async fn run_relay_mode(
     );
     let addr: SocketAddr = listen_addr.parse()?;
 
-    let relay_addr = Some(addr);
+    // The address that goes into this relay's signed descriptor: where
+    // clients reach it. A wildcard listen address says nothing about that.
+    let public_addr: Option<SocketAddr> = match &app_cfg.network.public_addr {
+        Some(a) => Some(a.parse()?),
+        None if !addr.ip().is_unspecified() => Some(addr),
+        None => None,
+    };
 
     let dht_node = if app_cfg.dht.enabled {
         let dht_addr: SocketAddr =
             format!("{}:{}", app_cfg.network.listen_addr, app_cfg.dht.port).parse()?;
-        let mut dht = p2p::dht::DhtNode::new(dht_addr, signing_key, relay_addr).await?;
+        let mut dht = match public_addr {
+            Some(public) => {
+                let transport_key = x25519_dalek::PublicKey::from(&network_secret).to_bytes();
+                p2p::dht::DhtNode::relay(
+                    dht_addr,
+                    signing_key,
+                    public,
+                    transport_key,
+                    p2p::dht::node::ID_PUZZLE_BITS,
+                )
+                .await?
+            }
+            None => {
+                warn!(
+                    "network.public_addr is not set and listen_addr is a wildcard: \
+                     this relay publishes no descriptor, so no client will use it"
+                );
+                p2p::dht::DhtNode::new(dht_addr, signing_key, None).await?
+            }
+        };
         dht.start().await;
 
         let bootstrap_addrs: Vec<SocketAddr> = app_cfg

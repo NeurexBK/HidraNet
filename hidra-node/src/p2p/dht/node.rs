@@ -2,6 +2,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
+use crate::p2p::dht::descriptor::{RelayDescriptor, VerifiedRelay};
+
 pub const ID_LEN: usize = 20;
 pub const ID_BITS: usize = ID_LEN * 8;
 
@@ -161,11 +163,27 @@ pub struct NodeInfo {
     pub public_key: [u8; 32],
     /// The nonce that solves this key's ID puzzle; the ID derives from it.
     pub id_nonce: u64,
+    /// A relay's signed statement of the address and transport key it serves
+    /// circuits with. Gossiped with the rest of this record, and checked by
+    /// whoever means to build a circuit through it: see `verified_relay`.
+    pub relay_descriptor: Option<RelayDescriptor>,
 }
 
 impl NodeInfo {
     pub fn is_relay(&self) -> bool {
         self.relay_addr.is_some()
+    }
+
+    /// The relay this record describes, if a circuit may use it: it carries a
+    /// descriptor signed by this node's own identity key, for the relay
+    /// address this record gives. A record passed on by another node can
+    /// leave the descriptor out; it cannot change what it says.
+    pub fn verified_relay(&self) -> Option<VerifiedRelay> {
+        let d = self.relay_descriptor.as_ref()?;
+        if d.identity_key != self.public_key || Some(d.addr) != self.relay_addr {
+            return None;
+        }
+        d.verify().ok()
     }
 
     /// The ID is the one this key and nonce derive, and the nonce solves the
@@ -238,6 +256,47 @@ mod tests {
         assert_eq!(id1, id2);
     }
 
+    /// A node record is a usable relay only if its descriptor was signed by
+    /// the node's own key, for the relay address the record gives.
+    #[test]
+    fn a_relay_record_is_held_to_its_own_descriptor() {
+        use ed25519_dalek::SigningKey;
+        use rand_core::OsRng;
+
+        let key = SigningKey::generate(&mut OsRng);
+        let pk = key.verifying_key().to_bytes();
+        let relay_addr: SocketAddr = "198.51.100.3:9001".parse().unwrap();
+        let info = NodeInfo {
+            id: NodeId::for_node(&pk, 0),
+            dht_addr: "198.51.100.3:7000".parse().unwrap(),
+            relay_addr: Some(relay_addr),
+            public_key: pk,
+            id_nonce: 0,
+            relay_descriptor: Some(RelayDescriptor::sign(&key, relay_addr, [4; 32], 1)),
+        };
+        assert_eq!(info.verified_relay().unwrap().transport_key(), &[4; 32]);
+
+        // Someone passing the record on swaps the key: the signature fails.
+        let mut swapped = info.clone();
+        swapped.relay_descriptor.as_mut().unwrap().transport_key = [5; 32];
+        assert!(swapped.verified_relay().is_none());
+
+        // A descriptor signed by another node, attached to this one's record.
+        let other = SigningKey::generate(&mut OsRng);
+        let mut borrowed = info.clone();
+        borrowed.relay_descriptor = Some(RelayDescriptor::sign(&other, relay_addr, [5; 32], 1));
+        assert!(borrowed.verified_relay().is_none());
+
+        // The record points somewhere the descriptor does not.
+        let mut moved = info.clone();
+        moved.relay_addr = Some("203.0.113.5:9001".parse().unwrap());
+        assert!(moved.verified_relay().is_none());
+
+        let mut bare = info;
+        bare.relay_descriptor = None;
+        assert!(bare.verified_relay().is_none());
+    }
+
     #[test]
     fn an_id_is_earned_by_its_nonce_and_bound_to_its_key() {
         let key = [0x42u8; 32];
@@ -251,6 +310,7 @@ mod tests {
             relay_addr: None,
             public_key: key,
             id_nonce: nonce,
+            relay_descriptor: None,
         };
         assert!(info.id_is_valid(bits));
 

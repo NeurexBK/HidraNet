@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::error::{HidraError, Result};
-use self::descriptor::{service_target, ServiceDescriptor};
+use self::descriptor::{service_target, RelayDescriptor, ServiceDescriptor};
 use self::handler::DhtHandler;
 use self::kbuckets::{diversity_prefix, neighbourhood, RoutingTable, UpdateResult, K};
 use self::message::{sign_and_serialize, verify_and_bind, DhtMessage};
@@ -180,6 +180,35 @@ impl DhtNode {
         relay_addr: Option<SocketAddr>,
         id_bits: u32,
     ) -> Result<Self> {
+        Self::build(bind_addr, signing_key, relay_addr, None, id_bits).await
+    }
+
+    /// A relay that clients can build circuits through: its node record
+    /// carries a descriptor, signed with `signing_key`, naming `relay_addr`
+    /// and the X25519 key the relay answers circuit handshakes with. A relay
+    /// started with `new` or `with_id_bits` announces itself without one, and
+    /// no client will use it.
+    pub async fn relay(
+        bind_addr: SocketAddr,
+        signing_key: SigningKey,
+        relay_addr: SocketAddr,
+        transport_key: [u8; 32],
+        id_bits: u32,
+    ) -> Result<Self> {
+        Self::build(bind_addr, signing_key, Some(relay_addr), Some(transport_key), id_bits).await
+    }
+
+    async fn build(
+        bind_addr: SocketAddr,
+        signing_key: SigningKey,
+        relay_addr: Option<SocketAddr>,
+        transport_key: Option<[u8; 32]>,
+        id_bits: u32,
+    ) -> Result<Self> {
+        let relay_descriptor = match (relay_addr, transport_key) {
+            (Some(addr), Some(key)) => Some(RelayDescriptor::sign_now(&signing_key, addr, key)),
+            _ => None,
+        };
         let socket = UdpSocket::bind(bind_addr).await?;
         let local_addr = socket.local_addr()?;
         let pubkey = signing_key.verifying_key().to_bytes();
@@ -194,6 +223,7 @@ impl DhtNode {
             relay_addr,
             public_key: pubkey,
             id_nonce,
+            relay_descriptor,
         };
         info!(
             node_id = %node_id,
