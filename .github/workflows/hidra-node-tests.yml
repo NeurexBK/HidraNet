@@ -1,0 +1,34 @@
+# The engine's own tests, on every change to the engine.
+#
+# Until this existed, CI ran one of them (no_addresses_in_logs, in
+# security.yml) and cargo audit. The rest — the onion circuit end to end, the
+# proof that a client only ever talks to its guard, hidden-service
+# authentication, the exit policy, the hybrid handshake on the wire — ran only
+# when someone remembered to run them by hand.
+name: hidra-node tests
+
+on:
+  push:
+    paths:
+      - "hidra-node/**"
+      - ".github/workflows/hidra-node-tests.yml"
+  pull_request:
+    paths:
+      - "hidra-node/**"
+      - ".github/workflows/hidra-node-tests.yml"
+
+jobs:
+  test:
+    name: cargo test (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hidra-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hidra-node
+      - name: unit and integration tests
+        run: cargo test --release

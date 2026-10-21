@@ -352,3 +352,122 @@ async fn failover_retries_on_connect_failure() {
     browser.read_exact(&mut echo_buf).await.unwrap();
     assert_eq!(&echo_buf, payload);
 }
+
+/// A target that streams `down` bytes to whoever connects while reading the
+/// `up` bytes they send, and reports whether those arrived intact.
+async fn start_two_way_server(
+    down: usize,
+    up: usize,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (mut rd, mut wr) = stream.into_split();
+        let writer = tokio::spawn(async move {
+            let data: Vec<u8> = (0..down).map(|i| (i % 251) as u8).collect();
+            for (n, chunk) in data.chunks(4000).enumerate() {
+                if wr.write_all(chunk).await.is_err() {
+                    return;
+                }
+                if n % 8 == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            }
+            let _ = wr.flush().await;
+            // Keep the write half open: a stream ends for both directions
+            // when either side closes, so closing early would cut the upload.
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let mut got = Vec::with_capacity(up);
+        let mut buf = vec![0u8; 8192];
+        while got.len() < up {
+            match rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        let intact = got.len() == up && got.iter().enumerate().all(|(i, b)| *b == (i % 241) as u8);
+        let _ = done_tx.send(intact);
+        let _ = writer.await;
+    });
+    (addr, done_rx)
+}
+
+/// Data flowing both ways at once through the SOCKS proxy and three relays.
+///
+/// Every hop races a read from one side against a read from the other. Those
+/// reads used to lose the bytes of a frame they had started when the other
+/// side won the race, and the stream broke. Uploading while downloading — a
+/// page sending a request while another is still arriving — is where that
+/// happened.
+#[tokio::test]
+async fn socks5_stream_carries_both_directions_at_once() {
+    const DOWN: usize = 600_000;
+    const UP: usize = 300_000;
+    let relays = three_relays().await;
+    let (target, target_done) = start_two_way_server(DOWN, UP).await;
+
+    let client_secret = StaticSecret::random_from_rng(OsRng);
+    let pool = CircuitPool::new(client_secret.to_bytes(), relays);
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let dht = idle_dht().await;
+    tokio::spawn(async move {
+        let (stream, remote_addr) = proxy_listener.accept().await.unwrap();
+        hidra_node::proxy::stream_handler::handle_socks5_connection(stream, pool, dht, remote_addr)
+            .await;
+    });
+
+    let mut browser = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    browser.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    browser.read_exact(&mut resp).await.unwrap();
+    let ip = match target.ip() {
+        std::net::IpAddr::V4(ip) => ip,
+        _ => panic!("expected IPv4"),
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
+    req.extend_from_slice(&ip.octets());
+    req.extend_from_slice(&target.port().to_be_bytes());
+    browser.write_all(&req).await.unwrap();
+    let mut connect_resp = [0u8; 10];
+    browser.read_exact(&mut connect_resp).await.unwrap();
+    assert_eq!(connect_resp[1], 0x00, "the circuit did not connect");
+
+    let (mut rd, mut wr) = browser.into_split();
+    let upload = tokio::spawn(async move {
+        let data: Vec<u8> = (0..UP).map(|i| (i % 241) as u8).collect();
+        for (n, chunk) in data.chunks(3000).enumerate() {
+            wr.write_all(chunk).await.unwrap();
+            if n % 8 == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
+        wr
+    });
+    let download = async {
+        let mut got = Vec::with_capacity(DOWN);
+        let mut buf = vec![0u8; 16384];
+        while got.len() < DOWN {
+            match rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        got
+    };
+    let got = tokio::time::timeout(std::time::Duration::from_secs(60), download)
+        .await
+        .expect("the download stalled");
+    let _wr = upload.await.unwrap();
+
+    assert_eq!(got.len(), DOWN, "the download broke off after {} of {} bytes", got.len(), DOWN);
+    assert!(got.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8), "the download arrived corrupted");
+    let intact = tokio::time::timeout(std::time::Duration::from_secs(30), target_done)
+        .await
+        .expect("the upload never finished")
+        .unwrap();
+    assert!(intact, "the upload arrived short or corrupted");
+}

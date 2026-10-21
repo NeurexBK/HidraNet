@@ -14,7 +14,7 @@ use zeroize::Zeroize;
 use crate::crypto::handshake::{HandshakeState, Role};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{
-    read_frame, write_frame, Message, SecureConnection,
+    read_frame, write_frame, FrameReader, Message, SecureConnection,
 };
 use crate::network::listener::{PROTO_FORWARDED_CELL, PROTO_NOISE_SESSION};
 use crate::onion::cell::{LayerHeader, RelayCommand};
@@ -1051,9 +1051,12 @@ async fn exit_forwarded_streaming_loop(
     key: &[u8; 32],
 ) -> Result<()> {
     let mut target_buf = vec![0u8; 16384];
+    // Read through a FrameReader: raced in the select! below, a plain
+    // read_frame dropped halfway loses the bytes it took (see FrameReader).
+    let mut up = FrameReader::new();
     loop {
         tokio::select! {
-            frame_result = read_frame(upstream) => {
+            frame_result = up.read_frame(upstream) => {
                 let frame = match frame_result {
                     Ok(f) => f,
                     Err(_) => break,
@@ -1109,6 +1112,9 @@ async fn relay_streaming_loop(
     circuit_id: u32,
     key: &[u8; 32],
 ) -> Result<()> {
+    // Both reads in the select! below are cancel safe: recv_message reads
+    // through the connection's FrameReader, and the next hop through its own.
+    let mut down = FrameReader::new();
     loop {
         tokio::select! {
             msg_result = conn.recv_message() => {
@@ -1125,7 +1131,7 @@ async fn relay_streaming_loop(
                     _ => break,
                 }
             }
-            frame_result = read_frame(next_stream) => {
+            frame_result = down.read_frame(next_stream) => {
                 let frame = match frame_result {
                     Ok(f) => f,
                     Err(_) => break,
@@ -1151,9 +1157,13 @@ async fn forwarded_streaming_loop(
     circuit_id: u32,
     key: &[u8; 32],
 ) -> Result<()> {
+    // One FrameReader per side: raced in the select! below, a plain
+    // read_frame dropped halfway loses the bytes it took (see FrameReader).
+    let mut up = FrameReader::new();
+    let mut down = FrameReader::new();
     loop {
         tokio::select! {
-            frame_result = read_frame(upstream) => {
+            frame_result = up.read_frame(upstream) => {
                 let frame = match frame_result {
                     Ok(f) => f,
                     Err(_) => break,
@@ -1168,7 +1178,7 @@ async fn forwarded_streaming_loop(
                     _ => break,
                 }
             }
-            frame_result = read_frame(downstream) => {
+            frame_result = down.read_frame(downstream) => {
                 let frame = match frame_result {
                     Ok(f) => f,
                     Err(_) => break,
@@ -1292,9 +1302,11 @@ async fn bridge_forwarded_client_to_service(
     to_service: mpsc::Sender<Vec<u8>>,
     from_service: &mut mpsc::Receiver<Vec<u8>>,
 ) -> Result<()> {
+    // Cancel safe, as in forwarded_streaming_loop.
+    let mut up = FrameReader::new();
     loop {
         tokio::select! {
-            frame_result = read_frame(upstream) => {
+            frame_result = up.read_frame(upstream) => {
                 let frame = match frame_result {
                     Ok(f) => f,
                     Err(_) => break,
