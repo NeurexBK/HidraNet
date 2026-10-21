@@ -143,17 +143,20 @@ probe6() {
   sleep 0.5; kill $td 2>/dev/null; wait $td 2>/dev/null
   OWN=$(tcpdump -n -r "$WORK/tun-$1.pcap" "src host $CLIENT6" 2>/dev/null | wc -l)
 }
-# The link is captured both ways; only what leaves with the client's own
-# address counts against it.
+# The link is captured both ways, but a leak is only the client's own address
+# heading OFF the local link, towards the internet. IPv6 neighbour discovery
+# stays on the link: the kernel answering "yes, this on-link address is here"
+# to the directly attached router (a neighbour advertisement to its link-local
+# address), and its own solicitations to the solicited-node multicast group.
+# Those go to link-local or multicast destinations and never leave the link,
+# so they are not a browsing leak and the count leaves them out. Anything of
+# the client's addressed to the outside still counts.
+LEAK="src host $CLIENT6 and not dst net fe80::/10 and not dst net ff00::/8"
 start_link_capture() { $C tcpdump -n -U -i c-e -w "$WORK/link-$1.pcap" "ip6 and host $CLIENT6" > /dev/null 2>&1 & LINKCAP=$!; PIDS+=("$LINKCAP"); sleep 0.5; }
-link_count() { kill "$LINKCAP" 2>/dev/null; sleep 0.3; tcpdump -n -r "$WORK/link-$1.pcap" "src host $CLIENT6" 2>/dev/null | wc -l; }
-# Diagnostics for a failure here, which CI has seen now and then with one
-# packet: every packet the link saw to or from the client's address, with
-# its time, and both ends' neighbour tables, so the log says what the
-# packet was and what brought it.
-link_seen() { tcpdump -n -tttt -r "$WORK/link-$1.pcap" 2>/dev/null | head -8 | tr '\n' ';'; }
-link_show() { echo "$(link_seen "$1") | client neighbours: $($C ip -6 neigh show dev c-e 2>&1 | tr '\n' ';') | entry neighbours: $($E ip -6 neigh show dev e-c 2>&1 | tr '\n' ';')"; }
-link_note() { local seen; seen=$(link_seen "$1"); [ -n "$seen" ] && echo "      (the link saw, to or from the client's address: $seen)"; return 0; }
+link_count() { kill "$LINKCAP" 2>/dev/null; sleep 0.3; tcpdump -n -r "$WORK/link-$1.pcap" "$LEAK" 2>/dev/null | wc -l; }
+# On a failure here, the packets that count as a leak, with their times, and
+# both ends' neighbour tables, so the log names the cause.
+link_show() { echo "$(tcpdump -n -tttt -r "$WORK/link-$1.pcap" "$LEAK" 2>/dev/null | head -4 | tr '\n' ';') | client neighbours: $($C ip -6 neigh show dev c-e 2>&1 | tr '\n' ';') | entry neighbours: $($E ip -6 neigh show dev e-c 2>&1 | tr '\n' ';')"; }
 tun_show() { tcpdump -n -tttt -r "$WORK/tun-$1.pcap" "src host $CLIENT6" 2>/dev/null | head -3 | tr '\n' ';'; }
 
 echo "── one hop through an exit that carries IPv6"
@@ -170,7 +173,6 @@ $I python3 -I -m http.server 8080 --bind :: --directory "$WORK" > /dev/null 2>&1
 [ "$(sha256sum < "$WORK/blob")" = "$($C curl -6 -s --max-time 20 'http://[2001:db8:221::2]:8080/blobsrv' | sha256sum)" ] && pass "1 MB over IPv6 through the tunnel, intact" || fail "the IPv6 transfer was corrupted or failed"
 $C "$BIN/hidravpn" down > /dev/null 2>&1
 N=$(link_count one); [ "$N" = 0 ] && pass "no IPv6 packet with the client's own address left on its link while connected" || fail "$N IPv6 packet(s) left on the link: $(link_show one)"
-link_note one
 $C ip -6 route | grep -q hvpn0 && fail "IPv6 routes to the tunnel remain" || pass "down: the IPv6 routes are gone"
 
 echo "── two hops: IPv6 through the exit, never through the entry"
@@ -188,7 +190,6 @@ EN=$(tcpdump -n -r "$WORK/entry-tun.pcap" 2>/dev/null | grep -vc "fe80::")
 [ "$EN" = 0 ] && pass "the entry's tunnel carried no IPv6 at all" || fail "the entry's tunnel carried $EN IPv6 packet(s)"
 $C "$BIN/hidravpn" down > /dev/null 2>&1
 N=$(link_count two); [ "$N" = 0 ] && pass "no IPv6 packet with the client's own address left on its link" || fail "$N IPv6 packet(s) left on the link: $(link_show two)"
-link_note two
 
 blocked_round() {  # $1 round, $2 invite file
   start_link_capture "$1"
@@ -200,7 +201,6 @@ blocked_round() {  # $1 round, $2 invite file
   [ "$OWN" = 0 ] && pass "no packet carried the client's own IPv6 address into the tunnel" || fail "$OWN packet(s) carried $CLIENT6 into the tunnel: $(tun_show "$1")"
   $C "$BIN/hidravpn" down > /dev/null 2>&1
   N=$(link_count "$1"); [ "$N" = 0 ] && pass "no IPv6 packet with the client's own address left on its link" || fail "$N IPv6 packet(s) left on the link: $(link_show "$1")"
-  link_note "$1"
 }
 
 echo "── an exit with ipv6 = \"off\""
