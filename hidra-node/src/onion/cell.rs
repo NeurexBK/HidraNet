@@ -3,6 +3,54 @@ use std::net::SocketAddr;
 
 use crate::error::{HidraError, Result};
 
+/// Every cell's innermost body is exactly this long: a command, its length
+/// before it, zeros after. Whoever originates a cell — the client going out,
+/// the last hop coming back — pads it, and only the other end unpads it, so
+/// every cell on a link has the same size whatever it carries. Before, a
+/// cell was as long as its contents, and anyone watching a link could read
+/// off the size of every request and every response, which is most of what
+/// website fingerprinting needs.
+///
+/// The largest command is the extension reply that carries the hybrid
+/// handshake's message B (about 1.7 kB with ML-KEM-1024), so 2 kB leaves room.
+pub const CELL_BODY: usize = 2048;
+const LEN_PREFIX: usize = 2;
+/// The most a command can be and still fit one cell.
+pub const MAX_COMMAND: usize = CELL_BODY - LEN_PREFIX;
+/// The most stream data one `Data` cell carries: a command, less bincode's
+/// enum tag (4 bytes) and vector length (8 bytes).
+pub const MAX_DATA: usize = MAX_COMMAND - 12;
+
+/// A command as the innermost body of a cell.
+pub fn pad_cell(command: &[u8]) -> Result<Vec<u8>> {
+    if command.len() > MAX_COMMAND {
+        return Err(HidraError::Protocol(format!(
+            "a {}-byte command does not fit one cell ({MAX_COMMAND} at most)",
+            command.len()
+        )));
+    }
+    let mut body = Vec::with_capacity(CELL_BODY);
+    body.extend_from_slice(&(command.len() as u16).to_be_bytes());
+    body.extend_from_slice(command);
+    body.resize(CELL_BODY, 0);
+    Ok(body)
+}
+
+/// The command inside a cell's innermost body.
+pub fn unpad_cell(body: &[u8]) -> Result<Vec<u8>> {
+    if body.len() != CELL_BODY {
+        return Err(HidraError::Protocol(format!(
+            "a cell body of {} bytes, not {CELL_BODY}",
+            body.len()
+        )));
+    }
+    let len = u16::from_be_bytes([body[0], body[1]]) as usize;
+    if len > MAX_COMMAND {
+        return Err(HidraError::Protocol("a cell's length field runs past its body".into()));
+    }
+    Ok(body[LEN_PREFIX..LEN_PREFIX + len].to_vec())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerHeader {
     pub next_hop: Option<SocketAddr>,
@@ -102,6 +150,47 @@ mod tests {
             decoded.next_hop,
             Some("127.0.0.1:9151".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn a_padded_cell_is_always_the_same_size() {
+        for len in [0, 1, 500, MAX_COMMAND] {
+            let command = vec![0xAB; len];
+            let body = pad_cell(&command).unwrap();
+            assert_eq!(body.len(), CELL_BODY);
+            assert_eq!(unpad_cell(&body).unwrap(), command);
+        }
+    }
+
+    #[test]
+    fn a_command_too_big_for_a_cell_is_refused() {
+        assert!(pad_cell(&vec![0; MAX_COMMAND + 1]).is_err());
+    }
+
+    #[test]
+    fn a_body_of_the_wrong_size_or_length_is_refused() {
+        assert!(unpad_cell(&vec![0; CELL_BODY - 1]).is_err());
+        let mut body = pad_cell(b"x").unwrap();
+        body[0] = 0xFF;
+        body[1] = 0xFF;
+        assert!(unpad_cell(&body).is_err());
+    }
+
+    #[test]
+    fn a_full_data_cell_is_exactly_one_cell() {
+        let full = RelayCommand::Data(vec![0; MAX_DATA]).serialize_bincode().unwrap();
+        assert_eq!(full.len(), MAX_COMMAND);
+        let over = RelayCommand::Data(vec![0; MAX_DATA + 1]).serialize_bincode().unwrap();
+        assert!(pad_cell(&over).is_err());
+    }
+
+    #[test]
+    fn the_largest_control_command_fits_a_cell() {
+        // The extension reply carries the hybrid handshake's message B,
+        // measured at 1680 bytes; the relay refuses handshake frames past
+        // 4096, but the real ones must fit one cell.
+        let reply = RelayCommand::Extended { frame: vec![0; 1680] }.serialize_bincode().unwrap();
+        assert!(pad_cell(&reply).is_ok());
     }
 
     #[test]
