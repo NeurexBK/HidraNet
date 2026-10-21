@@ -593,7 +593,7 @@ class TabManager {
     if (this.networkLock) this.networkLock.protect(tabSession);
 
     // Without this every request advertises the real Electron user agent
-    // ("HidraNet Browser/1.0.0 ... Electron/33"), which both identifies the
+    // ("HidraNet Browser/1.0.0 ... Electron/44"), which both identifies the
     // browser to every server and contradicts the spoofed navigator.userAgent.
     tabSession.setUserAgent(fingerprint.userAgent, fingerprint.languages.join(','));
 
