@@ -415,7 +415,10 @@ Getting there found three more bugs, now fixed:
   interfaces, and `test-multihop-netns.sh` proves it still does.
 - **The service did not run on battery.** The scheduled task kept
   schtasks' defaults: start only on mains power, stop on battery, stop
-  after three days. It is now described in full (`install/windows.rs`).
+  after three days. HidraVPN is now a real Windows service registered with
+  the SCM (`install/windows.rs`, `service.rs`), which has no such
+  conditions: it runs on battery as on mains, for as long as the machine is
+  up, and is told to stop so it can put the network back.
 
 **Not run on Windows:** passes and the browser page. A CI job runs the unit tests on Windows. It cannot arm a firewall on
 a hosted runner: that would cut the runner off from GitHub.

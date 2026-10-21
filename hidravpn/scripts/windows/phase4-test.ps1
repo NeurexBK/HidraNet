@@ -127,8 +127,8 @@ try {
   $out = (& $SvcExe install --client $CliExe 2>&1 | Out-String).Trim()
   Expect ($LASTEXITCODE -eq 0) 'install --client succeeds' (($out -split "`r?`n")[-1])
   Expect ((Test-Path $ISvc) -and (Test-Path $ICli) -and (Test-Path (Join-Path $Installed 'wintun.dll'))) 'the service, the client and wintun.dll are in Program Files\HidraVPN'
-  $task = Get-ScheduledTask -TaskName 'HidraVPN' -ErrorAction SilentlyContinue
-  Expect ($null -ne $task -and $task.Principal.UserId -match 'SYSTEM') 'the task runs as SYSTEM at boot' "$($task.Principal.UserId)"
+  $svc = Get-CimInstance Win32_Service -Filter "Name='HidraVPN'" -ErrorAction SilentlyContinue
+  Expect ($null -ne $svc -and $svc.StartName -match 'LocalSystem' -and $svc.StartMode -eq 'Auto') 'the service runs as LocalSystem at boot' "$($svc.StartName)/$($svc.StartMode)"
   Expect (Test-Path $KeyFile) "this machine's key was made at install"
   $acl = (Get-Acl $Data).Access | ForEach-Object { "$($_.IdentityReference):$($_.FileSystemRights)" }
   $open = @($acl | Where-Object { $_ -match 'Users|Everyone|Authenticated' -and $_ -match 'FullControl|Modify|Write' })
@@ -179,7 +179,7 @@ try {
 
   Step 'uninstall, then uninstall --purge'
   $out = (& $ISvc uninstall 2>&1 | Out-String).Trim()
-  Expect ($LASTEXITCODE -eq 0 -and -not (Get-ScheduledTask -TaskName 'HidraVPN' -ErrorAction SilentlyContinue)) 'uninstall removes the task' (($out -split "`r?`n")[-1])
+  Expect ($LASTEXITCODE -eq 0 -and $null -eq (Get-CimInstance Win32_Service -Filter "Name='HidraVPN'" -ErrorAction SilentlyContinue)) 'uninstall removes the service' (($out -split "`r?`n")[-1])
   Expect ((Test-Path $KeyFile) -and (Test-Path $ICli)) 'without --purge the key and the programs stay'
   & $SvcExe install --client $CliExe 2>&1 | Out-Null
   $out = (& $ISvc uninstall --purge 2>&1 | Out-String).Trim()

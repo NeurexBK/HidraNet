@@ -24,6 +24,10 @@ use hidravpn_core::Invite;
 use hidravpn_service::daemon::Daemon;
 use hidravpn_service::{install, ipc};
 
+/// Running as a real Windows service (the SCM's control handler and status).
+#[cfg(windows)]
+mod service;
+
 #[derive(Parser)]
 #[command(
     name = "hidravpn-service",
@@ -381,6 +385,24 @@ fn windows_log_file() -> Option<std::sync::Arc<std::fs::File>> {
 
 fn run_daemon() -> Result<()> {
     require_admin()?;
+    #[cfg(windows)]
+    {
+        // Prefer running as the registered service. Only when no SCM started
+        // us (someone ran `run` from a console, to watch it) do we fall
+        // through to the foreground. `dispatch` blocks for the service's
+        // whole life and sets up its own logging through `service_main`.
+        match service::dispatch()? {
+            service::Dispatch::Ran => return Ok(()),
+            service::Dispatch::NotStartedByScm => {}
+        }
+    }
+    init_logging();
+    run_daemon_until(foreground_stop())
+}
+
+/// Sets up the daemon's logging. On Windows the service has no console, so
+/// warnings and errors also go to a file. Call once per process.
+fn init_logging() {
     let logs = tracing_subscriber::fmt()
         // HidraVPN's own crates only, whatever RUST_LOG says.
         .with_env_filter(tracing_subscriber::EnvFilter::new(
@@ -392,8 +414,8 @@ fn run_daemon() -> Result<()> {
         .with_target(false);
     #[cfg(windows)]
     match windows_log_file() {
-        // Warnings and errors also go to a file: the scheduled task has no
-        // console. They name no address, key or name, like every log here.
+        // Warnings and errors also go to a file: the service has no console.
+        // They name no address, key or name, like every log here.
         Some(file) => {
             use tracing_subscriber::fmt::writer::MakeWriterExt;
             logs.with_ansi(false)
@@ -404,36 +426,51 @@ fn run_daemon() -> Result<()> {
     }
     #[cfg(not(windows))]
     logs.with_writer(std::io::stderr).init();
+}
 
+/// Builds the runtime and serves until `stop` completes. The synchronous
+/// entry both the foreground path and the Windows service call. `pub(crate)`
+/// so the service's `mod service` can drive it with the SCM's stop signal.
+pub(crate) fn run_daemon_until<S>(stop: S) -> Result<()>
+where
+    S: std::future::Future<Output = ()>,
+{
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(async {
-        let token = ipc::write_token().context("writing the control token")?;
-        let daemon = Daemon::new(token);
-        tracing::info!("HidraVPN service starting");
-        hidravpn_core::netcfg::recover_dns();
+    rt.block_on(serve_until(stop))
+}
 
-        let serve = {
-            let d = daemon.clone();
-            tokio::spawn(async move { ipc::serve(d).await })
-        };
-        let refill = {
-            let d = daemon.clone();
-            tokio::spawn(async move { d.refill_loop().await })
-        };
+/// Serves the control channel and the refill loop until `stop` completes,
+/// then puts the network back. Shared by the foreground and the service.
+async fn serve_until<S>(stop: S) -> Result<()>
+where
+    S: std::future::Future<Output = ()>,
+{
+    let token = ipc::write_token().context("writing the control token")?;
+    let daemon = Daemon::new(token);
+    tracing::info!("HidraVPN service starting");
+    hidravpn_core::netcfg::recover_dns();
 
-        wait_for_stop().await;
-        tracing::info!("stopping; putting the network back");
-        refill.abort();
-        daemon.shutdown().await;
-        serve.abort();
-        Ok::<(), anyhow::Error>(())
-    })
+    let serve = {
+        let d = daemon.clone();
+        tokio::spawn(async move { ipc::serve(d).await })
+    };
+    let refill = {
+        let d = daemon.clone();
+        tokio::spawn(async move { d.refill_loop().await })
+    };
+
+    stop.await;
+    tracing::info!("stopping; putting the network back");
+    refill.abort();
+    daemon.shutdown().await;
+    serve.abort();
+    Ok(())
 }
 
 #[cfg(unix)]
-async fn wait_for_stop() {
+async fn foreground_stop() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
@@ -443,9 +480,10 @@ async fn wait_for_stop() {
 }
 
 #[cfg(not(unix))]
-async fn wait_for_stop() {
-    // A task started at boot may have no console to take a Ctrl+C from; then
-    // it runs until it is ended from outside, never stopping at once.
+async fn foreground_stop() {
+    // Run in a console with no Ctrl+C to take: then it runs until it is ended
+    // from outside, never stopping at once. (As a service, the SCM's stop
+    // control drives the shutdown instead — see `mod service`.)
     if tokio::signal::ctrl_c().await.is_err() {
         std::future::pending::<()>().await;
     }

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for signing and notarizing the macOS app.
+
+  Notarization requires the hardened runtime, and an Electron app will not pass
+  it (or will crash at launch) without these: V8 JITs (allow-jit +
+  allow-unsigned-executable-memory), and Electron's own frameworks/helpers and
+  the bundled Tor are signed separately rather than under one team's library
+  validation (disable-library-validation). allow-dyld-environment-variables
+  lets the launcher set DYLD_* for the bundled Tor.
+
+  Lives in scripts/ (not build/, which is generated and gitignored) and is
+  read directly by scripts/sign-mac.sh. Nothing here is exercised until the app
+  is signed with a real Developer ID certificate on a Mac — see
+  docs/code-signing.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

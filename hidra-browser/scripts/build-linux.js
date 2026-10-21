@@ -19,7 +19,7 @@ const path  = require('path');
 const https = require('https');
 const { deflateRawSync, inflateRawSync } = require('zlib');
 
-const ELECTRON_VER = '33.4.11';
+const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'hidranet';       // lowercase binary name
 const APP_DISPLAY  = 'HidraNet';      // human-readable
 const VERSION      = '1.0.0';
