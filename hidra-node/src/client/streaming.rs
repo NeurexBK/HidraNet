@@ -11,12 +11,12 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 use crate::crypto::handshake::{HandshakeState, Role};
-use crate::crypto::service_auth::{ClientHandshake, SealedChannel};
+use crate::crypto::service_auth::{ClientHandshake, SealedChannel, SEAL_OVERHEAD};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::network::listener::PROTO_NOISE_SESSION;
 use crate::onion::builder::{build_onion, peel_response_layers};
-use crate::onion::cell::RelayCommand;
+use crate::onion::cell::{pad_cell, unpad_cell, RelayCommand, MAX_DATA};
 use crate::onion::circuit::{Circuit, CircuitHop};
 use crate::onion::layer::LayerCipher;
 use crate::relay::registry::RelayEntry;
@@ -212,14 +212,21 @@ impl StreamingCircuit {
         }
     }
 
+    /// Sends stream data, in as many cells as it takes: each cell carries at
+    /// most `MAX_DATA` bytes (less the seal, on a hidden service), so every
+    /// cell is the same size whatever is sent.
     pub async fn send_data(&mut self, data: &[u8]) -> Result<()> {
-        match self.sealed.as_mut() {
-            Some(ch) => {
-                let sealed = ch.seal(data)?;
-                self.send_raw(&sealed).await
+        if self.sealed.is_some() {
+            for piece in data.chunks(MAX_DATA - SEAL_OVERHEAD) {
+                let sealed = self.sealed.as_mut().expect("checked above").seal(piece)?;
+                self.send_raw(&sealed).await?;
             }
-            None => self.send_raw(data).await,
+        } else {
+            for piece in data.chunks(MAX_DATA) {
+                self.send_raw(piece).await?;
+            }
         }
+        Ok(())
     }
 
     pub async fn recv_data(&mut self) -> Result<Option<Vec<u8>>> {
@@ -511,18 +518,21 @@ async fn control_round(
     RelayCommand::deserialize_bincode(&peel_response_layers(partial, data)?)
 }
 
+/// A stream command padded to one cell, then wrapped for every hop.
 fn wrap_all_stream_layers(circuit: &mut Circuit, data: &[u8]) -> Result<Vec<u8>> {
-    let mut current = data.to_vec();
+    let mut current = pad_cell(data)?;
     for hop in circuit.hops.iter_mut().rev() {
         current = hop.layer.seal_forward(&current)?;
     }
     Ok(current)
 }
 
+/// A stream cell opened through every hop, and the command the exit padded
+/// into it.
 fn peel_all_stream_layers(circuit: &mut Circuit, data: Vec<u8>) -> Result<Vec<u8>> {
     let mut current = data;
     for hop in circuit.hops.iter_mut() {
         current = hop.layer.open_backward(&current)?;
     }
-    Ok(current)
+    unpad_cell(&current)
 }

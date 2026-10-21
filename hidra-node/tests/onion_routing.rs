@@ -123,7 +123,11 @@ async fn streaming_circuit_echo_through_three_relays() {
     let large_data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
     circuit.send_data(&large_data).await.unwrap();
 
-    let received_large = circuit.recv_data().await.unwrap().unwrap();
+    // A stream, not messages: 8 kB comes back in as many cells as it takes.
+    let mut received_large = Vec::new();
+    while received_large.len() < large_data.len() {
+        received_large.extend(circuit.recv_data().await.unwrap().unwrap());
+    }
     assert_eq!(received_large, large_data);
 
     circuit.send_end().await.unwrap();

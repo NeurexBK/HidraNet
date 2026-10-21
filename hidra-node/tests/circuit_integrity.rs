@@ -24,7 +24,7 @@ use hidra_node::client::streaming::StreamingCircuit;
 use hidra_node::crypto::handshake::{HandshakeState, Role};
 use hidra_node::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use hidra_node::network::listener::{NodeListener, PROTO_NOISE_SESSION, PROTO_RELAY_LINK};
-use hidra_node::onion::cell::LayerHeader;
+use hidra_node::onion::cell::{pad_cell, unpad_cell, LayerHeader};
 use hidra_node::onion::layer::LayerCipher;
 use hidra_node::relay::exit_policy::ExitPolicy;
 use hidra_node::relay::registry::RelayEntry;
@@ -192,11 +192,11 @@ async fn a_cell_sent_twice_closes_the_link_instead_of_opening_twice() {
     conn.send_message(&Message::CreateCircuit { circuit_id: id }).await.unwrap();
     assert_eq!(next_message(&mut conn).await, Some(Message::CircuitCreated { circuit_id: id }));
 
-    let cell = layer.seal_forward_cell(&LayerHeader { next_hop: None }, b"once").unwrap();
+    let cell = layer.seal_forward_cell(&LayerHeader { next_hop: None }, &pad_cell(b"once").unwrap()).unwrap();
     conn.send_message(&Message::Relay { circuit_id: id, data: cell.clone() }).await.unwrap();
     match next_message(&mut conn).await {
         Some(Message::Relay { data, .. }) => {
-            assert_eq!(layer.open_backward(&data).unwrap(), b"Received, agent");
+            assert_eq!(unpad_cell(&layer.open_backward(&data).unwrap()).unwrap(), b"Received, agent");
         }
         other => panic!("expected the relay's reply, got {other:?}"),
     }
@@ -218,11 +218,11 @@ async fn a_circuit_id_in_use_cannot_be_taken_over() {
     assert_eq!(next_message(&mut intruder).await, None, "a second session registered an id in use");
 
     // The owner's circuit still opens under the owner's layer.
-    let cell = layer.seal_forward_cell(&LayerHeader { next_hop: None }, b"still mine").unwrap();
+    let cell = layer.seal_forward_cell(&LayerHeader { next_hop: None }, &pad_cell(b"still mine").unwrap()).unwrap();
     owner.send_message(&Message::Relay { circuit_id: id, data: cell }).await.unwrap();
     match next_message(&mut owner).await {
         Some(Message::Relay { data, .. }) => {
-            assert_eq!(layer.open_backward(&data).unwrap(), b"Received, agent");
+            assert_eq!(unpad_cell(&layer.open_backward(&data).unwrap()).unwrap(), b"Received, agent");
         }
         other => panic!("the owner's circuit stopped working: {other:?}"),
     }
@@ -243,4 +243,65 @@ async fn a_peer_speaking_version_1_is_refused() {
             .unwrap_or(0);
         assert_eq!(n, 0, "the relay answered a version 1 peer (first byte {old:#04x})");
     }
+}
+
+/// The frames sent over one connection, after its protocol byte.
+fn frames(captured: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut at = 1;
+    while at + 4 <= captured.len() {
+        let len = u32::from_be_bytes(captured[at..at + 4].try_into().unwrap()) as usize;
+        if at + 4 + len > captured.len() {
+            break;
+        }
+        out.push(len);
+        at += 4 + len;
+    }
+    out
+}
+
+#[tokio::test]
+async fn every_stream_cell_on_a_link_is_the_same_size() {
+    let (guard, guard_key) = start_relay().await;
+    let (middle, middle_key) = start_relay().await;
+    let (exit, exit_key) = start_relay().await;
+    let (t_exit, tap_exit) = tap_in_front_of(exit).await;
+    let echo = start_echo_server().await;
+    let relays = vec![
+        RelayEntry { name: "guard".into(), addr: guard, noise_pubkey_b64: guard_key },
+        RelayEntry { name: "middle".into(), addr: middle, noise_pubkey_b64: middle_key },
+        RelayEntry { name: "exit".into(), addr: t_exit, noise_pubkey_b64: exit_key },
+    ];
+    let mut circuit = StreamingCircuit::build(&relays, StaticSecret::random_from_rng(OsRng))
+        .await
+        .unwrap();
+    circuit.connect(&echo.ip().to_string(), echo.port()).await.unwrap();
+
+    // Very different sizes: one byte, a short request, and more than one cell.
+    for size in [1usize, 700, 5000] {
+        let sent: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
+        circuit.send_data(&sent).await.unwrap();
+        let mut echoed = Vec::new();
+        while echoed.len() < size {
+            echoed.extend(circuit.recv_data().await.unwrap().unwrap());
+        }
+        assert_eq!(echoed, sent);
+    }
+    circuit.send_end().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let conns = tap_exit.connections();
+    let link = conns
+        .iter()
+        .find(|c| c.first() == Some(&PROTO_RELAY_LINK))
+        .expect("the exit was never reached over a relay link");
+    // Handshake messages A and C, the cell that opens the stream, then the
+    // stream: 1 + 1 + 3 data cells and the end.
+    let sizes = frames(link);
+    assert!(sizes.len() >= 3 + 6, "fewer frames than expected on the exit link: {sizes:?}");
+    let stream = &sizes[3..];
+    assert!(
+        stream.iter().all(|s| *s == stream[0]),
+        "stream cells of different sizes crossed the link to the exit: {stream:?}"
+    );
 }

@@ -764,83 +764,136 @@ async fn run_server_mode(
         info!("╚══════════════════════════════════════════════════════════════╝");
     }
 
-    // Service loop: receive client data from intro point, forward to local server
+    serve_hidden_sessions(&mut intro_circuit, &service_keys.signing_key, local_port).await;
+
+    Ok(())
+}
+
+/// Serves a hidden service's clients over its circuit to the introduction
+/// point. A client session opens with a challenge, which the service
+/// answers with the address's key; nothing reaches the local
+/// server until it has, and what does is sealed end to end. After that the
+/// session is a byte stream, both ways: what the client sends goes, in
+/// order, to one connection to the local server, and what the server sends
+/// back goes to the client in sealed pieces that each fit one cell.
+///
+/// It used to open a new local connection for every message from the
+/// client and read the answer once, up to 16 kB, sealed whole. With cells
+/// of one size a request arrives in pieces, which that loop would have
+/// spread over as many connections, and an answer over one cell would not
+/// have been sent at all.
+async fn serve_hidden_sessions(
+    intro_circuit: &mut client::streaming::StreamingCircuit,
+    signing_key: &SigningKey,
+    local_port: u16,
+) {
     let mut session: Option<crypto::service_auth::SealedChannel> = None;
+    let mut local: Option<tokio::net::TcpStream> = None;
+    let mut buf = vec![0u8; 16384];
     loop {
-        tokio::select! {
-            data_result = intro_circuit.recv_raw() => {
-                match data_result {
-                    Ok(Some(raw)) => {
-                        // Every client session opens with a challenge, which
-                        // the service answers with the address's key. Nothing
-                        // reaches the local server until it has, and what
-                        // does is sealed end to end.
-                        if crypto::service_auth::is_hello(&raw) {
-                            match crypto::service_auth::answer_hello(&service_keys.signing_key, &raw) {
-                                Ok((channel, answer)) => {
-                                    if intro_circuit.send_raw(&answer).await.is_err() { break; }
-                                    session = Some(channel);
-                                }
-                                Err(e) => warn!(error = %e, "could not answer a client's challenge"),
-                            }
-                            continue;
+        enum Event {
+            FromClient(crate::error::Result<Option<Vec<u8>>>),
+            FromServer(std::io::Result<usize>),
+            Stop,
+        }
+        // Both reads are cancel safe: the circuit's through its FrameReader,
+        // the local server's as any TcpStream read.
+        let event = tokio::select! {
+            r = intro_circuit.recv_raw() => Event::FromClient(r),
+            r = read_local(&mut local, &mut buf) => Event::FromServer(r),
+            _ = tokio::signal::ctrl_c() => Event::Stop,
+        };
+        match event {
+            Event::FromClient(Ok(Some(raw))) => {
+                if crypto::service_auth::is_hello(&raw) {
+                    // A new client: whatever the last one left open goes.
+                    local = None;
+                    match crypto::service_auth::answer_hello(signing_key, &raw) {
+                        Ok((channel, answer)) => {
+                            if intro_circuit.send_raw(&answer).await.is_err() { break; }
+                            session = Some(channel);
                         }
-                        let Some(channel) = session.as_mut() else {
-                            warn!("dropped data from a client that skipped the challenge");
-                            continue;
-                        };
-                        let data = match channel.open(&raw) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                warn!(error = %e, "client session ended: a message did not open");
-                                session = None;
-                                continue;
-                            }
-                        };
-                        let local_addr = format!("127.0.0.1:{local_port}");
-                        match tokio::net::TcpStream::connect(&local_addr).await {
-                            Ok(mut local_stream) => {
-                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                                if local_stream.write_all(&data).await.is_ok() {
-                                    let mut response_buf = vec![0u8; 16384];
-                                    match local_stream.read(&mut response_buf).await {
-                                        Ok(0) => {}
-                                        Ok(n) => {
-                                            if let Some(channel) = session.as_mut()
-                                                && let Ok(sealed) = channel.seal(&response_buf[..n])
-                                            {
-                                                let _ = intro_circuit.send_raw(&sealed).await;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            debug!(error = %e, "local server read error");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, local_port, "failed to connect to local server");
-                            }
-                        }
+                        Err(e) => warn!(error = %e, "could not answer a client's challenge"),
                     }
-                    Ok(None) => {
-                        info!("intro circuit closed, reconnecting...");
-                        break;
-                    }
+                    continue;
+                }
+                let Some(channel) = session.as_mut() else {
+                    warn!("dropped data from a client that skipped the challenge");
+                    continue;
+                };
+                let data = match channel.open(&raw) {
+                    Ok(d) => d,
                     Err(e) => {
-                        warn!(error = %e, "intro circuit error");
+                        warn!(error = %e, "client session ended: a message did not open");
+                        session = None;
+                        local = None;
+                        continue;
+                    }
+                };
+                if local.is_none() {
+                    match tokio::net::TcpStream::connect(format!("127.0.0.1:{local_port}")).await {
+                        Ok(s) => local = Some(s),
+                        Err(e) => {
+                            warn!(error = %e, local_port, "failed to connect to local server");
+                            continue;
+                        }
+                    }
+                }
+                use tokio::io::AsyncWriteExt;
+                if let Some(s) = local.as_mut()
+                    && s.write_all(&data).await.is_err()
+                {
+                    local = None;
+                }
+            }
+            Event::FromClient(Ok(None)) => {
+                info!("intro circuit closed, reconnecting...");
+                break;
+            }
+            Event::FromClient(Err(e)) => {
+                warn!(error = %e, "intro circuit error");
+                break;
+            }
+            Event::FromServer(Ok(n)) if n > 0 => {
+                let Some(channel) = session.as_mut() else { continue };
+                let mut sent = true;
+                for piece in buf[..n].chunks(onion::cell::MAX_DATA - crypto::service_auth::SEAL_OVERHEAD) {
+                    let sealed = match channel.seal(piece) {
+                        Ok(s) => s,
+                        Err(_) => { sent = false; break; }
+                    };
+                    if intro_circuit.send_raw(&sealed).await.is_err() {
+                        sent = false;
                         break;
                     }
                 }
+                if !sent { break; }
             }
-            _ = tokio::signal::ctrl_c() => {
+            Event::FromServer(r) => {
+                // The local server closed, or failed: the client's stream ends
+                // with it, as a direct connection would.
+                if let Err(e) = r {
+                    debug!(error = %e, "local server read error");
+                }
+                local = None;
+                if session.is_some() && intro_circuit.send_end().await.is_err() { break; }
+            }
+            Event::Stop => {
                 info!("received shutdown signal");
                 break;
             }
         }
     }
+}
 
-    Ok(())
+/// Reads from the local server of a hidden service, or waits for ever while
+/// no connection to it is open.
+async fn read_local(local: &mut Option<tokio::net::TcpStream>, buf: &mut [u8]) -> std::io::Result<usize> {
+    use tokio::io::AsyncReadExt;
+    match local {
+        Some(s) => s.read(buf).await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn run_proxy_mode(
@@ -1146,6 +1199,86 @@ async fn run_sevennine_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hidden service's session is a byte stream both ways: a request that
+    /// arrives in several cells reaches the local server whole, over one
+    /// connection, and an answer larger than a cell comes back whole.
+    #[tokio::test]
+    async fn a_hidden_service_carries_requests_and_answers_larger_than_a_cell() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const REQUEST: usize = 7000;
+        const ANSWER: usize = 9000;
+
+        async fn relay() -> relay::registry::RelayEntry {
+            let secret = StaticSecret::random_from_rng(rand_core::OsRng);
+            let key = base64::engine::general_purpose::STANDARD
+                .encode(x25519_dalek::PublicKey::from(&secret).to_bytes());
+            let listener = network::listener::NodeListener::bind("127.0.0.1:0".parse().unwrap(), secret)
+                .await
+                .unwrap()
+                .with_exit_policy(relay::exit_policy::ExitPolicy::ALLOW_PRIVATE);
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move { listener.accept_loop().await });
+            relay::registry::RelayEntry { name: "relay".into(), addr, noise_pubkey_b64: key }
+        }
+        let relays = vec![relay().await, relay().await, relay().await];
+
+        // The service's local server: reads the whole request on one
+        // connection, answers, and notes whether a second connection came.
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_port = server.local_addr().unwrap().port();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut s, _) = server.accept().await.unwrap();
+            let mut got = Vec::new();
+            let mut b = vec![0u8; 4096];
+            while got.len() < REQUEST {
+                match s.read(&mut b).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&b[..n]),
+                }
+            }
+            let answer: Vec<u8> = (0..ANSWER).map(|i| (i % 249) as u8).collect();
+            s.write_all(&answer).await.unwrap();
+            drop(s);
+            let second = tokio::time::timeout(std::time::Duration::from_millis(500), server.accept())
+                .await
+                .is_ok();
+            let _ = seen_tx.send((got, second));
+        });
+
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let service_pub = signing_key.verifying_key().to_bytes();
+        let mut intro = client::streaming::StreamingCircuit::build(&relays, StaticSecret::random_from_rng(rand_core::OsRng))
+            .await
+            .unwrap();
+        intro.register_service(&signing_key).await.unwrap();
+        tokio::spawn(async move { serve_hidden_sessions(&mut intro, &signing_key, local_port).await });
+
+        let mut client = client::streaming::StreamingCircuit::build(&relays, StaticSecret::random_from_rng(rand_core::OsRng))
+            .await
+            .unwrap();
+        client.connect_service_authenticated(&service_pub).await.unwrap();
+        let request: Vec<u8> = (0..REQUEST).map(|i| (i % 241) as u8).collect();
+        client.send_data(&request).await.unwrap();
+
+        let mut answer = Vec::new();
+        let read = async {
+            while answer.len() < ANSWER {
+                match client.recv_data().await.unwrap() {
+                    Some(d) => answer.extend(d),
+                    None => break,
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(20), read).await.expect("the answer stalled");
+        assert_eq!(answer.len(), ANSWER, "the answer came back short");
+        assert!(answer.iter().enumerate().all(|(i, b)| *b == (i % 249) as u8), "the answer came back corrupted");
+
+        let (got, second) = seen_rx.await.unwrap();
+        assert_eq!(got, request, "the request reached the local server short or corrupted");
+        assert!(!second, "the request was spread over more than one local connection");
+    }
 
     #[test]
     fn test_pow_solve_and_verify() {

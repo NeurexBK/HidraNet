@@ -16,7 +16,7 @@ use crate::crypto::handshake::{HandshakeState, Role};
 use crate::error::{HidraError, Result};
 use crate::network::connection::{read_frame, write_frame, Message, SecureConnection};
 use crate::network::listener::{PROTO_NOISE_SESSION, PROTO_RELAY_LINK};
-use crate::onion::cell::{LayerHeader, RelayCommand};
+use crate::onion::cell::{pad_cell, unpad_cell, LayerHeader, RelayCommand, MAX_DATA};
 use crate::onion::layer::LayerCipher;
 use crate::relay::exit_policy::ExitPolicy;
 
@@ -230,9 +230,14 @@ async fn serve_link(
                             ns.send_message(&Message::Relay { circuit_id, data: inner }).await?;
                             read_next_relay(ns).await?
                         }
+                        // The cell ends here: this hop takes the command out of
+                        // its padding and pads the answer it originates.
                         None => {
-                            handle_control(&inner, circuit_id, &mut pending_extend, ctx.policy, ctx.dial_source)
-                                .await?
+                            let command = unpad_cell(&inner)?;
+                            let answer =
+                                handle_control(&command, circuit_id, &mut pending_extend, ctx.policy, ctx.dial_source)
+                                    .await?;
+                            pad_cell(&answer)?
                         }
                     };
                     let sealed = seal_reply(&ctx.circuits, circuit_id, &reply).await?;
@@ -253,7 +258,7 @@ async fn serve_link(
                             relay_streaming_loop(&mut conn, ns, circuit_id, &mut layer).await?;
                         }
                         None => {
-                            let cmd = RelayCommand::deserialize_bincode(&inner)?;
+                            let cmd = RelayCommand::deserialize_bincode(&unpad_cell(&inner)?)?;
                             handle_exit_command(cmd, &mut conn, circuit_id, &mut layer, &ctx).await?;
                         }
                     }
@@ -467,6 +472,8 @@ const MAX_CIRCUITS: usize = 65_536;
 /// peer that then stalls on a handshake frame is dropped instead of pinning
 /// the task and its socket. A real handshake completes in well under a second.
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// The most addresses a DNS answer carries back, so it always fits one cell.
+const MAX_DNS_ANSWERS: usize = 16;
 
 /// Opens a link to a new hop and carries the client's Noise message A to it,
 /// returning the hop's reply B and the still-open link for the matching
@@ -505,15 +512,33 @@ async fn finish_carry(hop: &mut TcpStream, msg_c: &[u8], sealed_create: &[u8]) -
     .map_err(|_| HidraError::Relay("the next hop did not answer in time".into()))?
 }
 
-/// Seals a command back to the client and sends it.
+/// Seals a command back to the client, padded to one cell, and sends it.
 async fn reply(
     conn: &mut SecureConnection,
     circuit_id: u32,
     layer: &mut LayerCipher,
     cmd: &RelayCommand,
 ) -> Result<()> {
-    let sealed = layer.seal_backward(&cmd.serialize_bincode()?)?;
+    let sealed = layer.seal_backward(&pad_cell(&cmd.serialize_bincode()?)?)?;
     conn.send_message(&Message::Relay { circuit_id, data: sealed }).await
+}
+
+/// Sends stream data back to the client in as many cells as it takes.
+async fn reply_data(
+    conn: &mut SecureConnection,
+    circuit_id: u32,
+    layer: &mut LayerCipher,
+    data: &[u8],
+) -> Result<()> {
+    for piece in data.chunks(MAX_DATA) {
+        reply(conn, circuit_id, layer, &RelayCommand::Data(piece.to_vec())).await?;
+    }
+    Ok(())
+}
+
+/// The command a stream cell from the client carries, out of its padding.
+fn open_command(layer: &mut LayerCipher, data: &[u8]) -> Result<RelayCommand> {
+    RelayCommand::deserialize_bincode(&unpad_cell(&layer.open_forward(data)?)?)
 }
 
 async fn handle_exit_command(
@@ -605,6 +630,7 @@ async fn handle_exit_command(
                     .policy
                     .filter_answer(addrs.map(|a| a.ip()).collect())
                     .into_iter()
+                    .take(MAX_DNS_ANSWERS)
                     .map(|ip| ip.to_string())
                     .collect(),
                 Err(e) => {
@@ -637,7 +663,7 @@ async fn exit_streaming_loop(
                     Ok(Message::Relay { data, .. }) => data,
                     _ => break,
                 };
-                match RelayCommand::deserialize_bincode(&layer.open_forward(&data)?)? {
+                match open_command(layer, &data)? {
                     RelayCommand::Data(payload) => {
                         if target.write_all(&payload).await.is_err() { break; }
                     }
@@ -655,9 +681,7 @@ async fn exit_streaming_loop(
                         let _ = reply(conn, circuit_id, layer, &RelayCommand::End).await;
                         break;
                     }
-                    Ok(n) => {
-                        reply(conn, circuit_id, layer, &RelayCommand::Data(target_buf[..n].to_vec())).await?;
-                    }
+                    Ok(n) => reply_data(conn, circuit_id, layer, &target_buf[..n]).await?,
                     Err(_) => break,
                 }
             }
@@ -718,7 +742,7 @@ async fn bridge(
                     Ok(Message::Relay { data, .. }) => data,
                     _ => break,
                 };
-                match RelayCommand::deserialize_bincode(&layer.open_forward(&data)?)? {
+                match open_command(layer, &data)? {
                     RelayCommand::Data(payload) => {
                         if to_other.send(payload).await.is_err() {
                             break;
@@ -730,7 +754,7 @@ async fn bridge(
             }
             data = from_other.recv() => {
                 match data {
-                    Some(payload) => reply(conn, circuit_id, layer, &RelayCommand::Data(payload)).await?,
+                    Some(payload) => reply_data(conn, circuit_id, layer, &payload).await?,
                     None => break,
                 }
             }

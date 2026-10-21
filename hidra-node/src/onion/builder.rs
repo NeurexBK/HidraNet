@@ -1,11 +1,12 @@
 use crate::error::Result;
-use crate::onion::cell::LayerHeader;
+use crate::onion::cell::{pad_cell, unpad_cell, LayerHeader};
 use crate::onion::circuit::Circuit;
 
-/// Wraps a control cell for every hop of the circuit, innermost for the last.
-/// Each hop's layer counts the cell, so the circuit is borrowed mutably.
+/// Wraps a control cell for every hop of the circuit, innermost for the last,
+/// around a command padded to one cell (`cell::CELL_BODY`). Each hop's layer
+/// counts the cell, so the circuit is borrowed mutably.
 pub fn build_onion(circuit: &mut Circuit, payload: &[u8]) -> Result<Vec<u8>> {
-    let mut current = payload.to_vec();
+    let mut current = pad_cell(payload)?;
     let last = circuit.hops.len().saturating_sub(1);
     for i in (0..circuit.hops.len()).rev() {
         let next_hop = if i == last { None } else { Some(circuit.hops[i + 1].addr) };
@@ -17,12 +18,12 @@ pub fn build_onion(circuit: &mut Circuit, payload: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Opens a reply that came back through every hop, outermost (the guard's)
-/// first.
+/// first, and returns the command the last hop padded into it.
 pub fn peel_response_layers(circuit: &mut Circuit, mut data: Vec<u8>) -> Result<Vec<u8>> {
     for hop in circuit.hops.iter_mut() {
         data = hop.layer.open_backward(&data)?;
     }
-    Ok(data)
+    unpad_cell(&data)
 }
 
 #[cfg(test)]
@@ -55,7 +56,7 @@ mod tests {
         assert_eq!(h2.next_hop, Some("127.0.0.1:9152".parse().unwrap()));
         let (h3, inner3) = relays[2].open_forward_cell(&inner2).unwrap();
         assert!(h3.next_hop.is_none());
-        assert_eq!(inner3, b"Hello, hidden world");
+        assert_eq!(unpad_cell(&inner3).unwrap(), b"Hello, hidden world");
     }
 
     #[test]
@@ -64,7 +65,7 @@ mod tests {
         let mut relays = [0x11u8, 0x22, 0x33].map(|k| LayerCipher::new(&[k; 32]));
 
         // As relays send a reply back: the exit seals first, the guard last.
-        let mut reply = b"Received, agent".to_vec();
+        let mut reply = pad_cell(b"Received, agent").unwrap();
         for relay in relays.iter_mut().rev() {
             reply = relay.seal_backward(&reply).unwrap();
         }
