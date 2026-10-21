@@ -17,10 +17,10 @@
 const fs    = require('fs');
 const path  = require('path');
 const { readZip, writeZip, mkFile, mkDir } = require('./lib/zip');
-const { download } = require('./lib/net');
 const { buildJson } = require('./lib/build-stamp');
+const { electronZip } = require('./lib/electron');
+const { torDir, verifyTorDir } = require('./lib/tor');
 
-const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'hidranet';       // lowercase binary name
 const APP_DISPLAY  = 'HidraNet';      // human-readable
 const VERSION      = '1.0.0';
@@ -64,22 +64,9 @@ async function buildArch(arch) {
   console.log('  Linux ' + arch);
   console.log('─'.repeat(54));
 
-  var cacheDir = path.join(DIST, 'electron-cache');
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  var zipName  = 'electron-v' + ELECTRON_VER + '-linux-' + arch + '.zip';
-  var zipCache = path.join(cacheDir, zipName);
-  var dlUrl    = 'https://github.com/electron/electron/releases/download/v' +
-                 ELECTRON_VER + '/' + zipName;
-
-  if (!fs.existsSync(zipCache)) {
-    console.log('  Descarregando ' + zipName + ' ...');
-    console.log('  (GitHub → ~80 MB, this can take a while)');
-    await download(dlUrl, zipCache);
-    console.log('  Guardado em cache: ' + zipCache);
-  } else {
-    console.log('  Cache: ' + zipName);
-  }
+  // Downloaded once, and checked against Electron's published SHA-256 on
+  // every build (lib/electron.js).
+  var zipCache = await electronZip('linux', arch, path.join(DIST, 'electron-cache'));
 
   console.log('  Lendo ZIP ...');
   var srcBuf     = fs.readFileSync(zipCache);
@@ -135,28 +122,23 @@ async function buildArch(arch) {
   // ── Tor daemon — what actually anonymises the browsing ───────────────────
   // Without it the package opens, but every request leaves from the user's
   // real IP.
-  var torDir = path.join(ROOT, 'build', 'bin', 'tor', 'linux-' + arch);
-  if (fs.existsSync(path.join(torDir, 'tor'))) {
-    outEntries.push(mkDir(resPfx + 'bin'));
-    outEntries.push(mkDir(resPfx + 'bin/tor'));
-    ['tor', 'geoip', 'geoip6'].forEach(function(f) {
-      var abs = path.join(torDir, f);
-      if (!fs.existsSync(abs)) return;
-      outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
-    });
-    console.log('  Tor included (linux-' + arch + ')');
-    var libevent = path.join(ROOT, 'vendor', 'linux-' + arch, LIBEVENT);
-    if (fs.existsSync(libevent)) {
-      outEntries.push(mkFile(resPfx + 'bin/tor/' + LIBEVENT, fs.readFileSync(libevent)));
-      console.log('  ' + LIBEVENT + ' included beside Tor');
-    } else {
-      console.log('  [!!] ' + LIBEVENT + ' MISSING for linux-' + arch + ' — Tor will not start where');
-      console.log('       libevent is not installed, and nothing will connect.');
-    }
-  } else {
-    console.log('  [!!] Tor MISSING for linux-' + arch + ' — this package gives no anonymity.');
-    console.log('       node scripts/fetch-tor.js --platform linux --arch ' + arch);
-  }
+  // Refused rather than left out: a package without it opens and then sends
+  // everything from the user's own address. And only the pinned Tor
+  // (lib/tor.js) goes in.
+  var tor = torDir(ROOT, 'linux', arch);
+  verifyTorDir(tor, 'linux', arch);
+  outEntries.push(mkDir(resPfx + 'bin'));
+  outEntries.push(mkDir(resPfx + 'bin/tor'));
+  ['tor', 'geoip', 'geoip6'].forEach(function(f) {
+    outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(path.join(tor, f)), f === 'tor' ? 0o755 : 0o644));
+  });
+  console.log('  Tor included (linux-' + arch + '), every file matches its pin');
+  // Without libevent beside it the pinned Tor cannot start on most systems,
+  // so its absence stops the build too.
+  var libevent = path.join(ROOT, 'vendor', 'linux-' + arch, LIBEVENT);
+  if (!fs.existsSync(libevent)) throw new Error(LIBEVENT + ' missing for linux-' + arch + ' (vendor/linux-' + arch + '/)');
+  outEntries.push(mkFile(resPfx + 'bin/tor/' + LIBEVENT, fs.readFileSync(libevent)));
+  console.log('  ' + LIBEVENT + ' included beside Tor');
 
   // ── Launcher script (0o755) ───────────────────────────────────────────────
   // Shared with patch-zip.js and pack-portable.js — see lib/linux-launcher.js.

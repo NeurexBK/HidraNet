@@ -32,10 +32,10 @@
 const fs    = require('fs');
 const path  = require('path');
 const { readZip, writeZip, mkFile, mkDir, UNIX_VER } = require('./lib/zip');
-const { download } = require('./lib/net');
 const { buildJson } = require('./lib/build-stamp');
+const { electronZip } = require('./lib/electron');
+const { torDir, verifyTorDir } = require('./lib/tor');
 
-const ELECTRON_VER = '44.9.3';
 const VERSION      = '1.0.0';
 const ROOT         = path.join(__dirname, '..');
 const DIST         = path.join(ROOT, 'dist');
@@ -78,17 +78,10 @@ function scanDir(dir, base) {
   const config = path.join(NODE_ROOT, 'config.toml');
 
   // ── Electron's Windows runtime ────────────────────────────────────────────
-  const cacheDir = path.join(DIST, 'electron-cache');
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const zipName  = 'electron-v' + ELECTRON_VER + '-win32-x64.zip';
-  const zipCache = path.join(cacheDir, zipName);
-  if (!fs.existsSync(zipCache)) {
-    console.log('  Downloading ' + zipName + ' ...');
-    await download('https://github.com/electron/electron/releases/download/v' +
-                   ELECTRON_VER + '/' + zipName, zipCache);
-  } else {
-    console.log('  Cache: ' + zipName);
-  }
+  // Downloaded once, and checked against Electron's published SHA-256 on
+  // every build (lib/electron.js).
+  const zipCache = await electronZip('win32', 'x64', path.join(DIST, 'electron-cache'));
+  const zipName = path.basename(zipCache);
 
   const out = [];
   let exe = false;
@@ -133,18 +126,15 @@ function scanDir(dir, base) {
   // ── Tor — what actually anonymises the browsing ───────────────────────────
   // Without it the package opens, but every request leaves from the user's
   // real IP.
-  const torDir = path.join(ROOT, 'build', 'bin', 'tor', 'win32-x64');
-  if (!fs.existsSync(path.join(torDir, 'tor.exe'))) {
-    console.error('  [!!] Tor MISSING for win32-x64 — this package would give no anonymity.');
-    console.error('       node scripts/fetch-tor.js --platform win32 --arch x64');
-    process.exit(1);
-  }
+  // Refused rather than left out, and only the pinned Tor (lib/tor.js).
+  const tor = torDir(ROOT, 'win32', 'x64');
+  verifyTorDir(tor, 'win32', 'x64');
   out.push(mkDir(res + 'bin/tor'));
   for (const f of ['tor.exe', 'geoip', 'geoip6', '.version']) {
-    const abs = path.join(torDir, f);
+    const abs = path.join(tor, f);
     if (fs.existsSync(abs)) out.push(mkFile(res + 'bin/tor/' + f, fs.readFileSync(abs)));
   }
-  console.log('  Tor included (win32-x64)');
+  console.log('  Tor included (win32-x64), every file matches its pin');
 
   // ── Fallback launcher (CRLF: read by cmd.exe) ─────────────────────────────
   out.push(mkFile('Start HidraNet.bat', Buffer.from(
