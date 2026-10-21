@@ -147,7 +147,9 @@ sudo systemctl restart hidravpn-node
 
 Add the next issuer key before the current one expires, and remove an old
 one with `hidravpn-node pass-key remove ID`. `hidravpn/docs/phase-5.md` says
-how the issuer is run and what a pass binds.
+how the issuer is run and what a pass binds; `phase-7-payments.md` how the
+issuer sells passes for HNET (`--pay-wallet`, `--pay-pack`), which changes
+nothing on a node.
 
 ## Publishing the list
 

@@ -12,6 +12,9 @@
 //!   hidravpn nodes discover ADDR    a node's own record, by address
 //!   hidravpn passes token | get | list | auto
 //!                                   passes for nodes that admit with one
+//!   hidravpn passes buy [N] | claim SIG
+//!                                   buy passes with HNET: an order, then the
+//!                                   transaction that paid it
 //!   hidravpn up --privado           two hops from the pocket (an entry and an exit)
 //!   hidravpn up --rapido            one hop from the pocket
 //!   hidravpn up <exit.json>         connect, one hop (Rápido), this exit
@@ -239,6 +242,18 @@ enum Passes {
     },
     /// How many passes the wallet holds, per node.
     List,
+    /// Buy passes with HNET: opens an order for a pack of COUNT passes and
+    /// says exactly what to send where. Without COUNT, lists the packs.
+    /// Then `passes claim`.
+    Buy {
+        count: Option<u32>,
+        /// Open a new order even though one is open and unclaimed.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Claim the open order with the signature of the transaction that
+    /// paid it: the pack goes on this machine's account.
+    Claim { signature: String },
     /// Let the service top the wallet up by itself, only while connected
     /// (through the tunnel): `on`, `off`, or nothing to see how it is set.
     Auto {
@@ -505,6 +520,98 @@ async fn main() -> Result<()> {
                     println!(
                         "{}",
                         hidravpn_service::passes::load_refill(&pocket_path).describe()
+                    );
+                    if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
+                        println!(
+                            "an order for {} pass(es) is open, unclaimed: {} HNET by {}; `hidravpn passes claim <signature>` once paid",
+                            o.passes, o.amount, o.expires
+                        );
+                    }
+                }
+                Passes::Buy { count, replace } => {
+                    let pocket = load_pocket(&pocket_path)?;
+                    let Some(count) = count else {
+                        let p = hidravpn_service::passes::packs(&pocket).await?;
+                        println!("passes for sale, paid in HNET sent to {}:", p.wallet);
+                        for k in &p.packs {
+                            let hnet =
+                                hidravpn_core::payment::amount_to_string(k.price_raw, p.decimals)
+                                    .trim_end_matches('0')
+                                    .trim_end_matches('.')
+                                    .to_string();
+                            match k.usd_cents {
+                                Some(c) => println!(
+                                    "  {:>5} passes for {} USD, {hnet} HNET today   (hidravpn passes buy {})",
+                                    k.passes,
+                                    hidravpn_core::payment::usd_to_string(c),
+                                    k.passes
+                                ),
+                                None => println!(
+                                    "  {:>5} passes for {hnet} HNET   (hidravpn passes buy {})",
+                                    k.passes, k.passes
+                                ),
+                            }
+                        }
+                        if let Some(r) = &p.rate {
+                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for 24 hours");
+                        }
+                        println!("a pass is one connection through a node that admits with one");
+                        return Ok(());
+                    };
+                    if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
+                        if !replace {
+                            return Err(anyhow!(
+                                "an order for {} pass(es) is already open: {} HNET by {}.\nIf you paid it: hidravpn passes claim <signature>. For a new order instead: hidravpn passes buy {count} --replace (the open one can still be claimed until it lapses)",
+                                o.passes, o.amount, o.expires
+                            ));
+                        }
+                    }
+                    let (token, made) =
+                        hidravpn_service::passes::token_for_purchase(&token_beside(&pocket_path))?;
+                    if made {
+                        println!(
+                            "a new pass account token was made and kept at {} (root only); the passes bought go on it",
+                            token_beside(&pocket_path).display()
+                        );
+                    }
+                    let order =
+                        hidravpn_service::passes::buy(&pocket, &pocket_path, &token, count).await?;
+                    println!(
+                        "order open for {} pass(es).\n{}",
+                        order.passes,
+                        hidravpn_service::passes::describe_order(&order)
+                    );
+                }
+                Passes::Claim { signature } => {
+                    let order =
+                        hidravpn_service::passes::load_order(&pocket_path)?.ok_or_else(|| {
+                            anyhow!("no order is open; `hidravpn passes buy` makes one")
+                        })?;
+                    let token = hidravpn_service::passes::read_token(&token_beside(&pocket_path))?;
+                    use hidravpn_service::passes::Claimed;
+                    match hidravpn_service::passes::claim(&pocket_path, &order, &token, &signature)
+                        .await?
+                    {
+                        Claimed::Credited { passes, balance } => println!(
+                            "paid: {passes} pass(es) credited; the account has {balance} in all"
+                        ),
+                        Claimed::AlreadyCredited { balance } => println!(
+                            "that transaction had already paid this order: {balance} pass(es) on the account, nothing credited twice"
+                        ),
+                        Claimed::EarlierOrder {
+                            passes,
+                            balance,
+                            already,
+                        } => {
+                            return Err(anyhow!(
+                                "that transaction {} an earlier order of {passes} pass(es), not the open one ({} HNET), which stays open; the account has {balance} in all",
+                                if already { "had already paid" } else { "paid" },
+                                order.amount
+                            ))
+                        }
+                    }
+                    println!(
+                        "`hidravpn passes get` fetches passes for the nodes now, or the service does it by itself while connected"
                     );
                 }
                 Passes::Auto { state, low, count } => {

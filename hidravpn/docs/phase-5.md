@@ -290,8 +290,9 @@ protects a full node from being hammered).
   spent and loses that pass (it takes the next). A nuisance, not a breach.
 
 - **It is not payment.** An account is whatever the maintainers hand out —
-  an invitation, a subscription, a donation receipt. How accounts are sold,
-  if ever, is outside this phase, and nothing here promises it.
+  an invitation, a subscription, a donation receipt. How accounts are sold
+  is phase 7 (`phase-7-payments.md`): a pack of passes paid in HNET, on an
+  account made for the token, prepaid instead of under a daily quota.
 - **The issuer is online and holds its secret key**: it signs on demand. It
   is a third key, apart from the release key and the list key, and it is
   meant to rotate: `--days` (35 by default) bounds every pass made under it.

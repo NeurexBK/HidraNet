@@ -18,6 +18,7 @@ pub mod killswitch;
 pub mod logging;
 pub mod netcfg;
 pub mod pass;
+pub mod payment;
 pub mod pocket;
 pub mod random;
 pub mod release;
