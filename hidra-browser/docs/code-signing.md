@@ -11,7 +11,7 @@ account and a SignPath Foundation project — so this is a **turn-on guide**, no
 something a commit can finish. Two pieces are already in the repo and inert
 until you finish the steps below:
 
-- `build/entitlements.mac.plist` — the hardened-runtime entitlements Electron
+- `scripts/entitlements.mac.plist` — the hardened-runtime entitlements Electron
   needs to notarize.
 - `scripts/sign-mac.sh` — signs + notarizes + staples an extracted
   `HidraNet.app`. It **does nothing and exits 0 when the `APPLE_*` secrets are

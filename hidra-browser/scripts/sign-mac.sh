@@ -45,7 +45,7 @@ for tool in codesign security xcrun ditto; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENTITLEMENTS="$ROOT/build/entitlements.mac.plist"
+ENTITLEMENTS="$ROOT/scripts/entitlements.mac.plist"
 [ -f "$ENTITLEMENTS" ] || { echo "sign-mac: missing $ENTITLEMENTS" >&2; exit 1; }
 
 # A throwaway keychain, and a temp .p12, both removed on exit however we leave.
