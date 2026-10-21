@@ -273,6 +273,10 @@ async fn spawn_local_relays(
         rand::thread_rng().fill_bytes(&mut rng_bytes);
         let relay_secret = StaticSecret::from(rng_bytes);
         rng_bytes.zeroize();
+        // The client pins each hop's identity key, so a local relay must
+        // publish its own to be usable as a hop.
+        let relay_pub_b64 = base64::engine::general_purpose::STANDARD
+            .encode(x25519_dalek::PublicKey::from(&relay_secret).to_bytes());
 
         // These relays all live on this machine and hand circuits to each
         // other over loopback; the exit still goes only to public addresses.
@@ -295,7 +299,7 @@ async fn spawn_local_relays(
         entries.push(relay::registry::RelayEntry {
             name: format!("local-relay-{relay_num}"),
             addr,
-            noise_pubkey_b64: String::new(),
+            noise_pubkey_b64: relay_pub_b64,
         });
     }
 
@@ -578,8 +582,16 @@ async fn run_server_mode(
 
     let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
     for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
+        // A config entry with an empty key is a placeholder for a relay this
+        // node runs; replace it with the keyed local relay so it can serve as
+        // a hop (circuits are built only through relays whose key we know). An
+        // entry that already carries a key was pinned on purpose — keep it.
+        match config_relays.iter_mut().find(|r| r.addr == lr.addr) {
+            Some(existing) if existing.noise_pubkey_b64.trim().is_empty() => {
+                *existing = lr.clone();
+            }
+            Some(_) => {}
+            None => config_relays.push(lr.clone()),
         }
     }
     let relays = if config_relays.len() >= 3 {
@@ -867,8 +879,16 @@ async fn run_proxy_mode(
     let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
 
     for lr in &local_relays {
-        if !config_relays.iter().any(|r| r.addr == lr.addr) {
-            config_relays.push(lr.clone());
+        // A config entry with an empty key is a placeholder for a relay this
+        // node runs; replace it with the keyed local relay so it can serve as
+        // a hop (circuits are built only through relays whose key we know). An
+        // entry that already carries a key was pinned on purpose — keep it.
+        match config_relays.iter_mut().find(|r| r.addr == lr.addr) {
+            Some(existing) if existing.noise_pubkey_b64.trim().is_empty() => {
+                *existing = lr.clone();
+            }
+            Some(_) => {}
+            None => config_relays.push(lr.clone()),
         }
     }
 
@@ -975,6 +995,16 @@ async fn run_send_mode(
             .collect();
 
         info!(relays = relay_entries.len(), "discovered relays via DHT");
+
+        if relay_entries
+            .iter()
+            .all(|r| r.noise_pubkey_b64.trim().is_empty())
+        {
+            eprintln!(
+                "ERROR: DHT-discovered relays carry no identity key, so they cannot be used as authenticated hops. List relays with their keys in the config, or wait until a directory distributes relay keys."
+            );
+            std::process::exit(1);
+        }
 
         let response =
             client::session::run_client_session(&relay_entries, network_secret, payload)

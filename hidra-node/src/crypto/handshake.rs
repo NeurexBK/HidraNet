@@ -573,10 +573,8 @@ impl HandshakeState {
 
     /// The peer's static public key, once the handshake has learned it.
     ///
-    /// Part of the library's surface and nothing in the binary calls it, which
-    /// is why the allow is here: this module is now shared between the two
-    /// targets, and the binary denies warnings.
-    #[allow(dead_code)]
+    /// The peer's static identity key, learned (and proven) in the handshake.
+    /// The client pins each relay's key against this to authenticate the hop.
     pub fn remote_static_public(&self) -> Option<&PublicKey> {
         self.rs.as_ref()
     }

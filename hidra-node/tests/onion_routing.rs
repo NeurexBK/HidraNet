@@ -1,9 +1,10 @@
 use std::net::SocketAddr;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand_core::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use x25519_dalek::StaticSecret;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use hidra_node::client::circuit_pool::CircuitPool;
 use hidra_node::client::session::run_client_session;
@@ -12,16 +13,34 @@ use hidra_node::network::listener::NodeListener;
 use hidra_node::relay::exit_policy::ExitPolicy;
 use hidra_node::relay::registry::RelayEntry;
 
-fn make_relays(addrs: &[SocketAddr]) -> Vec<RelayEntry> {
-    addrs
-        .iter()
-        .enumerate()
-        .map(|(i, addr)| RelayEntry {
-            name: format!("relay-{}", i + 1),
-            addr: *addr,
-            noise_pubkey_b64: String::new(),
-        })
-        .collect()
+fn pubkey_b64(secret: &StaticSecret) -> String {
+    BASE64.encode(PublicKey::from(secret).to_bytes())
+}
+
+/// Starts a relay on an ephemeral port and returns a `RelayEntry` carrying its
+/// real identity key, so the client can pin it (circuits refuse unkeyed hops).
+async fn start_relay(name: &str) -> RelayEntry {
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let key = pubkey_b64(&secret);
+    let listener = NodeListener::bind("127.0.0.1:0".parse().unwrap(), secret)
+        .await
+        .unwrap()
+        .with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { listener.accept_loop().await });
+    RelayEntry {
+        name: name.into(),
+        addr,
+        noise_pubkey_b64: key,
+    }
+}
+
+async fn three_relays() -> Vec<RelayEntry> {
+    vec![
+        start_relay("relay-1").await,
+        start_relay("relay-2").await,
+        start_relay("relay-3").await,
+    ]
 }
 
 async fn start_echo_server() -> SocketAddr {
@@ -54,35 +73,9 @@ async fn start_echo_server() -> SocketAddr {
     addr
 }
 
-async fn start_three_relays() -> (SocketAddr, SocketAddr, SocketAddr) {
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-
-    let l1 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-    let l2 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-    let l3 = NodeListener::bind(addr, StaticSecret::random_from_rng(OsRng)).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-
-    let a1 = l1.local_addr().unwrap();
-    let a2 = l2.local_addr().unwrap();
-    let a3 = l3.local_addr().unwrap();
-
-    tokio::spawn(async move { l1.accept_loop().await });
-    tokio::spawn(async move { l2.accept_loop().await });
-    tokio::spawn(async move { l3.accept_loop().await });
-
-    (a1, a2, a3)
-}
-
 /// A DHT the SOCKS handler can hold but will never consult.
-///
-/// `handle_socks5_connection` takes one because a `.hidra` target is resolved
-/// through it. These tests only ask for host:port, which never reaches that
-/// path, so an isolated node with an empty routing table is the honest stand-in
-/// — it is a real DhtNode, not a mock, and a test that did take the service
-/// path would fail rather than quietly pass.
 async fn idle_dht() -> std::sync::Arc<hidra_node::p2p::dht::DhtNode> {
     let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
-    // A low ID difficulty: this node never meets another, and the public
-    // network's 24 bits would cost seconds in a debug build for nothing.
     let node = hidra_node::p2p::dht::DhtNode::with_id_bits(
         "127.0.0.1:0".parse().unwrap(),
         signing_key,
@@ -96,42 +89,8 @@ async fn idle_dht() -> std::sync::Arc<hidra_node::p2p::dht::DhtNode> {
 
 #[tokio::test]
 async fn three_relay_onion_circuit() {
-    let relay1_secret = StaticSecret::random_from_rng(OsRng);
-    let relay2_secret = StaticSecret::random_from_rng(OsRng);
-    let relay3_secret = StaticSecret::random_from_rng(OsRng);
+    let relays = three_relays().await;
     let client_secret = StaticSecret::random_from_rng(OsRng);
-
-    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-
-    let listener1 = NodeListener::bind(addr, relay1_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-    let listener2 = NodeListener::bind(addr, relay2_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-    let listener3 = NodeListener::bind(addr, relay3_secret).await.unwrap().with_exit_policy(ExitPolicy::ALLOW_PRIVATE);
-
-    let addr1 = listener1.local_addr().unwrap();
-    let addr2 = listener2.local_addr().unwrap();
-    let addr3 = listener3.local_addr().unwrap();
-
-    tokio::spawn(async move { listener1.accept_loop().await });
-    tokio::spawn(async move { listener2.accept_loop().await });
-    tokio::spawn(async move { listener3.accept_loop().await });
-
-    let relays = vec![
-        RelayEntry {
-            name: "relay-1".into(),
-            addr: addr1,
-            noise_pubkey_b64: String::new(),
-        },
-        RelayEntry {
-            name: "relay-2".into(),
-            addr: addr2,
-            noise_pubkey_b64: String::new(),
-        },
-        RelayEntry {
-            name: "relay-3".into(),
-            addr: addr3,
-            noise_pubkey_b64: String::new(),
-        },
-    ];
 
     let response = run_client_session(&relays, client_secret, "Hello, hidden world")
         .await
@@ -142,10 +101,8 @@ async fn three_relay_onion_circuit() {
 
 #[tokio::test]
 async fn streaming_circuit_echo_through_three_relays() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = three_relays().await;
     let echo_addr = start_echo_server().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
     let client_secret = StaticSecret::random_from_rng(OsRng);
 
     let mut circuit = StreamingCircuit::build(&relays, client_secret)
@@ -174,9 +131,7 @@ async fn streaming_circuit_echo_through_three_relays() {
 
 #[tokio::test]
 async fn streaming_circuit_connect_refused() {
-    let (a1, a2, a3) = start_three_relays().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
+    let relays = three_relays().await;
     let client_secret = StaticSecret::random_from_rng(OsRng);
 
     let mut circuit = StreamingCircuit::build(&relays, client_secret)
@@ -189,12 +144,46 @@ async fn streaming_circuit_connect_refused() {
     assert!(err_msg.contains("connect failed"), "error was: {err_msg}");
 }
 
+/// A circuit refuses to build through a relay whose identity key is not the one
+/// on record: this is what stops a relay carrying another hop's handshake from
+/// impersonating it.
+#[tokio::test]
+async fn circuit_refuses_a_relay_with_the_wrong_key() {
+    let mut relays = three_relays().await;
+    // Swap the middle relay's recorded key for an unrelated one; the real relay
+    // still answers, but it can no longer prove the key the client expects.
+    let wrong = pubkey_b64(&StaticSecret::random_from_rng(OsRng));
+    relays[1].noise_pubkey_b64 = wrong;
+    let client_secret = StaticSecret::random_from_rng(OsRng);
+
+    let msg = match StreamingCircuit::build(&relays, client_secret).await {
+        Err(e) => format!("{e}"),
+        Ok(_) => panic!("a circuit must not build through a relay with the wrong identity key"),
+    };
+    assert!(
+        msg.contains("does not match") || msg.contains("identity"),
+        "error was: {msg}"
+    );
+}
+
+/// A relay with no identity key on record cannot be a hop.
+#[tokio::test]
+async fn circuit_refuses_an_unkeyed_relay() {
+    let mut relays = three_relays().await;
+    relays[2].noise_pubkey_b64 = String::new();
+    let client_secret = StaticSecret::random_from_rng(OsRng);
+    let result = StreamingCircuit::build(&relays, client_secret).await;
+    assert!(
+        result.is_err(),
+        "an unkeyed relay must not be used as a hop"
+    );
+}
+
 #[tokio::test]
 async fn socks5_proxy_end_to_end() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = three_relays().await;
     let echo_addr = start_echo_server().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
     let client_secret = StaticSecret::random_from_rng(OsRng);
     let secret_bytes = client_secret.to_bytes();
 
@@ -248,10 +237,9 @@ async fn socks5_proxy_end_to_end() {
 
 #[tokio::test]
 async fn socks5_proxy_domain_name_no_local_dns() {
-    let (a1, a2, a3) = start_three_relays().await;
+    let relays = three_relays().await;
     let echo_addr = start_echo_server().await;
 
-    let relays = make_relays(&[a1, a2, a3]);
     let client_secret = StaticSecret::random_from_rng(OsRng);
     let pool = CircuitPool::new(client_secret.to_bytes(), relays);
 
@@ -273,22 +261,13 @@ async fn socks5_proxy_domain_name_no_local_dns() {
 
     let mut browser = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
 
-    // SOCKS5 handshake
     browser.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
     let mut resp = [0u8; 2];
     browser.read_exact(&mut resp).await.unwrap();
     assert_eq!(resp, [0x05, 0x00]);
 
-    // SOCKS5 CONNECT with domain name (ATYP=0x03)
-    // Domain = "localhost" pointing at the echo server port
     let domain = b"localhost";
-    let mut connect_req = vec![
-        0x05, // version
-        0x01, // CONNECT
-        0x00, // reserved
-        0x03, // domain
-        domain.len() as u8,
-    ];
+    let mut connect_req = vec![0x05, 0x01, 0x00, 0x03, domain.len() as u8];
     connect_req.extend_from_slice(domain);
     connect_req.extend_from_slice(&echo_addr.port().to_be_bytes());
     browser.write_all(&connect_req).await.unwrap();
@@ -298,7 +277,6 @@ async fn socks5_proxy_domain_name_no_local_dns() {
     assert_eq!(connect_resp[0], 0x05);
     assert_eq!(connect_resp[1], 0x00);
 
-    // Data through SOCKS5 tunnel with domain-based CONNECT
     let payload = b"Domain-based SOCKS5 connection!";
     browser.write_all(payload).await.unwrap();
 
@@ -309,18 +287,14 @@ async fn socks5_proxy_domain_name_no_local_dns() {
 
 #[tokio::test]
 async fn circuit_pool_reuses_prebuilt_circuits() {
-    let (a1, a2, a3) = start_three_relays().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
+    let relays = three_relays().await;
     let client_secret = StaticSecret::random_from_rng(OsRng);
     let pool = CircuitPool::new(client_secret.to_bytes(), relays);
 
-    // Pre-build circuits
     pool.maintain().await;
     let initial_size = pool.pool_size().await;
     assert!(initial_size > 0, "pool should have pre-built circuits");
 
-    // Take a circuit
     let circuit = pool.get_circuit().await.unwrap();
     assert!(circuit.circuit_id() > 0);
 
@@ -330,9 +304,7 @@ async fn circuit_pool_reuses_prebuilt_circuits() {
 
 #[tokio::test]
 async fn failover_retries_on_connect_failure() {
-    let (a1, a2, a3) = start_three_relays().await;
-
-    let relays = make_relays(&[a1, a2, a3]);
+    let relays = three_relays().await;
     let client_secret = StaticSecret::random_from_rng(OsRng);
     let pool = CircuitPool::new(client_secret.to_bytes(), relays);
 
@@ -360,7 +332,6 @@ async fn failover_retries_on_connect_failure() {
     let mut resp = [0u8; 2];
     browser.read_exact(&mut resp).await.unwrap();
 
-    // Connect to echo server — should succeed (failover works even with working relays)
     let echo_ip = match echo_addr.ip() {
         std::net::IpAddr::V4(ip) => ip,
         _ => panic!("expected IPv4"),

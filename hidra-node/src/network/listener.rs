@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,10 +17,16 @@ use crate::safelog::sensitive;
 pub const PROTO_NOISE_SESSION: u8 = 0x00;
 pub const PROTO_FORWARDED_CELL: u8 = 0x01;
 
+/// How long a freshly accepted connection has to send its single protocol
+/// byte before its handler task gives up, so a client that connects and then
+/// goes silent cannot tie a task up for good.
+const PROTO_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct NodeListener {
     listener: TcpListener,
     static_secret: Arc<[u8; 32]>,
     policy: ExitPolicy,
+    dial_source: Option<IpAddr>,
 }
 
 impl NodeListener {
@@ -31,6 +37,7 @@ impl NodeListener {
             listener,
             static_secret: Arc::new(static_secret.to_bytes()),
             policy: ExitPolicy::STRICT,
+            dial_source: None,
         })
     }
 
@@ -41,30 +48,59 @@ impl NodeListener {
         self
     }
 
+    /// Pin the address this relay's outbound hop connections are made from.
+    /// Off by default; used by tests to tell each hop's connections apart by
+    /// source, and available to a node that wants to fix its egress address.
+    #[allow(dead_code)]
+    pub fn with_dial_source(mut self, source: IpAddr) -> Self {
+        self.dial_source = Some(source);
+        self
+    }
+
     pub async fn accept_loop(&self) -> Result<()> {
-        let router = RelayRouter::new(Arc::clone(&self.static_secret)).with_policy(self.policy);
+        let router = Arc::new(
+            RelayRouter::new(Arc::clone(&self.static_secret))
+                .with_policy(self.policy)
+                .with_dial_source(self.dial_source),
+        );
 
         loop {
             let (mut stream, remote_addr) = self.listener.accept().await?;
             info!(remote_addr = %sensitive(&remote_addr), "accepted connection");
 
-            let mut proto_byte = [0u8; 1];
-            if let Err(e) = stream.read_exact(&mut proto_byte).await {
-                warn!(error = %e, "failed to read protocol byte");
-                continue;
-            }
+            // Read the one protocol byte inside a per-connection task, under a
+            // timeout. Done inline, a client that connects but never sends the
+            // byte would stall the whole accept loop and freeze the relay for
+            // everyone; now it holds up only — and only briefly — its own task.
+            let router = Arc::clone(&router);
+            tokio::spawn(async move {
+                let mut proto_byte = [0u8; 1];
+                match tokio::time::timeout(PROTO_READ_TIMEOUT, stream.read_exact(&mut proto_byte))
+                    .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(error = %e, "failed to read protocol byte");
+                        return;
+                    }
+                    Err(_) => {
+                        warn!("timed out reading protocol byte");
+                        return;
+                    }
+                }
 
-            match proto_byte[0] {
-                PROTO_NOISE_SESSION => {
-                    router.handle_client_connection(stream, remote_addr).await;
+                match proto_byte[0] {
+                    PROTO_NOISE_SESSION => {
+                        router.handle_client_connection(stream, remote_addr).await;
+                    }
+                    PROTO_FORWARDED_CELL => {
+                        router.handle_forwarded_cell(stream, remote_addr).await;
+                    }
+                    other => {
+                        warn!(proto = other, "unknown protocol byte, dropping connection");
+                    }
                 }
-                PROTO_FORWARDED_CELL => {
-                    router.handle_forwarded_cell(stream, remote_addr).await;
-                }
-                other => {
-                    warn!(proto = other, "unknown protocol byte, dropping connection");
-                }
-            }
+            });
         }
     }
 
