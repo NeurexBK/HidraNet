@@ -74,5 +74,8 @@
   "dependencies": {
     "mqtt": "5.16.0",
     "qrcode-generator": "1.4.4"
+  },
+  "overrides": {
+    "ip-address": "10.7.4"
   }
 }
