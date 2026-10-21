@@ -16,6 +16,12 @@ mod linux;
 #[cfg(windows)]
 mod windows;
 
+/// The name HidraVPN is registered under: the Windows service, and the
+/// Scheduled Task older builds used by the same name. Public so the service
+/// binary's own `mod service` registers under the same name.
+#[cfg(windows)]
+pub const SERVICE_NAME: &str = "HidraVPN";
+
 /// Where the installed copy of the service lives.
 pub fn installed_binary() -> PathBuf {
     #[cfg(target_os = "linux")]

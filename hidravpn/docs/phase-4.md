@@ -492,10 +492,10 @@ New-Item "$env:ProgramData\HidraVPN\probe.txt" -ItemType File
   elevation check, the session check and the `icacls`/`takeown` protection of
   the data folder are all untested at run time. The Linux half of the access
   model is proven in namespaces; the Windows half is to be checked on a real
-  PC with the checklist below, and `phase3-test.ps1` must still pass. The
-  service on Windows is still a scheduled task at boot, not a Windows
-  service; the control channel is polled by the page every two seconds, not
-  pushed; macOS has no kill switch and no service.
+  PC with the checklist below, and `phase3-test.ps1` must still pass. On
+  Windows the service is now registered with the SCM (it was a scheduled
+  task); the control channel is still polled by the page every two seconds,
+  not pushed; macOS has no kill switch and no service.
 - **Open admission is open.** A node that admits openly admits anyone with
   a client, three per address and 120 per node every ten minutes, up to
   4000 leases. That is the point — a stranger connects on the first try — and
