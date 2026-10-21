@@ -93,7 +93,7 @@ class VpnManager {
         const socketThere = await this._exists(this.endpoint);
         if (socketThere) {
           throw new VpnUnavailable('stopped', 'the HidraVPN service is installed but not running',
-            'Start it: `sudo hidravpn-service start` on Linux, or start the HidraVPN task on Windows.');
+            'Start it: `sudo hidravpn-service start` on Linux, or start the HidraVPN service on Windows.');
         }
         throw new VpnUnavailable('not-installed', 'the HidraVPN service is not installed',
           'Install HidraVPN first; the browser only drives the service, it does not contain it.');
@@ -185,7 +185,7 @@ class VpnManager {
         const code = e && e.code;
         if (code === 'ENOENT' || code === 'ECONNREFUSED') {
           finish(reject, new VpnUnavailable('stopped', 'the HidraVPN service is not running',
-            'Start it: `sudo hidravpn-service start` on Linux, or start the HidraVPN task on Windows.'));
+            'Start it: `sudo hidravpn-service start` on Linux, or start the HidraVPN service on Windows.'));
         } else if (code === 'EACCES' || code === 'EPERM') {
           finish(reject, new VpnUnavailable('no-permission', 'this user may not open the HidraVPN control channel', GROUP_HINT));
         } else {
