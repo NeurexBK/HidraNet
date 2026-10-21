@@ -4,6 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
+const { guardFingerprint } = require('./fingerprint-guard');
 const { LOOPBACK_ONLY } = require('./proxy-manager');
 const { APPS, ORIGINS, appOrigin, appOfUrl } = require('./app-origins');
 
@@ -179,6 +180,19 @@ class TabManager {
     }
 
     const view = this._buildView(tab, tabSession, fingerprint);
+
+    // The fingerprint goes in before the view loads anything of a page's own
+    // (see fingerprint-guard.js). If the protocol cannot be had, the page
+    // script is injected on dom-ready instead: weaker, and the best left.
+    if (!(await guardFingerprint(view.webContents, fingerprint))) {
+      this._injectFingerprint(view, fingerprint);
+    }
+    if (tab.closed) {
+      view.webContents.close();
+      if (!persistent) tabSession.clearStorageData();
+      return false;
+    }
+
     const old = { view: tab.view, session: tab.session, persistent: tab.persistent };
 
     tab.view = view;
@@ -247,7 +261,6 @@ class TabManager {
       console.error('[tab] WebRTC IP handling policy:', e.message);
     }
 
-    this._injectFingerprint(view, fingerprint);
     this._bindShortcuts(view, tabId);
 
     // Inject the "Publish to the network" feature into the SevenNine page (no engine rebuild)
