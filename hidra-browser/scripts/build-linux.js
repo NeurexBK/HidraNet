@@ -16,8 +16,9 @@
 
 const fs    = require('fs');
 const path  = require('path');
-const https = require('https');
-const { deflateRawSync, inflateRawSync } = require('zlib');
+const { readZip, writeZip, mkFile, mkDir } = require('./lib/zip');
+const { download } = require('./lib/net');
+const { buildJson } = require('./lib/build-stamp');
 
 const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'hidranet';       // lowercase binary name
@@ -28,190 +29,17 @@ const DIST         = path.join(ROOT, 'dist');
 const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
 const ARCH_ARG     = process.argv[2] || 'x64';
 
-// ── CRC-32 ───────────────────────────────────────────────────────────────────
-const CRC_TBL = (function() {
-  var t = new Uint32Array(256);
-  for (var i = 0; i < 256; i++) {
-    var c = i;
-    for (var j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[i] = c;
-  }
-  return t;
-})();
-function crc32(buf) {
-  var c = 0xFFFFFFFF;
-  for (var i = 0; i < buf.length; i++) c = CRC_TBL[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
+// The bundled Linux Tor is dynamically linked against libevent, which most
+// distributions do not install by default. Without it Tor dies at startup and
+// the browser opens with nothing connecting. tor-manager.js puts Tor's folder
+// on LD_LIBRARY_PATH, so the library goes right beside it. Only an x64 copy
+// is vendored. See vendor/linux-x64/README.md.
+const LIBEVENT = 'libevent-2.1.so.7';
 
-// ── ZIP Reader ────────────────────────────────────────────────────────────────
-function readZip(buf) {
-  var eocd = -1;
-  for (var i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
-  }
-  if (eocd < 0) throw new Error('EOCD not found — not a valid ZIP');
-
-  var cdCount  = buf.readUInt16LE(eocd + 10);
-  var cdOffset = buf.readUInt32LE(eocd + 16);
-  var entries  = [];
-  var pos      = cdOffset;
-
-  for (var n = 0; n < cdCount; n++) {
-    if (buf.readUInt32LE(pos) !== 0x02014b50) throw new Error('Bad CD signature at ' + pos);
-    var versionMadeBy = buf.readUInt16LE(pos + 4);
-    var method        = buf.readUInt16LE(pos + 10);
-    var crc           = buf.readUInt32LE(pos + 16);
-    var compSz        = buf.readUInt32LE(pos + 20);
-    var uncompSz      = buf.readUInt32LE(pos + 24);
-    var fnLen         = buf.readUInt16LE(pos + 28);
-    var exLen         = buf.readUInt16LE(pos + 30);
-    var cmLen         = buf.readUInt16LE(pos + 32);
-    var extAttr       = buf.readUInt32LE(pos + 38);
-    var lhOffset      = buf.readUInt32LE(pos + 42);
-    var filename      = buf.slice(pos + 46, pos + 46 + fnLen).toString('utf8');
-
-    var lhFnLen   = buf.readUInt16LE(lhOffset + 26);
-    var lhExLen   = buf.readUInt16LE(lhOffset + 28);
-    var dataStart = lhOffset + 30 + lhFnLen + lhExLen;
-    var rawData   = Buffer.from(buf.slice(dataStart, dataStart + compSz));
-
-    entries.push({ filename, method, crc, compSz, uncompSz, extAttr, versionMadeBy, rawData });
-    pos += 46 + fnLen + exLen + cmLen;
-  }
-  return entries;
-}
-
-// ── ZIP Writer ────────────────────────────────────────────────────────────────
-function writeZip(entries) {
-  var lhParts = [];
-  var cdParts = [];
-  var offset  = 0;
-
-  for (var i = 0; i < entries.length; i++) {
-    var e       = entries[i];
-    var nameBuf = Buffer.from(e.filename, 'utf8');
-
-    var lh = Buffer.alloc(30 + nameBuf.length);
-    lh.writeUInt32LE(0x04034b50, 0);
-    lh.writeUInt16LE(20, 4);
-    lh.writeUInt16LE(0, 6);
-    lh.writeUInt16LE(e.method, 8);
-    lh.writeUInt32LE(0, 10);
-    lh.writeUInt32LE(e.crc, 14);
-    lh.writeUInt32LE(e.compSz, 18);
-    lh.writeUInt32LE(e.uncompSz, 22);
-    lh.writeUInt16LE(nameBuf.length, 26);
-    lh.writeUInt16LE(0, 28);
-    nameBuf.copy(lh, 30);
-
-    var cd = Buffer.alloc(46 + nameBuf.length);
-    cd.writeUInt32LE(0x02014b50, 0);
-    cd.writeUInt16LE(e.versionMadeBy || 0x0314, 4); // Unix 2.0
-    cd.writeUInt16LE(20, 6);
-    cd.writeUInt16LE(0, 8);
-    cd.writeUInt16LE(e.method, 10);
-    cd.writeUInt32LE(0, 12);
-    cd.writeUInt32LE(e.crc, 16);
-    cd.writeUInt32LE(e.compSz, 20);
-    cd.writeUInt32LE(e.uncompSz, 24);
-    cd.writeUInt16LE(nameBuf.length, 28);
-    cd.writeUInt16LE(0, 30);
-    cd.writeUInt16LE(0, 32);
-    cd.writeUInt16LE(0, 34);
-    cd.writeUInt16LE(0, 36);
-    cd.writeUInt32LE(e.extAttr, 38);  // Unix permissions
-    cd.writeUInt32LE(offset, 42);
-    nameBuf.copy(cd, 46);
-
-    lhParts.push(lh, e.rawData);
-    cdParts.push(cd);
-    offset += lh.length + e.rawData.length;
-  }
-
-  var cdBuf = Buffer.concat(cdParts);
-  var eocd  = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);
-  eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(cdBuf.length, 12);
-  eocd.writeUInt32LE(offset, 16);
-  eocd.writeUInt16LE(0, 20);
-
-  return Buffer.concat(lhParts.concat([cdBuf, eocd]));
-}
-
-// ── Entry helpers ─────────────────────────────────────────────────────────────
-var UNIX_VER = 0x0314;
-
-function mkFile(filename, data, mode) {
-  mode = mode || 0o644;
-  var comp    = deflateRawSync(data, { level: 6 });
-  var useComp = comp.length < data.length;
-  return {
-    filename,
-    method:        useComp ? 8 : 0,
-    crc:           crc32(data),
-    compSz:        useComp ? comp.length : data.length,
-    uncompSz:      data.length,
-    extAttr:       ((0o100000 | mode) << 16) >>> 0,
-    versionMadeBy: UNIX_VER,
-    rawData:       useComp ? comp : data
-  };
-}
-
-function mkDir(filename) {
-  if (!filename.endsWith('/')) filename += '/';
-  return {
-    filename,
-    method: 0, crc: 0, compSz: 0, uncompSz: 0,
-    extAttr:       (0o040755 << 16) >>> 0,
-    versionMadeBy: UNIX_VER,
-    rawData:       Buffer.alloc(0)
-  };
-}
-
-// ── HTTPS download with redirect + progress ───────────────────────────────────
-function download(url, dest, redirects) {
-  redirects = redirects === undefined ? 10 : redirects;
-  return new Promise(function(resolve, reject) {
-    var file = fs.createWriteStream(dest);
-    https.get(url, { headers: { 'User-Agent': 'HidraNet-Linux-Builder/1.0' } }, function(res) {
-      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
-        file.close();
-        try { fs.unlinkSync(dest); } catch(_) {}
-        if (redirects <= 0) return reject(new Error('Too many redirects'));
-        return download(res.headers.location, dest, redirects - 1).then(resolve, reject);
-      }
-      if (res.statusCode !== 200) {
-        file.close();
-        try { fs.unlinkSync(dest); } catch(_) {}
-        return reject(new Error('HTTP ' + res.statusCode));
-      }
-      var total = parseInt(res.headers['content-length'] || '0');
-      var recv = 0, lastPct = -1;
-      res.on('data', function(chunk) {
-        recv += chunk.length;
-        if (total > 0) {
-          var pct = Math.floor(recv / total * 20) * 5;
-          if (pct !== lastPct) {
-            process.stdout.write('\r    ' + pct + '%  ' +
-              (recv / 1048576).toFixed(1) + ' / ' + (total / 1048576).toFixed(1) + ' MB   ');
-            lastPct = pct;
-          }
-        }
-      });
-      res.pipe(file);
-      file.on('finish', function() { file.close(); process.stdout.write('\n'); resolve(); });
-    }).on('error', function(err) {
-      file.close();
-      try { fs.unlinkSync(dest); } catch(_) {}
-      reject(err);
-    });
-  });
-}
+// The archive is written by lib/zip.js, as the other builders' are: it gives
+// every entry a real date (the copy of the writer this file used to carry
+// wrote zero, which decodes to a date that does not exist) and keeps the
+// Electron entries' modes and symlinks byte for byte.
 
 // ── Recursive dir scan ────────────────────────────────────────────────────────
 function scanDir(dir, base) {
@@ -302,6 +130,7 @@ async function buildArch(arch) {
     if (item.isDir) outEntries.push(mkDir(zp));
     else outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
   });
+  outEntries.push(mkFile(resPfx + 'app/build.json', buildJson()));
 
   // ── Tor daemon — what actually anonymises the browsing ───────────────────
   // Without it the package opens, but every request leaves from the user's
@@ -316,6 +145,14 @@ async function buildArch(arch) {
       outEntries.push(mkFile(resPfx + 'bin/tor/' + f, fs.readFileSync(abs), f === 'tor' ? 0o755 : 0o644));
     });
     console.log('  Tor included (linux-' + arch + ')');
+    var libevent = path.join(ROOT, 'vendor', 'linux-' + arch, LIBEVENT);
+    if (fs.existsSync(libevent)) {
+      outEntries.push(mkFile(resPfx + 'bin/tor/' + LIBEVENT, fs.readFileSync(libevent)));
+      console.log('  ' + LIBEVENT + ' included beside Tor');
+    } else {
+      console.log('  [!!] ' + LIBEVENT + ' MISSING for linux-' + arch + ' — Tor will not start where');
+      console.log('       libevent is not installed, and nothing will connect.');
+    }
   } else {
     console.log('  [!!] Tor MISSING for linux-' + arch + ' — this package gives no anonymity.');
     console.log('       node scripts/fetch-tor.js --platform linux --arch ' + arch);

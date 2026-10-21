@@ -20,6 +20,7 @@ const { inflateRawSync } = require('zlib');
 const { readZip, writeZip, mkFile, mkDir, patchEntry } = require('./lib/zip');
 const { launcherScript, readmeText, patchPlist } = require('./lib/mac-extras');
 const { download } = require('./lib/net');
+const { buildJson } = require('./lib/build-stamp');
 
 const ELECTRON_VER = '44.9.3';
 const APP_NAME     = 'HidraNet';
@@ -29,6 +30,12 @@ const ROOT         = path.join(__dirname, '..');
 const DIST         = path.join(ROOT, 'dist');
 const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
 const ARCH_ARG     = process.argv[2] || 'all';
+
+// HidraNet's icon for the bundle, from brand/logo/ at the top of the
+// repository. Electron's Info.plist names electron.icns, so the file keeps
+// that name and only its picture changes; without this the Dock and the
+// Finder show Electron's atom.
+const MAC_ICON = path.join(ROOT, '..', 'brand', 'logo', 'hidranet.icns');
 
 function scanDir(dir, base) {
   base = base || dir;
@@ -79,6 +86,8 @@ async function buildArch(arch) {
   const ePlist = hPfx + 'Contents/Info.plist';
   const eBin   = hPfx + 'Contents/MacOS/Electron';
   const hBin   = hPfx + 'Contents/MacOS/' + APP_NAME;
+  const eIcon  = hPfx + 'Contents/Resources/electron.icns';
+  let iconDone = false;
 
   const outEntries = [];
 
@@ -120,8 +129,16 @@ async function buildArch(arch) {
       continue;
     }
 
+    if (name === eIcon && fs.existsSync(MAC_ICON)) {
+      outEntries.push(patchEntry(e, eIcon, fs.readFileSync(MAC_ICON)));
+      iconDone = true;
+      continue;
+    }
+
     outEntries.push(Object.assign({}, e, { filename: name }));
   }
+  console.log(iconDone ? '  HidraNet icon in the bundle'
+                       : '  [!!] HidraNet icon NOT in the bundle — it shows Electron\'s');
 
   // ── Add our app source ────────────────────────────────────────────────────
   console.log('  Adicionando fonte do app ...');
@@ -144,6 +161,7 @@ async function buildArch(arch) {
       outEntries.push(mkFile(zp, fs.readFileSync(item.abs)));
     }
   });
+  outEntries.push(mkFile(resPfx + 'app/build.json', buildJson()));
 
   // ── Tor daemon — what actually anonymises the browsing ───────────────────
   // Without it the package opens, but every request leaves from the user's
