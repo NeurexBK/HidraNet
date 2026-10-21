@@ -44,7 +44,11 @@ public address; it holds no key for it) and at least one `--pay-pack
 PASSES=PRICE`: the price in whole HNET (`10=50`; the tag takes the
 decimals) or in dollars (`150=5.99usd`). `--pay-mint` and `--pay-decimals`
 default to HNET's; `--pay-rpc` to Solana's public mainnet RPC, over HTTPS
-(plain HTTP only to a private address, for tests).
+(plain HTTP only to a private address, for tests). Give `--pay-rpc` more
+than once to cross-check a payment across several independent RPCs: a
+claim is credited only when a strict majority of them read the same
+payment, so one lying or faulty RPC cannot conjure a payment out of
+nothing (see "A payment no single RPC decides" below).
 
 ## A price in dollars, paid in HNET
 
@@ -54,7 +58,10 @@ that order's 24 hours. The rate comes from a price feed the issuer fetches
 every five minutes (`--pay-price-every`): by default the DEX screener's
 answer about the mint (`api.dexscreener.com/tokens/v1/solana/<mint>`;
 `--pay-price-url` for another, over HTTPS), reading the deepest pair whose
-base is the mint. `GET /packs` tells the HNET of the moment and the rate,
+base is the mint. Give `--pay-price-url` more than once for redundancy:
+each refresh tries the feeds in order and takes the first that answers, so
+one being down does not stop dollar-priced sales (they must all speak the
+same shape). `GET /packs` tells the HNET of the moment and the rate,
 and the client shows both ("150 passes for 5.99 USD, 47217 HNET today").
 
 A feed is a thing to be careful with: one that lies or glitches would sell
@@ -98,6 +105,17 @@ operator's risk, as is the rate moving within an order's 24 hours.
   by hand (`account add --prepaid N`, or a new order).
 - **Nothing is credited before the chain says finalized**, and the
   transaction's own result must be success (`meta.err` null).
+- **A payment no single RPC decides.** Given more than one `--pay-rpc`, a
+  claim asks each in turn and is credited only when a strict majority read
+  the identical payment — same amount, same block time. An RPC that lies
+  (claims a payment that never happened, or a different amount) or is
+  merely broken is outvoted: it cannot forge a credit, only, if enough go
+  wrong at once, withhold one (503, "its RPCs did not agree", the order
+  stays open to try again). A majority agreeing on a *rejection* passes the
+  real reason through. One RPC is its own majority, so a one-RPC issuer
+  behaves exactly as before — and still trusts that one; three or more you
+  control is the configuration for real money. The agreement rule is a pure
+  function with its own unit test.
 - **The issuer holds no key to the wallet.** It only reads the chain. There
   is nothing on it that could move the money.
 - **Flooding is slowed.** Quotes and claims each pass a token bucket (30
@@ -146,9 +164,12 @@ operator's risk, as is the rate moving within an order's 24 hours.
   open orders keep the amount they were made at.
 - **The browser has no button for it yet**: the command line only.
 - **The public RPC is rate-limited** and run by someone else; an operator
-  who sells in earnest runs or rents an RPC and gives `--pay-rpc`.
-- **The issuer trusts its RPC.** A lying RPC could say a payment happened.
-  Run one you trust, over HTTPS.
+  who sells in earnest runs or rents RPCs and gives `--pay-rpc` (one or,
+  for the quorum below, several).
+- **No single RPC decides a payment** once more than one is given: a claim
+  is credited only when a strict majority agree on the same payment, so a
+  lying or broken RPC is outvoted. With one RPC the issuer still trusts
+  that one — run three or more you control, over HTTPS, for real money.
 
 ## Command lines
 

@@ -122,9 +122,12 @@ enum Cmd {
         pay_packs: Vec<String>,
         /// Where the going rate comes from, for packs priced in dollars: a
         /// DEX screener's answer about the mint (by default,
-        /// api.dexscreener.com's for it).
-        #[arg(long)]
-        pay_price_url: Option<String>,
+        /// api.dexscreener.com's for it). Give it more than once for
+        /// redundancy: each refresh tries them in order and takes the
+        /// first that answers, so one feed being down does not stop
+        /// dollar-priced sales. Each must speak the same shape.
+        #[arg(long = "pay-price-url")]
+        pay_price_urls: Vec<String>,
         /// How often the rate is fetched, in seconds.
         #[arg(long, default_value_t = 300)]
         pay_price_every: u64,
@@ -142,9 +145,14 @@ enum Cmd {
         /// The token's decimals (HNET: 6).
         #[arg(long, default_value_t = payment::HNET_DECIMALS)]
         pay_decimals: u8,
-        /// The Solana JSON-RPC endpoint payments are looked up at.
-        #[arg(long, default_value = "https://api.mainnet-beta.solana.com")]
-        pay_rpc: String,
+        /// A Solana JSON-RPC endpoint payments are looked up at. Give it
+        /// more than once to cross-check across several independent RPCs:
+        /// a claim is credited only when a strict majority of them read
+        /// the same payment, so one lying or faulty RPC cannot conjure a
+        /// payment out of nothing. Defaults to one public mainnet RPC;
+        /// for real money, run three or more.
+        #[arg(long = "pay-rpc")]
+        pay_rpc: Vec<String>,
     },
 }
 
@@ -830,40 +838,33 @@ impl Issuer {
             }
             Err(_) => return (503, refusal("the issuer could not read its orders")),
         };
-        // The chain, a few lookups at a time.
-        let Ok(_slot) = p.rpc_slots.acquire().await else {
-            return (503, refusal("the issuer cannot ask the chain right now"));
-        };
-        let seen = match p.fetch_transaction(&signature).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("chain lookup failed: {}", e.kind);
-                return (
-                    503,
-                    refusal(format!("the issuer could not ask the chain: {}", e.shown)),
-                );
-            }
-        };
-        drop(_slot);
-        let paid = match payment::inspect_payment(
-            &seen,
-            &payment::Receiver {
-                wallet: &p.wallet,
-                mint: &p.mint,
-                decimals: p.decimals,
-            },
-        ) {
-            Ok(paid) => paid,
-            Err(why) => {
-                warn!("claim refused: {}", why.kind());
-                return (
-                    match why {
-                        Rejected::NotFound => 404,
-                        Rejected::Malformed => 503,
-                        _ => 402,
-                    },
-                    refusal(why.to_string()),
-                );
+        // The chain, a few claims at a time. One claim crosses every RPC
+        // and is credited only on a strict majority reading the same
+        // payment, so no single RPC — lying or broken — decides it.
+        let paid = {
+            let Ok(_slot) = p.rpc_slots.acquire().await else {
+                return (503, refusal("the issuer cannot ask the chain right now"));
+            };
+            match p.confirm(&signature).await {
+                Quorum::Paid(paid) => paid,
+                Quorum::Refused(why) => {
+                    warn!("claim refused: {}", why.kind());
+                    return (
+                        match why {
+                            Rejected::NotFound => 404,
+                            Rejected::Malformed => 503,
+                            _ => 402,
+                        },
+                        refusal(why.to_string()),
+                    );
+                }
+                Quorum::Undecided => {
+                    warn!("claim refused: the chain's RPCs did not agree");
+                    return (
+                        503,
+                        refusal("the issuer could not confirm this payment on the chain right now; its RPCs did not agree. Try the claim again shortly"),
+                    );
+                }
             }
         };
         // Which of the token's open orders did it pay? The exact amount,
@@ -956,15 +957,21 @@ const MAX_OPEN_PER_ACCOUNT: usize = 5;
 /// Claims tried on one token's open orders before a new order is needed:
 /// each try is a lookup on the chain.
 const MAX_CLAIM_TRIES: u32 = 30;
-/// Lookups on the chain at once.
+/// Lookups on the chain at once. A single claim's quorum (one lookup per
+/// RPC, in turn) holds one slot for its whole run, so this bounds how many
+/// claims reach the chain at a time, not how many RPCs one claim crosses.
 const RPC_AT_ONCE: usize = 4;
+/// The one public RPC used when the operator names none.
+const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
 
 /// What the issuer sells and where payments go.
 struct Payments {
     wallet: String,
     mint: String,
     decimals: u8,
-    rpc: hidravpn_core::http::Url,
+    /// The RPCs a payment is cross-checked against. One claim asks each in
+    /// turn and credits only on a strict majority agreeing.
+    rpcs: Vec<hidravpn_core::http::Url>,
     specs: Vec<PackSpec>,
     /// The going rate, for packs priced in dollars; None with none such.
     rate: Option<Rate>,
@@ -990,7 +997,7 @@ impl Payments {
         wallet: &str,
         mint: &str,
         decimals: u8,
-        rpc: &str,
+        rpcs: &[String],
         packs: &[String],
         feed: Option<RateFeed>,
         orders_path: PathBuf,
@@ -1005,7 +1012,12 @@ impl Payments {
         if decimals > 12 {
             return Err(anyhow!("--pay-decimals is 0 to 12"));
         }
-        let rpc = hidravpn_core::http::Url::parse(rpc).context("--pay-rpc")?;
+        let mut rpcs_parsed = Vec::new();
+        let default_rpc = [String::from(DEFAULT_RPC)];
+        let given: &[String] = if rpcs.is_empty() { &default_rpc } else { rpcs };
+        for r in given {
+            rpcs_parsed.push(hidravpn_core::http::Url::parse(r).context("--pay-rpc")?);
+        }
         let mut parsed: Vec<PackSpec> = Vec::new();
         for p in packs {
             let pack = PackSpec::parse(p, decimals).context("--pay-pack")?;
@@ -1036,7 +1048,7 @@ impl Payments {
             },
             mint,
             decimals,
-            rpc,
+            rpcs: rpcs_parsed,
             specs: parsed,
             rate,
             orders_path,
@@ -1061,14 +1073,25 @@ impl Payments {
             .collect()
     }
 
-    /// Fetches a transaction, finalized, as `payment::inspect_payment`
-    /// reads it. Only the JSON-RPC `result`; an RPC error is a failure.
+    /// The wallet and token a payment to this issuer must reach.
+    fn receiver(&self) -> payment::Receiver<'_> {
+        payment::Receiver {
+            wallet: &self.wallet,
+            mint: &self.mint,
+            decimals: self.decimals,
+        }
+    }
+
+    /// Fetches a transaction from one RPC, finalized, as
+    /// `payment::inspect_payment` reads it. Only the JSON-RPC `result`; an
+    /// RPC error is a failure.
     async fn fetch_transaction(
         &self,
+        url: &hidravpn_core::http::Url,
         signature: &str,
     ) -> std::result::Result<serde_json::Value, LookupFailed> {
         let body = payment::get_transaction_request(signature);
-        let (status, answer) = hidravpn_core::http::call(&self.rpc, "POST", &body)
+        let (status, answer) = hidravpn_core::http::call(url, "POST", &body)
             .await
             .map_err(|e| LookupFailed {
                 kind: "no-answer",
@@ -1099,12 +1122,97 @@ impl Payments {
         }
         Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
     }
+
+    /// Asks one RPC and reads its answer into a verdict. An RPC that does
+    /// not answer, or answers unreadably, is `Unreachable` — it neither
+    /// confirms nor denies.
+    async fn verdict_of(&self, url: &hidravpn_core::http::Url, signature: &str) -> Verdict {
+        match self.fetch_transaction(url, signature).await {
+            Ok(result) => match payment::inspect_payment(&result, &self.receiver()) {
+                Ok(paid) => Verdict::Paid(paid),
+                Err(why) => Verdict::Rejected(why),
+            },
+            Err(e) => {
+                warn!("chain lookup failed on one RPC ({}): {}", e.kind, e.shown);
+                Verdict::Unreachable
+            }
+        }
+    }
+
+    /// Asks every RPC in turn and takes the quorum of their answers: a
+    /// payment is confirmed only if a strict majority read the very same
+    /// one. One lying RPC in a set of three cannot pass a payment off, nor
+    /// can one that is merely broken; a single RPC is its own majority, so
+    /// a one-RPC issuer behaves as before.
+    async fn confirm(&self, signature: &str) -> Quorum {
+        let mut verdicts = Vec::with_capacity(self.rpcs.len());
+        for url in &self.rpcs {
+            verdicts.push(self.verdict_of(url, signature).await);
+        }
+        tally(&verdicts, self.rpcs.len())
+    }
+}
+
+/// What one RPC said about a transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// It answered, and the answer reads as this payment.
+    Paid(payment::Payment),
+    /// It answered, and the answer is no payment, for this reason.
+    Rejected(payment::Rejected),
+    /// It did not answer, or not readably.
+    Unreachable,
+}
+
+/// What a set of RPC answers says, taken together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Quorum {
+    /// A strict majority read the identical payment.
+    Paid(payment::Payment),
+    /// A strict majority rejected it the same way.
+    Refused(payment::Rejected),
+    /// Neither: too many RPCs unreachable, or they disagree.
+    Undecided,
+}
+
+/// The quorum of `verdicts` over `total` RPCs. A strict majority
+/// (`total / 2 + 1`) must agree, exactly, on a payment or on a rejection;
+/// unreachable RPCs count toward neither, so they only ever withhold a
+/// quorum, never forge one. Pure, so the agreement rule is tested on its
+/// own.
+fn tally(verdicts: &[Verdict], total: usize) -> Quorum {
+    let need = total / 2 + 1;
+    for v in verdicts {
+        if let Verdict::Paid(p) = v {
+            let agree = verdicts
+                .iter()
+                .filter(|o| matches!(o, Verdict::Paid(q) if q == p))
+                .count();
+            if agree >= need {
+                return Quorum::Paid(*p);
+            }
+        }
+    }
+    for v in verdicts {
+        if let Verdict::Rejected(r) = v {
+            let agree = verdicts
+                .iter()
+                .filter(|o| matches!(o, Verdict::Rejected(q) if q == r))
+                .count();
+            if agree >= need {
+                return Quorum::Refused(r.clone());
+            }
+        }
+    }
+    Quorum::Undecided
 }
 
 /// Where the going rate comes from and how it is trusted.
 #[derive(Debug, Clone)]
 struct RateFeed {
-    url: String,
+    /// One or more feeds of the same shape; a refresh takes the first that
+    /// answers, so a feed being down does not stop dollar-priced sales.
+    urls: Vec<String>,
     every: Duration,
     max_age: i64,
     /// A move of more than this fraction (0.3 for 30 %) is held back.
@@ -1117,7 +1225,7 @@ struct RateFeed {
 /// times in a row.
 struct Rate {
     feed: RateFeed,
-    url: hidravpn_core::http::Url,
+    urls: Vec<hidravpn_core::http::Url>,
     mint: String,
     state: std::sync::Mutex<RateState>,
 }
@@ -1136,7 +1244,13 @@ const RATE_AGREE: u32 = 3;
 
 impl Rate {
     fn new(feed: RateFeed, mint: &str) -> Result<Rate> {
-        let url = hidravpn_core::http::Url::parse(&feed.url).context("--pay-price-url")?;
+        if feed.urls.is_empty() {
+            return Err(anyhow!("a feed needs at least one --pay-price-url"));
+        }
+        let mut urls = Vec::with_capacity(feed.urls.len());
+        for u in &feed.urls {
+            urls.push(hidravpn_core::http::Url::parse(u).context("--pay-price-url")?);
+        }
         if feed.max_age <= 0 || feed.every.is_zero() {
             return Err(anyhow!(
                 "--pay-price-every and --pay-price-max-age are 1 or more"
@@ -1144,7 +1258,7 @@ impl Rate {
         }
         Ok(Rate {
             feed,
-            url,
+            urls,
             mint: mint.to_string(),
             state: std::sync::Mutex::new(RateState::default()),
         })
@@ -1190,12 +1304,21 @@ impl Rate {
     }
 
     async fn refresh(&self) {
-        let fetched = hidravpn_core::http::call(&self.url, "GET", "").await;
-        let rate = match fetched {
-            Ok((200, body)) => payment::read_rate(&body, &self.mint),
-            Ok((status, _)) => Err(anyhow!("the price feed answered {status}")),
-            Err(e) => Err(e),
-        };
+        // Each feed in turn; the first that answers with a usable rate
+        // wins. A feed that is down or unreadable falls through to the
+        // next, so one being out does not stall dollar-priced sales.
+        let mut rate = Err(anyhow!("no price feed is configured"));
+        for url in &self.urls {
+            let fetched = hidravpn_core::http::call(url, "GET", "").await;
+            rate = match fetched {
+                Ok((200, body)) => payment::read_rate(&body, &self.mint),
+                Ok((status, _)) => Err(anyhow!("the price feed answered {status}")),
+                Err(e) => Err(e),
+            };
+            if rate.is_ok() {
+                break;
+            }
+        }
         let now = hidravpn_core::timefmt::now_unix();
         match rate {
             Ok(r) => {
@@ -1704,7 +1827,7 @@ async fn main() -> Result<()> {
             pay_mint,
             pay_decimals,
             pay_rpc,
-            pay_price_url,
+            pay_price_urls,
             pay_price_every,
             pay_price_max_age,
             pay_price_max_change,
@@ -1732,8 +1855,13 @@ async fn main() -> Result<()> {
                     ))
                 }
                 (Some(wallet), false) => {
+                    let urls = if pay_price_urls.is_empty() {
+                        vec![Rate::default_url(&pay_mint)]
+                    } else {
+                        pay_price_urls
+                    };
                     let feed = RateFeed {
-                        url: pay_price_url.unwrap_or_else(|| Rate::default_url(&pay_mint)),
+                        urls,
                         every: Duration::from_secs(pay_price_every),
                         max_age: i64::try_from(pay_price_max_age).unwrap_or(i64::MAX),
                         max_change: f64::from(pay_price_max_change) / 100.0,
@@ -2074,7 +2202,7 @@ mod tests {
                     WALLET,
                     payment::HNET_MINT,
                     6,
-                    &format!("http://127.0.0.1:{port}/"),
+                    &[format!("http://127.0.0.1:{port}/")],
                     &["10=50".into(), "30=140".into()],
                     None,
                     dir.join("orders.json"),
@@ -2215,7 +2343,7 @@ mod tests {
             WALLET,
             payment::HNET_MINT,
             6,
-            "https://x/",
+            &["https://x/".into()],
             &["10=50.5".into()],
             None,
             dir.join("o")
@@ -2225,7 +2353,7 @@ mod tests {
             WALLET,
             payment::HNET_MINT,
             6,
-            "https://x/",
+            &["https://x/".into()],
             &["10=50".into(), "10=60".into()],
             None,
             dir.join("o")
@@ -2235,7 +2363,7 @@ mod tests {
             "not-an-address",
             payment::HNET_MINT,
             6,
-            "https://x/",
+            &["https://x/".into()],
             &["10=50".into()],
             None,
             dir.join("o")
@@ -2245,7 +2373,7 @@ mod tests {
             payment::HNET_MINT,
             payment::HNET_MINT,
             6,
-            "https://x/",
+            &["https://x/".into()],
             &["10=50".into()],
             None,
             dir.join("o")
@@ -2256,7 +2384,7 @@ mod tests {
                 WALLET,
                 payment::HNET_MINT,
                 6,
-                "http://example.org/",
+                &["http://example.org/".into()],
                 &["10=50".into()],
                 None,
                 dir.join("o")
@@ -2300,7 +2428,7 @@ mod tests {
         assert_eq!(s.held, Some((0.001, 1)));
         let r = Rate::new(
             RateFeed {
-                url: Rate::default_url(payment::HNET_MINT),
+                urls: vec![Rate::default_url(payment::HNET_MINT)],
                 every: Duration::from_secs(300),
                 max_age: 3600,
                 max_change: 0.3,
@@ -2312,6 +2440,153 @@ mod tests {
         r.state.lock().unwrap().current = Some((0.0001, 1000));
         assert_eq!(r.current(1000 + 3600), Some(0.0001));
         assert_eq!(r.current(1000 + 3601), None, "stale");
+    }
+
+    #[test]
+    fn a_payment_is_credited_only_on_a_strict_majority() {
+        use payment::{Payment, Rejected};
+        let p = |raw, t| Payment {
+            paid_raw: raw,
+            block_time: t,
+        };
+        let real = Payment {
+            paid_raw: 50_000_000,
+            block_time: 1700,
+        };
+        let paid = |x: Payment| Verdict::Paid(x);
+        let rej = |r: Rejected| Verdict::Rejected(r);
+        let down = || Verdict::Unreachable;
+
+        // One RPC is its own majority: a one-RPC issuer is unchanged.
+        assert_eq!(tally(&[paid(real)], 1), Quorum::Paid(real));
+        assert_eq!(
+            tally(&[rej(Rejected::NotFound)], 1),
+            Quorum::Refused(Rejected::NotFound)
+        );
+        assert_eq!(tally(&[down()], 1), Quorum::Undecided);
+
+        // Three RPCs, two agree on the same payment: confirmed, even past
+        // one that is down or one that lies about the amount.
+        assert_eq!(
+            tally(&[paid(real), paid(real), down()], 3),
+            Quorum::Paid(real)
+        );
+        assert_eq!(
+            tally(&[paid(real), paid(real), paid(p(999, 1700))], 3),
+            Quorum::Paid(real),
+            "a lying minority cannot forge a payment"
+        );
+
+        // No two agree on the same payment: no quorum, nothing credited.
+        assert_eq!(
+            tally(&[paid(real), paid(p(999, 1700)), down()], 3),
+            Quorum::Undecided
+        );
+        // Payments that differ only in block time are not the same payment.
+        assert_eq!(
+            tally(&[paid(real), paid(p(50_000_000, 1701)), down()], 3),
+            Quorum::Undecided
+        );
+        // A split between a payment and a rejection is no quorum either.
+        assert_eq!(
+            tally(&[paid(real), rej(Rejected::NotFound), down()], 3),
+            Quorum::Undecided
+        );
+
+        // A rejection a majority agree on carries through (the right
+        // status reaches the client), but a payment always outweighs a
+        // rejection at the same count.
+        assert_eq!(
+            tally(
+                &[rej(Rejected::NotFound), rej(Rejected::NotFound), down()],
+                3
+            ),
+            Quorum::Refused(Rejected::NotFound)
+        );
+
+        // Two RPCs: both must agree, so one down withholds the quorum.
+        assert_eq!(tally(&[paid(real), paid(real)], 2), Quorum::Paid(real));
+        assert_eq!(tally(&[paid(real), down()], 2), Quorum::Undecided);
+    }
+
+    /// Stands up a fake Solana RPC that answers `getTransaction` the same
+    /// way for every signature: `Some((amount, time, ok))` for a transaction
+    /// paying that much HNET to the wallet, or `None` for "not on chain".
+    /// Returns the URL to give `--pay-rpc`.
+    async fn fake_rpc(answer: Option<(u64, i64, bool)>) -> String {
+        use tokio::io::AsyncWriteExt;
+        const WALLET: &str = "So11111111111111111111111111111111111111112";
+        const PAYER: &str = "ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc";
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = l.accept().await.unwrap();
+                let _ = read_request(&mut s).await;
+                let result = match answer {
+                    Some((amount, time, ok)) => serde_json::json!({
+                        "blockTime": time, "slot": 1, "transaction": {},
+                        "meta": {
+                            "err": if ok { serde_json::Value::Null } else { serde_json::json!({"x": 1}) },
+                            "preTokenBalances": [
+                                {"accountIndex": 2, "owner": WALLET, "mint": payment::HNET_MINT, "uiTokenAmount": {"amount": "1000", "decimals": 6}}
+                            ],
+                            "postTokenBalances": [
+                                {"accountIndex": 1, "owner": PAYER, "mint": payment::HNET_MINT, "uiTokenAmount": {"amount": "1", "decimals": 6}},
+                                {"accountIndex": 2, "owner": WALLET, "mint": payment::HNET_MINT, "uiTokenAmount": {"amount": (1000 + amount).to_string(), "decimals": 6}}
+                            ]
+                        }
+                    }),
+                    None => serde_json::Value::Null,
+                };
+                let body =
+                    serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
+                let _ = s.write_all(&http_response(200, &body)).await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    #[tokio::test]
+    async fn confirm_credits_only_what_a_majority_of_rpcs_agree_on() {
+        const WALLET: &str = "So11111111111111111111111111111111111111112";
+        let dir =
+            std::env::temp_dir().join(format!("hidravpn-issuer-quorum-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paid = payment::Payment {
+            paid_raw: 50_000_000,
+            block_time: 1700,
+        };
+        let payments = |rpcs: &[String]| {
+            Payments::new(
+                WALLET,
+                payment::HNET_MINT,
+                6,
+                rpcs,
+                &["10=50".into()],
+                None,
+                dir.join("orders.json"),
+            )
+            .unwrap()
+        };
+
+        // Two honest RPCs and one that forges a different amount: the two
+        // outvote the liar, so the real payment is confirmed.
+        let honest_a = fake_rpc(Some((50_000_000, 1700, true))).await;
+        let honest_b = fake_rpc(Some((50_000_000, 1700, true))).await;
+        let liar = fake_rpc(Some((999, 1700, true))).await;
+        let p = payments(&[honest_a.clone(), honest_b.clone(), liar.clone()]);
+        assert_eq!(p.confirm("any-signature").await, Quorum::Paid(paid));
+
+        // Honest two disagree with each other, the third is not on chain:
+        // no majority reads the same payment, so nothing is credited.
+        let other = fake_rpc(Some((60_000_000, 1700, true))).await;
+        let missing = fake_rpc(None).await;
+        let p = payments(&[honest_a, other, missing]);
+        assert_eq!(p.confirm("any-signature").await, Quorum::Undecided);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2347,10 +2622,10 @@ mod tests {
             WALLET,
             payment::HNET_MINT,
             6,
-            "https://example.org/",
+            &["https://example.org/".into()],
             &["150=5.99usd".into(), "10=50".into()],
             Some(RateFeed {
-                url: format!("http://127.0.0.1:{port}/"),
+                urls: vec![format!("http://127.0.0.1:{port}/")],
                 every: Duration::from_secs(1),
                 max_age: 2,
                 max_change: 0.3,
@@ -2363,7 +2638,7 @@ mod tests {
                 WALLET,
                 payment::HNET_MINT,
                 6,
-                "https://example.org/",
+                &["https://example.org/".into()],
                 &["150=5.99usd".into()],
                 None,
                 dir.join("o")
