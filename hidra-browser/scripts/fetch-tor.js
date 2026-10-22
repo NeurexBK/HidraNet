@@ -15,7 +15,12 @@ const https = require('https');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { TOR_VERSION, torProblems } = require('./lib/tor');
+// The Tor Project keeps only its latest releases on dist; older ones move to
+// the archive, under the same names and beside the same checksum list. A
+// pinned version that leaves dist is fetched from there, and is still held to
+// the same checksum and the same pins.
 const DIST = `https://dist.torproject.org/torbrowser/${TOR_VERSION}`;
+const ARCHIVE = `https://archive.torproject.org/tor-package-archive/torbrowser/${TOR_VERSION}`;
 
 const ROOT = path.join(__dirname, '..');
 
@@ -39,7 +44,7 @@ function bundleName(platform, arch) {
       ? `tor-expert-bundle-macos-aarch64-${TOR_VERSION}.tar.gz`
       : `tor-expert-bundle-macos-x86_64-${TOR_VERSION}.tar.gz`;
   }
-  throw new Error(`plataforma sem bundle do Tor: ${platform}/${arch}`);
+  throw new Error(`no Tor bundle for ${platform}/${arch}`);
 }
 
 function get(url) {
@@ -51,7 +56,9 @@ function get(url) {
       }
       if (res.statusCode !== 200) {
         res.resume();
-        return reject(new Error(`HTTP ${res.statusCode} em ${url}`));
+        const err = new Error(`HTTP ${res.statusCode} at ${url}`);
+        err.status = res.statusCode;
+        return reject(err);
       }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -84,10 +91,17 @@ async function main() {
   }
 
   console.log(`[..] downloading ${file}`);
-  const [sums, tarball] = await Promise.all([
-    get(`${DIST}/sha256sums-unsigned-build.txt`),
-    get(`${DIST}/${file}`),
-  ]);
+  // The list and the bundle always come from the same host.
+  const from = (base) => Promise.all([get(`${base}/sha256sums-unsigned-build.txt`), get(`${base}/${file}`)]);
+  let sums;
+  let tarball;
+  try {
+    [sums, tarball] = await from(DIST);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+    console.log(`[..] Tor ${TOR_VERSION} is no longer on dist.torproject.org; fetching it from archive.torproject.org`);
+    [sums, tarball] = await from(ARCHIVE);
+  }
 
   const line = sums.toString('utf8').split('\n').find((l) => l.includes(file));
   if (!line) throw new Error(`${file} is not in the official checksum list`);

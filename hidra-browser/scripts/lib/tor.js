@@ -7,10 +7,15 @@
  * Tor Project publishes beside it. That list comes from the same server as
  * the bundle, over the same connection, so on its own it proves the download
  * is intact, not that it is genuine. The hashes below are a second check that
- * does not come from that server: the files of the Tor Expert Bundle 15.0.22
- * (tor 0.4.9.12) as fetch-tor.js extracted them for the v1.0.0 packages.
- * fetch-tor.js refuses a bundle whose files differ, and every builder refuses
- * to package a Tor folder that differs.
+ * does not come from that server: the files of the Tor Expert Bundle 15.0.26
+ * (tor 0.4.9.14), extracted from bundles that matched
+ * sha256sums-signed-build.txt after that list's signature checked out
+ * against the Tor Browser Developers key (EF6E 286D DA85 EA2A 4BA7 DE68
+ * 4E2C 6E87 9329 8290). fetch-tor.js refuses a bundle whose files differ, and
+ * every builder refuses to package a Tor folder that differs.
+ *
+ * 15.0.22, which the v1.0.0 packages carry, left dist.torproject.org; a
+ * pinned version that leaves it is fetched from archive.torproject.org.
  *
  * Moving to another Tor means changing TOR_VERSION and recording new hashes
  * from a bundle whose signature was checked against the Tor Browser
@@ -21,16 +26,16 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 
-const TOR_VERSION = '15.0.22';
+const TOR_VERSION = '15.0.26';
 
-const GEOIP  = '25a69c1dc1d946bfdb0b1ba628db36e9668c51639963c2ee2afda7dc857f66a5';
-const GEOIP6 = '0a3b61ba326550d66a4c805563be25e28f1d59e5cdfc06b091bfdd9ea2c8f998';
+const GEOIP  = '3099e91a4c8c87a1e6ab8a0b1e7407aea0314a2d8d048d654b4087b9ae103d9f';
+const GEOIP6 = '10f50daba4156a5b1ae782c0db0478b4584901b1ed72cd619cddd4b9f2b03d6a';
 
 const PINS = {
-  'darwin-arm64': { 'tor': 'baf8add2d110278bb4cb14cb091121756683d77759692084cb3fb3b09044384d', geoip: GEOIP, geoip6: GEOIP6 },
-  'darwin-x64':   { 'tor': '153770d40cee72bed088c0202745c91847588afa614ef37f1c1cd76dc28af063', geoip: GEOIP, geoip6: GEOIP6 },
-  'linux-x64':    { 'tor': 'ed3edb11fe56063b31915e7b3ae31fb08e40a9f4aa2fe811e988d8037650afa4', geoip: GEOIP, geoip6: GEOIP6 },
-  'win32-x64':    { 'tor.exe': '60c45b01938c799862e511a9a5bab12f959a819c6264a24502edc342165f570c', geoip: GEOIP, geoip6: GEOIP6 },
+  'darwin-arm64': { 'tor': '7d5a89b6cec99aab47420040ad86dd5fd5174192e71b6c201b0b10170ba57ebb', geoip: GEOIP, geoip6: GEOIP6 },
+  'darwin-x64':   { 'tor': 'e249a521aa5b0ff44a39c1dc4b5707ae8cb109d8a26c637b6acbbf6832bf2f14', geoip: GEOIP, geoip6: GEOIP6 },
+  'linux-x64':    { 'tor': '39c9db0654d2ec218892bd00f75eccb5b641a7222754436c2e4a8d2f764a57d3', geoip: GEOIP, geoip6: GEOIP6 },
+  'win32-x64':    { 'tor.exe': '8c38513b3c4584154158e7c584f4144849dc679a64cd679553d72dad28230c54', geoip: GEOIP, geoip6: GEOIP6 },
 };
 
 function torDir(root, platform, arch) {
