@@ -71,6 +71,17 @@ publishes anything, and an unsigned build is never released (the release job
 only runs when `SIGNPATH_ENABLED` is `true`, and only after the checks, every
 namespace suite, the Windows unit tests and signing have succeeded).
 
+The one exception so far is **0.1.0, a preview for testers**: published by
+hand as a GitHub pre-release, without Authenticode, so the browser's Install
+button could be tried before SignPath is set up. Its files are listed in
+`landing/vpn/release/manifest.json`, signed offline with the release key, and
+the browser refuses any file that differs from it. On Windows 11 with Smart App
+Control on it does not run. Every earlier test build also calls itself 0.1.0,
+so on a machine that runs one, "Check for an update" says it is up to date:
+press Uninstall there (without removing the data, which keeps the key and the
+nodes), then Install. The first release for everyone goes through this
+workflow, signed.
+
 ```
 git checkout main && git pull
 git tag -a hidravpn-v0.3.0 -m "HidraVPN 0.3.0"
