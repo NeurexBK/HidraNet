@@ -157,7 +157,7 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   cannot switch it off. On Windows the caller is "elevated or not", so the
   owner is the elevated prompt or everyone interactive.
 - **Two keys** (`hidravpn-core/src/release.rs`,
-  `hidravpn/browser/src/main/release-verify.js`). The **release key** says "this
+  `hidra-browser/src/main/release-verify.js`). The **release key** says "this
   file came from HidraVPN's maintainers"; the **list key** says "this node
   list did". Both are Ed25519. The maintainers made them offline with
   `hidravpn-sign keygen` (the secret halves never entered the repository or
@@ -277,8 +277,8 @@ Checked by: `scripts/test-client-installer.sh` (17 checks, run for real as
 root with systemd stood in for: install, update, refusal, uninstall, purge,
 and the whole chain — a manifest made by the script, signed by
 `hidravpn-sign`, accepted by the browser's installer, which installs the
-download), `hidravpn/browser/test/vpn-installer.js` (16),
-`hidravpn/browser/test/vpn-leaktest.js` (8), `hidravpn/browser/test/vpn-page.js`
+download), `hidra-browser/test/vpn-installer.js` (16),
+`hidra-browser/test/vpn-leaktest.js` (8), `hidra-browser/test/vpn-page.js`
 (50) and a unit test for the country. On Windows, `scripts/windows/phase4-test.ps1`
 is the checklist for the real PC: install and update over the pipe the
 browser uses, the data folder's rights, connect with and without the local
@@ -378,7 +378,7 @@ operator. It proves, in 36 checks:
 - no node or service log names the client's address, a lease or a key.
 
 `test-browser-netns.sh` runs the three namespaces of `test-service-netns.sh`
-and drives everything through `hidravpn/browser/src/main/vpn-manager.js` — the
+and drives everything through `hidra-browser/src/main/vpn-manager.js` — the
 exact module the page uses — as an unprivileged user in the `hidravpn` group.
 It proves, in 28 checks:
 
@@ -406,7 +406,7 @@ the three throughout, carrying no client address, readable by root only;
 then an admission on one of them turns it into an exit, and importing the
 list again does not demote it.
 
-In `hidravpn/browser/`, `node test/vpn-manager.js` drives the
+In the browser (`hidra-browser/`), `node test/vpn-manager.js` drives the
 module against a stand-in service: every command, and every way the service
 can be absent — not installed, not running, not this user's to open, a stale
 token, an answer that is not an answer, no answer, a flood — comes back as a

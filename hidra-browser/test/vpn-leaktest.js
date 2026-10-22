@@ -1,7 +1,7 @@
 // The one-click leak test: every verdict comes from the service or from what
 // the address checks actually answered, and nothing is green by default.
 //
-//   node hidravpn/browser/test/vpn-leaktest.js
+//   node hidra-browser/test/vpn-leaktest.js
 
 'use strict';
 

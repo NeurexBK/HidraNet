@@ -17,10 +17,14 @@ on:
     tags: ['hidravpn-v*']
     paths:
       - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
       - '.github/workflows/hidravpn-build.yml'
   pull_request:
     paths:
       - 'hidravpn/**'
+      # The namespace suites drive the browser's VPN modules too.
+      - 'hidra-browser/src/main/vpn-*.js'
       - '.github/workflows/hidravpn-build.yml'
   workflow_dispatch:
 
@@ -54,11 +58,6 @@ jobs:
         run: for f in hidravpn/scripts/*.sh hidravpn/scripts/test/*.sh; do bash -n "$f" || exit 1; done
       - name: node installer (dry run)
         run: bash hidravpn/scripts/test-node-installer.sh
-      # The browser's half of the VPN, parked in hidravpn/browser/ until
-      # HidraVPN ships: the module that talks to the service, the installer,
-      # the leak test, the release-signature check and the page lint.
-      - name: browser module tests (node)
-        run: for t in vpn-manager vpn-installer vpn-leaktest release-verify vpn-page; do node "hidravpn/browser/test/$t.js" || exit 1; done
 
   netns:
     name: who can see what, end to end (Linux namespaces, as root, with IPv6)

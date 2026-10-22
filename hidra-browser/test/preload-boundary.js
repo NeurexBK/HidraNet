@@ -82,17 +82,22 @@ app.whenReady().then(async () => {
   const APPS = ['chat', 'mail', 'forum', 'publish'].map(appAt).join(',');
   const OTHER = `http://127.0.0.1:${other.address().port}`;
 
-  const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault'];
-  // HidraVPN is not released (its half of the browser is parked in
-  // hidravpn/browser/), so no page of ours is offered a VPN.
-  const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn === null;
+  const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault', 'vpn'];
+  // The VPN goes to its own page; the new tab page reads the status for its
+  // badge; every other page of ours gets no VPN at all.
+  const VPN_ALL = ['checkRelease', 'connect', 'disconnect', 'fetchList', 'getPasses', 'importNodes', 'install',
+    'leakTest', 'newIdentity', 'nodes', 'refill', 'setPassToken', 'status', 'uninstall', 'verifyFile'];
+  const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === 'status';
+  const vpnPage = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === VPN_ALL.join();
+  const noVpn = (s) => s && s.keys.join() === FULL.filter((k) => k !== 'vpn').join() && s.vpn === null;
   const vaultOnly = (s) => s && s.keys.join() === 'vault' && s.vault.join() === 'get,set,status';
   const none = (s) => s === null;
 
   const cases = [
-    ['our own newtab.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'newtab.html')).href, full, 'the full API, no VPN'],
-    ['our own hidrachat.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidrachat.html')).href, full, 'the full API, no VPN'],
-    ['our own hidramail.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidramail.html')).href, full, 'the full API, no VPN'],
+    ['our own newtab.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'newtab.html')).href, full, 'the full API, with the VPN status only'],
+    ['our own hidravpn.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidravpn.html')).href, vpnPage, 'the full API, with the whole VPN'],
+    ['our own hidrachat.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidrachat.html')).href, noVpn, 'no VPN'],
+    ['our own hidramail.html', pathToFileURL(path.join(ROOT, 'src', 'ui', 'hidramail.html')).href, noVpn, 'no VPN'],
     ['a downloaded file', pathToFileURL(downloaded).href, none, 'nothing'],
     ['..' + ' out of the ui directory', `${UI_ROOT_URL}../../${path.basename(downloaded)}`, none, 'nothing'],
     ['a remote page', 'data:text/html,<p>x', none, 'nothing'],
