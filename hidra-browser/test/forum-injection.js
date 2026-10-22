@@ -58,12 +58,16 @@ app.whenReady().then(async () => {
   });
   await win.loadURL(PAGE);
   const run = (js) => win.webContents.executeJavaScript(js);
-  for (let i = 0; i < 50 && !(await run("typeof onMessage === 'function' && !!window.state")); i++) await sleep(100);
+  // Until the page has its relays: replaced before then, they would be
+  // replaced again by the page's own.
+  for (let i = 0; i < 50 && !(await run("typeof onMessage === 'function' && !!window.state && !!window.relays")); i++) await sleep(100);
 
-  // A relay that publishes nowhere, and a reader with a real account.
+  // Relays that publish nowhere, and a reader with a real account.
   await run(`window.__sent = [];
-    window.client = { connected: true, subscribe() {}, end() {}, unsubscribe() {},
-      publish(t, v, o, cb) { window.__sent.push([t, v]); if (typeof cb === 'function') cb(); if (typeof o === 'function') o(); } };
+    relays.stop();
+    window.relays = { anyUp() { return true; }, isUp() { return true; }, subscribe() {}, unsubscribe() {}, stop() {},
+      publish(t, v) { window.__sent.push([t, v]); return Promise.resolve(1); },
+      publishTo(i, t, v) { window.__sent.push([t, v]); return Promise.resolve(1); } };
     state.ready = true; 1`);
   const signedIn = await run(`signIn('reader_1', 'correct horse battery staple 1729')`);
   check('the reader can sign in', signedIn === true);

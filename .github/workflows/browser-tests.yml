@@ -1,10 +1,12 @@
 # The browser's tests, on every change to the browser or to what its tests
 # read: the English-only sweep (which also reads hidra-node and the landing
-# page), the storage and vault tests, the VPN control-channel module against a
-# stand-in service, the VPN page lint (which reads the service's ipc.rs), the
-# release-signature verifier, and the Electron-only tests under Xvfb — among
-# them the preload boundary, which proves a downloaded .html or a website gets
-# no bridge to Tor, the vault or the VPN.
+# page), the storage and vault tests, who may call each handler, the VPN
+# control-channel module against a stand-in service, the VPN page lint (which
+# reads the service's ipc.rs), the release-signature verifier, and the
+# Electron-only tests under Xvfb — among them the preload boundary, which
+# proves a downloaded .html or a website gets no bridge to Tor, the vault or
+# the VPN, and apps-e2e, which runs the chat, mail and forum between people
+# through two local MQTT brokers and takes one of them down halfway.
 name: Browser tests
 
 on:
@@ -46,7 +48,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect build-pins; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -57,10 +59,11 @@ jobs:
           sudo apt-get install -y -qq xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libxss1 \
             || true
           sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2
+          sudo apt-get install -y -qq mosquitto
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

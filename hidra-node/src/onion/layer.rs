@@ -1,131 +1,153 @@
+//! One hop's layer of a circuit: what the client and that hop seal and open
+//! for each other.
+//!
+//! The layer used to be ChaCha20-Poly1305 under the hop's Noise session key,
+//! with a random nonce sent beside every cell and nothing to say where in
+//! the circuit's life a cell belonged. So any cell that opened once opened
+//! again: a hop, or anyone who could see the link between two hops, could
+//! send a cell a second time (the exit would then repeat a request to the
+//! destination), deliver cells out of order, or send a forward cell back
+//! towards the client, since one key served both directions. And the key was
+//! the guard link's own Noise transport key, used by two constructions at
+//! once.
+//!
+//! Now each hop derives two keys from its session key, one per direction
+//! (HKDF-SHA256, labelled), and each direction counts its cells. The count is
+//! the nonce, so it never travels: a cell opens only under the key of its
+//! direction and only as the next one expected. A replayed, reordered,
+//! dropped or reflected cell fails to open and the circuit is torn down —
+//! which is all such a cell can now achieve. A cell that fails to open does
+//! not move the count, so whoever sent it cannot push the real ones out of
+//! step.
+
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305,
 };
-use rand::RngCore;
+use hkdf::Hkdf;
+use sha2::Sha256;
+use zeroize::Zeroize;
 
 use crate::error::{HidraError, Result};
 use crate::onion::cell::LayerHeader;
 
-const NONCE_LEN: usize = 12;
-const TAG_LEN: usize = 16;
+const FORWARD_LABEL: &[u8] = b"HidraNet onion layer v2: client to hop";
+const BACKWARD_LABEL: &[u8] = b"HidraNet onion layer v2: hop to client";
 
-pub fn wrap_layer(key: &[u8; 32], header: &LayerHeader, inner: &[u8]) -> Result<Vec<u8>> {
-    let header_bytes = header.serialize_bincode()?;
-    let header_len = (header_bytes.len() as u32).to_be_bytes();
-
-    let mut plaintext = Vec::with_capacity(4 + header_bytes.len() + inner.len());
-    plaintext.extend_from_slice(&header_len);
-    plaintext.extend_from_slice(&header_bytes);
-    plaintext.extend_from_slice(inner);
-
-    let mut nonce = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce);
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| HidraError::Crypto("invalid layer key".into()))?;
-
-    let ciphertext = cipher
-        .encrypt(
-            (&nonce).into(),
-            Payload {
-                msg: &plaintext,
-                aad: &[],
-            },
-        )
-        .map_err(|_| HidraError::Crypto("layer encryption failed".into()))?;
-
-    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
+/// One direction: its key and the count of the next cell.
+struct Direction {
+    key: [u8; 32],
+    next: u64,
 }
 
-pub fn peel_layer(key: &[u8; 32], encrypted: &[u8]) -> Result<(LayerHeader, Vec<u8>)> {
-    if encrypted.len() < NONCE_LEN + TAG_LEN {
-        return Err(HidraError::Crypto("layer data too short".into()));
+impl Direction {
+    fn nonce(&self) -> [u8; 12] {
+        let mut n = [0u8; 12];
+        n[4..].copy_from_slice(&self.next.to_be_bytes());
+        n
     }
 
-    let nonce: [u8; NONCE_LEN] = encrypted[..NONCE_LEN]
-        .try_into()
-        .map_err(|_| HidraError::Crypto("invalid nonce".into()))?;
-    let ciphertext = &encrypted[NONCE_LEN..];
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| HidraError::Crypto("invalid layer key".into()))?;
-
-    let plaintext = cipher
-        .decrypt(
-            (&nonce).into(),
-            Payload {
-                msg: ciphertext,
-                aad: &[],
-            },
-        )
-        .map_err(|_| HidraError::Crypto("layer decryption failed".into()))?;
-
-    if plaintext.len() < 4 {
-        return Err(HidraError::Crypto("decrypted layer too short for header length".into()));
+    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        if self.next == u64::MAX {
+            return Err(HidraError::Crypto("circuit layer exhausted its cell count".into()));
+        }
+        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
+            .map_err(|_| HidraError::Crypto("invalid layer key".into()))?;
+        let out = cipher
+            .encrypt((&self.nonce()).into(), Payload { msg: plaintext, aad: &[] })
+            .map_err(|_| HidraError::Crypto("layer encryption failed".into()))?;
+        self.next += 1;
+        Ok(out)
     }
 
-    let header_len = u32::from_be_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]])
-        as usize;
-
-    if plaintext.len() < 4 + header_len {
-        return Err(HidraError::Crypto("decrypted layer too short for header".into()));
+    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
+            .map_err(|_| HidraError::Crypto("invalid layer key".into()))?;
+        // The count moves only once the cell has proven itself.
+        let out = cipher
+            .decrypt((&self.nonce()).into(), Payload { msg: ciphertext, aad: &[] })
+            .map_err(|_| {
+                HidraError::Crypto("layer cell did not open: not the next cell of this circuit".into())
+            })?;
+        self.next += 1;
+        Ok(out)
     }
-
-    let header = LayerHeader::deserialize_bincode(&plaintext[4..4 + header_len])?;
-    let inner = plaintext[4 + header_len..].to_vec();
-
-    Ok((header, inner))
 }
 
-pub fn encrypt_stream(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
-    let mut nonce = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce);
-
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| HidraError::Crypto("invalid stream key".into()))?;
-
-    let ciphertext = cipher
-        .encrypt(
-            (&nonce).into(),
-            Payload {
-                msg: data,
-                aad: &[],
-            },
-        )
-        .map_err(|_| HidraError::Crypto("stream encryption failed".into()))?;
-
-    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
+impl Drop for Direction {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
 }
 
-pub fn decrypt_stream(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>> {
-    if encrypted.len() < NONCE_LEN + TAG_LEN {
-        return Err(HidraError::Crypto("stream data too short".into()));
+/// The layer one hop and the client share for one circuit. Both ends build
+/// it from the same session key; the client seals forward and opens
+/// backward, the hop the other way round.
+pub struct LayerCipher {
+    forward: Direction,
+    backward: Direction,
+}
+
+impl LayerCipher {
+    pub fn new(session_key: &[u8; 32]) -> Self {
+        let hk = Hkdf::<Sha256>::new(None, session_key);
+        let mut forward = [0u8; 32];
+        let mut backward = [0u8; 32];
+        hk.expand(FORWARD_LABEL, &mut forward)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        hk.expand(BACKWARD_LABEL, &mut backward)
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        Self {
+            forward: Direction { key: forward, next: 0 },
+            backward: Direction { key: backward, next: 0 },
+        }
     }
 
-    let nonce: [u8; NONCE_LEN] = encrypted[..NONCE_LEN]
-        .try_into()
-        .map_err(|_| HidraError::Crypto("invalid nonce".into()))?;
-    let ciphertext = &encrypted[NONCE_LEN..];
+    /// Client side: a cell towards the hop.
+    pub fn seal_forward(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.forward.seal(plaintext)
+    }
 
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|_| HidraError::Crypto("invalid stream key".into()))?;
+    /// Hop side: a cell from the client.
+    pub fn open_forward(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        self.forward.open(ciphertext)
+    }
 
-    cipher
-        .decrypt(
-            (&nonce).into(),
-            Payload {
-                msg: ciphertext,
-                aad: &[],
-            },
-        )
-        .map_err(|_| HidraError::Crypto("stream decryption failed".into()))
+    /// Hop side: a cell towards the client.
+    pub fn seal_backward(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.backward.seal(plaintext)
+    }
+
+    /// Client side: a cell from the hop.
+    pub fn open_backward(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        self.backward.open(ciphertext)
+    }
+
+    /// Client side: a control cell, with the header that tells the hop where
+    /// to send what is inside.
+    pub fn seal_forward_cell(&mut self, header: &LayerHeader, inner: &[u8]) -> Result<Vec<u8>> {
+        let header_bytes = header.serialize_bincode()?;
+        let mut plaintext = Vec::with_capacity(4 + header_bytes.len() + inner.len());
+        plaintext.extend_from_slice(&(header_bytes.len() as u32).to_be_bytes());
+        plaintext.extend_from_slice(&header_bytes);
+        plaintext.extend_from_slice(inner);
+        self.seal_forward(&plaintext)
+    }
+
+    /// Hop side: a control cell, split into its header and what it carries.
+    pub fn open_forward_cell(&mut self, ciphertext: &[u8]) -> Result<(LayerHeader, Vec<u8>)> {
+        let plaintext = self.open_forward(ciphertext)?;
+        if plaintext.len() < 4 {
+            return Err(HidraError::Crypto("decrypted layer too short for header length".into()));
+        }
+        let header_len =
+            u32::from_be_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]) as usize;
+        if plaintext.len() < 4 + header_len {
+            return Err(HidraError::Crypto("decrypted layer too short for header".into()));
+        }
+        let header = LayerHeader::deserialize_bincode(&plaintext[4..4 + header_len])?;
+        Ok((header, plaintext[4 + header_len..].to_vec()))
+    }
 }
 
 #[cfg(test)]
@@ -133,54 +155,87 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
 
-    #[test]
-    fn wrap_and_peel_roundtrip() {
-        let key = [0x42u8; 32];
-        let header = LayerHeader {
-            next_hop: Some("127.0.0.1:9151".parse::<SocketAddr>().unwrap()),
-        };
-        let payload = b"secret message";
-
-        let encrypted = wrap_layer(&key, &header, payload).unwrap();
-        let (peeled_header, peeled_inner) = peel_layer(&key, &encrypted).unwrap();
-
-        assert_eq!(
-            peeled_header.next_hop,
-            Some("127.0.0.1:9151".parse().unwrap())
-        );
-        assert_eq!(peeled_inner, payload);
+    fn pair() -> (LayerCipher, LayerCipher) {
+        (LayerCipher::new(&[0x42; 32]), LayerCipher::new(&[0x42; 32]))
     }
 
     #[test]
-    fn wrong_key_rejected() {
-        let key = [0x42u8; 32];
-        let wrong_key = [0x43u8; 32];
-        let header = LayerHeader { next_hop: None };
-
-        let encrypted = wrap_layer(&key, &header, b"data").unwrap();
-        assert!(peel_layer(&wrong_key, &encrypted).is_err());
+    fn control_cell_roundtrip() {
+        let (mut client, mut hop) = pair();
+        let header = LayerHeader { next_hop: Some("127.0.0.1:9151".parse::<SocketAddr>().unwrap()) };
+        let sealed = client.seal_forward_cell(&header, b"secret message").unwrap();
+        let (h, inner) = hop.open_forward_cell(&sealed).unwrap();
+        assert_eq!(h.next_hop, Some("127.0.0.1:9151".parse().unwrap()));
+        assert_eq!(inner, b"secret message");
     }
 
     #[test]
-    fn tampered_data_rejected() {
-        let key = [0x42u8; 32];
-        let header = LayerHeader { next_hop: None };
-
-        let mut encrypted = wrap_layer(&key, &header, b"data").unwrap();
-        let last = encrypted.len() - 1;
-        encrypted[last] ^= 0xFF;
-        assert!(peel_layer(&key, &encrypted).is_err());
+    fn both_directions_roundtrip_in_order() {
+        let (mut client, mut hop) = pair();
+        for i in 0..5u8 {
+            let up = client.seal_forward(&[i; 10]).unwrap();
+            assert_eq!(hop.open_forward(&up).unwrap(), vec![i; 10]);
+            let down = hop.seal_backward(&[i; 20]).unwrap();
+            assert_eq!(client.open_backward(&down).unwrap(), vec![i; 20]);
+        }
     }
 
     #[test]
-    fn exit_node_header() {
-        let key = [0xAA; 32];
-        let header = LayerHeader { next_hop: None };
+    fn a_replayed_cell_is_refused() {
+        let (mut client, mut hop) = pair();
+        let cell = client.seal_forward(b"GET / HTTP/1.1").unwrap();
+        hop.open_forward(&cell).unwrap();
+        assert!(hop.open_forward(&cell).is_err(), "the same cell opened twice");
+    }
 
-        let encrypted = wrap_layer(&key, &header, b"exit payload").unwrap();
-        let (h, inner) = peel_layer(&key, &encrypted).unwrap();
+    #[test]
+    fn cells_out_of_order_are_refused() {
+        let (mut client, mut hop) = pair();
+        let first = client.seal_forward(b"one").unwrap();
+        let second = client.seal_forward(b"two").unwrap();
+        assert!(hop.open_forward(&second).is_err(), "a later cell opened first");
+        assert_eq!(hop.open_forward(&first).unwrap(), b"one");
+        assert_eq!(hop.open_forward(&second).unwrap(), b"two");
+    }
 
-        assert!(h.next_hop.is_none());
-        assert_eq!(inner, b"exit payload");
+    #[test]
+    fn a_forward_cell_sent_back_is_refused() {
+        let (mut client, _hop) = pair();
+        let cell = client.seal_forward(b"towards the hop").unwrap();
+        assert!(client.open_backward(&cell).is_err(), "a forward cell opened as a backward one");
+    }
+
+    #[test]
+    fn a_forged_cell_does_not_move_the_count() {
+        let (mut client, mut hop) = pair();
+        assert!(hop.open_forward(&[0u8; 40]).is_err());
+        let cell = client.seal_forward(b"the real first cell").unwrap();
+        assert_eq!(hop.open_forward(&cell).unwrap(), b"the real first cell");
+    }
+
+    #[test]
+    fn a_tampered_cell_is_refused() {
+        let (mut client, mut hop) = pair();
+        let mut cell = client.seal_forward(b"data").unwrap();
+        let last = cell.len() - 1;
+        cell[last] ^= 0xFF;
+        assert!(hop.open_forward(&cell).is_err());
+    }
+
+    #[test]
+    fn another_session_key_cannot_open() {
+        let mut client = LayerCipher::new(&[0x42; 32]);
+        let mut stranger = LayerCipher::new(&[0x43; 32]);
+        let cell = client.seal_forward(b"data").unwrap();
+        assert!(stranger.open_forward(&cell).is_err());
+    }
+
+    #[test]
+    fn the_layer_keys_are_not_the_session_key() {
+        let session = [0x42u8; 32];
+        let layer = LayerCipher::new(&session);
+        assert_ne!(layer.forward.key, session);
+        assert_ne!(layer.backward.key, session);
+        assert_ne!(layer.forward.key, layer.backward.key);
     }
 }

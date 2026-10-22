@@ -863,10 +863,11 @@ pub mod server {
             // moving "@5" tag. The browser's own copy of this app was moved
             // off the CDN already; this one was still loading it.
             "/vendor/mqtt.min.js" => Some((frontend::VENDOR_MQTT, "public, max-age=86400")),
-            // The two files the page shares with the browser, at fixed
-            // paths: nothing here concatenates the request path.
+            // The files the page shares with the browser, at fixed paths:
+            // nothing here concatenates the request path.
             "/hidra-store.js" => Some((frontend::STORE_JS, "no-cache")),
             "/hidrachat-crypto.js" => Some((frontend::ROOM_JS, "no-cache")),
+            "/hidra-relays.js" => Some((frontend::RELAYS_JS, "no-cache")),
             _ => None,
         } {
             let header = format!(
@@ -934,6 +935,8 @@ pub mod frontend {
     pub const STORE_JS: &str = include_str!("../../assets/hidra-store.js");
     /// The room cryptography, shared with the browser the same way.
     pub const ROOM_JS: &str = include_str!("../../assets/hidrachat-crypto.js");
+    /// The relay connections (every public broker at once), shared the same way.
+    pub const RELAYS_JS: &str = include_str!("../../assets/hidra-relays.js");
     /// The HidraNet logo and tab icon, the browser's files (src/ui/img/).
     pub const LOGO_PNG: &[u8] = include_bytes!("../../assets/img/hidranet-logo.png");
     pub const FAVICON_PNG: &[u8] = include_bytes!("../../assets/img/favicon.png");
@@ -1125,6 +1128,7 @@ mod tests {
             (super::frontend::PAGE_HTML, "hidra-browser/src/ui/hidrachat.html"),
             (super::frontend::STORE_JS, "hidra-browser/src/ui/hidra-store.js"),
             (super::frontend::ROOM_JS, "hidra-browser/src/ui/hidrachat-crypto.js"),
+            (super::frontend::RELAYS_JS, "hidra-browser/src/ui/hidra-relays.js"),
             (super::frontend::VENDOR_MQTT, "hidra-browser/src/ui/vendor/mqtt.min.js"),
         ] {
             if let Ok(browser) = std::fs::read_to_string(root.join(theirs)) {

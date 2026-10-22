@@ -285,6 +285,7 @@ async function test(name, fn) {
     const pairs = [
       ['hidra-browser/src/ui/hidrachat-crypto.js', 'hidra-node/assets/hidrachat-crypto.js'],
       ['hidra-browser/src/ui/hidra-store.js', 'hidra-node/assets/hidra-store.js'],
+      ['hidra-browser/src/ui/hidra-relays.js', 'hidra-node/assets/hidra-relays.js'],
       ['hidra-browser/src/ui/hidrachat.html', 'hidra-node/assets/hidrachat.html'],
       ['hidra-browser/src/ui/vendor/mqtt.min.js', 'hidra-node/assets/vendor/mqtt.min.js'],
     ];

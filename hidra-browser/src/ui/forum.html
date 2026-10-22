@@ -29,6 +29,7 @@
 <title>Hidra Forum</title>
 <link rel="icon" href="img/favicon.png">
 <script src="vendor/mqtt.min.js"></script>
+<script src="hidra-relays.js"></script>
 <script src="hidra-store.js"></script>
 <script src="hidrachat-crypto.js"></script>
 <style>
@@ -285,6 +286,9 @@ var $=function(id){return document.getElementById(id)};
 // The registrar's public key, printed by `forum-registrar.js keygen`. Empty
 // means no registrar: names are first-seen only.
 var REGISTRY_PUBKEY='BAs/uLDGkptJU32QBOx6bnS2VEFg4pP7LE9oIZc2bSoVdcET2PR0s/4fSqu5aems4VCgFoq+2fNAuE9FHqUB+W8=';
+// All of them at once (hidra-relays.js): every post, claim and tombstone is
+// published to each, so the forum is the same whichever of them a reader
+// reaches.
 var MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
 var CATS=['Technology','Privacy','Dark Web','Off-Topic'];
 var CAT_COLOR={'Technology':'#4f8cff','Privacy':'#00d4aa','Dark Web':'#a29bfe','Off-Topic':'#f5a623'};
@@ -296,7 +300,15 @@ var CAT_LEGACY={'Tecnologia':'Technology','Privacidade':'Privacy'};
 function normCat(c){ c=String(c||''); return Object.prototype.hasOwnProperty.call(CAT_LEGACY,c)?CAT_LEGACY[c]:c; }
 var PER_PAGE=20, RPER_PAGE=20;
 var subtle=crypto.subtle, te=new TextEncoder();
-var client=null, relayFails=0, relayTimer=null, readyTimer=null, relayDown=false;
+var relays=null, readyTimer=null, relayDown=false;
+// What each relay has shown this page, by topic: { pk, del } for posts and
+// claims, the verified registry seq for the registry. It tells the page what
+// a relay is missing of the user's own (see healRelay).
+var seenOn=[], seenRegistry=[], healTimers=[];
+// Tombstones that arrived before their post, by post id and signing key:
+// the other relay may still be delivering the post.
+var pendingDel={};
+function online(){ return !!(relays&&relays.anyUp()); }
 // An id this page made, or one made by an earlier version: a letter and ten
 // base32 characters. Anything else off the wire is not a post.
 var ID_RE=/^[tr][a-z2-7]{10}$/;
@@ -404,7 +416,7 @@ function showMe(){
 // in, no claim is a registration, another key is a refusal.
 async function signIn(name,pass){
   if(meLocked){ toast('Your forum account could not be unlocked. Unlock your system keychain and reload.'); return false; }
-  if(!client||!client.connected||!state.ready){ $('acct-state').innerHTML='<span class="err">Not connected to the network yet. Try again in a moment.</span>'; return false; }
+  if(!online()||!state.ready){ $('acct-state').innerHTML='<span class="err">Not connected to the network yet. Try again in a moment.</span>'; return false; }
   var norm=hidraRoom.normalizeName(name);
   if(!hidraRoom.validName(norm)){ $('acct-state').innerHTML='<span class="err">A username is 3 to 24 characters: letters, digits, dot, dash or underscore.</span>'; return false; }
   if(typeof pass!=='string'||pass.length<hidraRoom.MIN_ACCOUNT_PASSWORD){ $('acct-state').innerHTML='<span class="err">A password is at least '+hidraRoom.MIN_ACCOUNT_PASSWORD+' characters. The key made from it is public, so it can be guessed at leisure; use the generated one, or a long phrase. There is no way to reset it.</span>'; return false; }
@@ -451,45 +463,35 @@ function signOut(){
 // ───────── mqtt ─────────
 function connect(){
   $('ctxt').textContent='connecting…';
-  var url=MQTT_BROKERS[Math.floor(relayFails/2)%MQTT_BROKERS.length];
-  var c;
-  try{ c=mqtt.connect(url,{clientId:'hforum_'+rid(''),clean:true,reconnectPeriod:0,connectTimeout:9000,keepalive:30}); }
-  catch(e){ relayFails++; scheduleReconnect(); return; }
-  client=c;
-  c.on('connect',function(){
-    if(c!==client) return;
-    relayFails=0;
-    if(relayDown){ relayDown=false; $('relay-notice').classList.remove('show'); toast('Connected to the relay again.'); }
-    $('cdot').className='dot on'; $('ctxt').textContent='connected';
-    c.subscribe('hforum/u/+',{qos:1});
-    c.subscribe('hforum/t/+',{qos:1});
-    c.subscribe('hforum/r/+/+',{qos:1});
-    c.subscribe('hforum/rep/+/+',{qos:0});
-    c.subscribe('hforum/mod/+',{qos:1});
-    c.subscribe('hforum/admin',{qos:1});
-    if(REGISTRY_PUBKEY) c.subscribe('hforum/registry',{qos:1});
-    armReady();
+  relays=hidraRelays(MQTT_BROKERS,{
+    options:function(){ return {clientId:'hforum_'+rid(''),clean:true}; },
+    onMessage:function(topic,payload,i){ enqueue(topic,payload.toString(),i); },
+    onUp:function(i){ seenOn[i]={}; armReady(); armHeal(i); },
+    onChange:showRelays
   });
-  c.on('close',function(){
-    if(c!==client) return;
-    $('cdot').className='dot'; $('ctxt').textContent='offline';
-    relayFails++; scheduleReconnect();
-  });
-  c.on('error',function(){});
-  c.on('message',function(topic,payload){ enqueue(topic,payload.toString()); });
+  relays.subscribe('hforum/u/+',{qos:1});
+  relays.subscribe('hforum/t/+',{qos:1});
+  relays.subscribe('hforum/r/+/+',{qos:1});
+  relays.subscribe('hforum/rep/+/+',{qos:0});
+  relays.subscribe('hforum/mod/+',{qos:1});
+  relays.subscribe('hforum/admin',{qos:1});
+  if(REGISTRY_PUBKEY) relays.subscribe('hforum/registry',{qos:1});
+  relays.start();
 }
-// The relay is the only way out; there is no quiet fall-back to another.
-// When it does not answer, the page says so and keeps trying.
-function scheduleReconnect(){
-  clearTimeout(relayTimer);
-  var delay=Math.min(2000*Math.pow(1.5,Math.min(relayFails,8)),20000);
-  $('ctxt').textContent='reconnecting…';
-  if(relayFails>=2){
+// The relays are the only way out; there is no quiet fall-back to anything
+// else. When none answers, the page says so and keeps trying.
+function showRelays(up,total,fails){
+  if(up>0){
+    if(relayDown){ relayDown=false; $('relay-notice').classList.remove('show'); toast('Connected to the relay again.'); }
+    $('cdot').className='dot on'; $('ctxt').textContent=up===total?'connected':'connected ('+up+' of '+total+' relays)';
+    return;
+  }
+  $('cdot').className='dot'; $('ctxt').textContent='reconnecting…';
+  if(fails>=2){
     relayDown=true;
-    $('relay-notice').textContent='The relay is not answering. Retrying in '+Math.ceil(delay/1000)+' s. Nothing you post reaches anyone until it is back.';
+    $('relay-notice').textContent='The relays are not answering. Retrying. Nothing you post reaches anyone until one is back.';
     $('relay-notice').classList.add('show');
   }
-  relayTimer=setTimeout(function(){ var old=client; client=null; try{ if(old) old.end(true); }catch(e){} connect(); },delay);
 }
 // The relay hands over its retained messages in a burst after subscribing.
 // The page is ready when that burst has been quiet for SETTLE_MS, so that a
@@ -509,16 +511,81 @@ function scheduleRender(){ if(renderPending)return; renderPending=true; setTimeo
 // Messages are checked one at a time, in the order they arrived, so that a
 // tombstone cannot overtake the post it refers to.
 var queue=Promise.resolve();
-function enqueue(topic,s){ armReady(); queue=queue.then(function(){ return onMessage(topic,s); }).catch(function(){}); }
+function enqueue(topic,s,relay){
+  armReady();
+  if(typeof relay==='number'){ noteSeen(relay,topic,s); bumpHeal(relay); }
+  queue=queue.then(function(){ return onMessage(topic,s,relay); }).catch(function(){});
+}
 
 function parse(s){ try{ var o=JSON.parse(s); return (o&&typeof o==='object')?o:null; }catch(e){ return null; } }
 
-async function onMessage(topic,s){
+// ───────── what a relay is missing ─────────
+//
+// A relay that was down missed what was published meanwhile, and goes on
+// missing it: a reader who reaches only that relay would find the user's
+// name unclaimed and free to take, their posts absent, or a post they deleted
+// still there. Once a relay's burst of retained messages has settled, the
+// page compares it with what the user owns and republishes to that relay
+// what it lacks: the user's claim, posts and tombstones. Anything signed can
+// be passed on by anyone, so the registrar's list goes back too when the
+// relay holds an older one. While the relays agree, nothing is sent.
+function noteSeen(relay,topic,s){
+  if(!/^hforum\/(u|t|r)\//.test(topic)) return;
+  var seen=seenOn[relay]||(seenOn[relay]={});
+  var o=s?parse(s):null;
+  seen[topic]={ pk:o&&typeof o.pk==='string'?o.pk:'', del:!!(o&&o.del) };
+}
+function armHeal(relay){ healTimers[relay]={ deadline:Date.now()+READY_MAX_MS, timer:null }; bumpHeal(relay); }
+function bumpHeal(relay){
+  var h=healTimers[relay]; if(!h) return;
+  clearTimeout(h.timer);
+  h.timer=setTimeout(function(){
+    healTimers[relay]=null;
+    queue=queue.then(function(){ return healRelay(relay); }).catch(function(){});
+  },Math.max(0,Math.min(SETTLE_MS,h.deadline-Date.now())));
+}
+async function healRelay(relay){
+  if(!relays||!relays.isUp(relay)) return;
+  var seen=seenOn[relay]||{};
+  var put=function(topic,obj){ return relays.publishTo(relay,topic,JSON.stringify(obj),{qos:1,retain:true}); };
+  if(REGISTRY_PUBKEY&&vaultData.registry&&!(seenRegistry[relay]>=vaultData.registry.seq)) put('hforum/registry',vaultData.registry);
+  var me=state.me; if(!me) return;
+  var claim=vaultData.claims[me.name], ct='hforum/u/'+me.name;
+  if(claim&&claim.pk===me.pub&&!state.registryConflict&&!(seen[ct]&&seen[ct].pk===me.pub)){
+    var c={ v:2, name:claim.name, pk:me.pub, ts:claim.ts };
+    c.sig=await hidraRoom.signFields(me,['claim',me.name,claim.name,me.pub,claim.ts]);
+    put(ct,c);
+  }
+  var id, p, t;
+  for(id in state.topics){
+    p=state.topics[id]; t='hforum/t/'+id;
+    if(p.pk!==me.pub||seen[t]) continue;
+    var o={ id:id, cat:p.cat, title:p.title, body:p.body, nick:p.nick, tag:me.fingerprint, ts:p.ts, pk:me.pub };
+    o.sig=await hidraRoom.signFields(me,['t',id,p.cat,p.title,p.body,p.nick,p.ts]);
+    put(t,o);
+  }
+  for(id in state.replies){
+    p=state.replies[id]; t='hforum/r/'+p.topicId+'/'+id;
+    if(p.pk!==me.pub||seen[t]) continue;
+    var r={ id:id, topicId:p.topicId, body:p.body, nick:p.nick, tag:me.fingerprint, ts:p.ts, pk:me.pub };
+    r.sig=await hidraRoom.signFields(me,['r',id,p.topicId,p.body,p.nick,p.ts]);
+    put(t,r);
+  }
+  for(t in seen){
+    var x=seen[t]; id=t.split('/').pop();
+    if(x.del||x.pk!==me.pub||vaultData.deleted[id]!==me.pub) continue;
+    var ts=Date.now(), tomb={ del:1, id:id, ts:ts, pk:me.pub };
+    tomb.sig=await hidraRoom.signFields(me,['del',id,ts]);
+    put(t,tomb);
+  }
+}
+
+async function onMessage(topic,s,relay){
   var parts=topic.split('/');
   if(parts[0]!=='hforum') return;
 
   if(topic==='hforum/admin'){ await onAdmin(s); return; }
-  if(topic==='hforum/registry'){ await onRegistry(s); return; }
+  if(topic==='hforum/registry'){ await onRegistry(s,relay); return; }
 
   if(parts[1]==='u'&&parts.length===3){ await onClaim(parts[2],s); return; }
 
@@ -543,10 +610,11 @@ async function onMessage(topic,s){
 }
 
 // The registrar's list. Believed over the relay for every name in it.
-async function onRegistry(s){
+async function onRegistry(s,relay){
   if(!REGISTRY_PUBKEY||!s) return;         // a wipe takes nothing away
   var o=parse(s); if(!o) return;
   var reg=await hidraRoom.verifyRegistry(REGISTRY_PUBKEY,o);
+  if(reg&&typeof relay==='number') seenRegistry[relay]=Math.max(seenRegistry[relay]==null?-1:seenRegistry[relay],reg.seq);
   if(!reg||reg.seq<=state.registrySeq) return;   // not ours, or older than what we hold
   vaultData.registry=reg; persist();
   applyRegistry(reg,true);
@@ -627,8 +695,12 @@ async function onPost(kind,id,tid,s){
   var o=parse(s); if(!o) return;
   if(o.del){
     var pk=str(o.pk,200), ts=num(o.ts), sig=str(o.sig,200);
-    if(!have||!have.pk||have.pk!==pk) return;
-    if(!(await hidraRoom.verifyFields(pk,['del',id,ts],sig))) return;
+    if(have&&(!have.pk||have.pk!==pk)) return;
+    if(!pk||!(await hidraRoom.verifyFields(pk,['del',id,ts],sig))) return;
+    // Its post may still be on its way from the other relay, which was down
+    // when the author deleted it. Kept, and applied to that post if its key
+    // is the one that signed this.
+    if(!have){ (pendingDel[id]||(pendingDel[id]={}))[pk]=1; return; }
     // Remembered, so that the original bytes, which anyone may have kept,
     // do not bring the post back when republished.
     vaultData.deleted[id]=pk; persist();
@@ -648,6 +720,7 @@ async function onPost(kind,id,tid,s){
     var ppk=str(o.pk,200), psig=str(o.sig,200);
     var fields=kind==='t'?['t',id,post.cat,post.title,post.body,post.nick,post.ts]:['r',id,tid,post.body,post.nick,post.ts];
     if(!ppk||!psig||!(await hidraRoom.verifyFields(ppk,fields,psig))) return;
+    if(pendingDel[id]&&pendingDel[id][ppk]){ delete pendingDel[id]; vaultData.deleted[id]=ppk; persist(); return; }
     post.pk=ppk;
     post.tag=await hidraRoom.fingerprint(ppk);   // shown beside the name; the wire value is not signed
   }
@@ -694,9 +767,9 @@ function repliesOf(tid){ var a=[]; for(var k in state.replies){ var r=state.repl
 function lastActivity(t){ var m=t.ts, rs=repliesOf(t.id); if(rs.length) m=Math.max(m, rs[rs.length-1].ts); return m; }
 
 // ───────── publishing ─────────
-function publishRetained(topic,obj){ return new Promise(function(r){ client.publish(topic, JSON.stringify(obj), {qos:1,retain:true}, function(){r();}); }); }
+function publishRetained(topic,obj){ return relays.publish(topic, JSON.stringify(obj), {qos:1,retain:true}); }
 async function postTopic(cat,title,body){
-  if(!client||!client.connected){ toast('No connection to the network.'); return; }
+  if(!online()){ toast('No connection to the network.'); return; }
   if(title.length>140||body.length>MAX_TEXT){ toast('Too long: a title is up to 140 characters, a message up to 20 000.'); return; }
   var id=rid('t'), ts=Date.now();
   var o={ id:id, cat:cat, title:title, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
@@ -705,7 +778,7 @@ async function postTopic(cat,title,body){
   state.sel=id; state.cat=cat; renderAll(); openTopic(id); toast('Topic posted.');
 }
 async function postReply(tid,body){
-  if(!client||!client.connected){ toast('No connection.'); return; }
+  if(!online()){ toast('No connection.'); return; }
   if(body.length>MAX_TEXT){ toast('Too long: a reply is up to 20 000 characters.'); return; }
   var id=rid('r'), ts=Date.now();
   var r={ id:id, topicId:tid, body:body, nick:state.me.nick, tag:state.me.fingerprint, ts:ts, pk:state.me.pub };
@@ -715,15 +788,15 @@ async function postReply(tid,body){
 }
 function report(itemId){
   if(!ensureNick()) return;
-  if(!client||!client.connected){ toast('No connection.'); return; }
-  client.publish('hforum/rep/'+itemId+'/'+state.me.fingerprint,'1',{qos:0,retain:true});
+  if(!online()){ toast('No connection.'); return; }
+  relays.publish('hforum/rep/'+itemId+'/'+state.me.fingerprint,'1',{qos:0,retain:true});
   if(!state.reports[itemId])state.reports[itemId]={}; state.reports[itemId][state.me.fingerprint]=1;
   toast('Reported. Reports are public and carry your account fingerprint.'); renderAll();
 }
 async function delOwn(kind,id,tid){
   var p=kind==='t'?state.topics[id]:state.replies[id];
   if(!p||!state.me||p.pk!==state.me.pub){ toast('Only the author can delete this.'); return; }
-  if(!client||!client.connected){ toast('No connection.'); return; }
+  if(!online()){ toast('No connection.'); return; }
   var topic = kind==='t' ? 'hforum/t/'+id : 'hforum/r/'+tid+'/'+id;
   var ts=Date.now();
   var tomb={ del:1, id:id, ts:ts, pk:state.me.pub };
@@ -735,7 +808,7 @@ async function delOwn(kind,id,tid){
 }
 async function modHide(id){
   if(!state.mod||!state.me){ toast('Moderators only.'); return; }
-  if(!client||!client.connected){ toast('No connection.'); return; }
+  if(!online()){ toast('No connection.'); return; }
   var ts=Date.now();
   var h={ id:id, ts:ts, pk:state.me.pub };
   h.sig=await hidraRoom.signFields(state.me,['hide',id,ts]);
@@ -755,7 +828,7 @@ async function claimModeration(){
 }
 async function enterMod(pass){
   if(!state.me){ $('mod-state').innerHTML='<span class="err">Sign in first.</span>'; return; }
-  if(!client||!client.connected||!state.ready){ $('mod-state').innerHTML='<span class="err">Not connected to the network yet.</span>'; return; }
+  if(!online()||!state.ready){ $('mod-state').innerHTML='<span class="err">Not connected to the network yet.</span>'; return; }
   if(vaultData.adminPk){
     if(vaultData.adminPk===state.me.pub){ state.mod=true; refreshRole(); renderAll(); $('mod-state').innerHTML='<span class="ok">Your account holds moderation.</span>'; }
     else $('mod-state').innerHTML='<span class="err">Moderation is held by another account ('+esc(fpShort(vaultData.adminPk))+').</span>';
