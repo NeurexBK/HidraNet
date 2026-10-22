@@ -163,7 +163,7 @@ async function refreshProxyStatus() {
     panelStatus.textContent = exit ? `Anonymous — ${exit}` : 'Anonymous (Tor)';
     panelStatus.style.color = '#00d4aa';
     proxyDot.className = 'connected';
-    proxyLabel.textContent = 'Anonymous';
+    proxyLabel.textContent = 'Tor: Anonymous';
   } else if (status.connected) {
     panelStatus.textContent = 'Connected — Local';
     panelStatus.style.color = '#00d4aa';
@@ -173,7 +173,7 @@ async function refreshProxyStatus() {
     panelStatus.textContent = 'Disconnected';
     panelStatus.style.color = '#ff4466';
     proxyDot.className = 'disconnected';
-    proxyLabel.textContent = 'Disconnected';
+    proxyLabel.textContent = 'Tor: off';
   }
 
   document.getElementById('panel-proxy').textContent =

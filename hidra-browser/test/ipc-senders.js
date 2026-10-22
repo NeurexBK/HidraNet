@@ -36,14 +36,23 @@ const electron = new Proxy({
 }, { get: (t, k) => (k in t ? t[k] : inert) });
 
 // What a handler that got past its check would reach. Every call is noted,
-// so a forged call that slipped through shows up even if it returned.
+// so a forged call that slipped through shows up even if it returned. The
+// VPN service client and the installer are stood in for too: a handler that
+// wrongly let a forged call through must not reach the real service, or run
+// the real installer, on the machine running the tests.
 const touched = [];
 const spy = (name) => new Proxy(function () {}, {
   get: (_t, k) => (k === 'then' ? undefined : (...a) => { touched.push(`${name}.${String(k)}`); return undefined; }),
 });
+const STAND_INS = {
+  './vpn-manager': { VpnManager: function VpnManager() { return spy('vpnManager'); } },
+  './vpn-installer': { VpnInstaller: function VpnInstaller() { return spy('vpnInstaller'); } },
+};
+
 const load = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === 'electron') return electron;
+  if (STAND_INS[request] && parent && parent.filename.endsWith(path.join('src', 'main', 'main.js'))) return STAND_INS[request];
   return load.call(this, request, parent, isMain);
 };
 
@@ -64,7 +73,7 @@ const BAR = { sender: chrome, senderFrame: chrome.mainFrame };
 const app = (name) => `http://${name}.localhost:8090/`;
 
 const OUTSIDERS = {
-  'a website': from('https://example.com/newtab.html'),
+  'a website': from('https://example.com/hidravpn.html'),
   'a website on loopback': from('http://127.0.0.1:9/'),
   'a file elsewhere on the disk': from('file:///tmp/newtab.html'),
   'a file whose name only starts like ours': from(UI + 'newtab.html.evil.html'),
@@ -74,7 +83,7 @@ const OUTSIDERS = {
   'no frame at all': { sender: { mainFrame: null }, senderFrame: null },
 };
 // Our own pages, each as the main frame of a tab.
-const OURS = ['newtab.html', 'hidrachat.html', 'hidramail.html', 'forum.html',
+const OURS = ['newtab.html', 'hidravpn.html', 'hidrachat.html', 'hidramail.html', 'forum.html',
   'hidrareview.html', 'hidrasearch.html', 'donate.html', 'siteload.html', 'sitepub.html', 'browser.html'];
 // The apps, served on their loopback origin.
 const APPS = { 'HidraMail on its origin': from(app('mail')), 'HidraChat on its origin': from(app('chat')) };
@@ -93,7 +102,10 @@ const WHO = {
   'apps:status': ['newtab.html'],
   'sevennine:start': ['newtab.html'], 'sevennine:stop': ['newtab.html'],
   'vault:get': ['apps'], 'vault:set': ['apps'], 'vault:status': ['apps', 'newtab.html'],
+  'vpn:status': ['hidravpn.html', 'newtab.html'],
 };
+for (const ch of ['connect', 'leak-test', 'check-release', 'install', 'uninstall', 'disconnect', 'new-identity',
+  'nodes', 'import-nodes', 'fetch-list', 'get-passes', 'set-pass-token', 'refill', 'verify-file']) WHO['vpn:' + ch] = ['hidravpn.html'];
 
 // Everyone who is not on a handler's list.
 function strangersTo(allowed) {
@@ -152,13 +164,9 @@ async function refusesAll(channel, senders, args = []) {
     registered.join() === Object.keys(WHO).sort().join(),
     `registered but not in the table: ${registered.filter((c) => !WHO[c]).join(', ') || 'none'}; ` +
     `in the table but not registered: ${Object.keys(WHO).filter((c) => !handlers.has(c)).join(', ') || 'none'}`);
-  check('the count matches what the review counted (23)', registered.length === 23, `${registered.length}`);
-  // HidraVPN is not released: its half of the browser is parked in
-  // hidravpn/browser/, and nothing here may drive a VPN service.
-  check('the browser has no VPN handler', registered.every((c) => !c.startsWith('vpn:')),
-    registered.filter((c) => c.startsWith('vpn:')).join(', '));
+  check('the count matches what the review counted (38)', registered.length === 38, `${registered.length}`);
 
-  const ARGS = { 'tab:navigate': [1, 'https://example.com/'],
+  const ARGS = { 'vpn:uninstall': [true], 'vpn:connect': ['rapido', {}], 'tab:navigate': [1, 'https://example.com/'],
     'prefs:save': [{ theme: 'dark' }], 'vault:set': ['x'], 'tab:create': ['https://example.com/'] };
 
   for (const ch of registered) {
