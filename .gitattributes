@@ -1,0 +1,4 @@
+# Signed files: a signature covers the exact bytes, so git must never change
+# their line endings (a Windows checkout with core.autocrlf would otherwise
+# serve or re-sign different bytes).
+landing/vpn/** -text

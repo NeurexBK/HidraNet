@@ -1,0 +1,24 @@
+{
+  "product": "hidravpn",
+  "version": "0.1.0",
+  "generated": "2026-10-22T11:38:40Z",
+  "platforms": {
+    "win32-x64": {
+      "service": "hidravpn-service.exe",
+      "client": "hidravpn.exe",
+      "files": [
+        { "name": "hidravpn-service.exe", "url": "https://github.com/NeurexBK/HidraNet/releases/download/hidravpn-v0.1.0/hidravpn-service.exe", "sha256": "d852b2f7941a076e85d24eb86b7275181ee935987308b3b8b869e980e7bdec54", "size": 5256192 },
+        { "name": "hidravpn.exe", "url": "https://github.com/NeurexBK/HidraNet/releases/download/hidravpn-v0.1.0/hidravpn.exe", "sha256": "467ed84bbd28021b0bff226ecca19aa89f22acd8af6a2db1c945bbc76ad5ad2a", "size": 5022720 },
+        { "name": "wintun.dll", "url": "https://github.com/NeurexBK/HidraNet/releases/download/hidravpn-v0.1.0/wintun.dll", "sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce", "size": 427552 }
+      ]
+    },
+    "linux-x64": {
+      "service": "hidravpn-service",
+      "client": "hidravpn",
+      "files": [
+        { "name": "hidravpn-service", "url": "https://github.com/NeurexBK/HidraNet/releases/download/hidravpn-v0.1.0/hidravpn-service", "sha256": "14aa75671bab1bd9748693ffea9310a6ec578dbcc5f9f37f920bea3d18cc6106", "size": 5464008 },
+        { "name": "hidravpn", "url": "https://github.com/NeurexBK/HidraNet/releases/download/hidravpn-v0.1.0/hidravpn", "sha256": "98a42235383fb38eacef2e10e9e2dd29ab84d1867be9e9a3d148021439095ff9", "size": 5254296 }
+      ]
+    }
+  }
+}
