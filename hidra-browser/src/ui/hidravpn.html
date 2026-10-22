@@ -182,6 +182,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 .route.empty-route p{text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:6px}
 .stop{flex:1 1 0;min-width:0;text-align:center;display:flex;flex-direction:column;align-items:center}
 .orb{width:36px;height:36px;border-radius:50%;border:2px solid var(--border-light);background:var(--bg-input);display:grid;place-items:center;color:var(--text-muted);font-size:17px;line-height:1;transition:border-color .3s,box-shadow .3s}
+.orb .orb-cc{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--text-secondary)}
 .orb svg{width:18px;height:18px}
 .stop.this-machine .orb{border-color:rgba(0,204,255,.7);color:var(--cyan)}
 .stop.relay.fresh .orb{border-color:var(--accent);box-shadow:0 0 10px var(--accent-glow)}
@@ -394,7 +395,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       </div>
       <div class="strip" id="operator-row" hidden><svg aria-hidden="true"><use href="#icon-alert"/></svg><span id="operator-badge"></span></div>
       <div class="hops" id="hops"></div>
-      <p class="legend" id="legend" hidden>entry: sees your address, not where you go. exit: sees where you go, not your address.</p>
+      <p class="legend" id="legend" hidden></p>
     </section>
 
     <section class="card" id="leaks-card">
@@ -537,8 +538,29 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 
   // Two letters, as the service passes them, shown as a flag and the letters
   // themselves: a system without flag glyphs still shows the letters.
+  // Whether this system draws flags: Windows has no flag glyphs and shows
+  // the two letters instead, which next to the letters themselves read twice.
+  // A flag is drawn in colour; the letters are drawn in the fill colour only.
+  // The browser's canvas noise moves a channel by one, far under the margin.
+  var FLAGS = (function () {
+    try {
+      var c = document.createElement('canvas');
+      c.width = 32; c.height = 32;
+      var x = c.getContext('2d');
+      if (!x) return false;
+      x.textBaseline = 'top';
+      x.font = '26px sans-serif';
+      x.fillStyle = '#000';
+      x.fillText(String.fromCodePoint(0x1F1EB, 0x1F1EE), 0, 2);
+      var d = x.getImageData(0, 0, 32, 32).data;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 64 && (Math.abs(d[i] - d[i + 1]) > 24 || Math.abs(d[i + 1] - d[i + 2]) > 24)) return true;
+      }
+      return false;
+    } catch (e) { return false; }
+  })();
   function flag(cc) {
-    if (!/^[A-Z]{2}$/.test(cc || '')) return '';
+    if (!FLAGS || !/^[A-Z]{2}$/.test(cc || '')) return '';
     return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
   }
   function el(tag, cls, text) {
@@ -683,9 +705,13 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       var s = stop('relay ' + freshness(h), h.node_name || '');
       s.setAttribute('data-role', role);
       var g = flag(h.country);
-      if (g) s.firstChild.textContent = g; else s.firstChild.appendChild(icon('shield'));
+      // The flag in the circle with the letters under it; with no flag,
+      // the letters in the circle, once.
+      if (g) s.firstChild.textContent = g;
+      else if (h.country) s.firstChild.appendChild(el('span', 'orb-cc', h.country));
+      else s.firstChild.appendChild(icon('shield'));
       s.querySelector('.stop-name').title = h.endpoint || '';
-      s.appendChild(el('div', 'stop-cc', h.country || ''));
+      if (g) s.appendChild(el('div', 'stop-cc', h.country));
       s.appendChild(el('div', 'stop-sees', role === 'entry' ? 'sees your address' : role === 'exit' ? 'sees where you go' : 'sees your address and your traffic'));
       box.appendChild(s);
     });
@@ -699,7 +725,13 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var hops = $('hops');
     hops.textContent = '';
     var list = (r && r.hops_detail && r.hops_detail.length) ? r.hops_detail : [];
+    // What each hop sees. With two hops they differ; one hop is the whole
+    // view, and saying the exit does not see the address would be false.
+    var twoHops = list.some(function (h) { return h.role === 'entry'; });
     $('legend').hidden = !list.length;
+    $('legend').textContent = twoHops
+      ? 'entry: sees your address, not where you go. exit: sees where you go, not your address.'
+      : 'one hop: the node sees your address and your traffic.';
     list.forEach(function (h) {
       var row = el('div', 'hop');
       row.appendChild(el('span', 'pill role-' + (h.role === 'entry' ? 'entry' : 'exit'), h.role || ''));
@@ -763,6 +795,20 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     if (n.admitted !== false) return n.slot === 'exit';
     return String(n.role || '').trim().toLowerCase() !== 'entry';
   }
+  function isEntry(n) {
+    if (n.admitted !== false) return n.slot === 'entry';
+    return String(n.role || '').trim().toLowerCase() !== 'exit';
+  }
+  // The service's rule for two hops: both say who runs them, and they are
+  // different operators (compared without regard to case), on two machines.
+  function operatorOf(n) { return String((n && n.operator) || '').trim().toLowerCase(); }
+  function hostOf(n) { return String((n && n.endpoint) || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, ''); }
+  function canPair(e, x, allowSame) {
+    if ((e.node_name || e.endpoint) === (x.node_name || x.endpoint)) return false;
+    if (hostOf(e) && hostOf(e) === hostOf(x)) return false;
+    if (allowSame) return true;
+    return Boolean(operatorOf(e) && operatorOf(x) && operatorOf(e) !== operatorOf(x));
+  }
   function canAdmit(n) {
     var a = admissionOf(n);
     if (a === 'pass') return Number(n.passes) > 0;
@@ -787,7 +833,20 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       else {
         // Every connection needs an exit that would admit this machine.
         var exits = list.filter(isExit);
-        if (exits.some(canAdmit)) text = 'Ready. Choose a mode and press Connect.';
+        var usableExits = exits.filter(canAdmit);
+        if (usableExits.length && selectedMode() === 'privado') {
+          var entries = list.filter(isEntry).filter(canAdmit);
+          var allowSame = $('allow-same-operator').checked;
+          var pairs = function (same) {
+            return entries.some(function (e) { return usableExits.some(function (x) { return canPair(e, x, same); }); });
+          };
+          if (!entries.length) text = 'Two hops need an entry this machine can use, and there is none yet.';
+          else if (pairs(false)) text = 'Ready. Press Connect for two hops.';
+          else if (allowSame && pairs(true)) text = 'Ready. One operator will run both hops: together they see who and where.';
+          else if (pairs(true)) { text = 'Two hops would be refused: one operator runs both, or the list does not say who runs them.'; go = 'options'; }
+          else text = 'Two hops need an entry and an exit on two different machines.';
+        }
+        else if (usableExits.length) text = 'Ready. Choose a mode and press Connect.';
         else if (exits.some(function (n) { return admissionOf(n) === 'pass'; })) { text = 'Step 3 of 3: add passes so an exit admits this machine.'; go = 'passes'; }
         else if (exits.length) text = 'The exits here admit by hand: ask an operator for an invite.';
         else text = 'No exit node yet: nothing in the list can carry traffic out.';
@@ -799,7 +858,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var btn = $('btn-next');
     btn.hidden = !go;
     btn.setAttribute('data-go', go);
-    btn.textContent = go === 'nodes' ? 'Go to nodes' : go === 'passes' ? 'Go to passes' : 'Go to settings';
+    btn.textContent = go === 'nodes' ? 'Go to nodes' : go === 'passes' ? 'Go to passes' : go === 'options' ? 'Go to options' : 'Go to settings';
   }
 
   function render(s) {
@@ -1174,6 +1233,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     document.querySelectorAll('.mode').forEach(function (m) {
       m.classList.toggle('active', m.querySelector('input').checked);
     });
+    renderNextStep();
   }
   document.querySelectorAll('.mode input').forEach(function (input) {
     input.addEventListener('change', syncModes);
@@ -1181,6 +1241,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   function syncOptions() {
     $('options-summary').textContent = ($('allow-lan').checked ? 'Local network on' : 'Local network off') + ', ' +
       ($('allow-same-operator').checked ? 'one operator on both hops allowed' : 'one operator on both hops not allowed');
+    renderNextStep();
   }
   $('allow-lan').addEventListener('change', syncOptions);
   $('allow-same-operator').addEventListener('change', syncOptions);
@@ -1213,6 +1274,11 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       openSettings('settings-passes');
     } else if (go === 'settings') {
       openSettings('settings-service');
+    } else if (go === 'options') {
+      var o = $('options');
+      o.open = true;
+      o.scrollIntoView({ block: 'nearest' });
+      $('allow-same-operator').focus();
     }
   });
   $('btn-fetch').addEventListener('animationend', function () { $('btn-fetch').classList.remove('pulse'); });
