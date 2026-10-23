@@ -43,7 +43,21 @@ install -m 0755 "$BIN/hidravpn" "$PREFIX/hidravpn"
 install -m 0755 "$BIN/hidravpn-service" "$PREFIX/hidravpn-service"
 
 echo ">> installing and starting the service"
-"$PREFIX/hidravpn-service" install
+# 69: installed, but the service has not answered yet. Say so, do the rest,
+# and end with the same code.
+rc=0; "$PREFIX/hidravpn-service" install || rc=$?
+NOT_UP=0
+if [ "$rc" = 69 ]; then
+  NOT_UP=1
+  echo ">> the service is installed but has not answered yet: \`sudo systemctl status hidravpn\` says why"
+elif [ "$rc" != 0 ]; then
+  exit "$rc"
+fi
+if [ "$NOT_UP" = 1 ]; then
+  STATE_LINE="HidraVPN is installed, but its service has not answered yet: \`sudo systemctl status hidravpn\` says why."
+else
+  STATE_LINE="HidraVPN is installed and the service is running."
+fi
 
 # The browser runs as the person, not as root, and drives the service through
 # its control channel; membership of the hidravpn group is what lets it. The
@@ -72,7 +86,7 @@ fi
 cat <<EOF
 
 ────────────────────────────────────────────────────────────────────────
-HidraVPN is installed and the service is running.
+$STATE_LINE
 
 Nodes from the signed list that admit openly need no administrator:
 
@@ -96,3 +110,6 @@ Save the invite it prints as invite.json on this machine, then:
 Remove everything:  sudo hidravpn-service uninstall
 ────────────────────────────────────────────────────────────────────────
 EOF
+# The same code as the service's, so a caller can tell this apart from a
+# clean install.
+if [ "$NOT_UP" = 1 ]; then exit 69; fi

@@ -398,7 +398,7 @@ impl Circuit {
         netcfg::recover_dns();
 
         if let Some(entry) = &spec.entry {
-            if ONE_ADDRESS_PER_INTERFACE && same_address(entry, &spec.exit) {
+            if one_address_per_interface() && same_address(entry, &spec.exit) {
                 return Err(anyhow!(
                     "{} and {} gave this machine the same tunnel address, which one machine cannot hold on two interfaces; connect again, or ask an operator to give one of them another tunnel subnet",
                     entry.node_name,
@@ -802,7 +802,10 @@ pub async fn prepare(
             // session is simply asked for again: the exit leases the next
             // address while the first lease lapses unused.
             let mut tries = 0;
-            while ONE_ADDRESS_PER_INTERFACE && session && same_address(&entry, &invite) && tries < 3
+            while one_address_per_interface()
+                && session
+                && same_address(&entry, &invite)
+                && tries < 3
             {
                 tries += 1;
                 (invite, fresh) = admit_behind(
@@ -820,6 +823,26 @@ pub async fn prepare(
             }
             if invite.pass.is_some() {
                 won.push(invite.clone());
+            }
+            // A pass is not asked for again: that would spend another, and
+            // the exit of two hops is never shown a key twice. When the exit
+            // gave the address this connection's entry session did, the
+            // entry is asked for another session instead: it leases the next
+            // address of its subnet while the first lapses unused.
+            let mut tries = 0;
+            while one_address_per_interface()
+                && !session
+                && spec.entry_key.is_some()
+                && spec
+                    .entry
+                    .as_ref()
+                    .is_some_and(|e| same_address(e, &invite))
+                && tries < 3
+            {
+                tries += 1;
+                let (again, again_key) = entry_session_again(first, held, cancel).await?;
+                spec.entry = Some(again);
+                spec.entry_key = Some(again_key);
             }
             spec.exit = invite;
             spec.exit_key = fresh;
@@ -876,8 +899,39 @@ async fn first_hop_pass(
 
 /// Windows will not hold one address on two interfaces (it gives the second
 /// a link-local one, silently); Linux does, and two hops with the same
-/// address on both interfaces work there.
-const ONE_ADDRESS_PER_INTERFACE: bool = cfg!(windows);
+/// address on both interfaces work there. HIDRAVPN_ONE_ADDRESS_PER_INTERFACE=1
+/// applies Windows' rule on Linux too, for the namespace suites: it only
+/// ever makes the client stricter.
+fn one_address_per_interface() -> bool {
+    cfg!(windows)
+        || std::env::var_os("HIDRAVPN_ONE_ADDRESS_PER_INTERFACE").is_some_and(|v| v == "1")
+}
+
+/// Another session on the entry of two hops, asked directly, as the first
+/// one was. The bridge to the exit left the kill switch holding the machine
+/// to the entry's tunnel port, so it is held to the entry's own ports (and
+/// to `held`) again while the entry is asked.
+async fn entry_session_again(
+    entry: &Invite,
+    held: &[SocketAddr],
+    cancel: &Cancel,
+) -> Result<(Invite, ClientKey)> {
+    let mut nodes = held.to_vec();
+    nodes.push(entry.endpoint_addr()?);
+    killswitch::hold_admitting(&nodes, &[entry.admission_addr()?], None)
+        .context("could not hold the kill switch to ask the entry for another session")?;
+    let fresh = ClientKey::generate()?;
+    let invite = cancel
+        .or(crate::admission::request_admission(
+            &entry.record(),
+            &fresh.public_base64(),
+            "client",
+            true,
+        ))
+        .await
+        .with_context(|| format!("asking {} for another session", entry.node_name))?;
+    Ok((invite, fresh))
+}
 
 /// Whether two invites give this machine the same tunnel address.
 fn same_address(a: &Invite, b: &Invite) -> bool {

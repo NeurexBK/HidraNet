@@ -52,7 +52,10 @@ cp "$BIN/hidravpn-service" "$BIN/hidravpn" "$W/dl/"
 useradd --no-create-home "$TESTUSER" 2>/dev/null
 
 OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" --user "$TESTUSER" 2>&1); RC=$?
-[ $RC = 0 ] && pass "install from the download folder succeeds ($(echo "$OUT" | tail -1))" || fail "install: rc=$RC $OUT"
+# The stand-in systemd starts nothing, so the service never answers: the
+# install puts everything in place and says so, with exit 69, not success.
+[ $RC = 69 ] && echo "$OUT" | grep -q "installed, but it has not answered in 15 seconds" \
+  && pass "install from the download folder puts it in place; with nothing running it, it says the service has not answered (exit 69)" || fail "install: rc=$RC $OUT"
 cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service && cmp -s "$BIN/hidravpn" /usr/local/bin/hidravpn \
   && pass "the service and the client are in /usr/local/bin, byte for byte" || fail "binaries not placed"
 grep -q "^ExecStart=/usr/local/bin/hidravpn-service run$" /etc/systemd/system/hidravpn.service \
@@ -67,7 +70,7 @@ SUM1=$(sha256sum $KEY)
 
 : > "$HV_SYSTEMCTL_LOG"
 OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" 2>&1); RC=$?
-[ $RC = 0 ] && pass "installing again (an update) succeeds" || fail "update: $OUT"
+[ $RC = 69 ] && echo "$OUT" | grep -q "has not answered" && pass "installing again (an update) goes through, and says the same" || fail "update: rc=$RC $OUT"
 grep -q "^stop hidravpn" "$HV_SYSTEMCTL_LOG" && [ "$(grep -n '^stop hidravpn' "$HV_SYSTEMCTL_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^enable' "$HV_SYSTEMCTL_LOG" | head -1 | cut -d: -f1)" ] \
   && pass "an update stops the running service before replacing it, then starts it" || fail "update order: $(cat "$HV_SYSTEMCTL_LOG")"
 [ "$(sha256sum $KEY)" = "$SUM1" ] && pass "an update keeps the key every node knows this machine by" || fail "the key changed"
@@ -125,8 +128,9 @@ if command -v node >/dev/null && [ -x "$BIN/hidravpn-sign" ]; then
     })();' 2>&1)
   echo "$OUT" | grep -q '"c":{"ok":true,"version":"9.9.9"' && pass "the script's manifest, signed by hidravpn-sign, is accepted by the browser" || fail "manifest: $OUT"
   echo "$OUT" | grep -q '"bad":{"ok":false' && pass "the same manifest is refused under any other release key" || fail "other key: $OUT"
-  echo "$OUT" | grep -q '"r":{"ok":true' && cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service \
-    && pass "the browser's installer installs the checked download for real" || fail "install via browser: $OUT"
+  echo "$OUT" | grep -q '"r":{"ok":false,"installed":true,"version":"9.9.9"' && echo "$OUT" | grep -q "its service did not answer" \
+    && cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service \
+    && pass "the browser's installer installs the checked download for real, and does not call a service nothing runs 'running'" || fail "install via browser: $OUT"
   /usr/local/bin/hidravpn-service uninstall --purge >/dev/null 2>&1
 else
   echo "skip  the browser chain (needs node and hidravpn-sign built)"

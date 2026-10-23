@@ -408,9 +408,14 @@ Getting there found three more bugs, now fixed:
   subnet lease the same first addresses, and Windows will not hold one
   address on two interfaces: it gave the inner one a link-local address,
   silently, and nothing passed. On Windows the exit is now asked again for
-  a session when its address matches the entry's, and a tunnel interface
-  that did not take its address stops the connection with an error
-  (`netcfg::check_address`). Linux holds the same address on both
+  a session when its address matches the entry's. An exit that admits with
+  a pass is not asked again, which would spend another pass and show it a
+  second key: the entry, when it admitted this connection with a session,
+  is asked for another session instead, and leases the next address of its
+  subnet (since 0.1.1; `test-passes-netns.sh` applies Windows' rule with
+  `HIDRAVPN_ONE_ADDRESS_PER_INTERFACE=1` and proves one pass is spent). A
+  tunnel interface that did not take its address stops the connection with
+  an error (`netcfg::check_address`). Linux holds the same address on both
   interfaces, and `test-multihop-netns.sh` proves it still does.
 - **The service did not run on battery.** The scheduled task kept
   schtasks' defaults: start only on mains power, stop on battery, stop

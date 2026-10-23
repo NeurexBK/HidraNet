@@ -48,6 +48,9 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 // The exit code the privileged step uses when a copy does not match.
 const CHANGED_AFTER_CHECK = 65;
+// The exit code of `hidravpn-service install` when the service was put in
+// place but did not answer within its startup wait (main.rs NOT_ANSWERING).
+const NOT_ANSWERING = 69;
 
 // Linux, run as root by pkexec. A fixed script: everything it is told comes
 // in as positional arguments, never as part of the script, so no file name
@@ -255,6 +258,17 @@ class VpnInstaller {
       if (r.cancelled) return { ok: false, cancelled: true, error: 'administrator rights were not given; nothing was installed' };
       if (r.code === CHANGED_AFTER_CHECK) {
         return { ok: false, error: 'a downloaded file changed after it was checked, so nothing was run. Nothing was installed.' };
+      }
+      if (r.code === NOT_ANSWERING) {
+        const next = this.platform === 'linux'
+          ? '`sudo systemctl status hidravpn` says why.'
+          : 'restart this computer, or run the install again.';
+        return {
+          ok: false,
+          installed: true,
+          version: m.version,
+          error: `HidraVPN ${m.version} is installed, but its service did not answer within 15 seconds. If it still does not answer in a minute, ${next}`,
+        };
       }
       if (r.code !== 0) {
         return { ok: false, error: `the installer failed (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 400)}` };

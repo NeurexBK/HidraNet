@@ -1337,6 +1337,15 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       outdated = false;
     } else if (r && r.cancelled) {
       message('err', r.error || 'Cancelled; nothing was installed.', msgId);
+    } else if (r && r.installed) {
+      // The new version is in place, only its service has not answered:
+      // no update is waiting any more. The poll shows whether it runs, and
+      // Check for an update offers the release again while it does not.
+      message('err', r.error, msgId);
+      $('btn-update').style.display = 'none';
+      updateKnown = false;
+      outdated = false;
+      renderDot();
     } else {
       message('err', (r && r.error) || 'Nothing was installed.', msgId);
     }
