@@ -33,11 +33,17 @@ fn write_descriptor(path: &str, d: &RelayDescriptor) {
     std::fs::write(path, serde_json::to_string(d).unwrap()).unwrap();
 }
 
+/// Connects to the target, by the name in HIDRA_CANARY_HOST if set, and
+/// echoes 64 KiB that start with HIDRA_CANARY if set: the script then looks
+/// for both in every log.
 async fn round_trip(c: &mut StreamingCircuit, target: SocketAddr) -> Result<usize, String> {
-    c.connect(&target.ip().to_string(), target.port())
+    let host = std::env::var("HIDRA_CANARY_HOST").unwrap_or_else(|_| target.ip().to_string());
+    c.connect(&host, target.port())
         .await
         .map_err(|e| e.to_string())?;
-    let data: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+    let mut data: Vec<u8> = std::env::var("HIDRA_CANARY").unwrap_or_default().into_bytes();
+    data.extend((0..65536u32).map(|i| (i % 251) as u8));
+    data.truncate(65536);
     for chunk in data.chunks(8192) {
         c.send_data(chunk).await.map_err(|e| e.to_string())?;
     }

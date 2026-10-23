@@ -45,6 +45,7 @@ cleanup() {
     ip netns pids "$ns" 2>/dev/null | xargs -r kill -9 2>/dev/null
     ip netns del "$ns" 2>/dev/null
   done
+  rm -rf /etc/netns/hn-exit
   [ -n "${WORK:-}" ] && [ -z "${KEEP_WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -108,6 +109,14 @@ $CORE tcpdump -U -n -i core-c0 -w "$WORK/client.pcap" >/dev/null 2>&1 &
 PIDS+=($!)
 sleep 1
 
+# A payload and a hostname nobody else could produce. The exit resolves the
+# name to the target through its namespace's own hosts file.
+TAG="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+export HIDRA_CANARY="payload-canary-$TAG"
+export HIDRA_CANARY_HOST="host-canary-$TAG.test"
+mkdir -p /etc/netns/hn-exit
+echo "203.0.113.2 $HIDRA_CANARY_HOST" >/etc/netns/hn-exit/hosts
+
 # ── Nodes ───────────────────────────────────────────────────────────────────
 start() { # ns, log, args...
   local ns="$1" log="$2"; shift 2
@@ -170,6 +179,19 @@ SYN='tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0 and src host 
 n="$(syns "$SYN and not dst host 198.51.100.1")"
 [ "$n" = 0 ] && pass "capture: 0 connection attempts from the client to anything but the entry" \
   || fail "capture: $n connection attempts from the client to something other than the entry: $(tcpdump -n -r "$WORK/client.pcap" "$SYN and not dst host 198.51.100.1" 2>/dev/null | awk '{print $5}' | sort | uniq -c | tr '\n' ' ')"
+
+# ── What the logs say ───────────────────────────────────────────────────────
+# Every process logs at DEBUG, failure paths included. None may write the
+# canary payload, the canary hostname, or the client's address — the client
+# itself included: its log is on the user's disk.
+for f in client wrongkey tampered deadmiddle entry middle exit liar echo; do
+  [ -s "$WORK/$f.log" ] || [ "$f" = echo ] || fail "log $f.log is empty: the capture missed it"
+done
+grep -q "circuit extended" "$WORK/entry.log" && grep -q "extend failed" "$WORK/entry.log" \
+  || fail "the entry's log lacks the circuit's own lines: the capture missed it"
+leaks="$(grep -lE "$TAG|192\.0\.2\.2" "$WORK"/*.log 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+[ -z "$leaks" ] && pass "logs at DEBUG: no canary payload, no canary hostname, no client address" \
+  || fail "the canary or the client's address is in: $leaks"
 
 echo
 echo "passed $ok, failed $bad"
