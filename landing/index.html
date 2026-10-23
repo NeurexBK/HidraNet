@@ -420,7 +420,7 @@
           <div class="picon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4a2 2 0 0 1 2-2h9l5 5v15a0 0 0 0 1 0 0H6a2 2 0 0 1-2-2z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></div>
           <div class="tag">Infrastructure</div>
           <h3>.hidra services</h3>
-          <p>Publish sites, chat, mail and forums without revealing your IP or identity. No central servers, no single point of failure.</p>
+          <p>Publish sites, chat, mail and forums without revealing your IP or identity.</p>
           <a href="#pillars" class="plink">See the pillars <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></a>
         </article>
       </div>
@@ -431,8 +431,8 @@
   <section class="section" style="padding-top:0">
     <div class="wrap">
       <div class="stats reveal">
-        <div class="stat"><div class="n" data-count="0" data-suffix="">0</div><div class="l">Central servers</div></div>
-        <div class="stat"><div class="n cyan">3–7</div><div class="l">Hops per route</div></div>
+        <div class="stat"><div class="n" data-count="0" data-suffix="">0</div><div class="l">Accounts</div></div>
+        <div class="stat"><div class="n cyan">3</div><div class="l">Hops per route</div></div>
         <div class="stat"><div class="n">∞</div><div class="l">Possible nodes</div></div>
         <div class="stat"><div class="n cyan" data-count="256" data-suffix="-bit">0</div><div class="l">+ post-quantum ML-KEM</div></div>
         <div class="stat"><div class="n" data-count="4" data-suffix="">0</div><div class="l">Native apps</div></div>
@@ -449,7 +449,7 @@
         <span class="chip"><span class="d"></span>ML-KEM · post-quantum</span>
         <span class="chip"><span class="d"></span>Kademlia DHT</span>
         <span class="chip"><span class="d"></span>Onion routing</span>
-        <span class="chip"><span class="d"></span>Traffic obfuscation</span>
+        <span class="chip"><span class="d"></span>Kill switch</span>
         <span class="chip"><span class="d"></span>E2E encryption</span>
         <span class="chip"><span class="d"></span>Hidden services</span>
         <span class="chip"><span class="d"></span>100% Open Source</span>
@@ -474,17 +474,17 @@
         <article class="pill reveal"><span class="num">02</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
           <h3>Onion routing</h3>
-          <p>3 to 7 hops with chaffing. Your IP is never exposed to the other end.</p>
+          <p>Layered across three hops, so no single relay sees both your address and your destination.</p>
         </article>
         <article class="pill reveal"><span class="num">03</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg></div>
           <h3>DHT Kademlia</h3>
-          <p>Fully decentralised. No central servers, no single point of failure.</p>
+          <p>Peers and services are found through a Kademlia DHT — no central directory to block or seize.</p>
         </article>
         <article class="pill reveal"><span class="num">04</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></div>
-          <h3>Obfuscation</h3>
-          <p>Traffic indistinguishable from ordinary HTTPS.</p>
+          <h3>Leak protection</h3>
+          <p>A kill switch plus DNS and WebRTC leak guards keep your real IP from slipping out.</p>
         </article>
         <article class="pill reveal"><span class="num">05</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></div>
