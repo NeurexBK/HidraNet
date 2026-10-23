@@ -139,12 +139,16 @@ fn main() -> Result<()> {
             install::install(&install::InstallOptions { client, user })?;
             if answers_within(STARTUP_WAIT) {
                 println!("HidraVPN service installed and started");
+                Ok(())
             } else {
+                // Installed, but not known to work: an exit code of its own,
+                // so the browser's installer does not report it as running.
                 println!(
-                    "HidraVPN service installed; it is starting but has not answered yet: `hidravpn-service status` says when it is ready"
+                    "HidraVPN service installed, but it has not answered in {} seconds: `hidravpn-service status` says when it is ready",
+                    STARTUP_WAIT.as_secs()
                 );
+                std::process::exit(NOT_ANSWERING);
             }
-            Ok(())
         }
         Cmd::Uninstall { purge } => {
             require_admin()?;
@@ -331,6 +335,11 @@ fn read_invite(path: &std::path::Path) -> Result<Invite> {
 /// Runs an async client command on a small runtime.
 /// How long `install` and `start` wait for the new service to answer.
 const STARTUP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The exit code of an install whose service did not answer within
+/// STARTUP_WAIT (EX_UNAVAILABLE). The browser's installer tells it apart
+/// from success: hidra-browser/src/main/vpn-installer.js.
+const NOT_ANSWERING: i32 = 69;
 
 /// Waits until the service answers on its control channel. The OS starts
 /// it in the background, so without this a client run right after
