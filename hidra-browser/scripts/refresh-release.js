@@ -12,6 +12,7 @@
  *   node scripts/refresh-release.js              # download, patch, verify
  *   node scripts/refresh-release.js --in <dir>   # use packages already on disk
  *   node scripts/refresh-release.js --engine <f> # skip the cross-compile
+ *   node scripts/refresh-release.js --verify-inputs-only # verify, do not build
  *
  * Output lands in dist/release-out/, with the SHA-256 of each file to paste
  * into landing/SHA256SUMS.txt.
@@ -25,6 +26,7 @@ const { execFileSync } = require('child_process');
 const { inflateRawSync } = require('zlib');
 const { readZip, validDosDate } = require('./lib/zip');
 const { download } = require('./lib/net');
+const { verifyReleaseBase } = require('./lib/release-base');
 const { patchZip } = require('./patch-zip');
 
 const VERSION = '1.0.0';
@@ -215,6 +217,15 @@ function verify(file) {
     } else {
       console.log('  have ' + n);
     }
+    // Both newly downloaded and cached inputs must match the repository's
+    // pinned baseline before any ZIP parsing, patching or engine compilation.
+    verifyReleaseBase(src);
+    console.log('  verified base SHA-256: ' + n);
+  }
+
+  if (process.argv.includes('--verify-inputs-only')) {
+    console.log('  All base packages match their pinned SHA-256. No build was run.');
+    return;
   }
 
   console.log('');
@@ -251,6 +262,5 @@ function verify(file) {
     process.exit(1);
   }
   console.log('  All checks passed. The packages are in ' + outDir + '.');
-  console.log('  Upload them to the v' + VERSION + ' release, replacing the current assets,');
-  console.log('  then update landing/SHA256SUMS.txt with the hashes above.\n');
+  console.log('  These packages are for review. No release assets were published or replaced.\n');
 })().catch(e => { console.error('\n  failed: ' + e.message + '\n'); process.exit(1); });
