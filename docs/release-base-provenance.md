@@ -37,8 +37,13 @@ containment change.
 
 ## Scope of containment
 
-The changed workflows are manual, read-only and restricted to main. They
-produce review artifacts and cannot replace public release assets. Historical
-branches still contain their old workflow versions; merging this change alone
-does not revoke those versions or disable already running jobs. Repository
-administrators should account for that when managing historical branches.
+The new workflows (`verify-browser-release.yml` and
+`preview-browser-release-notes.yml`) are manual, read-only and restricted to
+main. They produce review artifacts and cannot replace public release assets.
+They use new paths so the legacy workflow IDs can remain disabled globally.
+
+Deployment must also disable the legacy `publish-release.yml` (ID 380890791)
+and `release-notes.yml` (ID 381747046) through GitHub Actions. Historical
+branches retain those files, so removing them from main alone is insufficient.
+Check for running legacy jobs separately; disabling a workflow does not cancel
+already running jobs. Do not re-enable the legacy IDs for a review build.
