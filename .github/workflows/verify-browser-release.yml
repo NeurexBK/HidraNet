@@ -1,0 +1,96 @@
+# Verify the browser packages in Actions without changing a public
+# release. Publishing needs a separate, reviewed process with immutable assets.
+
+name: verify browser release packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-browser-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: build and verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Check release input verification
+        working-directory: hidra-browser
+        run: node test/release-base.js
+
+      - name: Verify the pinned base packages
+        working-directory: hidra-browser
+        run: node scripts/refresh-release.js --verify-inputs-only
+
+      # The engine is cross-compiled for Windows, and rusqlite is built from
+      # source, so a C compiler for the target is needed and not just the Rust
+      # target.
+      - name: Install the Windows cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      - name: Add the Windows Rust target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      # Nothing ships that fails the invariants. These are cheap, and the
+      # whole reason for this release is that something shipped which should
+      # not have.
+      - name: The product is in English
+        working-directory: hidra-browser
+        run: node test/english-only.js
+
+      - name: The anonymity panel's claims are backed by code
+        working-directory: hidra-browser
+        run: |
+          node test/anonymity-claims.js
+          node test/mqtt-worker-csp.js
+
+      - name: The apps keep their storage and websites keep none
+        working-directory: hidra-browser
+        run: |
+          node test/app-storage.js
+          node test/display-url.js
+          node test/vault.js
+
+      - name: No addresses or content in the logs
+        working-directory: hidra-node
+        run: cargo test --test no_addresses_in_logs
+
+      # Downloads the current packages as a build input, swaps in the current
+      # sources and engine, then checks the generated packages.
+      - name: Build the packages
+        working-directory: hidra-browser
+        run: node scripts/refresh-release.js
+
+      - name: Hash the review packages
+        working-directory: hidra-browser/dist/release-out
+        run: |
+          ls -l
+          sha256sum *.zip | tee SHA256SUMS.txt
+
+      - name: Keep packages for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-release-review-${{ github.sha }}
+          path: |
+            hidra-browser/dist/release-out/*.zip
+            hidra-browser/dist/release-out/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

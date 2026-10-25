@@ -33,6 +33,7 @@ const { spawn, spawnSync } = require('child_process');
 
 const UI = path.join(__dirname, '..', 'src', 'ui');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'hidra-apps-e2e-'));
+const brokerProcesses = new Set();
 
 let passed = 0, failed = 0;
 function check(name, cond, why) {
@@ -67,7 +68,7 @@ class Broker {
       'allow_anonymous true',
       'persistence true',
       `persistence_location ${this.dir}/`,
-      'log_dest none',
+      'log_dest stderr',
       `listener ${port} 127.0.0.1`,
       'protocol websockets',
       '',
@@ -76,17 +77,26 @@ class Broker {
   }
   get url() { return `ws://127.0.0.1:${this.port}/mqtt`; }
   async start() {
-    this.proc = spawn('mosquitto', ['-c', this.conf], { stdio: 'ignore' });
+    this.proc = spawn('mosquitto', ['-c', this.conf], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const proc = this.proc;
+    brokerProcesses.add(proc);
+    proc.once('exit', () => brokerProcesses.delete(proc));
+    let diagnostic = '';
+    let spawnError;
+    proc.stderr.on('data', data => { diagnostic = (diagnostic + data).slice(-8000); });
+    proc.once('error', error => { spawnError = error; brokerProcesses.delete(proc); });
     for (let i = 0; i < 50; i++) {
+      if (spawnError || proc.exitCode !== null || proc.signalCode !== null) break;
       if (await new Promise((r) => { const s = net.connect(this.port, '127.0.0.1', () => { s.end(); r(true); }); s.on('error', () => r(false)); })) return;
       await sleep(100);
     }
-    throw new Error(this.name + ' did not start');
+    throw new Error(this.name + ' did not start: ' + (spawnError ? spawnError.message : diagnostic));
   }
   async stop() {
     if (!this.proc) return;
     const p = this.proc;
     this.proc = null;
+    if (p.exitCode !== null || p.signalCode !== null) return;
     await new Promise((r) => { p.once('exit', r); p.kill('SIGTERM'); });
   }
 }
@@ -342,6 +352,10 @@ app.whenReady().then(async () => {
   await b1.stop(); await b2.stop();
   console.log(failed ? `\n${failed} check(s) failed` : `\n${passed} checks passed: chat, mail and forum work between people, and through a broker outage`);
   app.exit(failed ? 1 : 0);
+}).catch(error => {
+  console.error('FAIL  test setup or cleanup: ' + (error.stack || error));
+  for (const proc of brokerProcesses) proc.kill('SIGTERM');
+  app.exit(1);
 });
 
 // A person opening an app.
