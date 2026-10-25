@@ -1563,7 +1563,7 @@ mod tests {
     /// A key made here, to sign what the vectors do not cover.
     fn local_key(seed: u8) -> (p256::ecdsa::SigningKey, String) {
         let sk = p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
-        let pk = sk.verifying_key().to_encoded_point(false);
+        let pk = sk.verifying_key().to_sec1_point(false);
         let pk = base64::engine::general_purpose::STANDARD.encode(pk.as_bytes());
         (sk, pk)
     }
