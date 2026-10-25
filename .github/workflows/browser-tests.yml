@@ -33,6 +33,7 @@ jobs:
   browser:
     name: node and Electron tests (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: hidra-browser
