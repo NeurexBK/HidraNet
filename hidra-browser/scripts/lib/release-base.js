@@ -4,16 +4,16 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-// Reference: landing/SHA256SUMS.txt at b7e595efcb100ba59000703bb688c8e2111c3840.
+// Reference: docs/release-base-provenance.md, run 39805862641 / commit 423f0ce.
 // These pins detect changes to the legacy build inputs; they are not a code
 // signature or an independent security audit of those binaries. Never refresh
 // them automatically from the same release being downloaded. A mismatch needs
 // investigation and a reviewed change with evidence of the replacement's origin.
 const SHA256 = Object.freeze({
-  'HidraNet-Browser-1.0.0-macOS-arm64.zip': 'fa0998beb47d833186c0b49703dd555a081393a6de15a6bdef77b7cc6db76a47',
-  'HidraNet-Browser-1.0.0-macOS-x64.zip': '48f20cd6d38643991d2466a54893c3a6e8d8d940026f6292645395c3d1cd6cb9',
-  'HidraNet-Browser-1.0.0-Linux-x64.zip': 'edefe4363d9c862d283e7f95086519d7e5ee48f8a564902ae642a8c817a5405b',
-  'HidraNet-Browser-1.0.0-Windows-x64.zip': 'f33c386a919b3fc8e6ebcc0207e281674d79b846b2e126020064c0026695386a',
+  'HidraNet-Browser-1.0.0-macOS-arm64.zip': '9c067cbdb0050a2e4b93f871065444fd7c2105ac5fa2291a18132ad2578f3dd8',
+  'HidraNet-Browser-1.0.0-macOS-x64.zip': 'b85f2339e353823310b76e5912a1b8ff5d4f6a437849e2d97f95570e189c014a',
+  'HidraNet-Browser-1.0.0-Linux-x64.zip': 'c1cce02007a6fa0eb1ad278c379244710dbf37f1e9522ea89ada24252ebb71bb',
+  'HidraNet-Browser-1.0.0-Windows-x64.zip': 'd140f2fa40e978223e2a5c65021ac4ce6774a14b5e19a2cd6bdf72a1cf26af43',
 });
 
 function verifySha256(file, expected) {
