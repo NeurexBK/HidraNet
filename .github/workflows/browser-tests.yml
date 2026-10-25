@@ -61,6 +61,20 @@ jobs:
             || true
           sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2
           sudo apt-get install -y -qq mosquitto
+      - name: Allow only the temporary E2E broker files in AppArmor
+        run: |
+          # New runner images confine Mosquitto to its system configuration.
+          # Keep confinement enabled; add only this suite's two private brokers.
+          for profile in /etc/apparmor.d/mosquitto /etc/apparmor.d/usr.sbin.mosquitto; do
+            if [ -f "$profile" ]; then
+              rules="/etc/apparmor.d/local/$(basename "$profile")"
+              printf '%s\n' \
+                '/tmp/hidra-apps-e2e-*/{first,second}/mosquitto.conf r,' \
+                '/tmp/hidra-apps-e2e-*/{first,second}/mosquitto.db{,.new} rwk,' \
+                | sudo tee -a "$rules"
+              sudo apparmor_parser -r "$profile"
+            fi
+          done
       - name: tests that need Electron
         run: |
           set -e
