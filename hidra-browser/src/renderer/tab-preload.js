@@ -65,6 +65,7 @@ const vpnBridge = uiPage === 'hidravpn.html' ? {
   getPasses: (count) => ipcRenderer.invoke('vpn:get-passes', count),
   setPassToken: (token) => ipcRenderer.invoke('vpn:set-pass-token', token),
   refill: (enabled) => ipcRenderer.invoke('vpn:refill', enabled),
+  checkout: (input) => ipcRenderer.invoke('vpn:checkout', input),
   verifyFile: () => ipcRenderer.invoke('vpn:verify-file'),
 } : uiPage === 'newtab.html' ? {
   status: () => ipcRenderer.invoke('vpn:status'),

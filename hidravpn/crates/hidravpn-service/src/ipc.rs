@@ -135,6 +135,12 @@ pub enum Command {
     /// answer never repeats it.
     /// (`pass_token`, not `token`: that name is the control token's.)
     SetPassToken { pass_token: Secret },
+    /// Purchases use only the issuer from the trusted pocket, never a URL
+    /// supplied by the browser. Account credentials stay in the service.
+    Checkout {
+        #[serde(flatten)]
+        action: crate::checkout::Action,
+    },
     /// Automatic passes (phase 6): what is given is changed, the rest kept;
     /// with nothing given, only read. The answer carries the setting as
     /// `refill` and says it as `note`.
@@ -266,6 +272,8 @@ impl StatusReport {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<crate::checkout::View>,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -287,6 +295,7 @@ pub struct Response {
 impl Response {
     pub fn ok() -> Self {
         Self {
+            checkout: None,
             ok: true,
             error: None,
             status: None,
@@ -297,6 +306,7 @@ impl Response {
     }
     pub fn with_status(s: StatusReport) -> Self {
         Self {
+            checkout: None,
             ok: true,
             error: None,
             status: Some(s),
@@ -307,6 +317,7 @@ impl Response {
     }
     pub fn err(msg: impl Into<String>) -> Self {
         Self {
+            checkout: None,
             ok: false,
             error: Some(msg.into()),
             status: None,
@@ -321,6 +332,7 @@ impl Response {
     }
     pub fn with_nodes(nodes: Vec<NodeReport>) -> Self {
         Self {
+            checkout: None,
             ok: true,
             error: None,
             status: None,

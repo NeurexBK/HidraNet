@@ -244,7 +244,13 @@ impl Daemon {
                 Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
                 Err(e) => Response::err(format!("{e:#}")),
             },
-            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token.0) {
+            Command::Checkout { action } => {
+                match self.checkout(action).await {
+                    Ok(view) => { let mut response = Response::ok(); response.checkout = Some(view); response },
+                    Err(_) => Response::err("Payment service unavailable or the saved order could not be read. Check the signed node list and try again. No payment was sent by this browser."),
+                }
+            },
+            Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token.0).await {
                 Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
                 Err(e) => Response::err(format!("{e:#}")),
             },
@@ -552,7 +558,21 @@ impl Daemon {
 
     /// Keeps the account token passes are asked for with, root only. The
     /// token is checked for shape and never repeated in an answer.
-    fn set_pass_token(&self, token: &str) -> Result<()> {
+    async fn checkout(&self, action: crate::checkout::Action) -> Result<crate::checkout::View> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        let pocket = load_pocket(&self.pocket_path)?;
+        crate::checkout::execute(&pocket, &self.pocket_path, action).await
+    }
+
+    async fn set_pass_token(&self, token: &str) -> Result<()> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        if crate::passes::load_order(&self.pocket_path)?.is_some() {
+            return Err(anyhow!(
+                "an order is still saved; finish its payment before replacing the account token"
+            ));
+        }
         let t = crate::passes::parse_token(token)?;
         write_private_atomic(&self.token_path(), t.as_bytes())?;
         tracing::info!("pass account token replaced");
