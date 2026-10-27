@@ -127,6 +127,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 .row{display:grid;gap:8px;margin-bottom:10px}
 .row.two{grid-template-columns:1fr 1fr}
 #pass-token{height:36px;width:100%;background:var(--bg-input);border:1px solid var(--border-light);border-radius:8px;padding:0 12px;color:var(--text-primary);outline:0;transition:border-color .16s,box-shadow .16s}
+#checkout-signature{height:38px;background:var(--bg-input);border:1px solid var(--border-light);border-radius:8px;padding:0 12px;color:var(--text-primary);margin:8px 0 12px;font:inherit}
+#checkout-details{padding:12px;background:var(--bg-input);border:1px solid var(--border-light);border-radius:8px;line-height:1.7}
+#checkout-packs .btn{white-space:normal;height:auto;min-height:40px;text-align:left;margin:8px 0;padding:10px}
 #pass-token::placeholder{color:var(--text-muted)}
 #pass-token:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 .badge{font-size:11px;font-weight:650;padding:3px 9px;border-radius:var(--pill);background:var(--bg-input);border:1px solid var(--border-light);color:var(--text-secondary);white-space:nowrap;transition:color .16s,border-color .16s,background .16s}
@@ -436,6 +439,19 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   <div class="drawer-body">
     <section class="section" id="settings-passes">
       <h3>Passes</h3>
+      <h4>Buy passes with HNET</h4>
+      <p class="help">Choose a package, pay from your Solana wallet, then confirm your transaction here. This browser never asks for your wallet seed or sends funds. Blockchain payments are public. The payment service can link the transaction to your pass account and observe the connection IP; buying passes is not anonymous.</p>
+      <button class="btn" id="checkout-load">Show packages / resume order</button>
+      <div id="checkout-packs"></div>
+      <div id="checkout-order" hidden>
+        <pre id="checkout-details" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px"></pre>
+        <p class="help" id="checkout-expiry"></p>
+        <label class="help" for="checkout-signature">Transaction signature from your wallet</label>
+        <input id="checkout-signature" type="text" autocomplete="off" spellcheck="false" maxlength="88" style="width:100%">
+        <button class="btn primary" id="checkout-claim">Check payment</button>
+        <label class="check"><input type="checkbox" id="checkout-unpaid"><span>I have not paid this order and want to replace it.</span></label>
+      </div>
+      <div class="msg" id="checkout-msg" role="status" aria-live="polite"></div>
       <p class="help">A node that admits with a pass takes one per connection, and sees a new key every time. Passes come from the issuer the signed list names, against an account: the issuer counts them but never learns which node a pass is for, and a node never learns whose account it came from.</p>
       <div class="pass-nodes" id="pass-nodes"><p class="empty">No node on this machine admits with a pass.</p></div>
       <div class="row"><input id="pass-token" type="password" autocomplete="off" spellcheck="false" placeholder="Account token" aria-label="Account token"></div>
@@ -623,6 +639,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     else { d.hidden = true; }
   }
   function openSettings(sectionId) {
+    if (api && api.checkout) checkoutRequest({ action: 'status' });
     drawerOpen = true;
     unseenDrawerError = false;
     renderDot();
@@ -1485,6 +1502,67 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     }
     await refresh();
   });
+
+  var checkoutBusy = false;
+  var checkoutOrder = null;
+  function checkoutExpiry() {
+    if (!checkoutOrder) return;
+    var deadline = Date.parse(checkoutOrder.expires);
+    var expired = !Number.isFinite(deadline) || Date.now() >= deadline;
+    $('checkout-expiry').textContent = expired ? 'This order has expired. Do not send funds. If you already paid, check the same transaction or contact the operator.' : 'Pay before ' + new Date(deadline).toLocaleString() + '. Send the exact amount, including every decimal digit.';
+  }
+  async function checkoutRequest(input) {
+    if (checkoutBusy || busy || !api || !api.checkout) return;
+    checkoutBusy = true;
+    $('checkout-load').disabled = true;
+    $('checkout-claim').disabled = true;
+    $('checkout-packs').querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+    message('note', 'Checking payment service...', 'checkout-msg');
+    try {
+      var result = await api.checkout(input);
+      if (!result || !result.ok || !result.checkout) throw new Error(result && result.error || 'This service does not support browser checkout yet.');
+      var view = result.checkout;
+      checkoutOrder = view.order || null;
+      $('checkout-order').hidden = !checkoutOrder;
+      $('checkout-unpaid').checked = false;
+      if (checkoutOrder) {
+        $('checkout-details').textContent = checkoutOrder.passes + ' passes\nExact amount: ' + checkoutOrder.amount + ' HNET\nNetwork: Solana\nRecipient: ' + checkoutOrder.wallet + '\nToken mint: ' + checkoutOrder.mint;
+        checkoutExpiry();
+      }
+      if (view.packs) {
+        $('checkout-packs').replaceChildren();
+        view.packs.forEach(function (pack) {
+          var button = document.createElement('button');
+          button.className = 'btn wide';
+          button.textContent = pack.passes + ' passes: ' + (pack.usd ? 'US$ ' + pack.usd + ' / ' : '') + pack.amount + ' HNET (exact total at checkout)';
+          button.addEventListener('click', function () {
+            if (checkoutOrder && !$('checkout-unpaid').checked) { message('note', 'Resume the saved order below. Replace it only if you have not paid.', 'checkout-msg'); return; }
+            checkoutRequest({ action: 'buy', passes: pack.passes, replace_unpaid: $('checkout-unpaid').checked });
+          });
+          $('checkout-packs').appendChild(button);
+        });
+      }
+      var text = view.message || (view.packs && !view.packs.length ? 'No packages are available right now. Try again later.' : checkoutOrder ? 'Saved order restored. Do not pay twice.' : 'Choose Show packages to see current availability.');
+      if (view.balance !== null && view.balance !== undefined) text += ' Account credit at confirmation: ' + view.balance + ' passes.';
+      message(['rejected', 'unavailable'].includes(view.state) ? 'err' : 'note', text, 'checkout-msg');
+      if (view.state === 'confirmed') $('checkout-signature').value = '';
+    } catch (error) {
+      message('err', error.message || 'Payment service unavailable. Do not repeat a payment.', 'checkout-msg');
+    } finally {
+      checkoutBusy = false;
+      $('checkout-load').disabled = false;
+      $('checkout-claim').disabled = false;
+      $('checkout-packs').querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+    }
+  }
+  $('checkout-load').addEventListener('click', async function () {
+    await checkoutRequest({ action: 'status' });
+    await checkoutRequest({ action: 'packs' });
+  });
+  $('checkout-claim').addEventListener('click', function () {
+    checkoutRequest({ action: 'claim', signature: $('checkout-signature').value.trim() });
+  });
+  setInterval(checkoutExpiry, 1000);
 
   // ── The list ────────────────────────────────────────────────────────
   $('btn-fetch').addEventListener('click', async function () {

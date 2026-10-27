@@ -869,6 +869,17 @@ pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksRespo
 /// Opens an order for `passes` with the issuer the pocket's list names,
 /// for the account `token`, and keeps it beside the pocket.
 pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) -> Result<Order> {
+    buy_checked(pocket, pocket_path, token, passes, |_| Ok(())).await
+}
+
+/// Validate a caller's purchase constraints before replacing its saved order.
+pub(crate) async fn buy_checked(
+    pocket: &Pocket,
+    pocket_path: &Path,
+    token: &str,
+    passes: u32,
+    validate: impl FnOnce(&Order) -> Result<()>,
+) -> Result<Order> {
     use sha2::Digest;
     let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
         anyhow!("the node list this machine holds names no pass issuer; import a newer list")
@@ -893,7 +904,10 @@ pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) 
     // says, written the way it is read back; the wallet is an address.
     hidravpn_core::payment::check_address(&q.wallet)
         .context("the issuer named a receiving wallet that is not one")?;
-    if hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
+    hidravpn_core::payment::check_address(&q.mint)?;
+    if q.decimals > 12
+        || q.amount_raw == 0
+        || hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
         || q.passes != passes
     {
         return Err(anyhow!(
@@ -912,6 +926,7 @@ pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) 
         usd: q.usd,
         rate: q.rate,
     };
+    validate(&order)?;
     crate::daemon::write_private_atomic(
         &order_path(pocket_path),
         serde_json::to_string_pretty(&order)?.as_bytes(),
@@ -940,6 +955,17 @@ pub enum Claimed {
 }
 
 /// Claims the open order with the transaction that paid it.
+#[derive(Debug)]
+pub struct ClaimRefused(pub u16);
+
+impl std::fmt::Display for ClaimRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the pass issuer did not take the claim ({})", self.0)
+    }
+}
+impl std::error::Error for ClaimRefused {}
+
+/// Claims the open order with the transaction that paid it.
 pub async fn claim(
     pocket_path: &Path,
     order: &Order,
@@ -957,7 +983,11 @@ pub async fn claim(
     })?;
     let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
     if status != 200 {
-        return Err(anyhow!(refused("did not take the claim", status, &answer)));
+        return Err(anyhow::Error::new(ClaimRefused(status)).context(refused(
+            "did not take the claim",
+            status,
+            &answer,
+        )));
     }
     let c: hidravpn_core::payment::ClaimResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;

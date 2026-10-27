@@ -60,7 +60,7 @@ const GROUP_HINT =
   'On Linux the browser must run as a member of the hidravpn group: the installer adds ' +
   'the user who ran it; log out and in once, or run `sudo usermod -aG hidravpn $USER`.';
 
-const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes']);
+const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes', 'checkout']);
 
 class VpnManager {
   constructor(options = {}) {
@@ -302,8 +302,23 @@ class VpnManager {
     return this._command({ cmd: 'set_pass_token', pass_token: t });
   }
 
-  // Automatic passes (phase 6): with a boolean, switched on or off; with
-  // nothing, only read. The answer carries the setting as `refill`.
+  // The page supplies an action, never an issuer URL or account credential.
+  async checkout(input) {
+    if (!input || !['status', 'packs', 'buy', 'claim'].includes(input.action)) return { ok: false, error: 'Invalid payment request.' };
+    const cmd = { cmd: 'checkout', action: input.action };
+    if (input.action === 'buy') {
+      if (!Number.isInteger(input.passes) || input.passes <= 0 || input.passes > 0xffffffff) return { ok: false, error: 'Choose a valid package.' };
+      cmd.passes = input.passes;
+      cmd.replace_unpaid = input.replace_unpaid === true;
+    }
+    if (input.action === 'claim') {
+      if (typeof input.signature !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(input.signature.trim())) return { ok: false, error: 'Paste the complete transaction signature from your wallet.' };
+      cmd.signature = input.signature.trim();
+    }
+    return this._command(cmd);
+  }
+
+  // Automatic passes: with no boolean, only read the existing setting.
   async refill(enabled) {
     return this._command(typeof enabled === 'boolean' ? { cmd: 'refill', enabled } : { cmd: 'refill' });
   }

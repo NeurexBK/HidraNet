@@ -105,7 +105,7 @@ const WHO = {
   'vpn:status': ['hidravpn.html', 'newtab.html'],
 };
 for (const ch of ['connect', 'leak-test', 'check-release', 'install', 'uninstall', 'disconnect', 'new-identity',
-  'nodes', 'import-nodes', 'fetch-list', 'get-passes', 'set-pass-token', 'refill', 'verify-file']) WHO['vpn:' + ch] = ['hidravpn.html'];
+  'nodes', 'import-nodes', 'fetch-list', 'get-passes', 'set-pass-token', 'refill', 'checkout', 'verify-file']) WHO['vpn:' + ch] = ['hidravpn.html'];
 
 // Everyone who is not on a handler's list.
 function strangersTo(allowed) {
@@ -164,7 +164,7 @@ async function refusesAll(channel, senders, args = []) {
     registered.join() === Object.keys(WHO).sort().join(),
     `registered but not in the table: ${registered.filter((c) => !WHO[c]).join(', ') || 'none'}; ` +
     `in the table but not registered: ${Object.keys(WHO).filter((c) => !handlers.has(c)).join(', ') || 'none'}`);
-  check('the count matches what the review counted (38)', registered.length === 38, `${registered.length}`);
+  check('the count matches what the review counted (39)', registered.length === 39, `${registered.length}`);
 
   const ARGS = { 'vpn:uninstall': [true], 'vpn:connect': ['rapido', {}], 'tab:navigate': [1, 'https://example.com/'],
     'prefs:save': [{ theme: 'dark' }], 'vault:set': ['x'], 'tab:create': ['https://example.com/'] };
