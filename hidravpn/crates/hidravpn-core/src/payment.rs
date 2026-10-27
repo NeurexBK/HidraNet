@@ -424,7 +424,18 @@ pub fn read_rate(answer: &str, mint: &str) -> Result<f64> {
             .and_then(|l| l.get("usd"))
             .and_then(|u| u.as_f64())
             .unwrap_or(0.0);
-        if price.is_finite() && price > 0.0 && best.is_none_or(|(l, _)| liquidity > l) {
+        if p.get("chainId")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c != "solana")
+        {
+            continue;
+        }
+        if price.is_finite()
+            && price > 0.0
+            && liquidity.is_finite()
+            && liquidity > 0.0
+            && best.is_none_or(|(l, _)| liquidity > l)
+        {
             best = Some((liquidity, price));
         }
     }
@@ -588,6 +599,9 @@ pub fn inspect_payment(
                 .and_then(|d| d.as_u64())
                 .and_then(|d| u8::try_from(d).ok())
                 .ok_or(Rejected::Malformed)?;
+            if v.iter().any(|&(i, _, _)| i == index) {
+                return Err(Rejected::Malformed);
+            }
             v.push((index, amount, decimals));
         }
         Ok(v)
@@ -817,6 +831,37 @@ mod tests {
             pair(HNET_MINT, "x", 100.0)
         ]);
         assert!(read_rate(&zero.to_string(), HNET_MINT).is_err());
+    }
+
+    #[test]
+    fn a_price_needs_positive_liquidity_and_cannot_name_another_chain() {
+        for bad in [
+            serde_json::json!({"baseToken":{"address":HNET_MINT},"priceUsd":"1"}),
+            serde_json::json!({"baseToken":{"address":HNET_MINT},"priceUsd":"1","liquidity":{"usd":-1}}),
+            serde_json::json!({"chainId":"ethereum","baseToken":{"address":HNET_MINT},"priceUsd":"1","liquidity":{"usd":100}}),
+        ] {
+            assert!(read_rate(&serde_json::json!([bad]).to_string(), HNET_MINT).is_err());
+        }
+    }
+
+    #[test]
+    fn duplicated_token_balance_entries_cannot_create_a_payment() {
+        let wallet = "11111111111111111111111111111111";
+        let receiver = Receiver {
+            wallet,
+            mint: HNET_MINT,
+            decimals: 6,
+        };
+        let mut value = tx(
+            &[(2, wallet, HNET_MINT, "100")],
+            &[(2, wallet, HNET_MINT, "150")],
+        );
+        let duplicate = value["meta"]["postTokenBalances"][0].clone();
+        value["meta"]["postTokenBalances"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert_eq!(inspect_payment(&value, &receiver), Err(Rejected::Malformed));
     }
 
     fn tx(pre: &[(u64, &str, &str, &str)], post: &[(u64, &str, &str, &str)]) -> serde_json::Value {
