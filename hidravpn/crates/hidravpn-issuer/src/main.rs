@@ -203,6 +203,13 @@ fn write_private(path: &Path, bytes: &[u8], create_new: bool) -> Result<()> {
     use std::io::Write;
     let mut o = std::fs::OpenOptions::new();
     o.write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // GENERIC_WRITE | WRITE_DAC: restrict the opened file before any
+        // secret bytes are written, without a path-based ACL race.
+        o.access_mode(0x4000_0000 | 0x0004_0000);
+    }
     if create_new {
         o.create_new(true);
     } else {
@@ -216,8 +223,49 @@ fn write_private(path: &Path, bytes: &[u8], create_new: bool) -> Result<()> {
     let mut f = o
         .open(path)
         .with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(windows)]
+    protect_private_file(&f)?;
     f.write_all(bytes)?;
     f.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn protect_private_file(file: &std::fs::File) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::core::w;
+    use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{
+        SetKernelObjectSecurity, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+    // Protected DACL: owner, SYSTEM and administrators only. Inherited
+    // access for other users never applies to the issuer's private files.
+    unsafe {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+        .context("building the issuer file permissions")?;
+        let result = SetKernelObjectSecurity(
+            HANDLE(file.as_raw_handle()),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        );
+        let _ = LocalFree(HLOCAL(descriptor.0));
+        result.context("restricting the issuer file permissions")?;
+    }
     Ok(())
 }
 
@@ -248,10 +296,24 @@ fn yes() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Accounts {
     #[serde(default)]
     accounts: Vec<AccountEntry>,
+    /// Durable receipts make replay after a crash safe. No raw tokens or signatures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    payment_receipts: Vec<PaymentReceipt>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PaymentReceipt {
+    signature_sha256: String,
+    token_sha256: String,
+    passes: u32,
 }
 
 /// Why an issuance is refused, with the HTTP status it is answered with.
@@ -342,7 +404,11 @@ impl Accounts {
             .iter_mut()
             .find(|a| same(a.token_sha256.as_bytes(), hash.as_bytes()))
         {
-            let b = a.balance.unwrap_or(0).saturating_add(passes);
+            let b = a
+                .balance
+                .unwrap_or(0)
+                .checked_add(passes)
+                .ok_or_else(|| anyhow!("the account balance cannot hold this credit"))?;
             a.balance = Some(b);
             return Ok(b);
         }
@@ -363,6 +429,28 @@ impl Accounts {
             balance: Some(passes),
         });
         Ok(passes)
+    }
+
+    fn credit_once(&mut self, hash: &str, passes: u32, signature: &str) -> Result<u32> {
+        if let Some(receipt) = self
+            .payment_receipts
+            .iter()
+            .find(|r| same(r.signature_sha256.as_bytes(), signature.as_bytes()))
+        {
+            if !same(receipt.token_sha256.as_bytes(), hash.as_bytes()) || receipt.passes != passes {
+                return Err(anyhow!("the payment receipt belongs to another order"));
+            }
+            return self
+                .balance_of(hash)
+                .ok_or_else(|| anyhow!("the credited account is missing"));
+        }
+        let balance = self.credit(hash, passes)?;
+        self.payment_receipts.push(PaymentReceipt {
+            signature_sha256: signature.to_string(),
+            token_sha256: hash.to_string(),
+            passes,
+        });
+        Ok(balance)
     }
 
     /// A prepaid account's balance; None for no such account or one with a
@@ -794,18 +882,35 @@ impl Issuer {
         };
         let candidates = match before {
             Ok(Ok(Ok(Claimable::Open(c)))) => c,
+            Ok(Ok(Ok(Claimable::PendingCredit { passes, amount_raw }))) => {
+                let (path_o, path_a) = (p.orders_path.clone(), self.accounts_path.clone());
+                let (hash, sig_hash) = (hash.clone(), sig_hash.clone());
+                let recovered = {
+                    let _held = self.lock.lock().await;
+                    tokio::task::spawn_blocking(move || {
+                        finish_credit(&path_o, &path_a, &hash, amount_raw, passes, &sig_hash)
+                    }).await
+                };
+                return match recovered {
+                    Ok(Ok(balance)) => (200, serde_json::to_string(&ClaimResponse {
+                        passes, balance, amount_raw, already_claimed: true,
+                    }).expect("an answer serialises")),
+                    _ => (503, refusal("the issuer could not credit the account; try the claim again")),
+                };
+            }
             Ok(Ok(Ok(Claimable::AlreadyPaid { passes, amount_raw }))) => {
                 // The same transaction paid this order before: say so, with
                 // the balance as it stands. Nothing is credited twice.
                 let path = self.accounts_path.clone();
                 let hash = hash.clone();
-                let balance = tokio::task::spawn_blocking(move || {
-                    Accounts::load(&path).map(|a| a.balance_of(&hash).unwrap_or(0))
-                })
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or(0);
+                let balance = match tokio::task::spawn_blocking(move || {
+                    Accounts::load(&path).and_then(|a| {
+                        a.balance_of(&hash).ok_or_else(|| anyhow!("the credited account is missing"))
+                    })
+                }).await {
+                    Ok(Ok(balance)) => balance,
+                    _ => return (503, refusal("the issuer could not read the credited account; try again")),
+                };
                 return (
                     200,
                     serde_json::to_string(&ClaimResponse {
@@ -899,15 +1004,9 @@ impl Issuer {
                     if let Err(e) = marked {
                         return Ok(Err(e));
                     }
-                    match Accounts::update(&path_a, |a| a.credit(&hash2, order.passes)) {
-                        Ok(Ok(b)) => Ok(Ok(b)),
-                        Ok(Err(e)) | Err(e) => {
-                            // Credited nothing: the order goes back to open, so
-                            // the claim can be made again.
-                            let _ = Orders::update(&path_o, |o| o.unmark(&hash2, amount, &sig2));
-                            Err(e)
-                        }
-                    }
+                    // The pending marker is durable before crediting. A retry
+                    // finishes it, including after either file was persisted.
+                    finish_credit(&path_o, &path_a, &hash2, amount, order.passes, &sig2).map(Ok)
                 },
             )
             .await
@@ -989,7 +1088,6 @@ struct Payments {
 /// for the client.
 struct LookupFailed {
     kind: &'static str,
-    shown: String,
 }
 
 impl Payments {
@@ -1009,14 +1107,31 @@ impl Payments {
                 "--pay-wallet is the mint itself; payments go to a wallet"
             ));
         }
-        if decimals > 12 {
-            return Err(anyhow!("--pay-decimals is 0 to 12"));
+        if decimals == 0 || decimals > 12 {
+            return Err(anyhow!(
+                "--pay-decimals is 1 to 12: order tags need fractional units"
+            ));
         }
         let mut rpcs_parsed = Vec::new();
         let default_rpc = [String::from(DEFAULT_RPC)];
         let given: &[String] = if rpcs.is_empty() { &default_rpc } else { rpcs };
         for r in given {
-            rpcs_parsed.push(hidravpn_core::http::Url::parse(r).context("--pay-rpc")?);
+            let url = hidravpn_core::http::Url::parse(r).context("--pay-rpc")?;
+            if rpcs_parsed
+                .iter()
+                .any(|previous: &hidravpn_core::http::Url| {
+                    previous
+                        .host
+                        .trim_end_matches('.')
+                        .eq_ignore_ascii_case(url.host.trim_end_matches('.'))
+                        && previous.port == url.port
+                })
+            {
+                return Err(anyhow!(
+                    "--pay-rpc: each vote must come from a distinct host and port"
+                ));
+            }
+            rpcs_parsed.push(url);
         }
         let mut parsed: Vec<PackSpec> = Vec::new();
         for p in packs {
@@ -1093,34 +1208,27 @@ impl Payments {
         let body = payment::get_transaction_request(signature);
         let (status, answer) = hidravpn_core::http::call(url, "POST", &body)
             .await
-            .map_err(|e| LookupFailed {
-                kind: "no-answer",
-                shown: format!("{e:#}"),
-            })?;
+            .map_err(|_| LookupFailed { kind: "no-answer" })?;
         if status != 200 {
             return Err(LookupFailed {
                 kind: "http-status",
-                shown: format!("the chain's RPC answered {status}"),
             });
         }
-        let v: serde_json::Value = serde_json::from_str(&answer).map_err(|_| LookupFailed {
-            kind: "not-json",
-            shown: "the chain's RPC answer is not JSON".into(),
-        })?;
-        if let Some(e) = v.get("error") {
-            let msg = e
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("an error without a message")
-                .chars()
-                .take(120)
-                .collect::<String>();
+        let v: serde_json::Value =
+            serde_json::from_str(&answer).map_err(|_| LookupFailed { kind: "not-json" })?;
+        if v.get("error").is_some_and(|e| !e.is_null()) {
+            return Err(LookupFailed { kind: "rpc-error" });
+        }
+        if v.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0")
+            || v.get("id").and_then(|v| v.as_u64()) != Some(1)
+        {
             return Err(LookupFailed {
-                kind: "rpc-error",
-                shown: format!("the chain's RPC refused: {msg}"),
+                kind: "rpc-envelope",
             });
         }
-        Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        v.get("result")
+            .cloned()
+            .ok_or(LookupFailed { kind: "rpc-result" })
     }
 
     /// Asks one RPC and reads its answer into a verdict. An RPC that does
@@ -1133,7 +1241,8 @@ impl Payments {
                 Err(why) => Verdict::Rejected(why),
             },
             Err(e) => {
-                warn!("chain lookup failed on one RPC ({}): {}", e.kind, e.shown);
+                // An RPC error may echo the queried transaction or URL credentials.
+                warn!("chain lookup failed on one RPC ({})", e.kind);
                 Verdict::Unreachable
             }
         }
@@ -1256,6 +1365,11 @@ impl Rate {
                 "--pay-price-every and --pay-price-max-age are 1 or more"
             ));
         }
+        if !feed.max_change.is_finite() || feed.max_change <= 0.0 || feed.max_change >= 1.0 {
+            return Err(anyhow!(
+                "--pay-price-max-change must be between 1 and 99 percent"
+            ));
+        }
         Ok(Rate {
             feed,
             urls,
@@ -1273,12 +1387,16 @@ impl Rate {
     fn current(&self, now: i64) -> Option<f64> {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.current
-            .filter(|&(_, at)| now - at <= self.feed.max_age)
+            .filter(|&(_, at)| now >= at && now.saturating_sub(at) <= self.feed.max_age)
             .map(|(r, _)| r)
     }
 
     /// Takes a freshly fetched rate in, or holds it: says which.
     fn offer(state: &mut RateState, new: f64, now: i64, max_change: f64) -> bool {
+        if !new.is_finite() || new <= 0.0 {
+            state.held = None;
+            return false;
+        }
         let Some((cur, _)) = state.current else {
             state.current = Some((new, now));
             return true;
@@ -1298,7 +1416,13 @@ impl Rate {
             state.held = None;
             true
         } else {
-            state.held = Some((new, agreed));
+            // Compare every confirmation with the original candidate, not
+            // the last sample, so a drifting series cannot pass the gate.
+            let candidate = match state.held {
+                Some((held, _)) if !moved(held) => held,
+                _ => new,
+            };
+            state.held = Some((candidate, agreed));
             false
         }
     }
@@ -1337,7 +1461,10 @@ impl Rate {
                     );
                 }
             }
-            Err(e) => warn!("the price feed did not answer: {e:#}"),
+            Err(_) => {
+                self.state.lock().unwrap_or_else(|e| e.into_inner()).held = None;
+                warn!("the price feed did not return a usable rate");
+            }
         }
     }
 }
@@ -1386,6 +1513,10 @@ struct Order {
     /// SHA-256 of the signature of the transaction that paid it, once paid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     paid_sha256: Option<String>,
+    /// New claims journal the credit before updating accounts. Old paid
+    /// orders default to complete, so upgrading never credits them twice.
+    #[serde(default, skip_serializing_if = "is_false")]
+    credit_pending: bool,
     /// Claims tried on it.
     #[serde(default)]
     tries: u32,
@@ -1422,6 +1553,7 @@ enum Full {
 enum Claimable {
     Open(Vec<Order>),
     AlreadyPaid { passes: u32, amount_raw: u64 },
+    PendingCredit { passes: u32, amount_raw: u64 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -1429,6 +1561,59 @@ enum NotClaimable {
     NoOrder,
     Used,
     TooManyTries,
+}
+
+/// Completes the write-ahead payment record. The account and its receipt
+/// are saved together; replay never adds the same credit a second time.
+fn finish_credit(
+    orders_path: &Path,
+    accounts_path: &Path,
+    hash: &str,
+    amount_raw: u64,
+    passes: u32,
+    signature: &str,
+) -> Result<u32> {
+    let balance = Accounts::update(accounts_path, |a| a.credit_once(hash, passes, signature))??;
+    Orders::update(orders_path, |orders| {
+        let order = orders
+            .orders
+            .iter_mut()
+            .find(|o| {
+                same(o.token_sha256.as_bytes(), hash.as_bytes())
+                    && o.amount_raw == amount_raw
+                    && o.paid_sha256.as_deref() == Some(signature)
+            })
+            .ok_or_else(|| anyhow!("the pending payment order is missing"))?;
+        order.credit_pending = false;
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(balance)
+}
+
+fn recover_pending_credits(orders_path: &Path, accounts_path: &Path) -> Result<usize> {
+    let pending = {
+        let _held = lock_file(orders_path)?;
+        Orders::load(orders_path)?
+            .orders
+            .into_iter()
+            .filter(|o| o.credit_pending)
+            .collect::<Vec<_>>()
+    };
+    for order in &pending {
+        let signature = order
+            .paid_sha256
+            .as_deref()
+            .ok_or_else(|| anyhow!("a pending credit has no confirmed payment"))?;
+        finish_credit(
+            orders_path,
+            accounts_path,
+            &order.token_sha256,
+            order.amount_raw,
+            order.passes,
+            signature,
+        )?;
+    }
+    Ok(pending.len())
 }
 
 impl Orders {
@@ -1470,9 +1655,14 @@ impl Orders {
         let keep_paid = 2 * ORDER_LIFETIME + CLOCK_SLACK;
         self.orders.retain(|o| match o.paid_sha256 {
             None => now < o.created + ORDER_LIFETIME,
-            Some(_) => now < o.created + keep_paid,
+            Some(_) => o.credit_pending || now < o.created + keep_paid,
         });
-        self.used.retain(|u| now < u.at + keep_paid);
+        self.used.retain(|u| {
+            now < u.at + keep_paid
+                || self.orders.iter().any(|o| {
+                    o.credit_pending && o.paid_sha256.as_deref() == Some(&u.signature_sha256)
+                })
+        });
     }
 
     fn open_count(&self, now: i64) -> usize {
@@ -1502,13 +1692,18 @@ impl Orders {
             return Err(Full::Account);
         }
         let space = payment::tag_space(decimals);
+        if space == 0 {
+            return Err(Full::Issuer);
+        }
         for _ in 0..64 {
             let mut raw = [0u8; 8];
             if getrandom::fill(&mut raw).is_err() {
                 return Err(Full::Issuer);
             }
             let tag = u64::from_le_bytes(raw) % space + 1;
-            let amount_raw = pack.price_raw + tag;
+            let Some(amount_raw) = pack.price_raw.checked_add(tag) else {
+                return Err(Full::Issuer);
+            };
             if self
                 .orders
                 .iter()
@@ -1522,6 +1717,7 @@ impl Orders {
                 amount_raw,
                 created: now,
                 paid_sha256: None,
+                credit_pending: false,
                 tries: 0,
             };
             self.orders.push(order.clone());
@@ -1546,6 +1742,12 @@ impl Orders {
                     .as_deref()
                     .is_some_and(|p| same(p.as_bytes(), sig_hash.as_bytes()))
         }) {
+            if o.credit_pending {
+                return Ok(Claimable::PendingCredit {
+                    passes: o.passes,
+                    amount_raw: o.amount_raw,
+                });
+            }
             return Ok(Claimable::AlreadyPaid {
                 passes: o.passes,
                 amount_raw: o.amount_raw,
@@ -1602,6 +1804,7 @@ impl Orders {
             })
             .ok_or(NotClaimable::NoOrder)?;
         o.paid_sha256 = Some(sig_hash.to_string());
+        o.credit_pending = true;
         self.used.push(Used {
             signature_sha256: sig_hash.to_string(),
             at: now,
@@ -1610,6 +1813,7 @@ impl Orders {
     }
 
     /// Undoes `mark_paid` when the account could not be credited.
+    #[cfg(test)]
     fn unmark(&mut self, hash: &str, amount_raw: u64, sig_hash: &str) {
         if let Some(o) = self.orders.iter_mut().find(|o| {
             o.amount_raw == amount_raw
@@ -1617,6 +1821,7 @@ impl Orders {
                 && o.paid_sha256.as_deref() == Some(sig_hash)
         }) {
             o.paid_sha256 = None;
+            o.credit_pending = false;
         }
         self.used
             .retain(|u| !same(u.signature_sha256.as_bytes(), sig_hash.as_bytes()));
@@ -1875,7 +2080,10 @@ async fn main() -> Result<()> {
                         Some(feed),
                         cli.orders.clone(),
                     )?;
-                    Orders::load(&cli.orders)?;
+                    let recovered = recover_pending_credits(&cli.orders, &cli.accounts)?;
+                    if recovered > 0 {
+                        info!("recovered {recovered} pending payment credit(s)");
+                    }
                     Some(p)
                 }
             };
@@ -1903,12 +2111,21 @@ async fn main() -> Result<()> {
                     }
                 });
             }
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            let terminate = async {
+                #[cfg(unix)]
+                {
+                    let mut term =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                    term.recv().await;
+                }
+                #[cfg(not(unix))]
+                std::future::pending::<()>().await;
+                Ok::<(), anyhow::Error>(())
+            };
             tokio::select! {
                 r = serve(issuer, listen) => r?,
                 _ = tokio::signal::ctrl_c() => {}
-                _ = term.recv() => {}
+                r = terminate => r?,
             }
             info!("stopping");
         }
@@ -1919,6 +2136,233 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payment_credit_survives_interrupted_writes_without_replay() {
+        let dir =
+            std::env::temp_dir().join(format!("hidra-credit-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (orders_path, accounts_path) = (dir.join("orders.json"), dir.join("accounts.json"));
+        let hash = token_hash("recovery-only-token");
+        let signature = "hashed-payment-signature";
+        let pack = Pack {
+            passes: 10,
+            price_raw: 50_000_000,
+            usd_cents: None,
+        };
+        let mut orders = Orders::default();
+        let order = orders.open(&hash, &pack, 1000, 6).unwrap();
+        orders
+            .mark_paid(&hash, order.amount_raw, signature, 1001)
+            .unwrap();
+        orders.save(&orders_path).unwrap();
+        // Crash after the order was written, before the account was credited.
+        let mut loaded = Orders::load(&orders_path).unwrap();
+        loaded.prune(1000 + 4 * ORDER_LIFETIME);
+        assert!(matches!(
+            loaded.before_claim(&hash, signature, 1000 + 4 * ORDER_LIFETIME),
+            Ok(Claimable::PendingCredit { .. })
+        ));
+        assert_eq!(
+            loaded.used.len(),
+            1,
+            "pending transactions cannot be pruned"
+        );
+        // Crash after the account and receipt were written, before clearing pending.
+        Accounts::update(&accounts_path, |a| a.credit_once(&hash, 10, signature))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recover_pending_credits(&orders_path, &accounts_path).unwrap(),
+            1
+        );
+        assert_eq!(
+            recover_pending_credits(&orders_path, &accounts_path).unwrap(),
+            0
+        );
+        assert_eq!(
+            finish_credit(
+                &orders_path,
+                &accounts_path,
+                &hash,
+                order.amount_raw,
+                10,
+                signature
+            )
+            .unwrap(),
+            10
+        );
+        assert_eq!(
+            finish_credit(
+                &orders_path,
+                &accounts_path,
+                &hash,
+                order.amount_raw,
+                10,
+                signature
+            )
+            .unwrap(),
+            10
+        );
+        let mut accounts = Accounts::load(&accounts_path).unwrap();
+        assert_eq!(accounts.charge("recovery-only-token", 3, 1), Ok((7, true)));
+        accounts.save(&accounts_path).unwrap();
+        assert_eq!(
+            finish_credit(
+                &orders_path,
+                &accounts_path,
+                &hash,
+                order.amount_raw,
+                10,
+                signature
+            )
+            .unwrap(),
+            7
+        );
+        assert!(Accounts::update(&accounts_path, |a| a.credit_once(
+            &token_hash("other"),
+            10,
+            signature
+        ))
+        .unwrap()
+        .is_err());
+        assert!(matches!(
+            Orders::load(&orders_path)
+                .unwrap()
+                .before_claim(&hash, signature, 1002),
+            Ok(Claimable::AlreadyPaid { .. })
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_accounts_and_paid_orders_remain_compatible() {
+        let accounts: Accounts = serde_json::from_str(r#"{"accounts":[]}"#).unwrap();
+        assert!(accounts.payment_receipts.is_empty());
+        let order: Order = serde_json::from_value(serde_json::json!({
+            "token_sha256": "hash", "passes": 10, "amount_raw": 42,
+            "created": 1000, "paid_sha256": "old-signature"
+        }))
+        .unwrap();
+        assert!(
+            !order.credit_pending,
+            "old payments must never be credited again"
+        );
+    }
+
+    #[test]
+    fn credit_write_failure_keeps_a_recoverable_order() {
+        let dir =
+            std::env::temp_dir().join(format!("hidra-credit-write-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let orders_path = dir.join("orders.json");
+        let hash = token_hash("write-failure-token");
+        let pack = Pack {
+            passes: 12,
+            price_raw: 50_000_000,
+            usd_cents: None,
+        };
+        let mut orders = Orders::default();
+        let order = orders.open(&hash, &pack, 1000, 6).unwrap();
+        orders
+            .mark_paid(&hash, order.amount_raw, "signature-hash", 1001)
+            .unwrap();
+        orders.save(&orders_path).unwrap();
+        let blocked = dir.join("blocked.json");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(finish_credit(
+            &orders_path,
+            &blocked,
+            &hash,
+            order.amount_raw,
+            12,
+            "signature-hash"
+        )
+        .is_err());
+        assert!(Orders::load(&orders_path).unwrap().orders[0].credit_pending);
+        let accounts_path = dir.join("accounts.json");
+        assert_eq!(
+            finish_credit(
+                &orders_path,
+                &accounts_path,
+                &hash,
+                order.amount_raw,
+                12,
+                "signature-hash"
+            )
+            .unwrap(),
+            12
+        );
+        assert_eq!(
+            Accounts::load(&accounts_path).unwrap().balance_of(&hash),
+            Some(12)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rate_confirmation_cannot_drift_or_accept_invalid_values() {
+        let mut state = RateState::default();
+        assert!(!Rate::offer(&mut state, f64::NAN, 1, 0.3));
+        assert!(state.current.is_none());
+        assert!(Rate::offer(&mut state, 1.0, 1, 0.3));
+        assert!(!Rate::offer(&mut state, 2.0, 2, 0.3));
+        assert!(!Rate::offer(&mut state, 2.5, 3, 0.3));
+        assert!(!Rate::offer(&mut state, 3.0, 4, 0.3));
+        assert_eq!(state.held, Some((3.0, 1)));
+        assert_eq!(state.current, Some((1.0, 1)));
+    }
+
+    #[test]
+    fn balances_and_order_amounts_fail_closed_on_overflow() {
+        let mut accounts = Accounts::default();
+        let token = accounts.add("full", 0, Some(u32::MAX)).unwrap();
+        let hash = token_hash(&token);
+        assert!(accounts.credit_once(&hash, 1, "signature-hash").is_err());
+        assert_eq!(accounts.balance_of(&hash), Some(u32::MAX));
+        assert!(accounts.payment_receipts.is_empty());
+        let mut orders = Orders::default();
+        let pack = Pack {
+            passes: 1,
+            price_raw: u64::MAX,
+            usd_cents: None,
+        };
+        assert_eq!(orders.open(&hash, &pack, 1000, 6), Err(Full::Issuer));
+        assert_eq!(orders.open(&hash, &pack, 1000, 0), Err(Full::Issuer));
+        assert!(orders.orders.is_empty());
+    }
+
+    #[test]
+    fn repeated_rpc_hosts_do_not_create_extra_votes() {
+        let make = |rpcs: &[String], decimals| {
+            Payments::new(
+                "11111111111111111111111111111111",
+                payment::HNET_MINT,
+                decimals,
+                rpcs,
+                &["10=50".into()],
+                None,
+                PathBuf::from("unused-orders.json"),
+            )
+        };
+        assert!(make(
+            &[
+                "https://rpc.example/a".into(),
+                "https://RPC.EXAMPLE:443/b".into()
+            ],
+            6
+        )
+        .is_err());
+        assert!(make(
+            &[
+                "http://127.0.0.1:8001/".into(),
+                "http://127.0.0.1:8002/".into()
+            ],
+            6
+        )
+        .is_ok());
+        assert!(make(&[], 0).is_err());
+    }
 
     #[test]
     fn an_account_gets_its_quota_a_day_and_not_one_more() {
@@ -1972,6 +2416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_token_nobody_issued_never_makes_the_issuer_write() {
         use std::os::unix::fs::MetadataExt;
         let dir =
@@ -2073,7 +2518,7 @@ mod tests {
         o.mark_paid(&h2, b.amount_raw, "sig-hash", 1002).unwrap();
         assert_eq!(
             o.before_claim(&h2, "sig-hash", 1003).unwrap(),
-            Claimable::AlreadyPaid {
+            Claimable::PendingCredit {
                 passes: 10,
                 amount_raw: b.amount_raw
             }
@@ -2092,7 +2537,7 @@ mod tests {
         o.mark_paid(&h2, twin.amount_raw, "twin-sig", 1003).unwrap();
         assert_eq!(
             o.before_claim(&h2, "twin-sig", 1003).unwrap(),
-            Claimable::AlreadyPaid {
+            Claimable::PendingCredit {
                 passes: 10,
                 amount_raw: twin.amount_raw
             }
@@ -2125,6 +2570,10 @@ mod tests {
             Err(NotClaimable::Used)
         );
         let much_later = 1000 + 3 * ORDER_LIFETIME;
+        // Completed credits may be pruned; pending ones are retained for recovery.
+        for order in &mut o.orders {
+            order.credit_pending = false;
+        }
         o.prune(much_later);
         assert!(o.orders.is_empty() && o.used.is_empty());
         // Undoing a mark puts the order back and frees the transaction.
