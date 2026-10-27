@@ -1463,7 +1463,7 @@ impl Rate {
             }
             Err(_) => {
                 self.state.lock().unwrap_or_else(|e| e.into_inner()).held = None;
-                warn!("the price feed did not return a usable rate");
+                warn!("the price feed did not answer");
             }
         }
     }

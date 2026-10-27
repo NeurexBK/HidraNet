@@ -100,3 +100,19 @@ simulates a pending final journal write; it is not a physical power-loss or
 filesystem fault test. Linux execution and operator-configured end-to-end
 acceptance remain unverified. No new browser interface, installer change,
 production configuration or publication was included in this audit.
+
+## PR 24 follow-up on 2026-10-27
+
+The first CI run passed Linux format/lint/unit tests and Windows tests/builds.
+The payment namespace suite reported 57 passes and one failure: its feed-down
+assertion requires both the cached USD pack and the established warning text.
+The pack was present in the failure output, but this change had renamed the
+warning. The original fixed message is restored without logging remote error
+content. The test and the stale-price policy are unchanged.
+
+At the maintainer's request, both hidra-node and hidravpn lockfiles now use
+crypto-bigint 0.7.10 instead of the yanked 0.7.8. Its required ctutils dependency
+also moves from 0.4.5 to 0.4.6 (crypto-bigint requires ^0.4.6). No audit warning
+is suppressed and no other dependency version is updated. This specifically
+extends the original HNET-only file scope to hidra-node/Cargo.lock; installers,
+downloads and production settings remain unchanged.
