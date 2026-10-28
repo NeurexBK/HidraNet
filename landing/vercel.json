@@ -47,7 +47,8 @@
     { "source": "/guide", "destination": "/guide/", "permanent": true },
     { "source": "/privacy", "destination": "/privacy/", "permanent": true },
     { "source": "/terms", "destination": "/terms/", "permanent": true },
-    { "source": "/code-signing", "destination": "/code-signing/", "permanent": true }
+    { "source": "/code-signing", "destination": "/code-signing/", "permanent": true },
+    { "source": "/vpn", "destination": "/vpn/", "permanent": true }
   ],
   "rewrites": [
     {

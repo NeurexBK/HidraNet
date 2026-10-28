@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HidraVPN (preview)</title>
+<meta name="description" content="HidraVPN, the VPN inside the HidraNet Browser: one hop or two, paid with blind-signed passes, for Windows and Linux. In preview: strong privacy, not anonymity.">
+<meta name="theme-color" content="#070809">
+<link rel="icon" type="image/png" href="../icons/favicon-32.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="../vpn/" class="on">HidraVPN</a>
+      <a href="../guide/">User guide</a>
+      <a href="../privacy/">Privacy</a>
+      <a href="../terms/">Terms</a>
+      <a href="../">Home</a>
+    </nav>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>HidraVPN &middot; preview &middot; October 2026</span>
+  <h1>Who you are and where you go, <span class="hl">on different machines</span></h1>
+  <p class="lede">HidraVPN is the VPN inside the HidraNet Browser. With two hops, the node that sees your address is not the node that sees your traffic. It is in preview, and its promise is strong privacy, not anonymity.</p>
+  <div class="meta"><span><b>Systems</b> Windows x64 &middot; Linux x64</span><span><b>Status</b> preview</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#get">1. Getting it</a>
+    <a href="#modes">2. One hop or two</a>
+    <a href="#passes">3. Passes</a>
+    <a href="#limits">4. What it does not do</a>
+    <a href="#preview">5. What preview means today</a>
+    <a href="#verify">6. Checking what you install</a>
+    <a href="#nodes">7. Running a node</a>
+  </nav>
+
+  <article>
+
+    <section id="get">
+      <h2>1. Getting it</h2>
+      <p>HidraVPN is installed from the HidraNet Browser: open the <b>VPN</b> page from the new tab and press <b>Install</b>. The browser downloads the programs listed in a signed release manifest, checks each file's hash, and installs the VPN service.</p>
+      <p>It runs on <b>Windows x64</b> and <b>Linux x64</b>. macOS is not supported yet.</p>
+      <p><a href="../#download">Download the HidraNet Browser</a></p>
+    </section>
+
+    <section id="modes">
+      <h2>2. One hop or two</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Mode</th><th>What the nodes see</th></tr></thead>
+        <tbody>
+          <tr><td><b>Fast, one hop</b> (<code>rapido</code>)</td><td>The node sees your address and your traffic. It hides them from your own network, not from the node.</td></tr>
+          <tr><td><b>Private, two hops</b> (<code>privado</code>)</td><td>The entry sees your address; the exit sees your traffic. No node sees both who you are and where you go.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Two hops are refused when one operator runs both the entry and the exit, because that operator could see both ends. You can allow it, and the VPN page says so plainly.</p>
+      <p>Each connection shows a node a key made for that connection only, and the exit of two hops is asked for admission through the entry, never from your address. No node can tell, by key, that two connections are the same person.</p>
+    </section>
+
+    <section id="passes">
+      <h2>3. Passes</h2>
+      <p>The exits admit with a <b>pass</b>: one pass is one connection through a node that takes passes. Passes are signed blind by the pass issuer. The issuer never sees what it signs, so it does not learn which node a pass is for, and the node that takes a pass does not learn which account it came from.</p>
+      <p>Passes are bought with <b>HNET</b>, on Solana: today from the <code>hidravpn</code> command line, soon from the VPN page. They are kept on an anonymous prepaid account: a random token on your machine, with no name, e-mail or sign-up. When you buy, the issuer sees the payment and, today, the address you buy from; buying through Tor is planned.</p>
+    </section>
+
+    <section id="limits">
+      <h2>4. What it does not do</h2>
+      <ul>
+        <li>It does not stop someone who watches both hops at once from matching the timing and volume of your traffic. No VPN can promise that, and this one does not.</li>
+        <li>Your DNS goes to the exit's resolver through the tunnel, so the exit sees the names you look up, as with any VPN.</li>
+        <li>A node that admits openly can be filled by someone with enough machines. That costs real computing for each connection, but it is possible.</li>
+        <li>It is not Tor, and it does not make you anonymous. It moves who sees what, and with two hops it splits it.</li>
+      </ul>
+      <p>The full audit, party by party and with the tests behind each claim, is in <a href="https://github.com/NeurexBK/HidraNet/blob/main/hidravpn/docs/anonymity.md" rel="noopener noreferrer">anonymity.md</a>.</p>
+    </section>
+
+    <section id="preview">
+      <h2>5. What preview means today</h2>
+      <ul>
+        <li><b>Every node is run by the HidraNet maintainers</b>: exits in Finland and the Netherlands, and an entry. Two hops keep your address and your traffic on different machines, but until independent operators run entries, not with different people.</li>
+        <li><b>The Windows programs are not code-signed yet.</b> Signing is being set up (<a href="../code-signing/">code signing policy</a>). Until then, Microsoft Defender may block or remove the VPN service.</li>
+        <li>The nodes are checked automatically and the maintainers are alerted when one stops answering.</li>
+        <li>Things will change and break. Report what you find at <a href="https://github.com/NeurexBK/HidraNet/issues" rel="noopener noreferrer">github.com/NeurexBK/HidraNet/issues</a>; never post a payment, a token or anything from your machine's VPN files there.</li>
+      </ul>
+    </section>
+
+    <section id="verify">
+      <h2>6. Checking what you install</h2>
+      <p>Two keys, kept offline by the maintainers, sign what the browser and the VPN trust. The public halves are built into the software; here they are, so you can check by hand.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Key (Ed25519, base64)</th><th>Signs</th></tr></thead>
+        <tbody>
+          <tr><td><code>denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=</code></td><td>Release key: the release manifest, <a href="release/manifest.json">release/manifest.json</a> with its <a href="release/manifest.json.sig">.sig</a>, which lists every file and its SHA-256.</td></tr>
+          <tr><td><code>0HfVyf5QtcUjBQSvRYQNeirD/I0432RnmlKQ+/gmNkk=</code></td><td>List key: the official node list, <a href="nodes.json">nodes.json</a> with its <a href="nodes.json.sig">.sig</a>.</td></tr>
+        </tbody>
+      </table></div>
+      <p><code>hidravpn-sign verify --pubkey &lt;key&gt; &lt;file&gt;</code> checks a file against its signature. The browser refuses a manifest or a list whose signature does not hold under these keys.</p>
+    </section>
+
+    <section id="nodes">
+      <h2>7. Running a node</h2>
+      <p>We are looking for the first independent operators of entries. The <a href="https://github.com/NeurexBK/HidraNet/blob/main/hidravpn/docs/operators/running-an-entry.md" rel="noopener noreferrer">operator guide</a> says what an entry sees, what it costs, what we ask and what operators get. Write to <a href="mailto:contact@hidranet.pro">contact@hidranet.pro</a> before you rent a server.</p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HidraVPN &middot; HidraNet &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>
