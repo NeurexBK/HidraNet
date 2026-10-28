@@ -197,7 +197,14 @@ asks, gets an invite, adds it with `hidravpn nodes add`.
 
 ## Knowing it works
 
-On a small machine of yours that is admitted on every node, hourly:
+Every hour, a GitHub Actions run checks that every node in the published list
+answers with its key, that the list and the release manifest on hidranet.org
+are signed, that the pass issuer answers and sells passes, and that the list
+and the pass keys are good for two more weeks. A problem opens an issue, and
+the next passing check closes it: [`node-monitor.md`](node-monitor.md).
+
+That check does not go through the tunnel. For that, on a small machine of
+yours that is admitted on every node, hourly:
 
 ```
 sudo hidravpn/scripts/probe-nodes.sh --out /var/www/status

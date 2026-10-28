@@ -106,8 +106,8 @@ says why). What you get instead:
 - **HidraVPN for yourself.** While your node is in the official list, your own
   HidraVPN account gets **100 passes a month** from us: one pass is one
   connection through a node that takes passes, so about three a day.
-- **Your node watched.** We check every node in the list. When yours stops
-  answering, we write to you at the address you gave us.
+- **Your node watched.** We check every node in the list every hour. When
+  yours stops answering, we write to you at the address you gave us.
 - **Stickers and a T-shirt**, once we have them, for operators whose node has
   stayed in the list for three months.
 - **For a company:** your company named as a network partner on hidranet.org,
