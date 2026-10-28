@@ -553,7 +553,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         if let Some(r) = &p.rate {
-                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for 24 hours");
+                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for as long as it is open");
                         }
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());

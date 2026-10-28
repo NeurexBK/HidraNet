@@ -56,7 +56,11 @@ of; the nonce, so each pass is spent once.
   only its SHA-256; `account list|disable|enable`; `run --key ...` serves
   `POST /issue` (and `GET /keys`). It listens on 127.0.0.1 by default and is
   meant to sit behind a TLS proxy; it refuses any other address without
-  `--plain-http-public`. It checks the token and the quota, and charges the
+  `--plain-http-public`. It reads a `POST` only when sent with
+  `Content-Type: application/json`, as the client always sends it, so no web
+  page can have its visitors' browsers post to it; and since it sees only
+  the proxy's address, any limit per client is the proxy's to set
+  (`phase-7-payments.md` says how). It checks the token and the quota, and charges the
   account, **before** it signs anything — so nobody without an account makes
   it use its secret key — and gives the count back if signing then fails;
   signing runs off the threads that serve connections. Every change to the

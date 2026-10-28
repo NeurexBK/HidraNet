@@ -7,6 +7,7 @@
 //!   hidravpn-issuer account list | disable NAME | enable NAME
 //!   hidravpn-issuer run --key issuer-key.json [--key ...]      serve POST /issue
 //!       [--pay-wallet ADDR --pay-pack PASSES=PRICE ...]         and sell passes for HNET (phase 7)
+//!   hidravpn-issuer order lapsed | credit ...                   orders that lapsed unpaid; a credit by hand
 //!
 //! What it does: an account that is enabled and under its daily quota (or
 //! with passes left, for a prepaid one) sends blinded pass messages and gets
@@ -36,13 +37,13 @@ use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use hidravpn_core::admission::{http_response, read_request, refusal};
+use hidravpn_core::admission::{http_response, read_request, refusal, HttpRequest};
 use hidravpn_core::pass::{
     IssueRequest, IssueResponse, IssuerSecret, PassKeyRecord, MAX_PER_REQUEST,
 };
 use hidravpn_core::payment::{
     self, ClaimRequest, ClaimResponse, Pack, PackSpec, PacksResponse, QuoteRequest, QuoteResponse,
-    Rejected, CLOCK_SLACK, ORDER_LIFETIME,
+    Rejected, CLOCK_SLACK, ORDER_LIFETIME, UNCLAIMED_LIFETIME,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -98,6 +99,12 @@ enum Cmd {
     Account {
         #[command(subcommand)]
         what: Account,
+    },
+    /// Orders that lapsed unpaid, kept a few days so that a payment made in
+    /// time and never claimed can still be credited by hand.
+    Order {
+        #[command(subcommand)]
+        what: OrderCmd,
     },
     /// Serve `POST /issue` until stopped.
     Run {
@@ -176,6 +183,43 @@ enum Account {
     },
     Enable {
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrderCmd {
+    /// The orders that lapsed unpaid and are still kept: the amount, the
+    /// pack, when each was made and lapsed.
+    Lapsed {
+        /// Only those of this amount, as it was sent ("50.042399").
+        #[arg(long)]
+        amount: Option<String>,
+        /// The token's decimals (HNET: 6).
+        #[arg(long, default_value_t = payment::HNET_DECIMALS)]
+        pay_decimals: u8,
+    },
+    /// Credits a lapsed order's pack to the account that made it, for a
+    /// payment you checked on chain yourself: finalized, successful, exactly
+    /// the amount, to the receiving wallet, made before the order lapsed.
+    /// The issuer does not look the transaction up; it records it as used,
+    /// so it pays nothing else.
+    Credit {
+        /// The amount paid, as the chain shows it ("50.042399").
+        #[arg(long)]
+        amount: String,
+        /// The transaction's signature.
+        #[arg(long)]
+        signature: String,
+        /// The transaction's block time, as the chain shows it
+        /// (2026-10-13T09:41:07Z, UTC).
+        #[arg(long)]
+        paid_at: String,
+        /// The account token's SHA-256, if two lapsed orders could match.
+        #[arg(long)]
+        token_sha256: Option<String>,
+        /// The token's decimals (HNET: 6).
+        #[arg(long, default_value_t = payment::HNET_DECIMALS)]
+        pay_decimals: u8,
     },
 }
 
@@ -695,24 +739,25 @@ impl Issuer {
                 refusal("the token's going rate is not known right now, so this pack is not for sale; try again in a few minutes"),
             );
         };
+        let hash = req.token_sha256.to_ascii_lowercase();
+        let now = hidravpn_core::timefmt::now_unix();
+        // What the index already answers costs no share of the bucket: an
+        // issuer full, or a token with as many orders open as it may have.
+        // A flood of those leaves the bucket to everyone else.
+        if let Err(full) = p.index().room_for(&hash, now) {
+            return full.refusal();
+        }
         if !p.quotes.take().await {
             return (
                 429,
                 refusal("too many orders at once; try again in a moment"),
             );
         }
-        let hash = req.token_sha256.to_ascii_lowercase();
-        let now = hidravpn_core::timefmt::now_unix();
-        let path = p.orders_path.clone();
         let decimals = p.decimals;
-        let opened = {
-            let _one_at_a_time = self.lock.lock().await;
-            let pack = pack.clone();
-            tokio::task::spawn_blocking(move || {
-                Orders::update(&path, |o| o.open(&hash, &pack, now, decimals))
-            })
-            .await
-        };
+        let pack2 = pack.clone();
+        let opened = self
+            .change_orders(move |o| o.open(&hash, &pack2, now, decimals))
+            .await;
         match opened {
             Ok(Ok(Ok(order))) => {
                 info!("order opened for {} pass(es)", order.passes);
@@ -725,23 +770,14 @@ impl Issuer {
                         decimals: p.decimals,
                         mint: p.mint.clone(),
                         wallet: p.wallet.clone(),
-                        expires: rfc3339_full(order.created + ORDER_LIFETIME),
+                        expires: rfc3339_full(order.lapses_at()),
                         usd: pack.usd_cents.map(payment::usd_to_string),
                         rate: pack.usd_cents.and(rate).map(payment::rate_to_string),
                     })
                     .expect("an answer serialises"),
                 )
             }
-            Ok(Ok(Err(Full::Issuer))) => (
-                503,
-                refusal("the issuer has as many orders open as it takes; try again later"),
-            ),
-            Ok(Ok(Err(Full::Account))) => (
-                429,
-                refusal(format!(
-                    "this account already has {MAX_OPEN_PER_ACCOUNT} orders open; pay and claim one, or wait for them to lapse"
-                )),
-            ),
+            Ok(Ok(Err(full))) => full.refusal(),
             Ok(Err(e)) => {
                 warn!("orders: {e:#}");
                 (503, refusal("the issuer cannot read or write its orders"))
@@ -772,26 +808,29 @@ impl Issuer {
             Ok(s) => s,
             Err(e) => return (400, refusal(format!("{e:#}"))),
         };
+        let hash = token_hash(token);
+        let sig_hash = hex::encode(Sha256::digest(signature.as_bytes()));
+        let now = hidravpn_core::timefmt::now_unix();
+        // A token with no order to claim is answered from the index: no
+        // share of the bucket, no read of the orders file. Only a claim
+        // that has an order to pay competes with the other claims.
+        match p.index().known(&hash, now) {
+            Known::Nothing => return no_order(),
+            Known::Lapsed => return lapsed_order(),
+            Known::Orders => {}
+        }
         if !p.claims.take().await {
             return (
                 429,
                 refusal("too many claims at once; try again in a moment"),
             );
         }
-        let hash = token_hash(token);
-        let sig_hash = hex::encode(Sha256::digest(signature.as_bytes()));
-        let now = hidravpn_core::timefmt::now_unix();
         // Before the chain is asked: is there an order to pay, was this
         // transaction already used, has this order been tried too often?
-        let path = p.orders_path.clone();
         let (hash2, sig2) = (hash.clone(), sig_hash.clone());
-        let before = {
-            let _one_at_a_time = self.lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                Orders::update(&path, |o| o.before_claim(&hash2, &sig2, now))
-            })
-            .await
-        };
+        let before = self
+            .change_orders(move |o| o.before_claim(&hash2, &sig2, now))
+            .await;
         let candidates = match before {
             Ok(Ok(Ok(Claimable::Open(c)))) => c,
             Ok(Ok(Ok(Claimable::AlreadyPaid { passes, amount_raw }))) => {
@@ -817,12 +856,8 @@ impl Issuer {
                     .expect("an answer serialises"),
                 );
             }
-            Ok(Ok(Err(NotClaimable::NoOrder))) => {
-                return (
-                    404,
-                    refusal("no open order for this token (none made, or it lapsed after 24 hours); `hidravpn passes buy` makes one"),
-                )
-            }
+            Ok(Ok(Err(NotClaimable::NoOrder))) => return no_order(),
+            Ok(Ok(Err(NotClaimable::Lapsed))) => return lapsed_order(),
             Ok(Ok(Err(NotClaimable::Used))) => {
                 return (409, refusal("that transaction already paid an order"))
             }
@@ -892,25 +927,34 @@ impl Issuer {
         let (hash2, sig2, amount) = (hash.clone(), sig_hash.clone(), order.amount_raw);
         let credited = {
             let _one_at_a_time = self.lock.lock().await;
-            tokio::task::spawn_blocking(
-                move || -> Result<std::result::Result<u32, NotClaimable>> {
-                    let marked =
-                        Orders::update(&path_o, |o| o.mark_paid(&hash2, amount, &sig2, now))?;
+            let done = tokio::task::spawn_blocking(
+                move || -> Result<(std::result::Result<u32, NotClaimable>, Index)> {
+                    let (marked, index) = Orders::update(&path_o, |o| {
+                        (o.mark_paid(&hash2, amount, &sig2, now), Index::of(o))
+                    })?;
                     if let Err(e) = marked {
-                        return Ok(Err(e));
+                        return Ok((Err(e), index));
                     }
                     match Accounts::update(&path_a, |a| a.credit(&hash2, order.passes)) {
-                        Ok(Ok(b)) => Ok(Ok(b)),
+                        Ok(Ok(b)) => Ok((Ok(b), index)),
                         Ok(Err(e)) | Err(e) => {
                             // Credited nothing: the order goes back to open, so
-                            // the claim can be made again.
+                            // the claim can be made again. The index is left as
+                            // it was: it still sends this token's claims on to
+                            // the file, which says what holds.
                             let _ = Orders::update(&path_o, |o| o.unmark(&hash2, amount, &sig2));
                             Err(e)
                         }
                     }
                 },
             )
-            .await
+            .await;
+            done.map(|r| {
+                r.map(|(credited, index)| {
+                    p.set_index(index);
+                    credited
+                })
+            })
         };
         match credited {
             Ok(Ok(Ok(balance))) => {
@@ -946,6 +990,90 @@ impl Issuer {
             ),
         }
     }
+
+    /// Changes the orders file under the issuer's lock, off the threads
+    /// that serve connections, and the index with it.
+    async fn change_orders<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Orders) -> T + Send + 'static,
+    ) -> std::result::Result<Result<T>, tokio::task::JoinError> {
+        let p = self
+            .payments
+            .as_ref()
+            .expect("orders are changed only by an issuer that sells");
+        let path = p.orders_path.clone();
+        let _one_at_a_time = self.lock.lock().await;
+        let done = tokio::task::spawn_blocking(move || {
+            Orders::update(&path, |o| {
+                let out = f(o);
+                (out, Index::of(o))
+            })
+        })
+        .await;
+        done.map(|r| {
+            r.map(|(out, index)| {
+                p.set_index(index);
+                out
+            })
+        })
+    }
+
+    /// One request's answer.
+    async fn answer(self: &Arc<Self>, req: HttpRequest) -> (u16, String) {
+        // A body is read only as JSON, declared so. A web page can make its
+        // visitors' browsers POST here without asking first only as text, a
+        // form or no type at all; one declared JSON the browser must ask
+        // about first, and nothing here answers that. So no page can spend
+        // the buckets with other people's browsers. Every client sends
+        // `application/json`, as it always has.
+        if req.method == "POST" && !req.is_json() {
+            return (
+                415,
+                refusal("the request is read only as Content-Type: application/json"),
+            );
+        }
+        match (req.method.as_str(), req.path.as_str()) {
+            // On a task of its own, so nothing can cut it between
+            // charging the account and signing, or giving the count
+            // back.
+            ("POST", "/issue") => {
+                let (issuer, body) = (self.clone(), req.body);
+                tokio::spawn(async move { issuer.issue(&body).await })
+                    .await
+                    .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
+            }
+            ("POST", "/quote") => self.quote(&req.body).await,
+            ("POST", "/claim") => {
+                let (issuer, body) = (self.clone(), req.body);
+                tokio::spawn(async move { issuer.claim(&body).await })
+                    .await
+                    .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
+            }
+            ("GET", "/packs") => self.packs(),
+            ("GET", "/") | ("GET", "/keys") => (200, self.records()),
+            ("GET", _) | ("POST", _) => (404, refusal("no such path")),
+            _ => (405, refusal("GET or POST")),
+        }
+    }
+}
+
+fn no_order() -> (u16, String) {
+    (
+        404,
+        refusal("no open order for this token (none made, or it lapsed); `hidravpn passes buy` makes one"),
+    )
+}
+
+fn lapsed_order() -> (u16, String) {
+    (
+        404,
+        refusal(format!(
+            "this token's order lapsed unpaid (an order lapses {} hours after it is made if no claim reached it, {} hours after if one did); `hidravpn passes buy` makes a new one. Paid before it lapsed? For {} days the issuer's operator can still credit it: give them the transaction's signature",
+            UNCLAIMED_LIFETIME / 3600,
+            ORDER_LIFETIME / 3600,
+            LAPSED_KEPT / 86_400
+        )),
+    )
 }
 
 // ---- passes for sale ---------------------------------------------------------------
@@ -954,6 +1082,35 @@ impl Issuer {
 const MAX_OPEN_ORDERS: usize = 20_000;
 /// Orders open at once for one token.
 const MAX_OPEN_PER_ACCOUNT: usize = 5;
+/// Orders a claim has reached, open at once: each lives `ORDER_LIFETIME`
+/// instead of `UNCLAIMED_LIFETIME`. Past it, a claim still goes ahead, and
+/// its order keeps the shorter life.
+const MAX_HELD_ORDERS: usize = 4_000;
+/// Quotes let through: this many at once, then this many a second.
+const QUOTE_BURST: usize = 30;
+const QUOTE_RATE: usize = 2;
+/// Claims let through to the chain: this many at once, then this many a
+/// second.
+const CLAIM_BURST: usize = 20;
+const CLAIM_RATE: usize = 2;
+// Orders made for nobody's payment can never fill the issuer: all the
+// quotes the bucket lets through in an unclaimed order's life, plus every
+// order a claim can hold for longer, fit under the cap. Filling it would
+// take outrunning the bucket itself, which the TLS proxy in front limits
+// per client.
+const _: () = assert!(
+    QUOTE_BURST + QUOTE_RATE * UNCLAIMED_LIFETIME as usize + MAX_HELD_ORDERS < MAX_OPEN_ORDERS
+);
+/// How long the record of an order that lapsed unpaid is kept, so a
+/// payment made in time can still be credited by hand (`order credit`).
+const LAPSED_KEPT: i64 = 7 * 86_400;
+/// Records of lapsed orders kept at most; past it, the oldest go first,
+/// those of orders no claim reached before any other.
+const MAX_LAPSED: usize = 10_000;
+/// How long a paid order and a used transaction are kept: the latest a
+/// transaction could still be claimed against another order is an order's
+/// life after it, plus the clock slack.
+const KEEP_PAID: i64 = 2 * ORDER_LIFETIME + CLOCK_SLACK;
 /// Claims tried on one token's open orders before a new order is needed:
 /// each try is a lookup on the chain.
 const MAX_CLAIM_TRIES: u32 = 30;
@@ -977,10 +1134,13 @@ struct Payments {
     rate: Option<Rate>,
     token_name: String,
     orders_path: PathBuf,
+    /// What the orders file holds, by token: see `Index`.
+    index: std::sync::Mutex<Index>,
     rpc_slots: Semaphore,
     /// Quotes and claims are each let through at a steady rate with a small
     /// burst: a flood opens no more orders, and asks the chain no more
-    /// often, than that.
+    /// often, than that. A share is spent only by a quote that can open an
+    /// order and a claim that has one to pay.
     quotes: Bucket,
     claims: Bucket,
 }
@@ -1039,6 +1199,7 @@ impl Payments {
                 ))
             }
         };
+        let index = Index::of(&Orders::load(&orders_path)?);
         Ok(Payments {
             wallet,
             token_name: if mint == payment::HNET_MINT {
@@ -1052,10 +1213,19 @@ impl Payments {
             specs: parsed,
             rate,
             orders_path,
+            index: std::sync::Mutex::new(index),
             rpc_slots: Semaphore::new(RPC_AT_ONCE),
-            quotes: Bucket::new(30.0, 3.0),
-            claims: Bucket::new(20.0, 2.0),
+            quotes: Bucket::new(QUOTE_BURST as f64, QUOTE_RATE as f64),
+            claims: Bucket::new(CLAIM_BURST as f64, CLAIM_RATE as f64),
         })
+    }
+
+    fn index(&self) -> std::sync::MutexGuard<'_, Index> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set_index(&self, index: Index) {
+        *self.index() = index;
     }
 
     /// The going rate, if it is known and fresh.
@@ -1381,7 +1551,7 @@ struct Order {
     token_sha256: String,
     passes: u32,
     amount_raw: u64,
-    /// Unix time; the order can be paid and claimed for `ORDER_LIFETIME`.
+    /// Unix time; the order can be paid and claimed until `lapses_at`.
     created: i64,
     /// SHA-256 of the signature of the transaction that paid it, once paid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1389,11 +1559,52 @@ struct Order {
     /// Claims tried on it.
     #[serde(default)]
     tries: u32,
+    /// No claim has reached it yet: it lapses `UNCLAIMED_LIFETIME` after it
+    /// was made, not `ORDER_LIFETIME`. An order written before there was a
+    /// shorter life reads as reached, and keeps the day it was promised.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unclaimed: bool,
 }
 
 impl Order {
+    fn lapses_at(&self) -> i64 {
+        self.created
+            + if self.unclaimed {
+                UNCLAIMED_LIFETIME
+            } else {
+                ORDER_LIFETIME
+            }
+    }
+
     fn open_at(&self, now: i64) -> bool {
-        self.paid_sha256.is_none() && now < self.created + ORDER_LIFETIME
+        self.paid_sha256.is_none() && now < self.lapses_at()
+    }
+}
+
+/// What is kept of an order that lapsed unpaid, for `LAPSED_KEPT`: the
+/// token's hash and the amount, which is all it takes to credit by hand a
+/// payment that was made in time and never claimed (`order credit`). The
+/// amount says which order a payment was for; the hash, whose account the
+/// pack goes to, so nobody but the order's own token gains by it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Lapsed {
+    token_sha256: String,
+    passes: u32,
+    amount_raw: u64,
+    created: i64,
+    /// When it lapsed: a payment after this did not pay it.
+    lapsed: i64,
+    /// Whether a claim had reached it.
+    #[serde(default)]
+    claimed: bool,
+}
+
+impl Lapsed {
+    /// Whether a payment with this block time could have paid it: the
+    /// same window a claim allows, from the clock slack before it was made
+    /// to when it lapsed.
+    fn could_be_paid_at(&self, block_time: i64) -> bool {
+        block_time >= self.created - CLOCK_SLACK && block_time < self.lapsed
     }
 }
 
@@ -1410,12 +1621,111 @@ struct Orders {
     orders: Vec<Order>,
     #[serde(default)]
     used: Vec<Used>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lapsed: Vec<Lapsed>,
 }
 
 #[derive(Debug, PartialEq)]
 enum Full {
     Issuer,
     Account,
+}
+
+impl Full {
+    fn refusal(&self) -> (u16, String) {
+        match self {
+            Full::Issuer => (
+                503,
+                refusal("the issuer has as many orders open as it takes; try again later"),
+            ),
+            Full::Account => (
+                429,
+                refusal(format!(
+                    "this account already has {MAX_OPEN_PER_ACCOUNT} orders open; pay and claim one, or wait for them to lapse"
+                )),
+            ),
+        }
+    }
+}
+
+/// What the orders file holds, by token, kept in memory beside it: each
+/// open order's token and when it lapses, each paid one's and until when
+/// it is kept, each lapsed record's and until when it is kept. Rebuilt from
+/// the file after every change the issuer makes to it, under the issuer's
+/// lock; nothing else opens orders, so a token the index has no order for
+/// has none. A quote or a claim it already knows the answer to is answered
+/// without the file, the lock or a share of the buckets.
+#[derive(Debug, Default)]
+struct Index {
+    open: Vec<(String, i64)>,
+    paid: Vec<(String, i64)>,
+    lapsed: Vec<(String, i64)>,
+}
+
+/// What the index knows of a token.
+#[derive(Debug, PartialEq)]
+enum Known {
+    /// An open order, or a paid one: the file says the rest.
+    Orders,
+    /// Only an order that lapsed unpaid, still on record.
+    Lapsed,
+    Nothing,
+}
+
+impl Index {
+    fn of(o: &Orders) -> Index {
+        let mut index = Index::default();
+        for order in &o.orders {
+            let h = order.token_sha256.clone();
+            match order.paid_sha256 {
+                None => index.open.push((h, order.lapses_at())),
+                Some(_) => index.paid.push((h, order.created + KEEP_PAID)),
+            }
+        }
+        for l in &o.lapsed {
+            index
+                .lapsed
+                .push((l.token_sha256.clone(), l.lapsed + LAPSED_KEPT));
+        }
+        index
+    }
+
+    /// Whether `hash` may open another order now. Every hash is compared in
+    /// full, without a short cut, as the files' are.
+    fn room_for(&self, hash: &str, now: i64) -> std::result::Result<(), Full> {
+        let open = || self.open.iter().filter(move |(_, until)| now < *until);
+        if open().count() >= MAX_OPEN_ORDERS {
+            return Err(Full::Issuer);
+        }
+        if open()
+            .filter(|(h, _)| same(h.as_bytes(), hash.as_bytes()))
+            .count()
+            >= MAX_OPEN_PER_ACCOUNT
+        {
+            return Err(Full::Account);
+        }
+        Ok(())
+    }
+
+    fn known(&self, hash: &str, now: i64) -> Known {
+        let of = |v: &[(String, i64)], live: &dyn Fn(i64) -> bool| {
+            v.iter()
+                .filter(|(h, until)| live(*until) && same(h.as_bytes(), hash.as_bytes()))
+                .count()
+                > 0
+        };
+        if of(&self.open, &|until| now < until) || of(&self.paid, &|until| now < until) {
+            return Known::Orders;
+        }
+        // An open order past its time has lapsed, though nothing has
+        // moved it to the records yet.
+        if of(&self.lapsed, &|until| now < until)
+            || of(&self.open, &|until| now < until + LAPSED_KEPT)
+        {
+            return Known::Lapsed;
+        }
+        Known::Nothing
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1427,6 +1737,8 @@ enum Claimable {
 #[derive(Debug, PartialEq)]
 enum NotClaimable {
     NoOrder,
+    /// No open order, but one that lapsed unpaid is on record.
+    Lapsed,
     Used,
     TooManyTries,
 }
@@ -1462,17 +1774,48 @@ impl Orders {
         Ok(())
     }
 
-    /// Throws away what can no longer matter: orders that lapsed unpaid,
-    /// paid ones and used transactions older than twice an order's life
-    /// (the latest a transaction could still be claimed against another
-    /// order is an order's life after it, plus the clock slack).
+    /// Throws away what can no longer matter: paid orders and used
+    /// transactions after `KEEP_PAID`, records of lapsed orders after
+    /// `LAPSED_KEPT` or past `MAX_LAPSED`. An order that lapsed unpaid
+    /// leaves the open ones and its amount is free again; a record of it
+    /// stays.
     fn prune(&mut self, now: i64) {
-        let keep_paid = 2 * ORDER_LIFETIME + CLOCK_SLACK;
+        let mut lapsed = Vec::new();
         self.orders.retain(|o| match o.paid_sha256 {
-            None => now < o.created + ORDER_LIFETIME,
-            Some(_) => now < o.created + keep_paid,
+            None if o.open_at(now) => true,
+            None => {
+                lapsed.push(Lapsed {
+                    token_sha256: o.token_sha256.clone(),
+                    passes: o.passes,
+                    amount_raw: o.amount_raw,
+                    created: o.created,
+                    lapsed: o.lapses_at(),
+                    claimed: !o.unclaimed,
+                });
+                false
+            }
+            Some(_) => now < o.created + KEEP_PAID,
         });
-        self.used.retain(|u| now < u.at + keep_paid);
+        self.lapsed.extend(lapsed);
+        self.used.retain(|u| now < u.at + KEEP_PAID);
+        self.lapsed.retain(|l| now < l.lapsed + LAPSED_KEPT);
+        let over = self.lapsed.len().saturating_sub(MAX_LAPSED);
+        if over > 0 {
+            // The oldest first, those no claim reached before any other: a
+            // flood of orders for nobody's payment never pushes out the
+            // record of one its token tried to claim.
+            let mut unclaimed = self.lapsed.iter().filter(|l| !l.claimed).count().min(over);
+            let rest = over - unclaimed;
+            self.lapsed.retain(|l| {
+                if unclaimed > 0 && !l.claimed {
+                    unclaimed -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            self.lapsed.drain(..rest);
+        }
     }
 
     fn open_count(&self, now: i64) -> usize {
@@ -1523,6 +1866,7 @@ impl Orders {
                 created: now,
                 paid_sha256: None,
                 tries: 0,
+                unclaimed: true,
             };
             self.orders.push(order.clone());
             return Ok(order);
@@ -1558,6 +1902,14 @@ impl Orders {
         {
             return Err(NotClaimable::Used);
         }
+        // A claim that reaches an order holds it open for its whole life,
+        // so a claim made too soon can be made again; as many as fit.
+        let held = self
+            .orders
+            .iter()
+            .filter(|o| o.open_at(now) && !o.unclaimed)
+            .count();
+        let mut room = MAX_HELD_ORDERS.saturating_sub(held);
         let mut open: Vec<Order> = Vec::new();
         for o in self
             .orders
@@ -1565,9 +1917,20 @@ impl Orders {
             .filter(|o| o.open_at(now) && same(o.token_sha256.as_bytes(), hash.as_bytes()))
         {
             o.tries = o.tries.saturating_add(1);
+            if o.unclaimed && room > 0 {
+                o.unclaimed = false;
+                room -= 1;
+            }
             open.push(o.clone());
         }
         if open.is_empty() {
+            if self
+                .lapsed
+                .iter()
+                .any(|l| same(l.token_sha256.as_bytes(), hash.as_bytes()))
+            {
+                return Err(NotClaimable::Lapsed);
+            }
             return Err(NotClaimable::NoOrder);
         }
         if open.iter().map(|o| o.tries).sum::<u32>() > MAX_CLAIM_TRIES {
@@ -1607,6 +1970,64 @@ impl Orders {
             at: now,
         });
         Ok(())
+    }
+
+    /// Takes out the record of the lapsed order a payment of `amount_raw`
+    /// at `paid_at` could have paid — the token's, if `token` is given —
+    /// and marks the transaction used, for a credit by hand. Refused if the
+    /// transaction already paid, or if no record or more than one fits.
+    fn take_lapsed(
+        &mut self,
+        amount_raw: u64,
+        paid_at: i64,
+        token: Option<&str>,
+        sig_hash: &str,
+        now: i64,
+    ) -> Result<Lapsed> {
+        self.prune(now);
+        if self
+            .used
+            .iter()
+            .any(|u| same(u.signature_sha256.as_bytes(), sig_hash.as_bytes()))
+        {
+            return Err(anyhow!(
+                "that transaction already paid an order; nothing credited"
+            ));
+        }
+        let fits: Vec<usize> = (0..self.lapsed.len())
+            .filter(|&i| {
+                let l = &self.lapsed[i];
+                l.amount_raw == amount_raw
+                    && l.could_be_paid_at(paid_at)
+                    && token.is_none_or(|t| same(l.token_sha256.as_bytes(), t.as_bytes()))
+            })
+            .collect();
+        let i = match fits.as_slice() {
+            [i] => *i,
+            [] => {
+                return Err(anyhow!(
+                    "no lapsed order of that amount could have been paid at that time; `order lapsed` lists those kept"
+                ))
+            }
+            _ => {
+                return Err(anyhow!(
+                    "{} lapsed orders of that amount could have been paid then; say whose with --token-sha256",
+                    fits.len()
+                ))
+            }
+        };
+        self.used.push(Used {
+            signature_sha256: sig_hash.to_string(),
+            at: now,
+        });
+        Ok(self.lapsed.remove(i))
+    }
+
+    /// Undoes `take_lapsed` when the account could not be credited.
+    fn put_back(&mut self, l: Lapsed, sig_hash: &str) {
+        self.lapsed.push(l);
+        self.used
+            .retain(|u| !same(u.signature_sha256.as_bytes(), sig_hash.as_bytes()));
     }
 
     /// Undoes `mark_paid` when the account could not be credited.
@@ -1672,28 +2093,7 @@ async fn serve(issuer: Arc<Issuer>, listen: SocketAddr) -> Result<()> {
             };
             let (status, body) = match req {
                 Err(()) => (400, refusal("not a request this service reads")),
-                Ok(req) => match (req.method.as_str(), req.path.as_str()) {
-                    // On a task of its own, so nothing can cut it between
-                    // charging the account and signing, or giving the count
-                    // back.
-                    ("POST", "/issue") => {
-                        let (issuer, body) = (issuer.clone(), req.body);
-                        tokio::spawn(async move { issuer.issue(&body).await })
-                            .await
-                            .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
-                    }
-                    ("POST", "/quote") => issuer.quote(&req.body).await,
-                    ("POST", "/claim") => {
-                        let (issuer, body) = (issuer.clone(), req.body);
-                        tokio::spawn(async move { issuer.claim(&body).await })
-                            .await
-                            .unwrap_or_else(|_| (503, refusal("the issuer could not answer")))
-                    }
-                    ("GET", "/packs") => issuer.packs(),
-                    ("GET", "/") | ("GET", "/keys") => (200, issuer.records()),
-                    ("GET", _) | ("POST", _) => (404, refusal("no such path")),
-                    _ => (405, refusal("GET or POST")),
-                },
+                Ok(req) => issuer.answer(req).await,
             };
             let _ = tokio::time::timeout(PER_CONNECTION, async {
                 let _ = stream.write_all(&http_response(status, &body)).await;
@@ -1815,6 +2215,90 @@ async fn main() -> Result<()> {
                 Account::Enable { name } => {
                     Accounts::update(&path, |a| a.set_enabled(&name, true))??;
                     println!("{name}: on");
+                }
+            }
+        }
+        Cmd::Order { what } => {
+            // A credit goes under the lock the running issuer takes, as for
+            // accounts.
+            let now = hidravpn_core::timefmt::now_unix();
+            match what {
+                OrderCmd::Lapsed {
+                    amount,
+                    pay_decimals,
+                } => {
+                    let amount = amount
+                        .map(|a| payment::amount_from_string(&a, pay_decimals))
+                        .transpose()
+                        .context("--amount")?;
+                    // Read only: what the file would hold once pruned.
+                    let mut o = Orders::load(&cli.orders)?;
+                    o.prune(now);
+                    let lapsed = o.lapsed;
+                    let mut shown = 0;
+                    for l in lapsed
+                        .iter()
+                        .filter(|l| amount.is_none_or(|a| a == l.amount_raw))
+                    {
+                        println!(
+                            "{} for {} pass(es)  made {}  lapsed {}  {}  account {}",
+                            payment::amount_to_string(l.amount_raw, pay_decimals),
+                            l.passes,
+                            rfc3339_full(l.created),
+                            rfc3339_full(l.lapsed),
+                            if l.claimed {
+                                "claimed on"
+                            } else {
+                                "never claimed"
+                            },
+                            &l.token_sha256[..l.token_sha256.len().min(16)]
+                        );
+                        shown += 1;
+                    }
+                    if shown == 0 {
+                        println!(
+                            "(no lapsed orders kept{})",
+                            if amount.is_some() {
+                                " of that amount"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                }
+                OrderCmd::Credit {
+                    amount,
+                    signature,
+                    paid_at,
+                    token_sha256,
+                    pay_decimals,
+                } => {
+                    let amount_raw =
+                        payment::amount_from_string(&amount, pay_decimals).context("--amount")?;
+                    let signature = payment::check_signature(&signature).context("--signature")?;
+                    let paid_at =
+                        hidravpn_core::timefmt::rfc3339_to_unix(&paid_at).context("--paid-at")?;
+                    let token = token_sha256.map(|t| t.trim().to_ascii_lowercase());
+                    if let Some(t) = &token {
+                        if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            return Err(anyhow!("--token-sha256 is the token's SHA-256, in hex"));
+                        }
+                    }
+                    let sig_hash = hex::encode(Sha256::digest(signature.as_bytes()));
+                    let l = Orders::update(&cli.orders, |o| {
+                        o.take_lapsed(amount_raw, paid_at, token.as_deref(), &sig_hash, now)
+                    })??;
+                    match Accounts::update(&cli.accounts, |a| a.credit(&l.token_sha256, l.passes)) {
+                        Ok(Ok(balance)) => println!(
+                            "credited {} pass(es) to the account that made the order; it has {balance} in all. The transaction is recorded as used",
+                            l.passes
+                        ),
+                        Ok(Err(e)) | Err(e) => {
+                            Orders::update(&cli.orders, |o| o.put_back(l, &sig_hash))
+                                .context("crediting failed, and the lapsed order could not be put back")?;
+                            return Err(e.context("crediting failed; the lapsed order is kept, try again"));
+                        }
+                    }
                 }
             }
         }
@@ -2108,18 +2592,27 @@ mod tests {
             o.before_claim(&h1, "other", 1005),
             Err(NotClaimable::TooManyTries)
         );
-        // Lapsed: gone, no claim; the used list outlives it.
+        // Lapsed: no claim, a record of each kept; the used list outlives
+        // them.
         let later = 1000 + ORDER_LIFETIME + 1;
         assert_eq!(
             o.before_claim(&h1, "third", later),
-            Err(NotClaimable::NoOrder)
+            Err(NotClaimable::Lapsed)
         );
         assert!(
-            o.orders
-                .iter()
-                .all(|x| x.paid_sha256.is_some() || x.created == 1004),
-            "unpaid lapsed orders are pruned; the one made later stays"
+            o.orders.iter().all(|x| x.paid_sha256.is_some()),
+            "unpaid lapsed orders are pruned"
         );
+        // h1's, which claims reached, a day after they were made; h2's last
+        // one, which none reached, two hours after.
+        assert_eq!(o.lapsed.len(), MAX_OPEN_PER_ACCOUNT + 1);
+        assert!(o.lapsed.iter().all(|l| (l.token_sha256 == h1
+            && l.claimed
+            && l.lapsed == 1000 + ORDER_LIFETIME)
+            || (l.token_sha256 == h2
+                && !l.claimed
+                && l.amount_raw == c.amount_raw
+                && l.lapsed == 1004 + UNCLAIMED_LIFETIME)));
         assert_eq!(
             o.before_claim(&h1, "sig-hash", later),
             Err(NotClaimable::Used)
@@ -2514,6 +3007,11 @@ mod tests {
     /// paying that much HNET to the wallet, or `None` for "not on chain".
     /// Returns the URL to give `--pay-rpc`.
     async fn fake_rpc(answer: Option<(u64, i64, bool)>) -> String {
+        fake_rpc_set(Arc::new(std::sync::Mutex::new(answer))).await
+    }
+
+    /// As `fake_rpc`, with an answer the test can change as it goes.
+    async fn fake_rpc_set(answer: Arc<std::sync::Mutex<Option<(u64, i64, bool)>>>) -> String {
         use tokio::io::AsyncWriteExt;
         const WALLET: &str = "So11111111111111111111111111111111111111112";
         const PAYER: &str = "ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc";
@@ -2523,6 +3021,7 @@ mod tests {
             loop {
                 let (mut s, _) = l.accept().await.unwrap();
                 let _ = read_request(&mut s).await;
+                let answer = *answer.lock().unwrap();
                 let result = match answer {
                     Some((amount, time, ok)) => serde_json::json!({
                         "blockTime": time, "slot": 1, "transaction": {},
@@ -2824,6 +3323,367 @@ mod tests {
             400
         );
         assert!(issuer.records().contains(&record.id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn pack10() -> Pack {
+        Pack {
+            passes: 10,
+            price_raw: 50_000_000,
+            usd_cents: None,
+        }
+    }
+
+    #[test]
+    fn an_order_no_claim_reached_lapses_in_hours_and_one_a_claim_reached_keeps_its_day() {
+        let mut o = Orders::default();
+        let (a, b) = (token_hash("a"), token_hash("b"));
+        let oa = o.open(&a, &pack10(), 0, 6).unwrap();
+        let ob = o.open(&b, &pack10(), 0, 6).unwrap();
+        assert_eq!(oa.lapses_at(), UNCLAIMED_LIFETIME, "what the quote says");
+        // A claim reaches b's order (too soon, say): it is held for the day.
+        assert!(matches!(
+            o.before_claim(&b, "s", 60),
+            Ok(Claimable::Open(_))
+        ));
+        assert!(o.orders.iter().all(|x| x.open_at(UNCLAIMED_LIFETIME - 1)));
+        o.prune(UNCLAIMED_LIFETIME);
+        assert_eq!(o.orders.len(), 1, "a's order lapsed, b's is held");
+        assert_eq!(o.orders[0].amount_raw, ob.amount_raw);
+        assert!(o.orders[0].open_at(ORDER_LIFETIME - 1));
+        assert!(!o.orders[0].open_at(ORDER_LIFETIME));
+        // a's order is a record now: who, how much, when it lapsed.
+        assert_eq!(
+            o.lapsed,
+            vec![Lapsed {
+                token_sha256: a.clone(),
+                passes: 10,
+                amount_raw: oa.amount_raw,
+                created: 0,
+                lapsed: UNCLAIMED_LIFETIME,
+                claimed: false,
+            }]
+        );
+        assert_eq!(
+            o.before_claim(&a, "s2", UNCLAIMED_LIFETIME),
+            Err(NotClaimable::Lapsed)
+        );
+        // An order written before there was a shorter life keeps its day.
+        let old: Orders = serde_json::from_str(&format!(
+            r#"{{"orders":[{{"token_sha256":"{a}","passes":10,"amount_raw":50000001,"created":0}}],"used":[]}}"#
+        ))
+        .unwrap();
+        assert!(old.orders[0].open_at(ORDER_LIFETIME - 1) && !old.orders[0].unclaimed);
+        assert!(
+            !serde_json::to_string(&old).unwrap().contains("unclaimed"),
+            "and is written back as it was read"
+        );
+        // Claims hold at most MAX_HELD_ORDERS open at once; past it, a
+        // claim still goes ahead and its order keeps the shorter life.
+        let mut full = Orders::default();
+        for i in 0..MAX_HELD_ORDERS as u64 {
+            full.orders.push(Order {
+                token_sha256: token_hash(&format!("held-{i}")),
+                passes: 10,
+                amount_raw: 50_000_001 + i,
+                created: 0,
+                paid_sha256: None,
+                tries: 1,
+                unclaimed: false,
+            });
+        }
+        let late = full.open(&a, &pack10(), 0, 6).unwrap();
+        match full.before_claim(&a, "s", 60) {
+            Ok(Claimable::Open(v)) => assert!(v.len() == 1 && v[0].unclaimed),
+            other => panic!("{other:?}"),
+        }
+        full.prune(UNCLAIMED_LIFETIME);
+        assert!(full.orders.iter().all(|x| x.amount_raw != late.amount_raw));
+        // The cap holds by construction: everything the quote bucket lets
+        // through in an unclaimed order's life, and every held order, fit.
+        let at_most = QUOTE_BURST + QUOTE_RATE * UNCLAIMED_LIFETIME as usize + MAX_HELD_ORDERS;
+        assert!(at_most < MAX_OPEN_ORDERS, "{at_most}");
+    }
+
+    #[test]
+    fn a_lapsed_order_is_kept_for_days_and_credited_by_hand_only_as_it_was() {
+        let mut o = Orders::default();
+        let (a, b) = (token_hash("a"), token_hash("b"));
+        let oa = o.open(&a, &pack10(), 1000, 6).unwrap();
+        let lapsed_at = 1000 + UNCLAIMED_LIFETIME;
+        let now = lapsed_at + 3600;
+        // A payment after it lapsed, of another amount, or by a transaction
+        // already used: nothing.
+        assert!(o
+            .take_lapsed(oa.amount_raw, lapsed_at, None, "t", now)
+            .is_err());
+        assert!(o
+            .take_lapsed(oa.amount_raw + 1, 1500, None, "t", now)
+            .is_err());
+        o.used.push(Used {
+            signature_sha256: "used".into(),
+            at: now,
+        });
+        assert!(o
+            .take_lapsed(oa.amount_raw, 1500, None, "used", now)
+            .is_err());
+        // A record of another token with the same amount, made later, its
+        // window overlapping by the clock slack: the time alone does not
+        // say whose, the token does.
+        o.lapsed.push(Lapsed {
+            token_sha256: b.clone(),
+            passes: 30,
+            amount_raw: oa.amount_raw,
+            created: lapsed_at,
+            lapsed: lapsed_at + UNCLAIMED_LIFETIME,
+            claimed: false,
+        });
+        let err = o
+            .take_lapsed(oa.amount_raw, lapsed_at - 10, None, "t", now)
+            .unwrap_err();
+        assert!(err.to_string().contains("--token-sha256"), "{err}");
+        let l = o
+            .take_lapsed(oa.amount_raw, lapsed_at - 10, Some(&a), "t", now)
+            .unwrap();
+        assert_eq!((l.token_sha256.as_str(), l.passes), (a.as_str(), 10));
+        assert!(o.used.iter().any(|u| u.signature_sha256 == "t"));
+        assert!(
+            o.take_lapsed(oa.amount_raw, 1500, Some(&a), "t2", now)
+                .is_err(),
+            "taken once"
+        );
+        // Put back when the account could not be credited.
+        o.put_back(l, "t");
+        assert!(!o.used.iter().any(|u| u.signature_sha256 == "t"));
+        assert!(o
+            .take_lapsed(oa.amount_raw, 1500, Some(&a), "t", now)
+            .is_ok());
+        // Kept LAPSED_KEPT, then gone.
+        o.prune(lapsed_at + UNCLAIMED_LIFETIME + LAPSED_KEPT - 1);
+        assert_eq!(o.lapsed.len(), 1);
+        o.prune(lapsed_at + UNCLAIMED_LIFETIME + LAPSED_KEPT);
+        assert!(o.lapsed.is_empty());
+        // Past MAX_LAPSED the oldest go, those no claim reached first: a
+        // flood of orders for nobody never pushes out one a claim reached.
+        let rec = |i: usize, claimed| Lapsed {
+            token_sha256: token_hash(&format!("r{i}")),
+            passes: 10,
+            amount_raw: 50_000_000 + i as u64,
+            created: 0,
+            lapsed: 10,
+            claimed,
+        };
+        let mut o = Orders::default();
+        o.lapsed.push(rec(0, true));
+        o.lapsed.extend((1..=MAX_LAPSED).map(|i| rec(i, false)));
+        o.prune(20);
+        assert_eq!(o.lapsed.len(), MAX_LAPSED);
+        assert!(o.lapsed[0].claimed && o.lapsed[1].amount_raw == 50_000_002);
+        let mut o = Orders::default();
+        o.lapsed.extend((0..=MAX_LAPSED).map(|i| rec(i, true)));
+        o.prune(20);
+        assert_eq!(o.lapsed[0].amount_raw, 50_000_001, "then simply the oldest");
+    }
+
+    #[test]
+    fn the_index_answers_what_needs_no_file() {
+        let mut o = Orders::default();
+        let (a, b, c) = (token_hash("a"), token_hash("b"), token_hash("c"));
+        for _ in 0..MAX_OPEN_PER_ACCOUNT {
+            o.open(&a, &pack10(), 0, 6).unwrap();
+        }
+        let ob = o.open(&b, &pack10(), 0, 6).unwrap();
+        o.mark_paid(&b, ob.amount_raw, "s", 1).unwrap();
+        let i = Index::of(&o);
+        assert_eq!(i.room_for(&a, 1), Err(Full::Account));
+        assert_eq!(i.room_for(&b, 1), Ok(()));
+        assert_eq!(
+            i.room_for(&a, UNCLAIMED_LIFETIME),
+            Ok(()),
+            "lapsed, room again"
+        );
+        assert_eq!(i.known(&a, 1), Known::Orders);
+        assert_eq!(i.known(&b, 1), Known::Orders, "paid: the file answers");
+        assert_eq!(i.known(&c, 1), Known::Nothing);
+        assert_eq!(
+            i.known(&a, UNCLAIMED_LIFETIME),
+            Known::Lapsed,
+            "lapsed, not yet moved"
+        );
+        assert_eq!(i.known(&b, 1 + KEEP_PAID), Known::Nothing);
+        o.prune(UNCLAIMED_LIFETIME);
+        let i = Index::of(&o);
+        assert_eq!(i.known(&a, UNCLAIMED_LIFETIME), Known::Lapsed);
+        assert_eq!(
+            i.known(&a, 2 * UNCLAIMED_LIFETIME + LAPSED_KEPT),
+            Known::Nothing
+        );
+    }
+
+    /// An issuer selling `10=50` against `rpc`, with its files in `dir`.
+    fn selling(dir: &Path, rpc: String) -> Arc<Issuer> {
+        const WALLET: &str = "So11111111111111111111111111111111111111112";
+        Arc::new(Issuer {
+            keys: Vec::new(),
+            accounts_path: dir.join("accounts.json"),
+            lock: Mutex::new(()),
+            payments: Some(
+                Payments::new(
+                    WALLET,
+                    payment::HNET_MINT,
+                    6,
+                    &[rpc],
+                    &["10=50".into()],
+                    None,
+                    dir.join("orders.json"),
+                )
+                .unwrap(),
+            ),
+        })
+    }
+
+    fn quote_body(hash: &str) -> Vec<u8> {
+        serde_json::to_vec(&QuoteRequest {
+            token_sha256: hash.into(),
+            passes: 10,
+        })
+        .unwrap()
+    }
+
+    fn claim_body(token: &str, sig: &str) -> Vec<u8> {
+        serde_json::to_vec(&ClaimRequest {
+            token: token.into(),
+            signature: sig.into(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn floods_that_can_open_or_pay_nothing_leave_the_buckets_to_buyers() {
+        let dir =
+            std::env::temp_dir().join(format!("hidravpn-issuer-flood-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let chain = Arc::new(std::sync::Mutex::new(None));
+        let issuer = selling(&dir, fake_rpc_set(chain.clone()).await);
+        let sig = payment::base58_encode(&[7; 64]);
+        // A buyer opens an order and pays it.
+        let (st, q) = issuer.quote(&quote_body(&token_hash("buyer"))).await;
+        assert_eq!(st, 200, "{q}");
+        let q: QuoteResponse = serde_json::from_str(&q).unwrap();
+        let now = hidravpn_core::timefmt::now_unix();
+        *chain.lock().unwrap() = Some((q.amount_raw, now, true));
+        // Meanwhile: far more claims than the bucket holds, for tokens with
+        // no order, each with a well-formed signature; and far more quotes
+        // than the bucket holds for one token past its orders open.
+        for i in 0..10 * CLAIM_BURST {
+            let (st, why) = issuer
+                .claim(&claim_body(&format!("nobody-{i}"), &sig))
+                .await;
+            assert!(st == 404 && why.contains("no open order"), "{st} {why}");
+        }
+        let spam = token_hash("spam");
+        for i in 0..10 * QUOTE_BURST {
+            let (st, why) = issuer.quote(&quote_body(&spam)).await;
+            if i < MAX_OPEN_PER_ACCOUNT {
+                assert_eq!(st, 200, "{why}");
+            } else {
+                assert!(st == 429 && why.contains("orders open"), "{st} {why}");
+            }
+        }
+        // The buyer's claim goes through at once, and a new buyer's quote.
+        let (st, c) = issuer.claim(&claim_body("buyer", &sig)).await;
+        assert_eq!(st, 200, "{c}");
+        let c: ClaimResponse = serde_json::from_str(&c).unwrap();
+        assert_eq!((c.passes, c.balance), (10, 10));
+        let (st, why) = issuer.quote(&quote_body(&token_hash("next buyer"))).await;
+        assert_eq!(st, 200, "{why}");
+        // Quotes that can open an order do spend the bucket: a flood of
+        // throwaway tokens is slowed, as before.
+        let mut slowed = 0;
+        for i in 0..2 * QUOTE_BURST {
+            let (st, _) = issuer
+                .quote(&quote_body(&token_hash(&format!("throwaway-{i}"))))
+                .await;
+            slowed += usize::from(st == 429);
+        }
+        assert!(slowed > 0);
+        // The index followed the file all along.
+        let from_file = Index::of(&Orders::load(&dir.join("orders.json")).unwrap());
+        let held = issuer.payments.as_ref().unwrap().index();
+        assert_eq!(
+            (held.open.len(), held.paid.len(), held.lapsed.len()),
+            (
+                from_file.open.len(),
+                from_file.paid.len(),
+                from_file.lapsed.len()
+            )
+        );
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_post_not_declared_json_is_refused_and_spends_nothing() {
+        let dir =
+            std::env::temp_dir().join(format!("hidravpn-issuer-ctype-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let issuer = selling(&dir, fake_rpc(None).await);
+        let req = |path: &str, ctype: Option<&str>, body: Vec<u8>| HttpRequest {
+            method: "POST".into(),
+            path: path.into(),
+            content_type: ctype.map(String::from),
+            body,
+        };
+        let hash = token_hash("t");
+        // What a web page can have a browser send without asking first:
+        // text, a form, or no type at all. More of them than the bucket
+        // holds: refused, no order opened, nothing spent.
+        for ctype in [
+            Some("text/plain"),
+            Some("text/plain;charset=UTF-8"),
+            Some("application/x-www-form-urlencoded"),
+            Some("multipart/form-data; boundary=x"),
+            None,
+        ] {
+            for _ in 0..QUOTE_BURST {
+                let (st, why) = issuer.answer(req("/quote", ctype, quote_body(&hash))).await;
+                assert!(
+                    st == 415 && why.contains("application/json"),
+                    "{ctype:?} {st} {why}"
+                );
+            }
+            let (st, _) = issuer
+                .answer(req(
+                    "/claim",
+                    ctype,
+                    claim_body("t", &payment::base58_encode(&[1; 64])),
+                ))
+                .await;
+            assert_eq!(st, 415);
+            assert_eq!(
+                issuer.answer(req("/issue", ctype, b"{}".to_vec())).await.0,
+                415
+            );
+        }
+        assert!(Orders::load(&dir.join("orders.json"))
+            .unwrap()
+            .orders
+            .is_empty());
+        // Declared JSON, as every client sends it: read.
+        let (st, why) = issuer
+            .answer(req("/quote", Some("application/json"), quote_body(&hash)))
+            .await;
+        assert_eq!(st, 200, "{why}");
+        // A GET has no body to declare.
+        let get = HttpRequest {
+            method: "GET".into(),
+            path: "/packs".into(),
+            content_type: None,
+            body: Vec::new(),
+        };
+        assert_eq!(issuer.answer(get).await.0, 200);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

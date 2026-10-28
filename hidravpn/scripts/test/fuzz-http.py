@@ -23,7 +23,7 @@ import sys
 import time
 
 TIMEOUT = 8.0  # the servers give up on a connection after 5 s
-OK_STATUS = {200, 400, 403, 404, 405, 409, 413, 429, 503}
+OK_STATUS = {200, 400, 403, 404, 405, 409, 413, 415, 429, 503}
 
 findings = []
 counts = {}
@@ -81,7 +81,7 @@ def http(method, path, body, extra=b""):
         body = body.encode("utf-8", "surrogatepass")
     return (
         method.encode() + b" " + path.encode() + b" HTTP/1.1\r\nHost: x\r\n"
-        + extra + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        + extra + b"Content-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
     )
 
 

@@ -823,7 +823,7 @@ pub fn describe_order(o: &Order) -> String {
     format!(
         "Send exactly {amount} {token}{in_dollars} to\n  {wallet}\nfrom any Solana wallet, by {expires} (UTC).\n\
          The amount must match to the last digit: it is what tells your payment apart.\n\
-         Then: hidravpn passes claim <transaction signature>\n\
+         Then, by the same time: hidravpn passes claim <transaction signature>\n\
          (the signature is in the wallet's transaction details, or on a Solana explorer).\n\
          Payments on Solana are public. To keep this one apart from the rest of what you do,\n\
          pay from a wallet you use for nothing else.",
