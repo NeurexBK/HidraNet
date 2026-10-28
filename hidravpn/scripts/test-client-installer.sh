@@ -75,6 +75,23 @@ grep -q "^stop hidravpn" "$HV_SYSTEMCTL_LOG" && [ "$(grep -n '^stop hidravpn' "$
   && pass "an update stops the running service before replacing it, then starts it" || fail "update order: $(cat "$HV_SYSTEMCTL_LOG")"
 [ "$(sha256sum $KEY)" = "$SUM1" ] && pass "an update keeps the key every node knows this machine by" || fail "the key changed"
 
+# An older build over a newer one: refused before the service is touched,
+# unless asked for. The installed copy says its version in its own bytes.
+VER=$("$BIN/hidravpn-service" --version | awk '{print $2}')
+grep -qaF "hidravpn-service-version=$VER" /usr/local/bin/hidravpn-service \
+  && pass "the installed service carries its version ($VER) where an install can read it" || fail "no version mark for $VER in the installed service"
+cp /usr/local/bin/hidravpn-service "$W/installed.bak"
+printf 'a newer build\0hidravpn-service-version=99.0.0\0' > /usr/local/bin/hidravpn-service
+SUM_NEWER=$(sha256sum /usr/local/bin/hidravpn-service)
+: > "$HV_SYSTEMCTL_LOG"
+OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" 2>&1); RC=$?
+[ $RC != 0 ] && [ $RC != 69 ] && echo "$OUT" | grep -q "HidraVPN 99.0.0 is installed, which is newer than this $VER; nothing was changed" \
+  && [ ! -s "$HV_SYSTEMCTL_LOG" ] && [ "$(sha256sum /usr/local/bin/hidravpn-service)" = "$SUM_NEWER" ] \
+  && pass "an older build does not replace a newer installed one: refused before the service is stopped" || fail "downgrade guard: rc=$RC $OUT / $(cat "$HV_SYSTEMCTL_LOG")"
+OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" --allow-downgrade 2>&1); RC=$?
+[ $RC = 69 ] && cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service && grep -q "^stop hidravpn" "$HV_SYSTEMCTL_LOG" \
+  && pass "with --allow-downgrade it goes back on purpose" || fail "--allow-downgrade: rc=$RC $OUT"
+
 : > "$HV_SYSTEMCTL_LOG"
 OUT=$("$W/dl/hidravpn-service" install --user 'x;id' 2>&1); RC=$?
 [ $RC != 0 ] && echo "$OUT" | grep -q "not a login name" && [ ! -s "$HV_SYSTEMCTL_LOG" ] \
@@ -103,17 +120,23 @@ if command -v node >/dev/null && [ -x "$BIN/hidravpn-sign" ]; then
   mkdir -p "$W/rel/linux-x64"
   cp "$BIN/hidravpn-service" "$BIN/hidravpn" "$W/rel/linux-x64/"
   PUB=$("$BIN/hidravpn-sign" keygen --out "$W/release.key" 2>/dev/null)
-  "$HERE/make-release-manifest.sh" --version 9.9.9 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" > "$W/rel/manifest.json"
+  "$HERE/make-release-manifest.sh" --version 9.9.9 --sequence 7 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" > "$W/rel/manifest.json"
   "$BIN/hidravpn-sign" sign --key "$W/release.key" "$W/rel/manifest.json" >/dev/null 2>&1
-  OUT=$(cd "$HERE/../../hidra-browser" && HV_REL="$W/rel" HV_PUB="$PUB" HV_USER="$TESTUSER" node -e '
+  # An older manifest, as genuinely signed, for after the install.
+  mkdir -p "$W/old"
+  "$HERE/make-release-manifest.sh" --version 9.9.9 --sequence 6 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" > "$W/old/manifest.json"
+  "$BIN/hidravpn-sign" sign --key "$W/release.key" "$W/old/manifest.json" >/dev/null 2>&1
+  grep -q '"sequence": 7,' "$W/rel/manifest.json" && grep -q '"expires": "20[0-9-]*T[0-9:]*Z",' "$W/rel/manifest.json" \
+    && pass "the script's manifest carries a sequence and an expiry, under the signature" || fail "manifest fields: $(head -8 "$W/rel/manifest.json")"
+  OUT=$(cd "$HERE/../../hidra-browser" && HV_REL="$W/rel" HV_OLD="$W/old" HV_STATE="$W/vpn-release.json" HV_PUB="$PUB" HV_USER="$TESTUSER" node -e '
     const fs = require("fs"); const path = require("path"); const { execFile } = require("child_process");
     const { VpnInstaller } = require("./src/main/vpn-installer");
-    const rel = process.env.HV_REL;
+    let rel = process.env.HV_REL;
     const local = (url) => url.endsWith("manifest.json") || url.endsWith("manifest.json.sig")
       ? path.join(rel, path.basename(url)) : path.join(rel, "linux-x64", path.basename(url));
     const inst = new VpnInstaller({
       manifestUrl: "https://hidranet.org/vpn/release/manifest.json", publicKey: process.env.HV_PUB,
-      platform: "linux", arch: "x64", user: process.env.HV_USER,
+      platform: "linux", arch: "x64", user: process.env.HV_USER, stateFile: process.env.HV_STATE,
       fetchText: async (u) => fs.readFileSync(local(u), "utf8"),
       fetchBuffer: async (u) => fs.readFileSync(local(u)),
       // Already root: pkexec would only ask for the password.
@@ -121,16 +144,25 @@ if command -v node >/dev/null && [ -x "$BIN/hidravpn-sign" ]; then
     });
     (async () => {
       const c = await inst.checkRelease();
-      const r = await inst.install();
+      const r = await inst.install(c);
       const bad = await new VpnInstaller({ ...inst, publicKey: "denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=",
         manifestUrl: inst.manifestUrl, fetchText: inst.fetchText, fetchBuffer: inst.fetchBuffer, run: inst.run, platform: "linux", arch: "x64" }).checkRelease();
-      console.log(JSON.stringify({ c, r, bad }));
+      // The site now serves the older manifest; a later run of the browser
+      // (the same data folder) refuses it.
+      const binaries = rel;
+      rel = process.env.HV_OLD;
+      const later = new VpnInstaller({ manifestUrl: inst.manifestUrl, publicKey: process.env.HV_PUB, platform: "linux", arch: "x64",
+        stateFile: process.env.HV_STATE, fetchText: inst.fetchText, fetchBuffer: (u) => fs.promises.readFile(path.join(binaries, "linux-x64", path.basename(u))), run: inst.run });
+      const old = await later.checkRelease();
+      console.log(JSON.stringify({ c, r, bad, old }));
     })();' 2>&1)
   echo "$OUT" | grep -q '"c":{"ok":true,"version":"9.9.9"' && pass "the script's manifest, signed by hidravpn-sign, is accepted by the browser" || fail "manifest: $OUT"
   echo "$OUT" | grep -q '"bad":{"ok":false' && pass "the same manifest is refused under any other release key" || fail "other key: $OUT"
   echo "$OUT" | grep -q '"r":{"ok":false,"installed":true,"version":"9.9.9"' && echo "$OUT" | grep -q "its service did not answer" \
     && cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service \
     && pass "the browser's installer installs the checked download for real, and does not call a service nothing runs 'running'" || fail "install via browser: $OUT"
+  echo "$OUT" | grep -q '"old":{"ok":false,"error":"the release manifest is older (sequence 6) than one this browser already accepted (sequence 7)' \
+    && pass "after that, an older signed manifest is refused by the browser, across runs" || fail "older manifest: $OUT"
   /usr/local/bin/hidravpn-service uninstall --purge >/dev/null 2>&1
 else
   echo "skip  the browser chain (needs node and hidravpn-sign built)"

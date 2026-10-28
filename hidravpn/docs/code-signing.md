@@ -125,6 +125,22 @@ the client and the browser — `RELEASE_PUBLIC_KEY_B64` in
 hidravpn-sign verify --pubkey <project public key> SHA256SUMS-hidravpn-v0.3.0.txt
 ```
 
+The browser installs from a manifest signed with the same key
+(`landing/vpn/release/manifest.json` and its `.sig`). Make it with a sequence
+higher than the published one's, sign it, and publish both:
+
+```
+hidravpn/scripts/make-release-manifest.sh --version 0.3.0 --sequence 2026110101 \
+    --base https://hidranet.org/vpn/release/0.3.0 \
+    --linux-x64 dist/linux --win32-x64 dist/windows > manifest.json
+hidravpn-sign sign --key hidravpn-release.key manifest.json
+```
+
+The manifest expires (90 days by default; `--expires` sets another date), and
+after that the browser refuses it, so that a site serving an old manifest
+forever cannot hold back later releases. Before it runs out, make and sign it
+again with a higher sequence, even when nothing else changed.
+
 There are **two keys**, and they are made the same way:
 
 ```
