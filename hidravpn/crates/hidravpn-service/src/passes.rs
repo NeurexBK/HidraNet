@@ -65,11 +65,13 @@ fn now() -> u64 {
 
 /// Whether a circuit can be built with this invite now, as a first hop: any
 /// invite not won with a pass and not for a node that takes them; one that
-/// takes passes when the wallet has the next pass for it, or when its lease
-/// is likely still standing.
+/// takes passes when the wallet has the next pass for it, or when the lease
+/// of its last pass, redeemed from this machine's address, is likely still
+/// standing. A pass redeemed through an entry counts for nothing here: its
+/// key is never shown from this machine's address.
 pub fn usable(inv: &Invite, wallet: &Wallet, now_unix: u64) -> bool {
     let left = wallet.count_for(&inv.node_public_key) > 0;
-    match &inv.pass {
+    match inv.direct_pass() {
         None => !inv.takes_passes() || left,
         Some(p) => left || p.lease_likely_alive(now_unix),
     }
@@ -117,13 +119,13 @@ pub fn without_dead(
     }
 }
 
-/// Writes down that a circuit went up or down with these keys' invites, in
-/// the pocket at `path`.
+/// Writes down that a circuit went up or down with these invites won with a
+/// pass, in the pocket at `path`.
 ///
 /// It waits a second at most for the lock (someone may be fetching passes
 /// over the network with it held) and otherwise leaves the times as they
 /// are: they only steer which node is picked, they never decide a spend.
-pub async fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
+pub async fn mark_used(pocket_path: &Path, used: &[Invite]) -> Result<()> {
     let f = open_lock(pocket_path)?;
     let mut held = false;
     for _ in 0..20 {
@@ -137,23 +139,29 @@ pub async fn mark_used(pocket_path: &Path, node_keys: &[String]) -> Result<()> {
         return Ok(());
     }
     let mut pocket = crate::daemon::load_pocket(pocket_path)?;
-    if mark_used_in(&mut pocket, node_keys) {
+    if mark_used_in(&mut pocket, used) {
         crate::daemon::save_pocket(pocket_path, &pocket)?;
     }
     Ok(())
 }
 
 /// `mark_used` on a pocket already loaded, by whoever holds the lock.
-/// Returns whether anything changed.
-pub fn mark_used_in(pocket: &mut Pocket, node_keys: &[String]) -> bool {
+/// Only the pass key the circuit used is marked: the pocket may keep
+/// another key for the same node (one redeemed from this machine's address,
+/// when the circuit's was redeemed through an entry), whose lease this says
+/// nothing about. Returns whether anything changed.
+pub fn mark_used_in(pocket: &mut Pocket, used: &[Invite]) -> bool {
     let t = now();
     let mut changed = false;
     for inv in pocket.entries.iter_mut().chain(pocket.exits.iter_mut()) {
+        let key = inv.node_public_key.trim().to_string();
         if let Some(p) = inv.pass.as_mut() {
-            if node_keys
-                .iter()
-                .any(|k| k.trim() == inv.node_public_key.trim())
-            {
+            if used.iter().any(|u| {
+                u.node_public_key.trim() == key
+                    && u.pass
+                        .as_ref()
+                        .is_some_and(|q| q.client_secret == p.client_secret)
+            }) {
                 p.used_at = t;
                 changed = true;
             }
@@ -203,6 +211,49 @@ pub fn read_token(path: &Path) -> Result<String> {
     parse_token(&t).with_context(|| format!("{}", path.display()))
 }
 
+/// Where the account token a new one replaced is kept: beside it, with
+/// `.previous` after its name.
+pub fn previous_token_path(token_path: &Path) -> std::path::PathBuf {
+    let mut name = token_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "pass.token".into());
+    name.push(".previous");
+    token_path.with_file_name(name)
+}
+
+/// Keeps `token` (as `parse_token` gives it) as the account token at
+/// `token_path`, root only. The token it replaces, when it is another one,
+/// is kept first beside it (`previous_token_path`, root only too): it may be
+/// the only copy of an account's paid balance, since the issuer keeps only
+/// its hash. A token there that cannot be read is not replaced. Returns
+/// where the one replaced was kept, if one was.
+pub fn keep_token(token_path: &Path, token: &str) -> Result<Option<std::path::PathBuf>> {
+    let before = match std::fs::read(token_path) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "reading the account token already at {}, which is not replaced unread",
+                    token_path.display()
+                )
+            })
+        }
+    };
+    let mut kept = None;
+    if let Some(old) = before {
+        let text = String::from_utf8_lossy(&old);
+        if !text.trim().is_empty() && text.trim() != token {
+            let previous = previous_token_path(token_path);
+            crate::daemon::write_private_atomic(&previous, &old)?;
+            kept = Some(previous);
+        }
+    }
+    crate::daemon::write_private_atomic(token_path, token.as_bytes())?;
+    Ok(kept)
+}
+
 /// An account token as typed or pasted: one word, trimmed.
 pub fn parse_token(text: &str) -> Result<String> {
     let t = text.trim().to_string();
@@ -214,11 +265,31 @@ pub fn parse_token(text: &str) -> Result<String> {
     Ok(t)
 }
 
+/// Whether the issuer may be asked for passes, with the account token,
+/// through a circuit in this mode. In rapido the one node already sees this
+/// machine's address, and the issuer sees the node's. In privado the request
+/// would leave through the exit that carries the session: the exit sees a
+/// flow to the issuer leave from the session's own tunnel address, and at
+/// that moment the issuer gets this account's request from the exit's
+/// address, so the two together tie the two-hop session to the account, and
+/// through it to how its passes were paid for. That holds whenever the exit's
+/// operator also runs the issuer, or shares its logs with it. The signed
+/// list does not say who runs the issuer; the maintainers run it and the
+/// exits, so no exit is taken as another operator's: never in privado.
+pub fn refills_through(mode: hidravpn_core::circuit::Mode) -> bool {
+    mode == hidravpn_core::circuit::Mode::Rapido
+}
+
+/// Why a request that carries the account token is not sent while two hops
+/// are up (`refills_through`).
+pub const NOT_THROUGH_TWO_HOPS: &str = "not while two hops (privado) are up: the request carries the pass account token and would leave through the exit, and the issuer, run by the same maintainers as the exits, could then tie this two-hop session to the account and to how it was paid for. Get passes while disconnected or connected in rapido, then connect in privado";
+
 /// Topping the wallet up by itself: when a pass node has fewer than `low`
 /// passes left, the service asks for enough to bring it back to `count` —
-/// only while connected, so the request goes through the tunnel and the
-/// issuer sees an exit's address, not this machine's. Kept beside the
-/// pocket (`refill.json`); with no file, on, 3 and 10.
+/// only while connected in rapido, so the request goes through the tunnel
+/// and the issuer sees the node's address, not this machine's; never in
+/// privado (`refills_through`). Kept beside the pocket (`refill.json`); with
+/// no file, on, 3 and 10.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Refill {
     pub enabled: bool,
@@ -275,11 +346,11 @@ impl Refill {
     pub fn describe(&self) -> String {
         if self.enabled {
             format!(
-                "automatic passes on: a pass node with fewer than {} left gets topped up to {}, only while connected (through the tunnel)",
+                "automatic passes on: a pass node with fewer than {} left gets topped up to {}, only while connected in rapido (through the tunnel); never in privado, where the request would leave through the exit and the issuer, run by the same maintainers, could tie the two-hop session to the account: `hidravpn passes get` before connecting in privado",
                 self.low, self.count
             )
         } else {
-            "automatic passes off: `hidravpn passes get` fetches them".into()
+            "automatic passes off: `hidravpn passes get` fetches them (not while connected in privado)".into()
         }
     }
 }
@@ -475,7 +546,7 @@ pub async fn redeem_into(
             record.node_name
         )
     })?;
-    match hidravpn_core::admission::redeem_pass(record, &pass).await {
+    match hidravpn_core::admission::redeem_pass(record, &pass, false).await {
         Ok(invite) => {
             pocket.replace(invite.clone())?;
             Ok(invite)
@@ -544,6 +615,7 @@ mod tests {
             admission_port: Some(51999),
             redeemed_at: 0,
             used_at: 0,
+            behind: Some(false),
         });
         p.add(Slot::Exit, inv.clone()).unwrap();
         let names: Vec<String> = pass_nodes(&p).into_iter().map(|(n, _)| n).collect();
@@ -579,6 +651,7 @@ mod tests {
                 admission_port: None,
                 redeemed_at,
                 used_at,
+                behind: Some(false),
             });
             inv
         };
@@ -614,6 +687,139 @@ mod tests {
             signature: String::new(),
         });
         assert!(usable(&lapsed, &w2, t));
+    }
+
+    fn pass_invite(name: &str, ep: &str, behind: Option<bool>, used_at: u64) -> Invite {
+        let mut inv = Invite::from_json(&format!(
+            r#"{{"node_name":"{name}","node_public_key":"{}","endpoint":"{ep}","client_address":"10.77.0.2/16","dns":"10.77.0.1","role":"exit","admission":"pass"}}"#,
+            ClientKey::generate().unwrap().public_base64()
+        ))
+        .unwrap();
+        inv.pass = Some(PassBinding {
+            client_secret: ClientKey::generate().unwrap().secret_base64(),
+            admission_port: None,
+            redeemed_at: now() - 60,
+            used_at,
+            behind,
+        });
+        inv
+    }
+
+    #[test]
+    fn a_pass_key_redeemed_through_an_entry_never_makes_a_node_usable_for_one_hop() {
+        let t = now();
+        let direct = pass_invite("direct", "203.0.113.1:51820", Some(false), t - 600);
+        let behind_used = pass_invite("behind", "203.0.113.2:51820", Some(true), t - 600);
+        let behind_fresh = pass_invite("fresh", "203.0.113.3:51820", Some(true), 0);
+        let unknown = pass_invite("unknown", "203.0.113.4:51820", None, t - 600);
+        let w = Wallet::default();
+        assert!(
+            usable(&direct, &w, t),
+            "a key shown from here, its lease standing"
+        );
+        for i in [&behind_used, &behind_fresh, &unknown] {
+            assert!(
+                !usable(i, &w, t),
+                "{}: a key the node saw through an entry (or from an older pocket) is not one to show it from here",
+                i.node_name
+            );
+        }
+        // A pass in the wallet is a fresh key: that node is usable again.
+        let mut w2 = Wallet::default();
+        w2.passes.push(blank_pass(&behind_used.node_public_key));
+        assert!(usable(&behind_used, &w2, t));
+        // In rapido, with no pass left, only the node whose key was shown
+        // from here is picked; as the exit of two hops none is, without a pass.
+        let mut p = Pocket::default();
+        for i in [&direct, &behind_used, &behind_fresh, &unknown] {
+            p.add(Slot::Exit, i.clone()).unwrap();
+        }
+        let names: Vec<String> = without_dead(&p, &w, "rapido", false)
+            .exits
+            .iter()
+            .map(|i| i.node_name.clone())
+            .collect();
+        assert_eq!(names, vec!["direct"]);
+        assert!(!usable_behind(&direct, &w));
+    }
+
+    #[test]
+    fn a_circuit_marks_only_the_pass_key_it_used() {
+        let t = now();
+        let direct = pass_invite("q", "203.0.113.1:51820", Some(false), t - 7200);
+        let mut behind = direct.clone();
+        behind.pass = Some(PassBinding {
+            client_secret: ClientKey::generate().unwrap().secret_base64(),
+            admission_port: None,
+            redeemed_at: t,
+            used_at: 0,
+            behind: Some(true),
+        });
+        let mut p = Pocket::default();
+        p.add(Slot::Exit, direct.clone()).unwrap();
+        // Two hops through the node: the pocket keeps the key shown from
+        // here, and the circuit's key, redeemed through the entry, is not it.
+        p.replace(behind.clone()).unwrap();
+        assert!(p.exits[0].direct_pass().is_some());
+        assert!(!mark_used_in(&mut p, std::slice::from_ref(&behind)));
+        assert_eq!(
+            p.exits[0].pass.as_ref().unwrap().used_at,
+            t - 7200,
+            "the two-hop circuit says nothing about the lease of the key shown from here"
+        );
+        assert!(mark_used_in(&mut p, std::slice::from_ref(&direct)));
+        assert!(p.exits[0].pass.as_ref().unwrap().used_at >= t);
+    }
+
+    #[test]
+    fn automatic_passes_go_out_through_one_hop_only() {
+        use hidravpn_core::circuit::Mode;
+        assert!(refills_through(Mode::Rapido));
+        assert!(
+            !refills_through(Mode::Privado),
+            "never through the exit of two hops, whose operator runs the issuer"
+        );
+        let on = Refill::default().describe();
+        assert!(
+            on.contains("only while connected in rapido") && on.contains("never in privado"),
+            "{on}"
+        );
+        assert!(NOT_THROUGH_TWO_HOPS.contains("privado"));
+    }
+
+    #[test]
+    fn a_new_account_token_keeps_the_one_it_replaces() {
+        let dir =
+            std::env::temp_dir().join(format!("hidravpn-token-{}-{}", std::process::id(), now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pass.token");
+        let previous = previous_token_path(&path);
+        assert_eq!(previous, dir.join("pass.token.previous"));
+        assert_eq!(
+            keep_token(&path, "first").unwrap(),
+            None,
+            "nothing to keep aside"
+        );
+        assert_eq!(
+            keep_token(&path, "first").unwrap(),
+            None,
+            "the same token: nothing replaced"
+        );
+        assert!(!previous.exists());
+        assert_eq!(keep_token(&path, "second").unwrap(), Some(previous.clone()));
+        assert_eq!(read_token(&path).unwrap(), "second");
+        assert_eq!(std::fs::read_to_string(&previous).unwrap(), "first");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&path, &previous] {
+                assert_eq!(
+                    std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn blank_pass(node: &str) -> hidravpn_core::pass::Pass {

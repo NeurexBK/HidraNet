@@ -441,8 +441,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       <div class="pass-nodes" id="pass-nodes"><p class="empty">No node on this machine admits with a pass.</p></div>
       <div class="row"><input id="pass-token" type="password" autocomplete="off" spellcheck="false" placeholder="Account token" aria-label="Account token"></div>
       <div class="row two"><button class="btn" id="btn-token" disabled>Keep the token</button><button class="btn outline-accent" id="btn-passes" disabled>Get 10 passes per node</button></div>
-      <p class="help note">The token is handed to the service on this machine, which keeps it where only an administrator can read it; this page does not keep it. Anyone with an account on this computer can spend the account's passes.</p>
-      <label class="switch"><input type="checkbox" id="auto-passes" disabled><span class="track"><span class="knob"></span></span><span class="switch-text"><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account's quota.</span></span></label>
+      <p class="help note">The token is handed to the service on this machine, which keeps it where only an administrator can read it, and keeps the one it replaces beside it; this page does not keep it. Only an administrator may hand it over, since it holds the passes bought on the account: <code>sudo hidravpn passes token FILE</code> (on Windows, <code>hidravpn passes token FILE</code> in a terminal run as administrator). Anyone with an account on this computer can spend the account's passes.</p>
+      <label class="switch"><input type="checkbox" id="auto-passes" disabled><span class="track"><span class="knob"></span></span><span class="switch-text"><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected in rapido: the issuer then sees the node you use at that moment, not this machine. Never in privado: the request would leave through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Get passes before you connect in privado. It spends the account's quota.</span></span></label>
       <div class="msg" id="passes-msg" aria-live="polite"></div>
     </section>
     <section class="section" id="settings-service">
@@ -487,8 +487,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     'timeout': 'The service did not answer',
     'outdated': 'The service is older than this browser'
   };
-  var REFILL_ON = 'When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account\'s quota.';
-  var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node).';
+  var REFILL_ON = 'When a node runs low, the service asks for more, only while connected in rapido: the issuer then sees the node you use at that moment, not this machine. Never in privado: the request would leave through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Get passes before you connect in privado. It spends the account\'s quota.';
+  var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node), and not while connected in privado.';
   var PURGE_QUESTION = 'Remove HidraVPN, its programs, its nodes and this machine\'s key? Every node will then see this as a new machine.';
   var KEEP_QUESTION = 'Remove HidraVPN? The network goes back to normal; the key and nodes are kept for a later install.';
   var STALE_SECS = 180;

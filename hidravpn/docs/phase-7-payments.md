@@ -38,6 +38,13 @@ real purchases on the main network by the maintainers. The legal review
    with that token like any other, drawing on a balance instead of a daily
    quota. A second purchase tops the same account up.
 
+Neither the order nor the claim is sent while the service has two hops up:
+both carry the account, and would leave through the exit, which with the
+issuer could tie the session to the account (`anonymity.md`, finding 20).
+The token is replaced only by root, and the one replaced is kept beside it
+as `pass.token.previous`: it may hold a paid balance that exists nowhere
+else.
+
 The issuer sells only when run with `--pay-wallet` (the receiving wallet's
 public address; it holds no key for it) and at least one `--pay-pack
 PASSES=PRICE`: the price in whole HNET (`10=50`; the tag takes the

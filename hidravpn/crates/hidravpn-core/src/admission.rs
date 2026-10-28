@@ -234,8 +234,14 @@ pub struct PassRefused(pub String);
 
 /// Redeems a pass on the node the record names and returns the invite,
 /// checked the same way: the node's key and endpoint as the list has them.
-/// The invite remembers the pass's fresh key, which the tunnel then shows.
-pub async fn redeem_pass(record: &NodeRecord, pass: &crate::pass::Pass) -> Result<Invite> {
+/// The invite remembers the pass's fresh key, which the tunnel then shows,
+/// and whether it was redeemed through an entry (`behind`) or from this
+/// machine's own address: the key is only ever shown the same way.
+pub async fn redeem_pass(
+    record: &NodeRecord,
+    pass: &crate::pass::Pass,
+    behind: bool,
+) -> Result<Invite> {
     if pass.node_public_key.trim() != record.node_public_key.trim() {
         return Err(anyhow!(
             "that pass was made for another node than {}",
@@ -275,6 +281,7 @@ pub async fn redeem_pass(record: &NodeRecord, pass: &crate::pass::Pass) -> Resul
         admission_port: record.admission_port,
         redeemed_at: crate::timefmt::now_unix().max(0) as u64,
         used_at: 0,
+        behind: Some(behind),
     });
     Ok(invite)
 }

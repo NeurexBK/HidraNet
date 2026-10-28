@@ -12,9 +12,13 @@ service keeps it filled.
   pass node with fewer than `low` passes left (3) is topped up back to
   `count` (10), in one request for all such nodes, interleaved as
   `passes get` does. Only when automatic passes are on (the default once a
-  token is kept), a token is kept, and **the circuit is up**: the request
-  then goes through the tunnel. Disconnected, nothing is fetched, even when
-  low — it would leave from this machine's own address.
+  token is kept), a token is kept, and **a one-hop circuit is up**: the
+  request then goes through the tunnel. Disconnected, nothing is fetched,
+  even when low — it would leave from this machine's own address. With two
+  hops up nothing is fetched either, and passes asked for by hand are
+  refused: the request would leave through the exit, and the exit and the
+  issuer together could tie the two-hop session to the account
+  (`anonymity.md`, finding 20).
 - **`hidravpn passes auto [on|off] [--low N] [--count N]`** sets it, root
   only, in `/etc/hidravpn/refill.json`; with no argument it says how it is
   set, and so does `hidravpn passes list`. `low` must be below `count`, and
@@ -106,12 +110,20 @@ recorded run, and the phase-4 Windows script has still not run.
 
 ## What is honest about this phase
 
-- **Through the tunnel, the issuer sees the exit instead of you.** It no
-  longer sees this machine's address, but it sees the address of the exit
-  the circuit uses at that moment, so it learns which exit an account was
-  using then. The passes it signs still say nothing about where they are
-  spent. Who would rather the issuer saw neither can turn automatic passes
-  off and fetch by hand, at a moment of their own choosing.
+- **Through the tunnel, the issuer sees the node instead of you.** It no
+  longer sees this machine's address, but it sees the address of the
+  one-hop node the circuit uses at that moment, so it learns which node an
+  account was using then. The passes it signs still say nothing about where
+  they are spent. Who would rather the issuer saw neither can turn automatic
+  passes off and fetch by hand, at a moment of their own choosing.
+- **Never through two hops.** There the request would leave through the
+  exit that carries the session. The exit sees the flow to the issuer leave
+  from the session's address, and the issuer gets the account's request from
+  the exit's address at the same moment: not a timing guess but an exact
+  join of the session to the account, for an exit whose operator runs the
+  issuer or shares its logs with it. The maintainers run both, and the list
+  does not name the issuer's operator, so automatic passes wait for one hop,
+  and passes are fetched by hand before connecting in privado.
 - **The timing still says something.** A top-up follows the use of passes,
   within ten to fifteen minutes; someone who watches both the issuer and a
   node can compare. Fetching more at a time (`--count`) makes it rarer.

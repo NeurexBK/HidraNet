@@ -21,7 +21,9 @@
 # `connect` joins the node by redeeming one; the internet sees the node;
 # every connection shows the node a fresh key; with two hops the exit's pass
 # is redeemed through the entry, the exit never hears from the client, and
-# with no pass left for it the connection is refused; when the exit and the
+# with no pass left for it the connection is refused; used next as the one
+# hop, it is never shown that key from the client's address (refused, or a
+# key redeemed from there, or a fresh pass); when the exit and the
 # entry give this machine the same address (Windows cannot hold it twice), the
 # entry is asked for another session and no second pass is spent; a pass spent once is refused
 # the second time; the quota and a switched-off account stop issuance; the
@@ -130,6 +132,35 @@ OUT=$($C "$BIN/hidravpn" passes get --count 6 2>&1); [ $? -ne 0 ] && echo "$OUT"
 # ── Connecting redeems a pass; every connection a fresh one ─────────────────
 $C env RUST_LOG=hidravpn_service=info HIDRAVPN_PLAIN_HTTP_ISSUER=1 "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+# A node's own peer table, as its operator can read it: "key endpoint
+# handshake" lines. A node on userspace WireGuard answers on its control
+# socket; one on the kernel's (as on a CI runner) through `wg`. Arguments:
+# the interface, then the namespace prefix it lives in.
+peers() {
+  if [ -S "/var/run/wireguard/$1.sock" ]; then peers_uapi "/var/run/wireguard/$1.sock"
+  else $2 wg show "$1" dump 2>/dev/null | awk 'NR > 1 { ep = $3; if (ep == "(none)") ep = "-"; else sub(/:[0-9]+$/, "", ep); print $1, ep, $5 }'
+  fi
+}
+peers_uapi() { python3 -I - "$1" <<'PY'
+import socket, sys, base64
+s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b"get=1\n\n")
+buf = b""
+while not buf.endswith(b"\n\n"):
+    c = s.recv(65536)
+    if not c: break
+    buf += c
+key = None; ep = "-"; hs = 0; out = []
+def flush():
+    if key: out.append(f"{key} {ep} {hs}")
+for line in buf.decode().splitlines():
+    k, _, v = line.partition("=")
+    if k == "public_key":
+        flush(); key = base64.b64encode(bytes.fromhex(v)).decode(); ep = "-"; hs = 0
+    elif k == "endpoint": ep = v.rsplit(":", 1)[0]
+    elif k == "last_handshake_time_sec": hs = int(v)
+flush(); print("\n".join(out))
+PY
+}
 svc() { python3 -I - "$1" <<'PY'
 import socket, sys, json
 tok = open('/run/hidravpn/control.token').read().strip()
@@ -273,6 +304,8 @@ ST=$(svc '{"cmd":"status"}')
 echo "$R" | grep -q '"ok":true' && echo "$ST" | grep -q '"entry_name":"node-e"' && echo "$ST" | grep -q '"node_name":"node-q"' && pass "two hops: node-e as the entry, node-q (which takes passes) as the exit" || fail "privado with a pass exit: $R $ST"
 EXIT_IP=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] && pass "the internet sees node-q ($EXIT_IP)" || fail "privado exit IP '$EXIT_IP'"
 [ "$(q_passes)" = $((QP - 1)) ] && grep -q "admitted a client with a pass" "$WORK/node-q.log" && pass "one of node-q's passes was redeemed for this connection" || fail "node-q passes: $QP -> $(q_passes)"
+# The key node-q was shown as the exit of two hops: the one arriving from node-e.
+K_BEHIND=$(peers hvq0 "$Q" | awk '$2 == "10.206.0.2" { print $1 }' | head -1)
 sleep 1; kill -INT $TCPD 2>/dev/null; wait $TCPD 2>/dev/null
 FROM_CLIENT=$(tcpdump -n -r "$WORK/q.pcap" "src host 10.200.0.2 or dst host 10.200.0.2" 2>/dev/null | wc -l)
 VIA_ENTRY=$(tcpdump -n -r "$WORK/q.pcap" "src host 10.206.0.2 and tcp dst port 51821" 2>/dev/null | wc -l)
@@ -287,6 +320,55 @@ sleep 1; kill -INT $TCPD 2>/dev/null; wait $TCPD 2>/dev/null
 ST=$(svc '{"cmd":"status"}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "no pass left for node-" && echo "$R" | grep -q "only ever shown a key admitted through the entry" && echo "$ST" | grep -q '"connected":false' && echo "$ST" | grep -q '"killswitch":false' && pass "with no pass left for the exit of two hops, connect is refused and says why; it never falls back to a key the exit saw" || fail "no pass for the exit: $R $ST"
 [ "$(tcpdump -n -r "$WORK/q2.pcap" "src host 10.200.0.2 or dst host 10.200.0.2" 2>/dev/null | wc -l)" = 0 ] && pass "and node-q heard nothing from the client" || fail "node-q heard from the client on a refused connect"
+
+# ── After two hops, one hop through the same pass node ─────────────────────
+# node-q was just the exit of two hops, under a key redeemed through node-e.
+# Used next as the one hop, with no pass left for it, it is never shown that
+# key from this machine's address: neither as the last pass's key nor as a
+# fresh one. Either the key redeemed from here before is used, or the
+# connection is refused; with a pass, a fresh key. node-p is taken out of
+# the pocket meanwhile, so node-q is the one hop.
+from_client() { peers hvq0 "$Q" | awk -v k="$1" '$1 == k && $2 == "10.200.0.2"' | wc -l; }
+[ -n "$K_BEHIND" ] && pass "node-q saw its two-hop key arrive from node-e only" || fail "no key from node-e in node-q's peers: $(peers hvq0 "$Q" | tr '\n' ';')"
+[ "$(secret_of node-q)" = "$AFTER" ] && pass "the key redeemed through the entry did not take the place of the one redeemed from here in the pocket" || fail "node-q's key in the pocket is no longer the one redeemed from here"
+cp /etc/hidravpn/circuit.json "$WORK/pocket-before-one-hop.json"
+"$BIN/hidravpn" nodes remove node-p > /dev/null 2>&1
+R=$(svc '{"cmd":"connect","mode":"rapido"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+$C curl -s --max-time 5 -o /dev/null http://10.201.0.2/ 2>/dev/null
+[ "$(from_client "$K_BEHIND")" = 0 ] && pass "rapido through node-q with no pass left: the two-hop key never arrived from the client ($(echo "$R" | grep -q '"ok":true' && echo "the key redeemed from here was used" || echo refused))" || fail "node-q got its two-hop key from the client's address: $R"
+R=$(svc '{"cmd":"new_identity"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+[ "$(from_client "$K_BEHIND")" = 0 ] && pass "nor after a new identity in rapido" || fail "a new identity showed node-q its two-hop key from the client: $R"
+svc '{"cmd":"down"}' >/dev/null
+# node-q only ever used as the exit of two hops: the pocket keeps no key
+# redeemed from here for it, only the two-hop one.
+python3 -I - <<'PY'
+import json
+p = json.load(open('/etc/hidravpn/circuit.json'))
+q = [x for x in p['exits'] if x['node_name'] == 'node-q'][0]
+p['exits'] = [x for x in p['exits'] if x['node_name'] != 'node-q']
+p['entries'] = [x for x in p.get('entries', []) if x['node_name'] != 'node-q']
+keep = ('node_name', 'node_public_key', 'endpoint', 'operator', 'role', 'admission', 'admission_port', 'country', 'features')
+p.setdefault('known', []).append({k: q[k] for k in keep if q.get(k) is not None})
+open('/etc/hidravpn/circuit.json', 'w').write(json.dumps(p))
+PY
+OUT=$($C "$BIN/hidravpn" passes get --node node-q --count 1 --token-file <(echo "$TOKEN3") 2>&1); echo "$OUT" | grep -q "1 pass(es) for 1 node(s)" || fail "a pass for node-q: $OUT"
+R=$(svc '{"cmd":"connect","mode":"privado"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+K2=$(peers hvq0 "$Q" | awk -v k="$K_BEHIND" '$2 == "10.206.0.2" && $1 != k { print $1 }' | head -1)
+svc '{"cmd":"status"}' | grep -q '"entry_name":"node-e"' && [ -n "$K2" ] && pass "two hops again through node-q, under a new key from node-e" || fail "second privado: $R"
+svc '{"cmd":"down"}' >/dev/null
+R=$(svc '{"cmd":"connect","mode":"rapido"}'); ST=$(svc '{"cmd":"status"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "no pass left for node-q" && echo "$R" | grep -q "admitted through an entry" && echo "$ST" | grep -q '"connected":false' && [ "$(from_client "$K2")" = 0 ] && pass "rapido right after, with no pass left and only the two-hop key: refused, says why, and node-q never got that key from the client" || fail "rapido with only a two-hop key: $R $ST (from the client: $(from_client "$K2"))"
+OUT=$($C "$BIN/hidravpn" passes get --node node-q --count 1 --token-file <(echo "$TOKEN3") 2>&1); echo "$OUT" | grep -q "1 pass(es) for 1 node(s)" || fail "another pass for node-q: $OUT"
+R=$(svc '{"cmd":"connect","mode":"rapido"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null)
+NEWK=$(peers hvq0 "$Q" | awk '$2 == "10.200.0.2" && $3 > 0 { print $1 }' | sort -u)
+[ "$EXIT_IP" = 10.205.0.2 ] && [ "$(from_client "$K2")" = 0 ] && [ "$(from_client "$K_BEHIND")" = 0 ] && [ -n "$NEWK" ] && pass "with a pass, rapido through node-q shows it a fresh key, never a two-hop one" || fail "rapido with a pass: '$EXIT_IP' $R"
+svc '{"cmd":"down"}' >/dev/null
+cp "$WORK/pocket-before-one-hop.json" /etc/hidravpn/circuit.json
 
 # ── Two hops through an entry that takes passes: none wasted on failures ───
 # node-f, an entry that admits with a pass. When the exit cannot be used,

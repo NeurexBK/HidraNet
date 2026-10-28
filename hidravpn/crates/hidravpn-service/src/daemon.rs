@@ -163,10 +163,13 @@ impl Daemon {
     /// the service an invite of their own, which would route the whole
     /// machine through a node nobody vetted, and never switch off what
     /// another account switched on. Members may also look after the passes
-    /// (the account token, fetching passes, automatic top-ups): the browser
-    /// runs as the person, and the VPN page does that for them. What is at
-    /// stake there is the pass account's quota, never the machine's network
-    /// or its key; the token is never repeated in an answer.
+    /// (fetching passes, automatic top-ups): the browser runs as the person,
+    /// and the VPN page does that for them. What is at stake there is the
+    /// pass account's quota, never the machine's network or its key. The
+    /// account token itself is root's to replace: it may hold passes paid
+    /// for, and the next purchase goes on whatever token is kept, so another
+    /// account that replaced it could wipe the one and take the other. It is
+    /// never repeated in an answer.
     pub async fn handle(&self, req: Request, caller: Option<u32>) -> Response {
         let privileged = caller == Some(0);
         // The token is compared in full, in constant time, before anything else.
@@ -244,8 +247,17 @@ impl Daemon {
                 Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Command::SetPassToken { .. } if !privileged => Response::err(
+                "keeping the pass account token needs root (an administrator on Windows), as `up` with an invite does: the token holds the account's passes, bought ones too, and the next purchase goes on it. `sudo hidravpn passes token <file>` keeps one (on Windows, `hidravpn passes token <file>` in a terminal run as administrator).",
+            ),
             Command::SetPassToken { pass_token } => match self.set_pass_token(&pass_token.0) {
-                Ok(()) => Response::ok().noting("the account token is kept on this machine, readable by root only"),
+                Ok(kept) => Response::ok().noting(match kept {
+                    Some(p) => format!(
+                        "the account token is kept on this machine, readable by root only; the one it replaced is kept at {}, readable by root only too",
+                        p.display()
+                    ),
+                    None => "the account token is kept on this machine, readable by root only".to_string(),
+                }),
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::Refill {
@@ -438,9 +450,9 @@ impl Daemon {
 
     /// Writes down, for the invites won with a pass that this circuit uses,
     /// that they were used now: what tells later picks their lease stands.
-    async fn note_used(&self, keys: &[String]) {
-        if !keys.is_empty() {
-            if let Err(e) = crate::passes::mark_used(&self.pocket_path, keys).await {
+    async fn note_used(&self, used: &[Invite]) {
+        if !used.is_empty() {
+            if let Err(e) = crate::passes::mark_used(&self.pocket_path, used).await {
                 tracing::warn!("could not note a pass key's use: {e:#}");
             }
         }
@@ -550,13 +562,16 @@ impl Daemon {
         Ok((pocket, lines.join("; ")))
     }
 
-    /// Keeps the account token passes are asked for with, root only. The
-    /// token is checked for shape and never repeated in an answer.
-    fn set_pass_token(&self, token: &str) -> Result<()> {
+    /// Keeps the account token passes are asked for with, root only; the
+    /// caller is root (`handle`). The token is checked for shape and never
+    /// repeated in an answer. The one it replaces is kept beside it
+    /// (`passes::keep_token`): it may hold a paid balance, and be its only
+    /// copy. Returns where that one was kept, if one was.
+    fn set_pass_token(&self, token: &str) -> Result<Option<PathBuf>> {
         let t = crate::passes::parse_token(token)?;
-        write_private_atomic(&self.token_path(), t.as_bytes())?;
+        let kept = crate::passes::keep_token(&self.token_path(), &t)?;
         tracing::info!("pass account token replaced");
-        Ok(())
+        Ok(kept)
     }
 
     /// Reads the automatic-passes setting, and changes what is given. Any
@@ -599,10 +614,24 @@ impl Daemon {
 
     /// Asks the issuer for passes with the token this machine keeps, `count`
     /// for each pass node or the one named. Only the account's quota is at
-    /// stake, and the token never leaves the service.
+    /// stake, and the token never leaves the service. Not while two hops are
+    /// up: the request would leave through their exit
+    /// (`passes::NOT_THROUGH_TWO_HOPS`).
     async fn get_passes(&self, name: Option<&str>, count: usize) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
         let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        // Under the pocket's locks no circuit is being built: what is up is
+        // what the request would leave through. In the same order as every
+        // other path: the pocket's locks, then the circuit's.
+        let two_hops = self
+            .state
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|a| a.circuit.spec().hops() == 2);
+        if two_hops {
+            return Err(anyhow!("{}", crate::passes::NOT_THROUGH_TWO_HOPS));
+        }
         let pocket = load_pocket(&self.pocket_path)?;
         let token = crate::passes::read_token(&self.token_path())?;
         let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
@@ -628,8 +657,9 @@ impl Daemon {
         }
     }
 
-    /// One top-up, when it is on, a token is kept and the circuit is up: the
-    /// issuer is then asked through the tunnel and sees an exit's address.
+    /// One top-up, when it is on, a token is kept and a one-hop circuit is
+    /// up: the issuer is then asked through the tunnel and sees the node's
+    /// address. Never through two hops (`passes::refills_through`).
     /// Returns what was fetched, if anything.
     pub async fn refill_once(&self) -> Option<String> {
         let paused = self
@@ -646,7 +676,7 @@ impl Daemon {
         }
         // No token kept: nothing to ask with, and nothing to say.
         let token = crate::passes::read_token(&self.token_path()).ok()?;
-        if !self.circuit_up() {
+        if !self.refill_may_go() {
             return None;
         }
         let _one_at_a_time = self.pocket_lock.lock().await;
@@ -664,15 +694,16 @@ impl Daemon {
         };
         // Asked again now that the locks are held: whoever held them may
         // have been slow, and a `down` meanwhile would send the request,
-        // with the account token, out of this machine's own address.
-        if !self.circuit_up() {
+        // with the account token, out of this machine's own address (a
+        // connect in privado, through its exit).
+        if !self.refill_may_go() {
             return None;
         }
         let before = wallet.passes.len();
         // Asked again before each request: a `down` while the issuer is
         // asked must stop the next one before it looks the issuer up.
         let got =
-            crate::passes::refill(&pocket, &mut wallet, &token, &r, &|| self.circuit_up()).await;
+            crate::passes::refill(&pocket, &mut wallet, &token, &r, &|| self.refill_may_go()).await;
         if wallet.passes.len() != before
             && crate::passes::save_wallet(&self.wallet_path(), &wallet).is_err()
         {
@@ -690,12 +721,17 @@ impl Daemon {
         }
     }
 
-    /// Whether a circuit is up now. One being built, or being changed, is
-    /// not: the answer does not wait for it.
-    fn circuit_up(&self) -> bool {
-        self.state
-            .try_lock()
-            .is_ok_and(|g| g.as_ref().is_some_and(|a| a.circuit.status().connected))
+    /// Whether a top-up may go out now: a circuit is up, and one the
+    /// issuer may be asked through (`passes::refills_through`: one hop, not
+    /// two). One being built, or being changed, is not: the answer does not
+    /// wait for it.
+    fn refill_may_go(&self) -> bool {
+        self.state.try_lock().is_ok_and(|g| {
+            g.as_ref().is_some_and(|a| {
+                a.circuit.status().connected
+                    && crate::passes::refills_through(a.circuit.spec().mode())
+            })
+        })
     }
 
     /// Says why a top-up failed, without an address or a name, and rests
@@ -925,7 +961,7 @@ impl Daemon {
                     Some(Box::new(o)),
                 ));
             }
-            crate::passes::mark_used_in(&mut pocket, &spec_keys(o.circuit.spec()));
+            crate::passes::mark_used_in(&mut pocket, &spec_passes(o.circuit.spec()));
             let _ = o.circuit.down_with(false).await;
         } else if killswitch::is_active() {
             held.push(first_hop);
@@ -971,7 +1007,7 @@ impl Daemon {
             Err(e) => Err(e),
         };
         if let Ok(c) = &built {
-            crate::passes::mark_used_in(&mut pocket, &spec_keys(c.spec()));
+            crate::passes::mark_used_in(&mut pocket, &spec_passes(c.spec()));
         }
         if let Err(e) = save_pocket(&self.pocket_path, &pocket) {
             tracing::warn!("could not write the pocket: {e:#}");
@@ -1015,7 +1051,7 @@ impl Daemon {
         // interfaces so the kernel interfaces are gone before we report
         // "disconnected". Their use is written down after, with the state
         // free: the pocket's lock may be held a while by a fetch.
-        let used = spec_keys(active.circuit.spec());
+        let used = spec_passes(active.circuit.spec());
         let r = active.circuit.down().await;
         drop(guard);
         tracing::info!("disconnected");
@@ -1150,12 +1186,12 @@ fn preferring(from: Vec<usize>, ok: impl Fn(usize) -> bool) -> Vec<usize> {
     }
 }
 
-/// The node keys of a circuit's invites won with a pass.
-fn spec_keys(spec: &CircuitSpec) -> Vec<String> {
+/// A circuit's invites won with a pass.
+fn spec_passes(spec: &CircuitSpec) -> Vec<Invite> {
     std::iter::once(&spec.exit)
         .chain(spec.entry.as_ref())
         .filter(|i| i.pass.is_some())
-        .map(|i| i.node_public_key.clone())
+        .cloned()
         .collect()
 }
 
@@ -1600,6 +1636,47 @@ mod tests {
             )
             .await;
         assert!(ok.ok, "a group member may still ping");
+    }
+
+    #[tokio::test]
+    async fn only_root_may_replace_the_pass_account_token_and_the_old_one_is_kept() {
+        let dir = std::env::temp_dir().join(format!(
+            "hidravpn-daemon-tok-{}-{}",
+            std::process::id(),
+            random::index(1 << 30).unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = Daemon::with_pocket("tok".to_string(), dir.join("circuit.json"));
+        let set = |t: &str| Request {
+            token: "tok".into(),
+            cmd: Command::SetPassToken {
+                pass_token: crate::ipc::Secret(t.into()),
+            },
+        };
+        let kept = dir.join("pass.token");
+        std::fs::write(&kept, "the-paid-one").unwrap();
+        for caller in [Some(1000), None] {
+            let r = d.handle(set("someone-elses"), caller).await;
+            assert!(!r.ok);
+            assert!(
+                r.error.as_deref().unwrap().contains("needs root"),
+                "{:?}",
+                r.error
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "the-paid-one");
+        assert!(!dir.join("pass.token.previous").exists());
+        // Root replaces it, and the one replaced is kept beside it.
+        let r = d.handle(set("a-new-one"), Some(0)).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert!(r.note.as_deref().unwrap().contains("pass.token.previous"));
+        assert!(!serde_json::to_string(&r).unwrap().contains("a-new-one"));
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "a-new-one");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("pass.token.previous")).unwrap(),
+            "the-paid-one"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
