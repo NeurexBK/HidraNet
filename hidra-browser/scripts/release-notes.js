@@ -10,6 +10,10 @@
  * ones on the release page, downloaded, or the ones a publish run uploaded —
  * so the table on the page is always the table of what the page serves.
  *
+ * The packages' version is read from their names (one version, four
+ * systems), and every "{version}" in the notes becomes it: each build is
+ * published under a version and a tag of its own.
+ *
  * Usage:
  *   node scripts/release-notes.js <dir-with-the-zips> [commit-sha] [--preview] > notes.md
  */
@@ -23,12 +27,7 @@ const ROOT = path.join(__dirname, '..', '..');
 const NOTES = path.join(ROOT, '.github', 'release-notes.md');
 
 // Same order as landing/SHA256SUMS.txt.
-const FILES = [
-  'HidraNet-Browser-1.0.0-macOS-arm64.zip',
-  'HidraNet-Browser-1.0.0-macOS-x64.zip',
-  'HidraNet-Browser-1.0.0-Linux-x64.zip',
-  'HidraNet-Browser-1.0.0-Windows-x64.zip',
-];
+const ARCHES = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64'];
 
 const dir = process.argv[2];
 if (!dir) {
@@ -37,6 +36,19 @@ if (!dir) {
 }
 const preview = process.argv.includes('--preview');
 const commit = (process.argv[3] === '--preview' ? '' : process.argv[3] || '').trim().slice(0, 7);
+
+// The one version the packages in the folder share.
+const versions = new Set();
+for (const n of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+  const m = /^HidraNet-Browser-(\d+\.\d+\.\d+)-(macOS-arm64|macOS-x64|Linux-x64|Windows-x64)\.zip$/.exec(n);
+  if (m) versions.add(m[1]);
+}
+if (versions.size > 1) {
+  console.error('  packages of more than one version in ' + dir + ': ' + [...versions].join(', '));
+  process.exit(1);
+}
+const version = [...versions][0] || '';
+const FILES = ARCHES.map((a) => `HidraNet-Browser-${version || '<version>'}-${a}.zip`);
 
 const rows = FILES.map((name) => {
   const file = path.join(dir, name);
@@ -53,7 +65,7 @@ const rows = FILES.map((name) => {
 });
 
 const date = new Date().toISOString().slice(0, 10);
-const notes = fs.readFileSync(NOTES, 'utf8').trimEnd();
+const notes = fs.readFileSync(NOTES, 'utf8').trimEnd().replace(/\{version\}/g, version);
 
 let out = preview ? '# Release notes preview\n\nThis document is a preview only; this run did not publish or replace any release assets.\n\n' : '';
 out += notes + '\n\n## Packages\n\n';

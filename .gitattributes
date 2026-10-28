@@ -2,3 +2,5 @@
 # their line endings (a Windows checkout with core.autocrlf would otherwise
 # serve or re-sign different bytes).
 landing/vpn/** -text
+landing/SHA256SUMS.txt -text
+landing/SHA256SUMS.txt.sig -text

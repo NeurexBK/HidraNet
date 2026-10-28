@@ -31,11 +31,24 @@ jobs:
 
       - name: Check release input verification
         working-directory: hidra-browser
-        run: node test/release-base.js
+        run: |
+          node test/release-base.js
+          node test/release-runtime.js
 
+      # Downloads the base packages (the ones on the release page) and checks
+      # them: the pinned hashes, and that their Electron files, their Tor and
+      # their engine are the ones the repository pins.
       - name: Verify the pinned base packages
         working-directory: hidra-browser
         run: node scripts/refresh-release.js --verify-inputs-only
+
+      # The same question asked of the binary itself, so the log says plainly
+      # which Electron the published packages run, even when the step above
+      # has already refused them.
+      - name: The published packages run the Electron package.json pins
+        if: always()
+        working-directory: hidra-browser
+        run: node scripts/check-engine.js dist/release-in/*.zip
 
       # The engine is cross-compiled for Windows, and rusqlite is built from
       # source, so a C compiler for the target is needed and not just the Rust
@@ -77,6 +90,10 @@ jobs:
       - name: Build the packages
         working-directory: hidra-browser
         run: node scripts/refresh-release.js
+
+      - name: The built packages run the Electron package.json pins
+        working-directory: hidra-browser
+        run: node scripts/check-engine.js dist/release-out/*.zip
 
       - name: Hash the review packages
         working-directory: hidra-browser/dist/release-out

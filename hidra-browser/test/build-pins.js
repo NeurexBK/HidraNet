@@ -65,6 +65,17 @@ for (const b of ['build-mac.js', 'build-linux.js', 'build-win.js']) {
   check(b + ' packages only a Tor that matches its pins', /verifyTorDir\(/.test(src));
 }
 
+// Every build is its package.json version: no builder carries a version of
+// its own, which is how every rebuild came to call itself 1.0.0.
+for (const b of ['build-mac.js', 'build-linux.js', 'build-win.js', 'pack-portable.js', 'refresh-release.js', 'update-sums.js']) {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', b), 'utf8');
+  check(b + ' takes its version from package.json',
+        /const VERSION\s*=\s*(require\(path\.join\(ROOT, ('hidra-browser', )?'package\.json'\)\)\.version|JSON\.parse\(fs\.readFileSync\(path\.join\(ROOT, 'package\.json'\))/.test(src) &&
+        !/const VERSION\s*=\s*'/.test(src));
+}
+check('package.json has a version past the 1.0.0 every earlier build was published as',
+      /^\d+\.\d+\.\d+$/.test(pkg.version) && pkg.version !== '1.0.0');
+
 // ── Tor ─────────────────────────────────────────────────────────────────────
 for (const k of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64']) {
   const pins = tor.PINS[k] || {};

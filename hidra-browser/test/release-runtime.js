@@ -1,0 +1,239 @@
+// A package is refused unless it runs the Electron and the Tor the repository
+// pins, on the Chromium its user agent claims, with no stale app code.
+//
+// The v1.0.0 packages were refreshed from older ones by refresh-release.js,
+// which swapped the app and kept the runtime: they went out on Electron
+// 33.4.11 (Chromium 130) and Tor 15.0.22 while lib/electron.js and lib/tor.js
+// said 44.9.3 and 15.0.26, under a Chrome 152 user agent. This checks the
+// refusals in lib/package-runtime.js on small stand-in packages, that
+// refresh-release.js applies them to its inputs before building and to its
+// outputs, that patch-zip.js refuses app/src files the tree no longer has,
+// and that check-engine.js reads the version out of the binary. With the
+// official Electron zip in a cache, it also checks a package laid out from
+// it passes; with the published 1.0.0 Linux package in dist/release-in, that
+// it is refused. No network.
+//
+//   node hidra-browser/test/release-runtime.js
+
+'use strict';
+
+const assert = require('assert');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const ROOT = path.join(__dirname, '..');
+const { readZip, writeZip, mkFile, mkDir } = require('../scripts/lib/zip');
+const rt = require('../scripts/lib/package-runtime');
+const tor = require('../scripts/lib/tor');
+const electron = require('../scripts/lib/electron');
+const { patchZip } = require('../scripts/patch-zip');
+
+let passed = 0, failed = 0;
+async function check(name, fn) {
+  try { await fn(); passed++; console.log('ok    ' + name); } catch (e) { failed++; console.log('FAIL  ' + name + '\n      ' + ((e && e.stack) || e)); }
+}
+const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hidra-runtime-'));
+const zipOf = (files) => readZip(writeZip(files.map(([n, d, m]) => (n.endsWith('/') ? mkDir(n) : mkFile(n, Buffer.from(d), m)))));
+
+// What Electron writes into its main binary, and so what the check reads.
+const engine = (e, c) => 'ELF\0padding\0Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/' + c +
+  ' Electron/' + e + ' Safari/537.36\0more\0Chrome/' + c + '\0Electron/' + e + '\0';
+const GOOD_ENGINE = engine(electron.ELECTRON_VER, rt.advertisedChromeMajor() + '.0.7977.167');
+
+// A stand-in for the pinned Tor: its pins are swapped for the fixture's.
+const TOR = { tor: 'the tor we ship', geoip: 'geoip data', geoip6: 'geoip6 data' };
+const realPins = tor.PINS['linux-x64'];
+tor.PINS['linux-x64'] = { tor: sha(TOR.tor), geoip: sha(TOR.geoip), geoip6: sha(TOR.geoip6) };
+const LIBEVENT = fs.readFileSync(path.join(ROOT, 'vendor', 'linux-x64', 'libevent-2.1.so.7'));
+
+const officialLinux = (bin = GOOD_ENGINE) => zipOf([
+  ['electron', bin, 0o755], ['libffmpeg.so', 'ffmpeg'], ['chrome-sandbox', 'sandbox', 0o4755],
+  ['locales/', ''], ['locales/en-US.pak', 'en'], ['locales/pt-BR.pak', 'pt'],
+  ['resources/', ''], ['resources/default_app.asar', 'the default app'], ['version', electron.ELECTRON_VER],
+]);
+function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, add = [], torFiles = TOR } = {}) {
+  const files = [
+    ['hidranet', bin, 0o755], ['libffmpeg.so', 'ffmpeg'], ['chrome-sandbox', 'sandbox', 0o4755],
+    ['locales/en-US.pak', 'en'], ['locales/pt-BR.pak', 'pt'], ['version', electron.ELECTRON_VER],
+    ['resources/app/package.json', '{}'], ['resources/app/src/main/main.js', 'main'], ['resources/app/build.json', '{}'],
+    ['resources/bin/tor/libevent-2.1.so.7', LIBEVENT],
+    ...Object.entries(torFiles).map(([n, d]) => ['resources/bin/tor/' + n, d]),
+    ['start.sh', '#!/bin/sh', 0o755], ['LEIA-ME.txt', 'readme'],
+    ...add,
+  ].filter(([n]) => !drop.includes(n)).map(([n, d, m]) => [prefix + n, n in swap ? swap[n] : d, m]);
+  return zipOf(files);
+}
+
+(async () => {
+  // ── The runtime ─────────────────────────────────────────────────────────
+  await check('a package laid out from the pinned Electron, with the pinned Tor, passes', async () => {
+    const pkg = linuxPackage();
+    assert.deepStrictEqual(rt.runtimeProblems(pkg, officialLinux(), 'linux'), []);
+    assert.deepStrictEqual(rt.torProblems(pkg, 'linux', 'x64'), []);
+    assert.deepStrictEqual(rt.engineProblems(pkg, 'linux'), []);
+  });
+  await check('so does one under a top folder, as build-linux.js writes it', async () => {
+    const pkg = linuxPackage({ prefix: 'HidraNet-Linux-x64/' });
+    assert.deepStrictEqual(rt.runtimeProblems(pkg, officialLinux(), 'linux'), []);
+    assert.deepStrictEqual(rt.torProblems(pkg, 'linux', 'x64'), []);
+    assert.deepStrictEqual(rt.engineProblems(pkg, 'linux'), []);
+  });
+  await check('an Electron file that differs from the pinned zip is refused', async () => {
+    const p = rt.runtimeProblems(linuxPackage({ swap: { 'libffmpeg.so': 'an older ffmpeg' } }), officialLinux(), 'linux');
+    assert.deepStrictEqual(p, ['libffmpeg.so is not the file of Electron ' + electron.ELECTRON_VER]);
+  });
+  await check('the main binary of another Electron is refused', async () => {
+    const old = engine('33.4.11', '130.0.6723.191');
+    const pkg = linuxPackage({ bin: old });
+    assert.ok(rt.runtimeProblems(pkg, officialLinux(), 'linux').includes('hidranet is not the file of Electron ' + electron.ELECTRON_VER));
+    assert.deepStrictEqual(rt.engineProblems(pkg, 'linux'), [
+      'the engine is Electron 33.4.11, not ' + electron.ELECTRON_VER,
+      'the engine is Chromium 130.0.6723.191 but the user agent says Chrome ' + rt.advertisedChromeMajor(),
+    ]);
+  });
+  await check('a missing Electron file, or one from somewhere else, is refused', async () => {
+    const p = rt.runtimeProblems(linuxPackage({ drop: ['locales/pt-BR.pak'], add: [['libevil.so', 'x']] }), officialLinux(), 'linux');
+    assert.deepStrictEqual(p.sort(), ['libevil.so comes from neither Electron ' + electron.ELECTRON_VER + ' nor HidraNet',
+      'the Electron file locales/pt-BR.pak is missing'].sort());
+  });
+  await check('an engine whose Chromium is not the one the user agent claims is refused', async () => {
+    const p = rt.engineProblems(linuxPackage({ bin: engine(electron.ELECTRON_VER, '151.0.1.2') }), 'linux');
+    assert.deepStrictEqual(p, ['the engine is Chromium 151.0.1.2 but the user agent says Chrome ' + rt.advertisedChromeMajor()]);
+    assert.ok(rt.engineProblems(linuxPackage({ bin: 'no version in here' }), 'linux').length === 2);
+    const two = engine(electron.ELECTRON_VER, '152.0.1.2') + engine('33.4.11', '152.0.1.2');
+    assert.ok(/names no single Electron version/.test(rt.engineProblems(linuxPackage({ bin: two }), 'linux').join()));
+  });
+  await check('the user agent the check compares with is the one engine.js advertises', async () => {
+    assert.strictEqual(rt.advertisedChromeMajor("'Mozilla/5.0 (X11) Chrome/152.0.0.0 Safari' 'Mozilla/5.0 (Win) Chrome/152.0.0.0 S'"), '152');
+    assert.throws(() => rt.advertisedChromeMajor("'Mozilla/5.0 Chrome/152.0.0.0' 'Mozilla/5.0 Chrome/151.0.0.0'"), /exactly one/);
+  });
+
+  // ── Tor ─────────────────────────────────────────────────────────────────
+  await check('a Tor that is not the pinned one is refused, file by file', async () => {
+    const p = rt.torProblems(linuxPackage({ torFiles: { ...TOR, tor: 'tor 15.0.22' } }), 'linux', 'x64');
+    assert.strictEqual(p.length, 1);
+    assert.ok(/^Tor: tor is not the pinned Tor 15\.0\.26/.test(p[0]), p[0]);
+    const q = rt.torProblems(linuxPackage({ torFiles: { tor: TOR.tor, geoip: TOR.geoip } }), 'linux', 'x64');
+    assert.deepStrictEqual(q, ['Tor: geoip6 is missing']);
+  });
+  await check('Tor\'s folder holds nothing else: no stray file, an honest .version, the vendored libevent', async () => {
+    assert.deepStrictEqual(rt.torProblems(linuxPackage({ torFiles: { ...TOR, torrc: 'x' } }), 'linux', 'x64'),
+      ['Tor: torrc is not part of the pinned Tor']);
+    assert.deepStrictEqual(rt.torProblems(linuxPackage({ torFiles: { ...TOR, '.version': '15.0.22\n' } }), 'linux', 'x64'),
+      ['Tor: .version says "15.0.22", not ' + tor.TOR_VERSION]);
+    assert.deepStrictEqual(rt.torProblems(linuxPackage({ torFiles: { ...TOR, '.version': tor.TOR_VERSION + '\n' } }), 'linux', 'x64'), []);
+    assert.deepStrictEqual(rt.torProblems(linuxPackage({ swap: { 'resources/bin/tor/libevent-2.1.so.7': 'other' } }), 'linux', 'x64'),
+      ['Tor: libevent-2.1.so.7 is not the one in vendor/linux-x64/']);
+  });
+
+  // ── Names the builders change ───────────────────────────────────────────
+  await check('macOS and Windows: the renamed binaries and the patched plist and icon are expected', async () => {
+    const mac = zipOf([
+      ['Electron.app/Contents/MacOS/Electron', 'stub'], ['Electron.app/Contents/Info.plist', 'com.github.Electron'],
+      ['Electron.app/Contents/Resources/electron.icns', 'atom'], ['Electron.app/Contents/Resources/default_app.asar', 'x'],
+      ['Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework', GOOD_ENGINE],
+      ['Electron.app/Contents/_CodeSignature/CodeResources', 'sig'],
+    ]);
+    const macPkg = zipOf([
+      ['HidraNet.app/Contents/MacOS/HidraNet', 'stub'], ['HidraNet.app/Contents/Info.plist', 'net.hidra.browser'],
+      ['HidraNet.app/Contents/Resources/electron.icns', 'hydra'],
+      ['HidraNet.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework', GOOD_ENGINE],
+      ['HidraNet.app/Contents/Resources/app/package.json', '{}'], ['Start HidraNet.command', 'x'], ['README-macOS.txt', 'x'],
+    ]);
+    assert.deepStrictEqual(rt.runtimeProblems(macPkg, mac, 'darwin'), []);
+    assert.deepStrictEqual(rt.engineProblems(macPkg, 'darwin'), []);
+    const win = zipOf([['electron.exe', GOOD_ENGINE], ['ffmpeg.dll', 'f'], ['resources/default_app.asar', 'x']]);
+    const winPkg = zipOf([['HidraNet.exe', GOOD_ENGINE], ['ffmpeg.dll', 'f'], ['resources/app/package.json', '{}'],
+      ['resources/bin/hidra-node.exe', 'engine'], ['Start HidraNet.bat', 'x']]);
+    assert.deepStrictEqual(rt.runtimeProblems(winPkg, win, 'win32'), []);
+    assert.deepStrictEqual(rt.engineProblems(winPkg, 'win32'), []);
+    assert.deepStrictEqual(rt.platformOf('HidraNet-Browser-1.1.0-macOS-arm64.zip'), { platform: 'darwin', arch: 'arm64' });
+  });
+
+  // ── Stale app code ──────────────────────────────────────────────────────
+  await check('patch-zip.js refuses a package carrying app/src files the tree no longer has', async () => {
+    const zip = path.join(tmp, 'HidraNet-Browser-1.0.0-Linux-x64.zip');
+    const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'));
+    fs.writeFileSync(zip, writeZip([mkFile('resources/app/src/main/main.js', main),
+      mkFile('resources/app/src/main/removed-for-a-reason.js', Buffer.from('old code'))]));
+    assert.throws(() => patchZip(zip, path.join(tmp, 'out.zip'), { dry: true }), /no longer has: main\/removed-for-a-reason\.js/);
+    fs.writeFileSync(zip, writeZip([mkFile('resources/app/src/main/main.js', main)]));
+    assert.doesNotThrow(() => patchZip(zip, path.join(tmp, 'out.zip'), { dry: true }));
+  });
+
+  // ── refresh-release.js applies all of it ────────────────────────────────
+  await check('refresh-release.js checks every base package before building, and every output after', async () => {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'refresh-release.js'), 'utf8');
+    const inputs = src.indexOf('await runtimeProblemsOf(path.join(inDir, n))');
+    assert.ok(inputs !== -1, 'the inputs are not checked');
+    assert.ok(inputs < src.indexOf("process.argv.includes('--verify-inputs-only')"), 'inputs-only skips the runtime check');
+    assert.ok(inputs < src.indexOf('buildEngine();\n'), 'the runtime is checked after the build starts');
+    assert.ok(/runtime\.runtimeProblems\(es, await officialElectron\(name\), platform\)/.test(src) &&
+              /runtime\.torProblems\(es, platform, arch\)/.test(src) && /runtime\.engineProblems\(es, platform\)/.test(src));
+    assert.ok(/for \(const n of OUT_NAMES\) await verify\(/.test(src), 'the outputs are not verified');
+    assert.ok(/appSourceProblems\(es, pfx\)/.test(src), 'the outputs\' app/src is not compared with the tree');
+    assert.ok(/const VERSION = JSON\.parse\(fs\.readFileSync\(path\.join\(ROOT, 'package\.json'\)/.test(src) &&
+              /if \(VERSION === BASE_VERSION\)/.test(src), 'a refreshed package can reuse the base version');
+  });
+
+  // ── check-engine.js ─────────────────────────────────────────────────────
+  await check('check-engine.js fails a package on another Electron and passes the pinned one', async () => {
+    const pkg = require('../package.json');
+    const write = (name, bin) => {
+      const f = path.join(tmp, name);
+      fs.writeFileSync(f, writeZip([mkFile('hidranet', Buffer.from(bin), 0o755), mkFile('resources/app/package.json', Buffer.from('{}'))]));
+      return f;
+    };
+    const old = write(`HidraNet-Browser-${pkg.version}-Linux-x64.zip`, engine('33.4.11', '130.0.6723.191'));
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-engine.js'), old], { encoding: 'utf8' });
+    assert.strictEqual(r.status, 1, r.stdout);
+    assert.ok(/Electron 33\.4\.11, not 44\.9\.3/.test(r.stdout), r.stdout);
+    const ok = write('HidraNet-Browser-9.9.9-Linux-x64.zip', GOOD_ENGINE);
+    const r2 = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-engine.js'), ok], { encoding: 'utf8' });
+    assert.strictEqual(r2.status, 0, r2.stdout);
+  });
+
+  // ── Against the real files, when they are on this machine ───────────────
+  tor.PINS['linux-x64'] = realPins;
+  const zipName = electron.zipName('linux', 'x64');
+  const cacheDirs = [path.join(ROOT, 'dist', 'electron-cache'), path.join(os.homedir(), '.cache', 'electron')];
+  let official = null;
+  for (const d of cacheDirs) {
+    const found = [path.join(d, zipName), ...(fs.existsSync(d) ? fs.readdirSync(d).map((s) => path.join(d, s, zipName)) : [])]
+      .find((f) => fs.existsSync(f));
+    if (found) { official = found; break; }
+  }
+  if (official) {
+    await check('the official Electron ' + electron.ELECTRON_VER + ' zip, laid out as build-linux.js does, passes', async () => {
+      electron.verifyElectronZip(official);
+      const entries = readZip(fs.readFileSync(official));
+      const laid = entries.filter((e) => e.filename.indexOf('default_app.asar') === -1)
+        .map((e) => Object.assign({}, e, { filename: e.filename === 'electron' ? 'hidranet' : e.filename }));
+      laid.push(mkFile('resources/app/package.json', Buffer.from('{}')));
+      assert.deepStrictEqual(rt.runtimeProblems(laid, entries, 'linux'), []);
+      assert.deepStrictEqual(rt.engineProblems(laid, 'linux'), []);
+    });
+  } else {
+    console.log('skip  no official ' + zipName + ' in a cache to lay a package out from');
+  }
+  const published = path.join(ROOT, 'dist', 'release-in', 'HidraNet-Browser-1.0.0-Linux-x64.zip');
+  if (fs.existsSync(published)) {
+    await check('the published 1.0.0 Linux package is refused: Electron 33, Chromium 130, Tor 15.0.22', async () => {
+      const es = readZip(fs.readFileSync(published));
+      const engineP = rt.engineProblems(es, 'linux');
+      assert.ok(engineP.some((p) => /Electron 33\.4\.11/.test(p)) && engineP.some((p) => /Chromium 130\./.test(p)), engineP.join('; '));
+      assert.ok(rt.torProblems(es, 'linux', 'x64').some((p) => /tor is not the pinned Tor/.test(p)));
+      if (official) assert.ok(rt.runtimeProblems(es, readZip(fs.readFileSync(official)), 'linux').length > 0);
+    });
+  } else {
+    console.log('skip  no published 1.0.0 Linux package in dist/release-in to check');
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();

@@ -10,6 +10,7 @@ const { VpnInstaller, installable } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
 const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
+const { UpdateCheck } = require('./update-check');
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
@@ -78,14 +79,21 @@ function vpnFetchAllowed(url) {
 }
 
 async function fetchText(url, maxBytes) {
+  return (await fetchSmall(url, maxBytes)).toString('utf8');
+}
+
+// The bytes of a small file (a node list, a signature, the checksum table),
+// exactly as served. An HTTP error carries its status, so a caller can tell
+// "not there" from "not reachable".
+async function fetchSmall(url, maxBytes) {
   vpnFetchAllowed(url);
   const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  const tooBig = new Error(`${url}: far larger than a node list`);
+  if (!res.ok) throw Object.assign(new Error(`${url}: ${res.status}`), { status: res.status });
+  const tooBig = new Error(`${url}: larger than ${maxBytes} bytes, far more than this file should be`);
   const declared = Number(res.headers.get('content-length') || 0);
   if (declared > maxBytes) throw tooBig;
   // Read with the cap, so a server that lies about its length (or sends no
-  // length) cannot make this process buffer more than a node list.
+  // length) cannot make this process buffer more than the cap.
   const reader = res.body.getReader();
   const chunks = [];
   let total = 0;
@@ -96,7 +104,7 @@ async function fetchText(url, maxBytes) {
     if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw tooBig; }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 // The same, for a release file: bytes, capped at what the signed manifest
@@ -119,6 +127,18 @@ async function fetchBuffer(url, maxBytes) {
 }
 
 const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+
+// Whether a newer build is out (update-check.js): the signed checksum table,
+// fetched the same way as the node list, through Tor with the same bare
+// request, once the network lock has opened. It only ever leads to a notice
+// on the new tab page.
+let updateCheck = null;
+function checkForUpdate() {
+  if (!updateCheck) {
+    updateCheck = new UpdateCheck({ fetchBytes: fetchSmall, currentVersion: app.getVersion(), log: (m) => console.log(m) });
+  }
+  updateCheck.run().catch((e) => console.log('[update] check failed: ' + ((e && e.message) || e)));
+}
 
 // The leak test has to see what every other program on this machine sees,
 // not what the browser's own Tor route sees, so it asks from a session with
@@ -229,6 +249,7 @@ async function connectTorOnce() {
   // not the IP check, which depends on an external site being up. If that check
   // fails we tell the user, but we do not leave them without a network.
   networkLock.release();
+  checkForUpdate();
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
@@ -1090,7 +1111,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo() };
+    // update: a newer build, or this one below the minimum safe version,
+    // from the signed checksum table; null when there is nothing to say.
+    return {
+      chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo(),
+      update: updateCheck ? updateCheck.notice() : null,
+    };
   });
 
   // HidraVPN. The service picks the nodes and holds the tunnel; the browser

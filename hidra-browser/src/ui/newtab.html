@@ -371,6 +371,17 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 1s linear infinite; }
 
+    /* Update notice: a newer build, or this one below the minimum safe
+       version, from the signed checksum table. A notice only. */
+    .update-notice {
+      margin: 0 0 20px; padding: 12px 16px; border-radius: var(--radius-sm);
+      border: 1px solid rgba(255,170,51,0.4); background: rgba(255,170,51,0.08);
+      color: var(--text-primary); font-size: 13px; line-height: 1.5;
+    }
+    .update-notice.unsafe { border-color: rgba(255,68,102,0.5); background: rgba(255,68,102,0.1); }
+    .update-notice strong { color: var(--warning); }
+    .update-notice.unsafe strong { color: var(--danger); }
+
     /* Footer */
     .footer {
       display: flex; justify-content: space-between; align-items: center;
@@ -439,6 +450,11 @@
         </div>
       </div>
     </header>
+
+    <div class="update-notice" id="update-notice" role="status" hidden>
+      <strong id="update-title"></strong>
+      <span id="update-text"></span>
+    </div>
 
     <div class="search-container">
       <div class="search-box">
@@ -1028,9 +1044,37 @@
       }
     }
 
+    // Shown when the signed checksum table names a newer build than this
+    // one, or a minimum safe version this one is below. Nothing is
+    // downloaded: the person gets the new build from the site and checks it.
+    function showUpdate(update) {
+      var box = document.getElementById('update-notice');
+      if (!box) return;
+      var version = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+      if (!update || !version.test(update.current) || !version.test(update.latest) ||
+          (update.unsafe && !version.test(update.minimum))) {
+        box.hidden = true;
+        return;
+      }
+      if (update.unsafe) {
+        box.className = 'update-notice unsafe';
+        document.getElementById('update-title').textContent = 'This browser has known security problems.';
+        document.getElementById('update-text').textContent = 'HidraNet Browser ' + update.current +
+          ' is older than ' + update.minimum + ', the oldest version still considered safe. Download ' +
+          update.latest + ' from hidranet.org, check its SHA-256 against SHA256SUMS.txt there, and replace this copy.';
+      } else {
+        box.className = 'update-notice';
+        document.getElementById('update-title').textContent = 'HidraNet Browser ' + update.latest + ' is available.';
+        document.getElementById('update-text').textContent = 'This is ' + update.current +
+          '. Download the new version from hidranet.org and check its SHA-256 against SHA256SUMS.txt there.';
+      }
+      box.hidden = false;
+    }
+
     async function detectApps() {
       detectVpn();
       var status = await appsStatus();
+      showUpdate(status.update);
       // The exact build, so an older copy can be told apart at a glance.
       var about = status.about;
       if (about && typeof about.version === 'string') {

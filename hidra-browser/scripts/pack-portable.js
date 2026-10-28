@@ -18,7 +18,7 @@ const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const DESKTOP = path.join(require('os').homedir(), 'Desktop');
 const NODE_ROOT = path.join(ROOT, '..', 'hidra-node');
-const VERSION = '1.0.0';
+const VERSION = require(path.join(ROOT, 'package.json')).version;
 
 const platform = process.argv[2] || 'all';
 

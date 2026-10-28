@@ -1,5 +1,5 @@
-HidraBrowser v1.0.0 — SHA-256 checksums
-=======================================
+HidraNet Browser 1.0.0 — SHA-256 checksums
+==========================================
 
 Verify before running.
 
@@ -7,6 +7,65 @@ Verify before running.
   Windows:         Get-FileHash .\<file> -Algorithm SHA256
 
 If the value does not match the table below, do not run the file.
+
+What a match tells you: that your file is the file this table lists, and
+nothing more. The table is published by the same maintainers, from the
+same repository and accounts, as the files themselves: someone who could
+replace the files could replace this table to match them. It does not
+prove who built the file.
+
+
+SIGNED RECORD
+-----------------------------------------------------------------------
+
+The browser (1.1.0 and later) reads these three lines to tell you when a
+newer build is out, or when yours has known security problems. It only
+tells you; it never downloads or installs anything.
+
+  latest-version:        1.0.0
+  minimum-safe-version:  1.0.0
+  valid-until:           2027-04-30
+
+It believes them only when SHA256SUMS.txt.sig, beside this file, is an
+Ed25519 signature of this whole file made offline with the HidraNet
+release key, the key that also signs HidraVPN. Its public half is built
+into the browser and into HidraVPN, and published at hidranet.org/vpn/:
+
+  denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=
+
+The signature covers the label "hidranet-browser-sums-v1", a zero byte,
+then this file, so it cannot be passed off as the signature of anything
+else that key signs. To check it yourself with hidravpn-sign:
+
+  { printf 'hidranet-browser-sums-v1\0'; cat SHA256SUMS.txt; } > sums.msg
+  cp SHA256SUMS.txt.sig sums.msg.sig
+  hidravpn-sign verify --pubkey <the key above> sums.msg
+
+For a first download, a key read from this site is only as trustworthy as
+the site. For a browser already installed, the key is built in: whoever
+controls this site cannot make it believe a record the maintainers did
+not sign. Until the maintainers publish the first signature there is no
+.sig, and the browser shows no notice.
+
+
+KNOWN PROBLEMS WITH THE 1.0.0 PACKAGES
+-----------------------------------------------------------------------
+
+The Linux package below runs Electron 33.4.11 (Chromium 130), which no
+longer receives security fixes, and Tor 15.0.22. The Windows and macOS
+packages were made the same way; assume the same of them. The source
+they were refreshed from names Electron 44.9.3 and Tor 15.0.26, but the
+runtime and Tor were carried over from an older package without being
+checked against those pins. They are being rebuilt from scratch, on the
+pinned Electron and Tor, under a new version number, and will be
+replaced on this page by that version rather than under the same names.
+
+Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
+22 October 2026 also lack some or all of the security fixes listed below,
+among them the bridge that let any downloaded .html file turn Tor off
+and the engine API that answered any website. Replace them. None of
+the 1.0.0 copies checks for updates, so they cannot learn of this
+themselves.
 
 
 ON THE RELEASE PAGE NOW
@@ -167,6 +226,7 @@ The download is not corrupt. Sign it locally and it opens:
 Tor is signed first and on its own because --deep does not descend into
 Resources/. Skip that line and the app opens but cannot connect.
 
-Verifying the checksum above tells you the file is the one we published.
-It does not tell you an operating system will accept it without
-complaint. See README-macOS.txt inside the macOS ZIP.
+A matching checksum tells you that the file is the one the table lists.
+It does not tell you that the maintainers built it (see the top of this
+file), nor that an operating system will accept it without complaint.
+See README-macOS.txt inside the macOS ZIP.

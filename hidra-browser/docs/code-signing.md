@@ -21,6 +21,67 @@ Nothing else in the build or release scripts was changed, because the
 remaining edits (below) can only be tested on a Mac with a real certificate,
 and getting them wrong blind would break the working unsigned build.
 
+Until then, the one thing that does not come from the same accounts as the
+files is the release key: the checksum table can be signed offline with it
+(below). That does not help someone downloading for the first time, who reads
+the key from the same site, but it lets every installed browser from 1.1.0 on
+tell a genuine update notice from one the site's controller made up.
+
+---
+
+## The checksum table — Ed25519, offline, with the release key
+
+`landing/SHA256SUMS.txt` lists the packages' hashes and, near its top, a
+small record the browser reads (`src/main/update-check.js`): the latest
+version, the minimum safe version and the day the record stops being valid.
+The browser fetches the table and `SHA256SUMS.txt.sig` through Tor once the
+network lock opens, checks the signature with the release key it embeds
+(`release-verify.js`, `verifyBrowserSums`), and shows a notice on the new tab
+page when a newer build is out or this one is below the minimum. It never
+downloads or installs anything. With no `.sig` it shows nothing.
+
+The signature is over the label `hidranet-browser-sums-v1`, a zero byte, then
+the file, never over the bare file: the same key signs HidraVPN's manifest
+and its `SHA256SUMS-hidravpn-*.txt` over their bare bytes, and the label keeps
+a signature made for one from passing as the other.
+
+### Signing it (on the PC that holds the release key)
+
+Every time the table changes — a new build, a new minimum, a renewed
+`valid-until` — sign it again, in PowerShell, from the repository root:
+
+```
+git pull
+node hidra-browser\scripts\update-sums.js <folder with the four zips> <commit> --minimum 1.1.0   # only when the packages change
+.\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key -Sign C:\HidraVPN\hidravpn-sign.exe
+node hidra-browser\scripts\verify-sums.js
+git add landing\SHA256SUMS.txt landing\SHA256SUMS.txt.sig
+git commit -m "landing: sign SHA256SUMS.txt"
+```
+
+`sign-sums.ps1` shows the file's SHA-256 and the three record lines and asks
+before signing; it refuses a key inside the repository, CRLF line endings
+(`.gitattributes` keeps the file LF) and a `valid-until` that has passed or is
+more than 400 days away. Any `hidravpn-sign` will do: the script adds the
+label itself, signs, checks the result against the public key in
+`release-verify.js`, writes `landing/SHA256SUMS.txt.sig` and deletes its
+temporary copy. The key file is only read by `hidravpn-sign`.
+
+Choose `valid-until` so it is renewed well before it passes (180 days is the
+default `update-sums.js` writes): a browser ignores an expired record, and
+anyone who can change the site can keep serving the last signed record until
+then, hiding a newer one. Raise `minimum-safe-version` whenever a release
+fixes a security problem: every build below it then shows a warning instead
+of a plain update notice.
+
+### What CI does with it
+
+The `release-sums` job in `browser-tests.yml` runs `scripts/verify-sums.js`
+on every change: the record must parse, `package.json` must not be behind
+it, and once a `.sig` exists, the table must verify against it with the
+embedded release key. A change that removes a `.sig` the previous commit had
+is refused too. An expired record is only a warning there.
+
 ---
 
 ## macOS — Developer ID + notarization

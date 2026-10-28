@@ -134,7 +134,12 @@ wrong is high.
   helps. The keys are on it.
 - **The browser's own attack surface.** It is Chromium. Chromium has
   vulnerabilities, and ours is pinned to a version rather than updated by
-  Google's release channel.
+  Google's release channel. Nothing updates it for you: from 1.1.0 the new
+  tab page says when a newer build is out, or when yours is below the
+  minimum safe version, from a record signed offline with the release key
+  and fetched through Tor, and you download and check the new build
+  yourself. Copies of 1.0.0 have no such check, and the published 1.0.0
+  packages run Electron 33 (Chromium 130), which no longer gets fixes.
 
 ## Reporting something
 

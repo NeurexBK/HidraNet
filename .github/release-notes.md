@@ -1,8 +1,10 @@
-# HidraNet Browser 1.0.0
+# HidraNet Browser {version}
 
 A browser for private browsing, with Tor built in and HidraNet's own apps alongside it: encrypted mail, chat, a forum and `.hidra` site publishing. For Windows, macOS (Apple Silicon and Intel) and Linux.
 
-These packages are refreshed in place. The files on this page are rebuilt from the current source and replace the previous ones under the same names, and the table at the bottom is generated from the files that were actually uploaded. If a hash does not match your download, do not run it.
+Every build is published under a version and a tag of its own, and a file on a release page is never replaced. The table at the bottom is generated from the files that were actually uploaded. If a hash does not match your download, do not run it.
+
+From 1.1.0 the browser tells you, on the new tab page, when a newer version is out or when yours has known security problems. It reads that from `SHA256SUMS.txt` on hidranet.org, fetched through Tor, and believes it only when the release key's signature over it checks out; it never downloads or installs anything itself.
 
 ## What is in this build
 
@@ -29,11 +31,11 @@ The first start takes 20 to 40 seconds while Tor connects; the panel shows the p
 ## Verifying your download
 
 ```
-sha256sum HidraNet-Browser-1.0.0-Linux-x64.zip            # Linux
-shasum -a 256 HidraNet-Browser-1.0.0-macOS-arm64.zip      # macOS
-Get-FileHash .\HidraNet-Browser-1.0.0-Windows-x64.zip -Algorithm SHA256   # Windows PowerShell
+sha256sum HidraNet-Browser-{version}-Linux-x64.zip            # Linux
+shasum -a 256 HidraNet-Browser-{version}-macOS-arm64.zip      # macOS
+Get-FileHash .\HidraNet-Browser-{version}-Windows-x64.zip -Algorithm SHA256   # Windows PowerShell
 ```
 
-Compare the result with the table below. The same table is kept in the repository at `landing/SHA256SUMS.txt`, written by the run that uploaded the files.
+Compare the result with the table below. The same table is kept in the repository at `landing/SHA256SUMS.txt`. A match tells you that your file is the file the table lists; the table comes from the same maintainers and accounts as the files, so it does not prove who built them. `SHA256SUMS.txt.sig` beside it, once published, is a signature of the table made offline with the release key that also signs HidraVPN.
 
 None of these builds are signed or notarised. `SECURITY.md` in the repository says what this browser defends against and what it does not; read it before relying on it for anything that matters.
