@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "generated": "2026-10-22T11:39:10Z",
-  "sequence": 2026102201,
+  "generated": "2026-10-28T00:19:49Z",
+  "sequence": 2026102801,
   "expires": "2026-11-25T00:00:00Z",
   "note": "HidraNet official node list",
   "nodes": [
@@ -27,6 +27,18 @@
       "features": [
         "sessions",
         "admission-relay"
+      ]
+    },
+    {
+      "node_name": "amsterdam-1",
+      "node_public_key": "KKGxmjiGfQ986DUD+6UcyK6es79lXN+yF25vkN6rDnI=",
+      "endpoint": "206.189.4.168:51820",
+      "operator": "HidraNet",
+      "role": "exit",
+      "admission": "pass",
+      "country": "NL",
+      "features": [
+        "sessions"
       ]
     }
   ],
