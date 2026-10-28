@@ -23,8 +23,10 @@
 // a crash. A Tor that is not running leaves that port closed, and a socket
 // the filter never saw fails there instead of leaving from this machine's
 // own address. (Another program holding the port keeps Tor from starting,
-// so the lock stays shut; what the filter misses then reaches that program
-// on this machine, still not the network.) No session is ever set to
+// so the lock stays shut; but whatever the filter misses then goes to that
+// program, hostname included, and it could forward it from this machine's
+// own address. Tor on a port of its own choosing, read back over the
+// control port, would close that too.) No session is ever set to
 // 'direct', and the route never changes, so no late write can put one back
 // on another route either. Tabs used to start out on whatever answered on
 // port 9050, or on 'direct', and the switch to Tor's rules could miss a tab
@@ -69,6 +71,9 @@ class NetworkLock {
     this.engaged = true;
     this.reason = 'the Tor connection is not ready yet';
     this.blockedCount = 0;
+    // Bumped by every engage(). A connect takes it before its checks and
+    // may open the lock only if nothing closed it again in the meantime.
+    this.generation = 0;
     // Each protected session, with its first setProxy still in flight or done.
     this._sessions = new Map();
   }
@@ -88,14 +93,21 @@ class NetworkLock {
     if (!this.engaged) this.blockedCount = 0;
     this.engaged = true;
     this.reason = reason || 'the Tor connection is not ready yet';
+    this.generation++;
     for (const s of this._sessions.keys()) {
       try { s.closeAllConnections().catch(() => {}); } catch (e) { /* a session being torn down */ }
     }
   }
 
-  release() {
+  // Opens the lock for the connect that took `generation` before its
+  // checks. If Tor died or the user disconnected while those checks were
+  // awaited, engage() has moved the generation on and this refuses, so a
+  // stale connect cannot reopen a lock that a later close shut.
+  release(generation) {
+    if (generation !== this.generation) return false;
     this.engaged = false;
     this.reason = null;
+    return true;
   }
 
   // A request is allowed through a closed lock only if it provably stays on

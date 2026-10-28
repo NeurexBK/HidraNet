@@ -131,15 +131,20 @@ const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText,
 // cookies, no connection kept for later.
 function directProbe(url) {
   return new Promise((resolve, reject) => {
+    // `timeout` below only notices a silent socket; this bounds the whole
+    // exchange, so a server that sends a byte at a time cannot hold it open.
+    let deadline = null;
+    const done = (fn) => (v) => { clearTimeout(deadline); fn(v); };
     const request = https.get(url, { headers: { 'User-Agent': VPN_FETCH_UA }, agent: false, timeout: 10000 }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { if (body.length < 4096) body += c; });
-      res.on('end', () => resolve(body));
-      res.on('error', reject);
+      res.on('end', () => done(resolve)(body));
+      res.on('error', done(reject));
     });
+    deadline = setTimeout(() => request.destroy(new Error('timeout')), 10000);
     request.on('timeout', () => request.destroy(new Error('timeout')));
-    request.on('error', reject);
+    request.on('error', done(reject));
   });
 }
 
@@ -194,6 +199,9 @@ function connectTor() {
 }
 
 async function connectTorOnce() {
+  // Taken before anything is awaited: a Disconnect or a Tor crash from here
+  // on engages the lock again, and then this connect may no longer open it.
+  const generation = networkLock.generation;
   const started = await torManager.start(app.getPath('userData'));
   if (!started.ok) {
     // Stays closed: a Tor that did not start must not let traffic out.
@@ -216,8 +224,13 @@ async function connectTorOnce() {
   // Tor reached 100% and Chromium confirms every session goes through its
   // SOCKS port. This is the moment to open — not the IP check, which depends
   // on an external site being up. If that check fails we tell the user, but
-  // we do not leave them without a network.
-  networkLock.release();
+  // we do not leave them without a network. Only if this connect is still
+  // the current one: the checks above are awaited, and Tor may have died or
+  // the user pressed Disconnect while they ran.
+  // What closed the lock meanwhile left it closed, with its own reason.
+  if (torManager.getStatus().state !== 'ready' || !networkLock.release(generation)) {
+    return { ok: false, msg: 'Tor stopped before the connection was confirmed; the network stays blocked' };
+  }
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
@@ -1057,10 +1070,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
 
   ipcMain.handle('proxy:disconnect', async (event) => {
     fromPages(event, ['newtab.html'], 'proxy:disconnect');
-    await torManager.stop();
-    // Not 'direct': the sessions keep Tor's route, to a port nothing listens
-    // on any more, and the lock blocks what reaches the filter.
+    // Closed before Tor is stopped, not after: Tor's port is free before its
+    // process is seen to exit, and nothing may carry on meanwhile. Not
+    // 'direct': the sessions keep Tor's route, to a port nothing listens on
+    // any more, and the lock blocks what reaches the filter.
     networkLock.engage('disconnected by the user');
+    await torManager.stop();
     return { ok: true, msg: 'disconnected' };
   });
 

@@ -178,8 +178,6 @@ async function refreshProxyStatus() {
 
   // Tor's SOCKS port: the route every tab has, connected or not.
   document.getElementById('panel-proxy').textContent = status.proxy || '—';
-  document.getElementById('panel-relays').textContent =
-    status.relayCount || '—';
 }
 
 // === WINDOW CONTROLS ===

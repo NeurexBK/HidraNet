@@ -156,6 +156,23 @@ else if (!/protect\(electronSession\) \{[\s\S]*?setProxy\(this\.proxyConfig\(\)\
 else if (/9050|_probeSocks|configure\(/.test(proxy.replace(/^\s*\/\/.*$/gm, ''))) bad('the block page', 'proxy-manager.js still looks for a SOCKS proxy on 9050');
 else ok('the block page: no session is ever routed anywhere but Tor');
 
+// It also holds only while the lock is shut whenever Tor is not running. A
+// connect awaits its checks before opening, and a Disconnect or a Tor crash
+// during them used to be undone by the release that followed. And Disconnect
+// stopped Tor before closing, leaving Tor's port free behind an open lock.
+const connectBody = (main.match(/async function connectTorOnce\(\) \{[\s\S]*?\n\}/) || [''])[0];
+const disconnectBody = (main.match(/'proxy:disconnect'[\s\S]*?\n {2}\}\);/) || [''])[0];
+if (!/const generation = networkLock\.generation;\s*(\/\/.*\s*)*const started = await torManager\.start/.test(connectBody)) {
+  bad('the block page', 'connectTorOnce no longer takes the lock\'s generation before it awaits anything');
+} else if ((connectBody.match(/networkLock\.release\(/g) || []).length !== 1
+  || !/getStatus\(\)\.state !== 'ready' \|\| !networkLock\.release\(generation\)/.test(connectBody)) {
+  bad('the block page', 'connectTorOnce can open the lock without checking that Tor is still up and nothing closed it since');
+} else if (!/networkLock\.engage\('disconnected by the user'\);\s*await torManager\.stop\(\);/.test(disconnectBody)) {
+  bad('the block page', 'Disconnect stops Tor before it closes the lock');
+} else {
+  ok('the block page: a late connect cannot reopen the lock, and Disconnect closes it first');
+}
+
 if (failed) {
   console.log('\n' + failed + ' claim(s) the browser does not keep');
   process.exit(1);

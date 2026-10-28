@@ -75,12 +75,32 @@ function fakeSession({ failFirst = 0, stuck = null } = {}) {
   check('a forgotten session is no longer checked', (await lock.unrouted()).length === 0);
 
   // Closing: no route changes, connections are dropped.
-  lock.release();
+  check('the lock opens for the connect that took its generation', lock.release(lock.generation) && !lock.engaged);
   const before = a.writes.length + b.writes.length;
   lock.engage('Tor exited unexpectedly');
   check('engaging changes no session\'s route', a.writes.length + b.writes.length === before && a.route === 'SOCKS5 127.0.0.1:9052');
   check('engaging drops every protected session\'s open connections', a.closed === 1 && b.closed === 1, `${a.closed} ${b.closed}`);
   check('and nothing was ever set direct', [...a.writes, ...b.writes].every((w) => w.proxyRules === RULES && !w.mode), JSON.stringify([...a.writes, ...b.writes]));
+
+  // A connect takes the generation, then awaits its checks. Tor dying or a
+  // Disconnect during them engages the lock, and the late release is refused.
+  {
+    const late = new NetworkLock(RULES);
+    let slow;
+    const d = fakeSession();
+    d.resolveProxy = () => new Promise((r) => { slow = () => r(d.route); });
+    late.protect(d);
+    const generation = late.generation;
+    const checking = late.unrouted();
+    await new Promise((r) => setImmediate(r));
+    late.engage('Tor exited unexpectedly');
+    slow();
+    check('the checks still pass on their own', (await checking).length === 0);
+    check('a release from before engage() is refused', late.release(generation) === false);
+    check('so the lock stays shut, with the reason that shut it', late.engaged && late.getStatus().reason === 'Tor exited unexpectedly', JSON.stringify(late.getStatus()));
+    check('a release with no generation is refused too', late.release() === false && late.engaged);
+    check('the current generation still opens it', late.release(late.generation) && !late.engaged);
+  }
 
   // What Chromium may resolve by itself.
   check('Chromium resolves nothing but this machine\'s names', HOST_RESOLVER_RULES === 'MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE *.localhost, EXCLUDE 127.0.0.1, EXCLUDE ::1', HOST_RESOLVER_RULES);

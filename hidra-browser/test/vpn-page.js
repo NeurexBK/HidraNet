@@ -134,7 +134,8 @@ expect('the VPN page\'s own requests carry no browser name and no cookies', /cre
 expect('the list and release fetches never go out while Tor is not ready', (main.match(/vpnFetchAllowed\(url\);/g) || []).length === 2, 'fetchText or fetchBuffer skips the network-lock check');
 // No Chromium session is ever direct, and Chromium resolves no names itself,
 // so the leak test asks through Node, as any other program on the machine.
-expect('the leak test asks outside the browser\'s Tor route, as any other program would', /function directProbe\(url\) \{\s*return new Promise\(\(resolve, reject\) => \{\s*const request = https\.get\(url, \{[^}]*\}, agent: false/.test(main) && /runLeakTest\(await vpnManager\.status\(\), directProbe\)/.test(main), 'the leak test no longer asks through Node\'s https');
+expect('the leak test asks outside the browser\'s Tor route, as any other program would', /function directProbe\(url\) \{\s*return new Promise\(\(resolve, reject\) => \{[\s\S]{0,400}?const request = https\.get\(url, \{[^}]*\}, agent: false/.test(main) && /runLeakTest\(await vpnManager\.status\(\), directProbe\)/.test(main), 'the leak test no longer asks through Node\'s https');
+expect('the leak test gives up after ten seconds in all, not only after ten silent ones', /function directProbe[\s\S]{0,900}?deadline = setTimeout\(\(\) => request\.destroy\(new Error\('timeout'\)\), 10000\)[\s\S]{0,200}?clearTimeout\(deadline\)|function directProbe[\s\S]{0,300}?clearTimeout\(deadline\)[\s\S]{0,700}?deadline = setTimeout\(\(\) => request\.destroy\(new Error\('timeout'\)\), 10000\)/.test(main), 'directProbe has only a socket idle timeout, so a server sending a byte at a time holds the test open');
 expect('a country reaches the page as text, never as markup', !/innerHTML/.test(page), 'the page uses innerHTML');
 expect('uninstalling asks first', /window\.confirm\(question\)/.test(page), 'no confirmation before removing');
 

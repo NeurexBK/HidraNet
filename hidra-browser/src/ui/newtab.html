@@ -158,7 +158,7 @@
 
     .status-label { font-size: 14px; font-weight: 500; }
 
-    .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 
     .stat {
       text-align: center; padding: 12px 8px;
@@ -422,7 +422,6 @@
       .dashboard { padding: 24px 16px; }
       .logo-svg { height: 80px; width: auto; }
       .logo-text h1 { font-size: 24px; letter-spacing: 4px; }
-      .stat-grid { grid-template-columns: repeat(2, 1fr); }
       .footer { flex-direction: column; gap: 8px; text-align: center; }
     }
   </style>
@@ -578,10 +577,6 @@
           <span id="status-text" class="status-label">Connecting...</span>
         </div>
         <div class="stat-grid">
-          <div class="stat">
-            <span class="stat-value" id="stat-relays">—</span>
-            <span class="stat-label">Active Relays</span>
-          </div>
           <div class="stat">
             <span class="stat-value" id="stat-uptime">0s</span>
             <span class="stat-label">Uptime</span>
@@ -1215,7 +1210,6 @@
             mode = status.mode || (connected ? 'local' : 'disconnected');
             tor = status.tor || null;
             connectedSince = connected && tor && tor.readyAt ? tor.readyAt : null;
-            document.getElementById('stat-relays').textContent = status.relayCount || '—';
             // Only while connected: the address the last connection left
             // through is not where anything goes now.
             document.getElementById('stat-exit').textContent =

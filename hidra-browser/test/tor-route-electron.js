@@ -143,12 +143,13 @@ app.whenReady().then(async () => {
     tabs.createTab('http://mail.localhost:8090/'),
     tabs.createTab('https://example.com/'),
   ];
+  const generation = lock.generation;
   const unrouted = await lock.unrouted();
-  lock.release();
+  const opened = lock.release(generation);
   opening.push(tabs.createTab('hidra://newtab'));
   await Promise.all(opening);
   await sleep(300);
-  check('the lock found no session off Tor\'s route before opening', unrouted.length === 0, String(unrouted.length));
+  check('the lock found no session off Tor\'s route before opening', unrouted.length === 0 && opened, String(unrouted.length));
   check('every session, the apps\' one included, is on Tor\'s route after the lock opens',
     offRoute(await routes()).length === 0, JSON.stringify(await routes()));
   check('the apps\' shared partition ends on Tor', tabs.appsSession
@@ -174,7 +175,7 @@ app.whenReady().then(async () => {
   // The filter is the second layer. A request it never sees still has
   // nowhere to go: open the lock for this one load, as if a socket had gone
   // round the filter, and the load fails at Tor's closed port.
-  lock.release();
+  lock.release(lock.generation);
   const escaped = await load(tab.view.webContents, `http://e${Date.now()}.example/`);
   lock.engage('Tor exited unexpectedly');
   check('with Tor gone, a request the filter misses fails at the proxy instead of leaving direct',
