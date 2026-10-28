@@ -368,12 +368,12 @@ function md(s){
   var held=[];
   function hold(h){ held.push(h); return '\u0000'+(held.length-1)+'\u0000'; }
   function unhold(t){ return t.replace(/\u0000(\d+)\u0000/g,function(_,i){ return unhold(held[+i]); }); }
-  s=s.replace(/`([^`]+)`/g,function(_,c){ return hold('<code>'+esc(c)+'</code>'); });
+  s=s.replace(/`([^`]+)`/g,function(_,c){ return hold('<code>'+esc(c).replace(/\n/g,'<br>')+'</code>'); });
   s=s.replace(/!\[([^\]\u0000]*)\]\((https?:\/\/[^\s)\u0000]+)\)/g,function(m,alt,url){
     var u=webUrl(url); return u?hold('<img src="'+u+'" alt="'+esc(alt)+'">'):m; });
   s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)\u0000]+)\)/g,function(m,text,url){
     var u=webUrl(url); return u?hold('<a href="'+u+'" target="_blank" rel="noopener">'+mdInline(esc(text))+'</a>'):m; });
-  s=s.replace(/https?:\/\/[^\s()<>"'`*\u0000]+/g,function(m){
+  s=s.replace(/https?:\/\/[^\s)<>"`*\u0000]+/g,function(m){
     var u=webUrl(m); return u?hold('<a href="'+u+'" target="_blank" rel="noopener">'+esc(m)+'</a>'):m; });
   return unhold(mdInline(esc(s)));
 }

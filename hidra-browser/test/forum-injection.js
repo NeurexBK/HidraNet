@@ -43,6 +43,8 @@ const BODIES = [
   `[see https://a.example/p onmouseover=${PWN} x](https://a.example/)`,
   `[x](https://a.example/?https://b.example/p onmouseover=${PWN})`,
   `![https://a.example/p](https://a.example/i.png) [https://b.example/q](https://b.example/?https://c.example/)`,
+  `https://a.example/it's'onmouseover='${PWN}`,
+  `https://a.example/(x'onmouseover='${PWN})`,
 ];
 // What markdown makes, and the only attributes each may carry.
 const ALLOWED = { B: [], I: [], CODE: [], BR: [], A: ['href', 'target', 'rel'], IMG: ['src', 'alt'] };
@@ -206,6 +208,9 @@ app.whenReady().then(async () => {
     const link = dom(md('[see https://example.org/a](https://example.org/b)'));
     const addr = dom(md('[x](https://example.org/?u=https://example.net/)'));
     const bold = dom(md('**https://example.org/c**'));
+    const code = dom(md('\`a\\nb\`'));
+    const apos = dom(md("https://example.org/it's"));
+    const paren = dom(md('(see https://example.org/a_(b) or https://example.org/c)'));
     return {
       img: img.children.length === 1 && img.firstChild.tagName === 'IMG'
         && img.firstChild.getAttribute('alt') === 'see https://example.org/a'
@@ -215,13 +220,20 @@ app.whenReady().then(async () => {
       addr: addr.querySelectorAll('a').length === 1
         && addr.querySelector('a').getAttribute('href') === 'https://example.org/?u=https://example.net/',
       bold: bold.querySelector('b > a[href="https://example.org/c"]') !== null,
-      html: [img.innerHTML, link.innerHTML, addr.innerHTML, bold.innerHTML],
+      code: code.querySelector('code > br') !== null && code.querySelector('code').textContent === 'ab',
+      apos: apos.querySelectorAll('a').length === 1 && apos.querySelector('a').getAttribute('href') === "https://example.org/it's"
+        && apos.querySelector('a').textContent === "https://example.org/it's",
+      paren: [...paren.querySelectorAll('a')].map((a) => a.getAttribute('href')).join(' ') === 'https://example.org/a_(b https://example.org/c',
+      html: [img.innerHTML, link.innerHTML, addr.innerHTML, bold.innerHTML, code.innerHTML, apos.innerHTML, paren.innerHTML],
     };
   })()`);
   check('a URL in the alt text of an image stays alt text', nested.img, nested.html[0]);
   check('a URL in the text of a link stays its text', nested.link, nested.html[1]);
   check('a URL in the address of a link stays in the address', nested.addr, nested.html[2]);
   check('a bold URL is a link in bold', nested.bold, nested.html[3]);
+  check('a line break in inline code stays a line break', nested.code, nested.html[4]);
+  check('a bare URL with an apostrophe is linked in full', nested.apos, nested.html[5]);
+  check('a bare URL keeps an opening parenthesis and ends at a closing one', nested.paren, nested.html[6]);
 
   win.destroy();
   console.log(`\n${passed} passed, ${failed} failed`);
