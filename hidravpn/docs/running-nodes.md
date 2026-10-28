@@ -77,7 +77,10 @@ sudo bash hidravpn/scripts/install-node-linux.sh \
 
 The installer checks the machine, builds or installs the binary, makes the
 node's key, installs the hardened systemd unit, opens the two ports, waits for
-the node to report ready, and prints the node's record. **Back up
+the node to report ready, and prints the node's record. `--country NL` puts the
+node's country in its record, and `--tunnel 10.80.0.0/16` gives it a tunnel
+subnet of its own; give every node a different one, so a client never gets the
+same address from its entry and its exit. **Back up
 `/etc/hidravpn/node.toml`**: it is the node's identity.
 
 Then, on the server: `hidravpn-node record > hel-1.json`, and send that file to
@@ -173,10 +176,9 @@ hidravpn/scripts/make-node-list.sh --key list.key --out nodes.json \
 `--sequence` goes up every time (clients refuse an older list); `--expires`
 is when clients stop trusting it (90 days by default); `--removed <key>`
 withdraws a node from every client that imports the list. Publish
-`nodes.json` and `nodes.json.sig` where the browser looks
-(`https://hidranet.org/vpn/nodes.json`, `VPN_LIST_URL` in the browser's VPN
-wiring, parked until HidraVPN ships: `browser/README.md`), and anywhere else
-you like.
+`nodes.json` and `nodes.json.sig` where the browser looks (`VPN_LIST_URL` in
+`hidra-browser/src/main/main.js`, `https://hidranet.org/vpn/nodes.json`), and
+anywhere else you like.
 
 ## What a client does with it
 
@@ -195,7 +197,14 @@ asks, gets an invite, adds it with `hidravpn nodes add`.
 
 ## Knowing it works
 
-On a small machine of yours that is admitted on every node, hourly:
+Every hour, a GitHub Actions run checks that every node in the published list
+answers with its key, that the list and the release manifest on hidranet.org
+are signed, that the pass issuer answers and sells passes, and that the list
+and the pass keys are good for two more weeks. A problem opens an issue, and
+the next passing check closes it: [`node-monitor.md`](node-monitor.md).
+
+That check does not go through the tunnel. For that, on a small machine of
+yours that is admitted on every node, hourly:
 
 ```
 sudo hidravpn/scripts/probe-nodes.sh --out /var/www/status
@@ -208,8 +217,13 @@ look at when someone says a node is down.
 
 ## What volunteers get, and when
 
+An operator who is not one of us and wants to run an entry has a guide of
+their own: [`operators/running-an-entry.md`](operators/running-an-entry.md).
+
 Nothing financial, and the documents say so (`docs/business/16`, §6). What
 they get: their name on their node and in the list, the same installer, the
 same abuse template, and an honest statement of what running an exit means.
-Volunteers come after the maintainers' nodes have stayed up for months and
-the list has a name. Until then, every node is one you rented.
+During the preview, independent operators are taken for **entries only**,
+after the check in that guide and at most two nodes per operator; every exit is
+still one you rented (`docs/business/16`, §4). Other volunteers come after the
+maintainers' nodes have stayed up for months and the list has a name.

@@ -12,6 +12,8 @@
 #   the "internet" side, so a client reaches it directly and through node-p
 #   hv-e ──veth── hv-inet: node-e, an entry that admits openly, 10.206.0.2,
 #   for two hops with node-q as the exit
+#   hv-x, hv-y ──veth── hv-inet: node-x (exit, pass) and node-y (entry,
+#   open), 10.208.0.2 and 10.209.0.2, both leasing from 10.81.0.0/16
 #
 # It proves: the issuer makes a key and an account, and keeps the token's
 # hash only; the node trusts the key and admits with passes only; the signed
@@ -19,7 +21,9 @@
 # `connect` joins the node by redeeming one; the internet sees the node;
 # every connection shows the node a fresh key; with two hops the exit's pass
 # is redeemed through the entry, the exit never hears from the client, and
-# with no pass left for it the connection is refused; a pass spent once is refused
+# with no pass left for it the connection is refused; when the exit and the
+# entry give this machine the same address (Windows cannot hold it twice), the
+# entry is asked for another session and no second pass is spent; a pass spent once is refused
 # the second time; the quota and a switched-off account stop issuance; the
 # open-admission door is shut on a pass node; the wallet and the token are
 # root's only; and no log names the client, the account or the token.
@@ -30,7 +34,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
-C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; Q="ip netns exec hv-q"; E="ip netns exec hv-e"; F="ip netns exec hv-f"
+C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; Q="ip netns exec hv-q"; E="ip netns exec hv-e"; F="ip netns exec hv-f"; X="ip netns exec hv-x"; Y="ip netns exec hv-y"
 PIDS=()
 export RUST_BACKTRACE=0
 # The issuer speaks plain HTTP on this private test network; a client sends
@@ -44,10 +48,11 @@ cleanup() {
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   sleep 0.5
   [ -n "${NODE_Q:-}" ] && kill -CONT "$NODE_Q" 2>/dev/null
-  for ns in hv-client hv-node hv-inet hv-q hv-e hv-f; do ip netns del "$ns" 2>/dev/null; done
+  for ns in hv-client hv-node hv-inet hv-q hv-e hv-f hv-x hv-y; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /var/run/wireguard/hvp0.sock /var/run/wireguard/hvq0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvf0.sock
+         /var/run/wireguard/hvp0.sock /var/run/wireguard/hvq0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvf0.sock \
+         /var/run/wireguard/hvx0.sock /var/run/wireguard/hvy0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -173,7 +178,7 @@ svc '{"cmd":"down"}' >/dev/null
 
 # ── The browser's module: hands the token over, asks for passes ────────────
 cat > "$WORK/browser.js" <<JS
-const { VpnManager } = require('$HERE/../browser/src/main/vpn-manager.js');
+const { VpnManager } = require('$HERE/../../hidra-browser/src/main/vpn-manager.js');
 (async () => {
   const vpn = new VpnManager({ timeoutMs: 30000 });
   const t = await vpn.setPassToken(process.argv[2]);
@@ -326,6 +331,55 @@ OUT=$(up2)
 [ "$(left "$WORK/rec-f.json")" = 1 ] && [ "$(f_lease)" = "$L1" ] && [ "$(left "$WORK/rec-q.json")" = 2 ] && pass "the next try uses node-f's kept lease: no pass spent on either node" || fail "second try: $(echo "$OUT" | tail -1); node-f $(left "$WORK/rec-f.json") lease $(f_lease), node-q $(left "$WORK/rec-q.json")"
 kill -CONT "$NODE_Q"
 { $C ip link show hvpn0 || $C nft list table inet hidravpn_ks; } >/dev/null 2>&1 && fail "a failed two-hop try left a tunnel or the kill switch behind" || pass "the failed tries left nothing behind"
+
+# ── Two hops on one subnet: no second pass for an address clash ────────────
+# node-x, an exit that admits with a pass, and node-y, an entry that admits
+# openly, both lease from 10.81.0.0/16 and are fresh, so each gives this
+# machine the subnet's first address. Windows cannot hold one address on two
+# interfaces; HIDRAVPN_ONE_ADDRESS_PER_INTERFACE=1 applies its rule here. The
+# exit's pass is redeemed once, and node-y, whose sessions cost nothing, is
+# asked for another session: the circuit comes up on two addresses.
+ip netns add hv-x; ip netns add hv-y
+ip link add x-i type veth peer name i-x; ip link set x-i netns hv-x; ip link set i-x netns hv-inet
+ip link add y-i type veth peer name i-y; ip link set y-i netns hv-y; ip link set i-y netns hv-inet
+$X ip addr add 10.208.0.2/24 dev x-i; $X ip link set x-i up; $X ip link set lo up; $X ip route add default via 10.208.0.1
+$I ip addr add 10.208.0.1/24 dev i-x; $I ip link set i-x up
+$Y ip addr add 10.209.0.2/24 dev y-i; $Y ip link set y-i up; $Y ip link set lo up; $Y ip route add default via 10.209.0.1
+$I ip addr add 10.209.0.1/24 dev i-y; $I ip link set i-y up
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --endpoint 10.208.0.2:51820 --tunnel 10.81.0.0/16 --name node-x --role exit --operator fifth --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
+sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
+$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" init --endpoint 10.209.0.2:51820 --tunnel 10.81.0.0/16 --name node-y --role entry --operator sixth --open-admission --dns udp://10.201.0.2 --out-interface y-i > "$WORK/init-y.log" 2>&1 || { cat "$WORK/init-y.log"; fail "node-y init"; }
+sed -i 's/^interface = "hvpn0"/interface = "hvy0"/' "$WORK/y.toml"
+mkdir -p "$WORK/run-x" "$WORK/run-y" "$WORK/s"
+$X env HIDRAVPN_RUN_DIR="$WORK/run-x" "$BIN/hidravpn-node" --config "$WORK/x.toml" run > "$WORK/node-x.log" 2>&1 & PIDS+=($!)
+$Y env HIDRAVPN_RUN_DIR="$WORK/run-y" "$BIN/hidravpn-node" --config "$WORK/y.toml" run > "$WORK/node-y.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 1 100); do grep -q "admission service on" "$WORK/node-x.log" && grep -q "admission service on" "$WORK/node-y.log" && break; sleep 0.2; done
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" record > "$WORK/rec-x.json" 2>/dev/null
+$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" record > "$WORK/rec-y.json" 2>/dev/null
+HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes5.json" --sequence 5 \
+  --issuer-url http://10.200.0.1:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec-x.json" "$WORK/rec-y.json" > /dev/null 2>&1
+SP="$WORK/s/circuit.json"
+OUT=$("$BIN/hidravpn" --pocket "$SP" nodes import "$WORK/nodes5.json" --pubkey "$LISTPUB" 2>&1); echo "$OUT" | grep -q "added 2 node(s)" || fail "import v5: $OUT"
+OUT=$($C "$BIN/hidravpn" --pocket "$SP" passes get --node node-x --count 2 --token-file <(echo "$TOKEN4") 2>&1); echo "$OUT" | grep -q "2 pass(es) for 1 node(s)" || fail "passes for node-x: $OUT"
+x_left() { python3 -I - "$WORK/rec-x.json" "$WORK/s/passes.json" <<'PY2'
+import json, sys
+key = json.load(open(sys.argv[1]))['node_public_key'].strip()
+print(sum(1 for p in json.load(open(sys.argv[2])).get('passes', []) if p['node_public_key'].strip() == key))
+PY2
+}
+y_sessions() { python3 -I -c "import json; print(sum(1 for l in json.load(open('$WORK/run-y/peers.json'))['leases'] if l['source']=='session'))" 2>/dev/null || echo 0; }
+$C env HIDRAVPN_ONE_ADDRESS_PER_INTERFACE=1 "$BIN/hidravpn" --direct --key /etc/hidravpn/client.key --pocket "$SP" up --privado > "$WORK/same.log" 2>&1 & UP_S=$!
+EXIT_IP=""
+for _ in $(seq 1 40); do EXIT_IP=$($C curl -s --max-time 3 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.208.0.2" ] && break; sleep 0.5; done
+TUN_IPS=$($C ip -4 -o addr show 2>/dev/null | grep -o '10\.81\.[0-9]*\.[0-9]*' | sort -u | tr '\n' ' ')
+[ "$EXIT_IP" = "10.208.0.2" ] && pass "two hops come up through node-y and node-x although both gave this machine the same first address" || fail "same-address two hops: exit IP '$EXIT_IP'; $(tail -3 "$WORK/same.log")"
+[ "$(echo $TUN_IPS | wc -w)" = 2 ] && pass "the two interfaces hold two different addresses ($TUN_IPS)" || fail "tunnel addresses: '$TUN_IPS'"
+[ "$(x_left)" = 1 ] && [ "$EXIT_IP" = "10.208.0.2" ] && pass "one pass of node-x was spent, not a second one for the clash" || fail "node-x passes left: $(x_left), wanted 1"
+[ "$(y_sessions)" -ge 2 ] && pass "node-y was asked for another session instead ($(y_sessions) session leases)" || fail "node-y sessions: $(y_sessions)"
+kill -INT $UP_S 2>/dev/null; wait $UP_S 2>/dev/null
+sleep 1
+{ $C ip link show hvpn0 || $C nft list table inet hidravpn_ks; } >/dev/null 2>&1 && fail "the same-address circuit left a tunnel or the kill switch behind" || pass "and it came down cleanly"
 
 # ── A pass spent once is refused the second time ────────────────────────────
 OUT=$($C "$BIN/hidravpn" --pocket "$WORK/again/circuit.json" nodes join --all 2>&1)

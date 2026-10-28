@@ -1,9 +1,12 @@
 # The browser's tests, on every change to the browser or to what its tests
 # read: the English-only sweep (which also reads hidra-node and the landing
-# page), the storage and vault tests, who may call each handler, and the
+# page), the storage and vault tests, who may call each handler, the VPN
+# control-channel module against a stand-in service, the VPN page lint (which
+# reads the service's ipc.rs), the release-signature verifier, and the
 # Electron-only tests under Xvfb — among them the preload boundary, which
-# proves a downloaded .html or a website gets no bridge to Tor or the vault.
-# HidraVPN is not in the browser yet; its half is tested in hidravpn-build.yml.
+# proves a downloaded .html or a website gets no bridge to Tor, the vault or
+# the VPN, and apps-e2e, which runs the chat, mail and forum between people
+# through two local MQTT brokers and takes one of them down halfway.
 name: Browser tests
 
 on:
@@ -13,6 +16,8 @@ on:
       - "hidra-node/src/**"
       - "hidra-node/assets/**"
       - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
   pull_request:
     paths:
@@ -20,12 +25,15 @@ on:
       - "hidra-node/src/**"
       - "hidra-node/assets/**"
       - "landing/**"
+      - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
 
 jobs:
   browser:
     name: node and Electron tests (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: hidra-browser
@@ -41,7 +49,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault ipc-senders tor-connect; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect build-pins release-base release-notes; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -52,10 +60,25 @@ jobs:
           sudo apt-get install -y -qq xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libxss1 \
             || true
           sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2
+          sudo apt-get install -y -qq mosquitto
+      - name: Allow only the temporary E2E broker files in AppArmor
+        run: |
+          # New runner images confine Mosquitto to its system configuration.
+          # Keep confinement enabled; add only this suite's two private brokers.
+          for profile in /etc/apparmor.d/mosquitto /etc/apparmor.d/usr.sbin.mosquitto; do
+            if [ -f "$profile" ]; then
+              rules="/etc/apparmor.d/local/$(basename "$profile")"
+              printf '%s\n' \
+                '/tmp/hidra-apps-e2e-*/{first,second}/mosquitto.conf r,' \
+                '/tmp/hidra-apps-e2e-*/{first,second}/mosquitto.db{,.new} rwk,' \
+                | sudo tee -a "$rules"
+              sudo apparmor_parser -r "$profile"
+            fi
+          done
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

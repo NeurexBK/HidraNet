@@ -162,6 +162,11 @@ impl Direction {
     }
 }
 
+/// What sealing adds to a message: the Poly1305 tag (the nonce is the count,
+/// so it does not travel). A client splits what it sends so that each sealed
+/// piece still fits one cell.
+pub const SEAL_OVERHEAD: usize = 16;
+
 /// An authenticated session with a hidden service, from either end.
 pub struct SealedChannel {
     send: Direction,
@@ -313,6 +318,17 @@ mod tests {
         for i in 0..50u8 {
             let m = c.seal(&[i; 100]).unwrap();
             assert_eq!(s.open(&m).unwrap(), vec![i; 100]);
+        }
+    }
+
+    #[test]
+    fn sealing_adds_exactly_the_stated_overhead() {
+        let svc = key();
+        let (hs, hello) = ClientHandshake::start();
+        let (_, answer) = answer_hello(&svc, &hello).unwrap();
+        let mut c = hs.finish(&svc.verifying_key().to_bytes(), &answer).unwrap();
+        for len in [0, 1, 1000] {
+            assert_eq!(c.seal(&vec![0; len]).unwrap().len(), len + SEAL_OVERHEAD);
         }
     }
 

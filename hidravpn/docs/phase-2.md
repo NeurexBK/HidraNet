@@ -19,7 +19,7 @@ crates/hidravpn-core/src/killswitch/   the kill switch, one file per OS
 crates/hidravpn-service/   the background service
   daemon.rs    holds the tunnel, arms the kill switch, puts the network back
   ipc.rs       the local control channel: a request and a reply, one line each
-  install/     the OS service (systemd unit / Windows scheduled task)
+  install/     the OS service (systemd unit / Windows service)
 scripts/test-killswitch.sh       the leak test, in two network namespaces
 scripts/test-service-netns.sh    the whole service, end to end, with a real node
 scripts/windows/phase2-test.ps1  the same checks from a real Windows machine
@@ -99,7 +99,8 @@ even if everything else is blocked, because it needs no network to do so.
   when the tunnel is gone.
 - macOS has no kill switch yet, so the service refuses to connect there rather
   than leave the machine unprotected. pf comes next.
-- A native Windows service (the Service Control Manager) is a later refinement;
-  for now the service runs as SYSTEM from a scheduled task, which is enough to
-  hold the tunnel and serve the control channel.
+- On Windows the service is registered with the Service Control Manager and
+  runs as LocalSystem (SYSTEM) at boot. (The first builds ran it from a
+  scheduled task; the SCM's stop and shutdown controls let the daemon put the
+  network back when the machine stops, which a hard-ended task did not.)
 - Nothing is logged but counts and states: no address, no name, no traffic.

@@ -1,15 +1,16 @@
-//! Windows: a Scheduled Task that runs the service as SYSTEM at boot. A task
-//! runs an ordinary console program, unlike a true Windows service, so the
-//! same `run` binary serves here without a service-control handshake; a native
-//! service is a later refinement. Everything is reversible with schtasks.
+//! Windows: a real service, registered with the SCM to start as SYSTEM at
+//! boot. The SCM hands it a stop and a shutdown control, so the daemon puts
+//! the network back when the machine stops as surely as when a person
+//! disconnects — which a Scheduled Task, hard-terminated, did not. Older
+//! builds installed a Scheduled Task by the same name; install and uninstall
+//! remove it so the two never both run. The service-side of this (the
+//! control handler, the status the SCM reads) lives in `crate::service`.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::run;
-
-const TASK: &str = "HidraVPN";
+use super::{run, SERVICE_NAME};
 
 pub fn install(bin: &Path) -> Result<()> {
     // wintun.dll must sit beside the installed service, or it cannot create the
@@ -83,97 +84,88 @@ pub fn install(bin: &Path) -> Result<()> {
         crate::ipc::protect_token(&token)?;
     }
 
-    // The task is described in full rather than with schtasks' switches,
-    // whose defaults are wrong for a service: start only on mains power,
-    // stop when the laptop goes on battery, stop after three days. Seen on
-    // a laptop: on battery the service never started, or was ended, and the
-    // command line found nothing to talk to.
-    let xml = data.join("task.xml");
-    std::fs::write(&xml, utf16_with_bom(&task_xml(bin)))
-        .with_context(|| format!("writing {}", xml.display()))?;
-    let path = xml.to_string_lossy().into_owned();
-    let made = run("schtasks", &["/Create", "/TN", TASK, "/XML", &path, "/F"]);
-    let _ = std::fs::remove_file(&xml);
-    made.context("creating the HidraVPN task")?;
+    // An older build may have left a Scheduled Task by this name; remove it
+    // so the task and the service never both run.
+    remove_legacy_task();
+
+    // Register the service: started by the SCM at boot as LocalSystem, its
+    // ImagePath the installed exe with `run`. `sc` wants `key= value` with
+    // the space part of the syntax, so the key and value are two arguments;
+    // the exe path is quoted inside the value because of "Program Files".
+    //
+    // An install over an existing service re-points it (config, in case the
+    // path changed) rather than failing on "already exists". A first install
+    // has nothing to re-point, so a failed config there is the real error.
+    let image = service_image_path(bin);
+    let created = run(
+        "sc.exe",
+        &[
+            "create",
+            SERVICE_NAME,
+            "binPath=",
+            &image,
+            "start=",
+            "auto",
+            "obj=",
+            "LocalSystem",
+            "DisplayName=",
+            "HidraVPN",
+        ],
+    );
+    if created.is_err() {
+        run(
+            "sc.exe",
+            &[
+                "config",
+                SERVICE_NAME,
+                "binPath=",
+                &image,
+                "start=",
+                "auto",
+                "obj=",
+                "LocalSystem",
+            ],
+        )
+        .context("creating the HidraVPN service")?;
+    }
+    let _ = run("sc.exe", &["description", SERVICE_NAME, "HidraVPN service"]);
+    // Restarted if it ever exits with an error: three times, a minute apart,
+    // the failure count forgotten after a day.
+    let _ = run(
+        "sc.exe",
+        &[
+            "failure",
+            SERVICE_NAME,
+            "reset=",
+            "86400",
+            "actions=",
+            "restart/60000/restart/60000/restart/60000",
+        ],
+    );
     // Start it now as well, so the user need not reboot.
-    let _ = run("schtasks", &["/Run", "/TN", TASK]);
+    let _ = run("sc.exe", &["start", SERVICE_NAME]);
     Ok(())
 }
 
-/// The task: at boot, as SYSTEM with full rights, on battery as on mains,
-/// for as long as the machine runs, one instance, restarted if it fails.
-fn task_xml(bin: &Path) -> String {
-    let command = bin
-        .display()
-        .to_string()
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>HidraVPN service</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <BootTrigger>
-      <Enabled>true</Enabled>
-    </BootTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>4</Priority>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
-    </RestartOnFailure>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{command}</Command>
-      <Arguments>run</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"#
-    )
+/// The service's ImagePath: the installed exe, quoted (its folder has a
+/// space), with the `run` argument the SCM launches it with.
+fn service_image_path(bin: &Path) -> String {
+    format!("\"{}\" run", bin.display())
 }
 
-/// schtasks reads a task file as UTF-16, as Windows writes them.
-fn utf16_with_bom(s: &str) -> Vec<u8> {
-    let mut out = vec![0xFF, 0xFE];
-    for u in s.encode_utf16() {
-        out.extend_from_slice(&u.to_le_bytes());
-    }
-    out
+/// Removes the Scheduled Task older builds installed, if present. Failures
+/// (no such task) are ignored.
+fn remove_legacy_task() {
+    let _ = run("schtasks", &["/End", "/TN", SERVICE_NAME]);
+    let _ = run("schtasks", &["/Delete", "/TN", SERVICE_NAME, "/F"]);
 }
 
 pub fn uninstall() -> Result<()> {
     let _ = crate::cli_down_blocking();
-    let _ = run("schtasks", &["/End", "/TN", TASK]);
-    let _ = run("schtasks", &["/Delete", "/TN", TASK, "/F"]);
-    // Make sure nothing is left armed if the task was killed mid-connection.
+    let _ = run("sc.exe", &["stop", SERVICE_NAME]);
+    let _ = run("sc.exe", &["delete", SERVICE_NAME]);
+    remove_legacy_task();
+    // Make sure nothing is left armed if the service was killed mid-connection.
     let _ = hidravpn_core::killswitch::remove();
     if let Ok(Some(plan)) = hidravpn_core::netcfg::load_plan() {
         let _ = hidravpn_core::netcfg::revert(&plan);
@@ -206,12 +198,18 @@ pub fn purge() -> Result<()> {
 }
 
 pub fn start() -> Result<()> {
-    run("schtasks", &["/Run", "/TN", TASK]).map(|_| ())
+    run("sc.exe", &["start", SERVICE_NAME]).map(|_| ())
 }
 
 pub fn stop() -> Result<()> {
     let _ = crate::cli_down_blocking();
-    run("schtasks", &["/End", "/TN", TASK]).map(|_| ())
+    // Best effort: the SCM answers at once and the service then unwinds
+    // (STOP_PENDING while it puts the network back). An already-stopped
+    // service is not an error to report; a stop for an update waits on the
+    // binary being free, not on this.
+    let _ = run("sc.exe", &["stop", SERVICE_NAME]);
+    let _ = run("schtasks", &["/End", "/TN", SERVICE_NAME]);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -219,14 +217,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_task_runs_on_battery_for_as_long_as_the_machine_runs() {
-        let xml = task_xml(Path::new(r"C:\Program Files\A&B\hidravpn-service.exe"));
-        assert!(xml.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
-        assert!(xml.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
-        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
-        assert!(xml.contains("<UserId>S-1-5-18</UserId>"));
-        assert!(xml.contains(r"<Command>C:\Program Files\A&amp;B\hidravpn-service.exe</Command>"));
-        let bytes = utf16_with_bom("ab");
-        assert_eq!(bytes, vec![0xFF, 0xFE, b'a', 0, b'b', 0]);
+    fn the_service_image_path_quotes_the_exe_and_passes_run() {
+        // The exe is quoted (its folder has a space) and `run` is the
+        // argument the SCM starts it with.
+        let p = service_image_path(Path::new(r"C:\Program Files\HidraVPN\hidravpn-service.exe"));
+        assert_eq!(p, r#""C:\Program Files\HidraVPN\hidravpn-service.exe" run"#);
     }
 }

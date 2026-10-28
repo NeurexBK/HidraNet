@@ -11,6 +11,7 @@
     "build:linux": "node scripts/prepare-build.js && electron-builder --linux --x64",
     "build:mac": "node scripts/prepare-build.js && node scripts/build-mac.js",
     "build:linux-zip": "node scripts/prepare-build.js && node scripts/build-linux.js",
+    "build:win-zip": "node scripts/prepare-build.js && node scripts/build-win.js",
     "build:all": "node scripts/prepare-build.js && electron-builder --win --linux --x64",
     "build": "node scripts/prepare-build.js && electron-builder --win --x64",
     "fetch-tor": "node scripts/fetch-tor.js",
@@ -19,8 +20,8 @@
   "author": "HidraNet <contact@hidranet.org>",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "44.9.3",
+    "electron-builder": "^26.0.0"
   },
   "build": {
     "appId": "net.hidra.browser",
@@ -74,5 +75,8 @@
   "dependencies": {
     "mqtt": "5.16.0",
     "qrcode-generator": "1.4.4"
+  },
+  "overrides": {
+    "ip-address": "10.7.4"
   }
 }

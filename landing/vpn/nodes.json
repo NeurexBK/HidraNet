@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "generated": "2026-10-28T00:19:49Z",
+  "sequence": 2026102801,
+  "expires": "2026-11-25T00:00:00Z",
+  "note": "HidraNet official node list",
+  "nodes": [
+    {
+      "node_name": "helsinki-1",
+      "node_public_key": "qiamLThLQS2yHlWdosfPSpjND3O9KV7yPh7611KdUEQ=",
+      "endpoint": "95.216.142.72:51820",
+      "operator": "HidraNet",
+      "role": "exit",
+      "admission": "pass",
+      "country": "FI",
+      "features": [
+        "sessions"
+      ]
+    },
+    {
+      "node_name": "entrada-1",
+      "node_public_key": "GO9FJyrJxix+YmFhAoBckjJqk5RiBs/Fv/mj13GMhC8=",
+      "endpoint": "159.69.244.23:51820",
+      "operator": "HidraNet",
+      "role": "entry",
+      "admission": "open",
+      "features": [
+        "sessions",
+        "admission-relay"
+      ]
+    },
+    {
+      "node_name": "amsterdam-1",
+      "node_public_key": "KKGxmjiGfQ986DUD+6UcyK6es79lXN+yF25vkN6rDnI=",
+      "endpoint": "206.189.4.168:51820",
+      "operator": "HidraNet",
+      "role": "exit",
+      "admission": "pass",
+      "country": "NL",
+      "features": [
+        "sessions"
+      ]
+    }
+  ],
+  "pass_issuer": {
+    "url": "https://passes.hidranet.org",
+    "keys": [
+      {
+        "id": "3d7c13bb08e6b535",
+        "key": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEApCPTseqJN6r9+n2H9o/OPJSjLPIU+lcEIQmmOk2oMr8xPuyn++qCcLYrWFtmIFajMQMiI2ZYsQ2SEvKpULcMenehYm85AupsWTvmbfQ/C1v5j2FjsGIwYFviwoFxgFeW1M9eiylIXKgm19rG+e8H826iM1J8c+P0sdTkg9mR04fO6eUDIC1u5qHnXavPAWRtrpCKIhWM5Au6ZbrZP8SSlQYqDUTkWp17Tb1LmxniMhlrqadtPEyEaMcAkueiXQJYuX5bC2oVz4sFg7a3D0q86JpKWBYEXFyGolQc2FZdWDrgdb6XBP8hpn1NONfFERvw8VQgsSEe7/87ASkc+tsivwIDAQAB",
+        "not_after": "2026-11-25T00:00:00Z"
+      }
+    ]
+  }
+}

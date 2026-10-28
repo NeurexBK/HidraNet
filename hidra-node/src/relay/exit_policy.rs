@@ -53,11 +53,15 @@ impl ExitPolicy {
         self.private_targets || is_public(ip)
     }
 
-    /// Resolve an exit destination and pick an address the policy allows.
+    /// Resolve an exit destination to the addresses a connection may try, in
+    /// the resolver's order.
     ///
     /// Refuses the whole name if any address it resolves to is refused: a
     /// name that points both outside and inside is not one to guess about.
-    pub async fn resolve_target(&self, host: &str, port: u16) -> Result<SocketAddr, String> {
+    /// All of them are returned, not the first: a name with an IPv6 address
+    /// listed before its IPv4 one used to fail outright on an exit with no
+    /// IPv6, which is most of them.
+    pub async fn resolve_target(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
         if port == 0 {
             return Err("destination port 0 refused".into());
         }
@@ -68,14 +72,14 @@ impl ExitPolicy {
         self.choose(&addrs)
     }
 
-    fn choose(&self, addrs: &[SocketAddr]) -> Result<SocketAddr, String> {
+    fn choose(&self, addrs: &[SocketAddr]) -> Result<Vec<SocketAddr>, String> {
         if addrs.is_empty() {
             return Err("destination did not resolve".into());
         }
         if addrs.iter().any(|a| !self.permits_target(a.ip())) {
             return Err("destination refused by this relay's exit policy".into());
         }
-        Ok(addrs[0])
+        Ok(addrs.to_vec())
     }
 
     /// The addresses of a DNS answer that the policy would let a client use.
@@ -244,7 +248,12 @@ mod tests {
         ];
         assert!(ExitPolicy::STRICT.choose(&mixed).is_err());
         let public: Vec<SocketAddr> = vec!["93.184.216.34:80".parse().unwrap()];
-        assert_eq!(ExitPolicy::STRICT.choose(&public).unwrap(), public[0]);
+        assert_eq!(ExitPolicy::STRICT.choose(&public).unwrap(), public);
+        let both: Vec<SocketAddr> = vec![
+            "[2606:2800:220:1:248:1893:25c8:1946]:80".parse().unwrap(),
+            "93.184.216.34:80".parse().unwrap(),
+        ];
+        assert_eq!(ExitPolicy::STRICT.choose(&both).unwrap(), both, "every allowed address, in order");
         assert!(ExitPolicy::STRICT.choose(&[]).is_err());
     }
 

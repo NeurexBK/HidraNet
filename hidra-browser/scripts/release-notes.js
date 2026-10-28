@@ -11,7 +11,7 @@
  * so the table on the page is always the table of what the page serves.
  *
  * Usage:
- *   node scripts/release-notes.js <dir-with-the-zips> [commit-sha] > notes.md
+ *   node scripts/release-notes.js <dir-with-the-zips> [commit-sha] [--preview] > notes.md
  */
 'use strict';
 
@@ -35,7 +35,8 @@ if (!dir) {
   console.error('usage: release-notes.js <dir-with-the-zips> [commit-sha]');
   process.exit(1);
 }
-const commit = (process.argv[3] || '').trim().slice(0, 7);
+const preview = process.argv.includes('--preview');
+const commit = (process.argv[3] === '--preview' ? '' : process.argv[3] || '').trim().slice(0, 7);
 
 const rows = FILES.map((name) => {
   const file = path.join(dir, name);
@@ -54,9 +55,15 @@ const rows = FILES.map((name) => {
 const date = new Date().toISOString().slice(0, 10);
 const notes = fs.readFileSync(NOTES, 'utf8').trimEnd();
 
-let out = notes + '\n\n## Packages\n\n';
-out += `Published ${date}${commit ? ` from commit \`${commit}\`` : ''}. `;
-out += 'The hashes below were computed from these exact files; the same table is in `landing/SHA256SUMS.txt`.\n\n';
+let out = preview ? '# Release notes preview\n\nThis document is a preview only; this run did not publish or replace any release assets.\n\n' : '';
+out += notes + '\n\n## Packages\n\n';
+if (preview) {
+  out += `Preview generated ${date}${commit ? ` using notes from commit \`${commit}\`` : ''}. `;
+  out += 'The hashes below describe the downloaded public packages, not a new build.\n\n';
+} else {
+  out += `Published ${date}${commit ? ` from commit \`${commit}\`` : ''}. `;
+  out += 'The hashes below were computed from these exact files; the same table is in `landing/SHA256SUMS.txt`.\n\n';
+}
 out += '```\n';
 for (const r of rows) out += `${r.sha}  ${r.name}  (${r.mib} MiB)\n`;
 out += '```\n';

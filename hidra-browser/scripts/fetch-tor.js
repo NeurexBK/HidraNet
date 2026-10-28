@@ -14,9 +14,13 @@ const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-
-const TOR_VERSION = '15.0.22';
+const { TOR_VERSION, torProblems } = require('./lib/tor');
+// The Tor Project keeps only its latest releases on dist; older ones move to
+// the archive, under the same names and beside the same checksum list. A
+// pinned version that leaves dist is fetched from there, and is still held to
+// the same checksum and the same pins.
 const DIST = `https://dist.torproject.org/torbrowser/${TOR_VERSION}`;
+const ARCHIVE = `https://archive.torproject.org/tor-package-archive/torbrowser/${TOR_VERSION}`;
 
 const ROOT = path.join(__dirname, '..');
 
@@ -28,13 +32,19 @@ function outDirFor(platform, arch) {
 
 function bundleName(platform, arch) {
   if (platform === 'win32') return `tor-expert-bundle-windows-x86_64-${TOR_VERSION}.tar.gz`;
-  if (platform === 'linux') return `tor-expert-bundle-linux-x86_64-${TOR_VERSION}.tar.gz`;
+  if (platform === 'linux') {
+    // Only x86_64 is fetched and pinned. Asked for arm64, this used to fetch
+    // the x86_64 bundle anyway, and the package would have shipped a Tor
+    // that cannot run on the machine it is for.
+    if (arch !== 'x64') throw new Error(`no Tor is pinned for linux-${arch}`);
+    return `tor-expert-bundle-linux-x86_64-${TOR_VERSION}.tar.gz`;
+  }
   if (platform === 'darwin') {
     return arch === 'arm64'
       ? `tor-expert-bundle-macos-aarch64-${TOR_VERSION}.tar.gz`
       : `tor-expert-bundle-macos-x86_64-${TOR_VERSION}.tar.gz`;
   }
-  throw new Error(`plataforma sem bundle do Tor: ${platform}/${arch}`);
+  throw new Error(`no Tor bundle for ${platform}/${arch}`);
 }
 
 function get(url) {
@@ -46,7 +56,9 @@ function get(url) {
       }
       if (res.statusCode !== 200) {
         res.resume();
-        return reject(new Error(`HTTP ${res.statusCode} em ${url}`));
+        const err = new Error(`HTTP ${res.statusCode} at ${url}`);
+        err.status = res.statusCode;
+        return reject(err);
       }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -70,15 +82,26 @@ async function main() {
   const rel = path.relative(ROOT, OUT_DIR).replace(/\\/g, '/');
 
   if (fs.existsSync(STAMP) && fs.readFileSync(STAMP, 'utf8').trim() === TOR_VERSION) {
-    console.log(`[ok] Tor ${TOR_VERSION} already present in ${rel}`);
-    return;
+    const problems = torProblems(OUT_DIR, platform, arch);
+    if (!problems.length) {
+      console.log(`[ok] Tor ${TOR_VERSION} already present in ${rel}, every file matches its pin`);
+      return;
+    }
+    console.log(`[..] the Tor in ${rel} does not match its pins (${problems[0]}); fetching it again`);
   }
 
   console.log(`[..] downloading ${file}`);
-  const [sums, tarball] = await Promise.all([
-    get(`${DIST}/sha256sums-unsigned-build.txt`),
-    get(`${DIST}/${file}`),
-  ]);
+  // The list and the bundle always come from the same host.
+  const from = (base) => Promise.all([get(`${base}/sha256sums-unsigned-build.txt`), get(`${base}/${file}`)]);
+  let sums;
+  let tarball;
+  try {
+    [sums, tarball] = await from(DIST);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+    console.log(`[..] Tor ${TOR_VERSION} is no longer on dist.torproject.org; fetching it from archive.torproject.org`);
+    [sums, tarball] = await from(ARCHIVE);
+  }
 
   const line = sums.toString('utf8').split('\n').find((l) => l.includes(file));
   if (!line) throw new Error(`${file} is not in the official checksum list`);
@@ -118,6 +141,16 @@ async function main() {
   }
 
   fs.rmSync(stage, { recursive: true, force: true });
+
+  // The checksum above came from the same server as the bundle. The pins in
+  // lib/tor.js did not: a bundle that passes the first and fails these is
+  // not the Tor we ship.
+  const problems = torProblems(OUT_DIR, platform, arch);
+  if (problems.length) {
+    fs.rmSync(OUT_DIR, { recursive: true, force: true });
+    throw new Error(`the bundle's files do not match the pinned Tor ${TOR_VERSION}:\n  ${problems.join('\n  ')}`);
+  }
+  console.log(`[ok] every file matches its pin in scripts/lib/tor.js`);
   fs.writeFileSync(STAMP, TOR_VERSION, 'utf8');
 
   const mb = (fs.statSync(path.join(OUT_DIR, exeName)).size / 1024 / 1024).toFixed(1);

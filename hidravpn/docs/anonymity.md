@@ -219,10 +219,9 @@ system.
 **Fixed.** The test runs only with the kill switch armed and an exit
 handshake in the last three minutes. With the kill switch off it asks no
 website anything and says why. The probe sends a generic user agent and no
-cookies (`vpn-leaktest.js`, and the browser's VPN wiring, parked until
-HidraVPN ships: `browser/README.md`).
+cookies (`vpn-leaktest.js`, `directProbe()` in `hidra-browser/src/main/main.js`).
 
-**Tests:** `hidravpn/browser/test/vpn-leaktest.js` (9), `test/vpn-page.js` (54).
+**Tests:** `hidra-browser/test/vpn-leaktest.js` (9), `test/vpn-page.js` (54).
 
 ### 9. Low — the list and release fetches named the browser
 
@@ -409,13 +408,21 @@ Getting there found three more bugs, now fixed:
   subnet lease the same first addresses, and Windows will not hold one
   address on two interfaces: it gave the inner one a link-local address,
   silently, and nothing passed. On Windows the exit is now asked again for
-  a session when its address matches the entry's, and a tunnel interface
-  that did not take its address stops the connection with an error
-  (`netcfg::check_address`). Linux holds the same address on both
+  a session when its address matches the entry's. An exit that admits with
+  a pass is not asked again, which would spend another pass and show it a
+  second key: the entry, when it admitted this connection with a session,
+  is asked for another session instead, and leases the next address of its
+  subnet (since 0.1.1; `test-passes-netns.sh` applies Windows' rule with
+  `HIDRAVPN_ONE_ADDRESS_PER_INTERFACE=1` and proves one pass is spent). A
+  tunnel interface that did not take its address stops the connection with
+  an error (`netcfg::check_address`). Linux holds the same address on both
   interfaces, and `test-multihop-netns.sh` proves it still does.
 - **The service did not run on battery.** The scheduled task kept
   schtasks' defaults: start only on mains power, stop on battery, stop
-  after three days. It is now described in full (`install/windows.rs`).
+  after three days. HidraVPN is now a real Windows service registered with
+  the SCM (`install/windows.rs`, `service.rs`), which has no such
+  conditions: it runs on battery as on mains, for as long as the machine is
+  up, and is told to stop so it can put the network back.
 
 **Not run on Windows:** passes and the browser page. A CI job runs the unit tests on Windows. It cannot arm a firewall on
 a hosted runner: that would cut the runner off from GitHub.

@@ -8,7 +8,7 @@
 // installed, not running, not ours to open, answering nonsense, never
 // answering — comes back as a state a page can show, never as a crash.
 //
-//   node hidravpn/browser/test/vpn-manager.js
+//   node hidra-browser/test/vpn-manager.js
 
 'use strict';
 

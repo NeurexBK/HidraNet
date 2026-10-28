@@ -25,10 +25,10 @@ pub async fn run_client_session(
     // long-term key is no longer shown to any relay.
     drop(client_secret);
 
-    let (mut conn, circuit) = build_telescoped(relays).await?;
+    let (mut conn, mut circuit) = build_telescoped(relays).await?;
     info!(circuit_id = circuit.id, bytes = payload.len(), "sending payload through the circuit");
 
-    let onion_data = build_onion(&circuit, payload.as_bytes())?;
+    let onion_data = build_onion(&mut circuit, payload.as_bytes())?;
     conn.send_message(&Message::Relay {
         circuit_id: circuit.id,
         data: onion_data,
@@ -44,7 +44,7 @@ pub async fn run_client_session(
         }
     };
 
-    let plaintext = peel_response_layers(&circuit, response_data)?;
+    let plaintext = peel_response_layers(&mut circuit, response_data)?;
     let response_str = String::from_utf8(plaintext)
         .map_err(|e| HidraError::Circuit(format!("response is not valid UTF-8: {e}")))?;
     info!(circuit_id = circuit.id, bytes = response_str.len(), "circuit complete");

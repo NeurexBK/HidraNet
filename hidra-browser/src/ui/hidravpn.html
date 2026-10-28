@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+  HidraVPN, inside the browser. This page does not contain the VPN: it drives
+  the HidraVPN service installed on this machine, through the browser's main
+  process (src/main/vpn-manager.js). Everything shown here is read from the
+  service: the state, the kill switch, the hops, the bytes. Nothing on this
+  page is a fixed badge, because a fixed badge is a promise the service may
+  not be keeping.
+
+  The shape is a VPN desktop app's: the nodes this machine knows on the left,
+  one connect control in the middle with the state spelled out above it and
+  the route beside it, the status under it, and a gear that slides in the
+  administrative parts (passes, the service itself, removal). No tabs: what
+  it takes to connect is on one screen.
+
+  The policy below leaves the page no way out: it talks to nothing
+  (connect-src 'none'), loads nothing remote, cannot be framed and submits
+  nothing. The one thing it can do is call window.hidra.vpn, which the main
+  process only offers to this page.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HidraVPN</title>
+<link rel="icon" href="img/favicon.png">
+<style>
+:root{--bg-primary:#06060b;--bg-card:#10101c;--bg-card-hover:#14142a;--bg-input:#0a0a16;--text-primary:#e0e0e8;--text-secondary:#8888a0;--text-muted:#555570;--accent:#00d4aa;--accent-dim:#00a888;--accent-glow:rgba(0,212,170,.15);--danger:#ff4466;--danger-text:#ffb3bb;--warning:#ffaa33;--cyan:#00ccff;--border:#1a1a2e;--border-light:#22223a;--radius:10px;--radius-sm:6px;--pill:999px;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{display:grid;grid-template-columns:280px minmax(0,1fr);grid-template-rows:52px minmax(0,1fr);grid-template-areas:"top top" "side main";overflow:hidden;background:var(--bg-primary);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+svg{display:block}
+button,input{font-family:inherit;font-size:inherit;color:inherit}
+.hidden{display:none !important}
+[hidden]{display:none !important}
+code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:5px}
+
+/* ── Top bar ─────────────────────────────────────────────────────────── */
+#topbar{grid-area:top;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg-primary);z-index:3}
+.brand{display:flex;align-items:center;gap:9px}
+.brand img{width:22px;height:22px;object-fit:contain}
+.brand .mark{width:22px;height:22px;color:var(--accent)}
+.wordmark{font-size:14px;font-weight:600;letter-spacing:.3px}
+.wordmark-sub{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-top:1px}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.stamp{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.stamp.warn{color:var(--warning)}
+.icon-btn{width:32px;height:32px;border-radius:6px;border:0;background:transparent;color:var(--text-secondary);display:grid;place-items:center;cursor:pointer;position:relative;transition:background .16s,color .16s}
+.icon-btn:hover{background:var(--bg-card-hover);color:var(--text-primary)}
+.icon-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.icon-btn svg{width:18px;height:18px}
+.nav-dot{position:absolute;top:5px;right:5px;width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.nav-dot.warn{background:var(--warning);box-shadow:0 0 6px var(--warning)}
+
+/* ── Sidebar: the nodes this machine knows ───────────────────────────── */
+#sidebar{grid-area:side;background:var(--bg-card);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;overflow-y:auto}
+.side-head{height:44px;flex:none;padding:0 12px;display:flex;align-items:center;gap:8px}
+.side-head h2{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)}
+.count{font-size:10.5px;font-weight:650;padding:1px 6px;border-radius:var(--pill);background:var(--bg-input);border:1px solid var(--border-light);color:var(--text-secondary);line-height:1.5}
+.count.warn{color:var(--warning);border-color:rgba(255,170,51,.4)}
+.pill-link{margin-left:auto;height:28px;padding:0 10px;border-radius:var(--pill);border:1px solid rgba(0,212,170,.35);background:transparent;color:var(--accent);font-size:11.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:background .16s}
+.pill-link:hover{background:var(--accent-glow)}
+.pill-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.search{margin:0 12px 8px;position:relative;flex:none}
+.search svg{position:absolute;left:11px;top:10px;width:14px;height:14px;color:var(--text-muted);pointer-events:none}
+#node-search{width:100%;height:34px;border-radius:17px;background:var(--bg-input);border:1px solid var(--border);padding:0 12px 0 32px;color:var(--text-primary);outline:0;transition:border-color .16s,box-shadow .16s}
+#node-search::placeholder{color:var(--text-muted)}
+#node-search:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+.side-note{padding:0 12px 6px;font-size:11px;line-height:1.5;color:var(--text-muted);flex:none}
+.side-help{padding:0 12px 8px;flex:none}
+.side-help summary{font-size:11px;color:var(--accent);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px}
+.side-help summary::-webkit-details-marker{display:none}
+.side-help summary svg{width:12px;height:12px;transition:transform .16s}
+.side-help[open] summary svg{transform:rotate(90deg)}
+.side-help .help{margin-top:6px;font-size:11px;line-height:1.5;color:var(--text-secondary)}
+#nodes{flex:1;list-style:none;padding:0 8px 8px}
+.group-title{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);padding:10px 6px 4px;font-weight:600}
+.node{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:10px;align-items:center;min-height:50px;padding:8px;border-radius:8px;border-top:1px solid var(--border);cursor:default}
+.node:first-of-type,.group-title + .node{border-top:0}
+.flag{display:flex;flex-direction:column;align-items:center;line-height:1.1}
+.flag .glyph{font-size:16px}
+.flag .cc{font-size:10.5px;color:var(--text-muted);letter-spacing:.04em;font-weight:600}
+.node-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node-meta{font-size:11.5px;line-height:1.4;color:var(--text-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.node-meta .warn{color:var(--warning)}
+.pill{font-size:10.5px;font-weight:650;text-transform:uppercase;letter-spacing:.04em;padding:2px 7px;border-radius:var(--pill);border:1px solid var(--border-light);color:var(--text-secondary);background:var(--bg-input);white-space:nowrap}
+.pill.slot-entry,.pill.role-entry{color:#7fe3ff;border-color:rgba(0,204,255,.3);background:rgba(0,204,255,.12)}
+.pill.slot-exit,.pill.role-exit{color:var(--accent);border-color:rgba(0,212,170,.35);background:var(--accent-glow)}
+.pill.slot-known{color:var(--text-muted)}
+.empty-state{padding:24px 12px;text-align:center;color:var(--text-secondary)}
+.empty-state svg{width:28px;height:28px;margin:0 auto 8px;color:var(--text-muted)}
+.empty-state b{display:block;font-size:13px;color:var(--text-primary);margin-bottom:4px}
+.empty-state p{font-size:12px;line-height:1.5}
+.empty{padding:10px 8px;font-size:12px;color:var(--text-muted);line-height:1.5}
+.empty.err{color:var(--danger-text)}
+.side-actions{position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:10px 12px;display:grid;gap:8px}
+.side-actions .msg{margin-top:0}
+
+/* ── Main ────────────────────────────────────────────────────────────── */
+#main{grid-area:main;overflow-y:auto;min-height:0;padding:24px 28px 40px;background:radial-gradient(900px 420px at 60% -10%,rgba(0,212,170,.06),transparent)}
+.content{max-width:940px;margin:0 auto}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px}
+.card-head{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.card-head h2{font-size:15px;font-weight:600;letter-spacing:.3px;flex:1}
+.card-icon{width:16px;height:16px;color:var(--accent);flex-shrink:0}
+.help{font-size:12.5px;line-height:1.55;color:var(--text-secondary)}
+.help.note{margin-top:10px}
+.card.install{border-color:rgba(0,212,170,.35)}
+.steps{font-size:12.5px;line-height:1.6;color:var(--text-secondary);margin:8px 0 14px 18px}
+
+/* ── Buttons, inputs, badges ─────────────────────────────────────────── */
+.btn{height:36px;font-size:13px;font-weight:600;padding:0 14px;border-radius:var(--radius-sm);background:var(--bg-input);border:1px solid var(--border-light);color:var(--text-primary);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;transition:border-color .16s,background .16s,box-shadow .16s,transform .16s,opacity .16s}
+.btn:hover:not(:disabled){border-color:var(--accent)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-dim));color:#06060b;border:0;box-shadow:0 0 20px var(--accent-glow)}
+.btn.primary:hover:not(:disabled){box-shadow:0 0 30px var(--accent-glow);transform:translateY(-1px)}
+.btn.danger{background:rgba(255,68,102,.12);color:var(--danger);border:1px solid rgba(255,68,102,.3)}
+.btn.danger:hover:not(:disabled){background:rgba(255,68,102,.2);border-color:rgba(255,68,102,.5)}
+.btn.outline-accent{border:1px solid rgba(0,212,170,.5);color:var(--accent)}
+.btn.outline-accent:hover:not(:disabled){background:var(--accent-glow)}
+.btn.link{height:auto;padding:0;border:0;background:transparent;color:var(--accent);font-size:12px;font-weight:600}
+.btn.link:hover:not(:disabled){text-decoration:underline}
+.btn.wide{width:100%}
+.btn.pulse{animation:pulse-ring 1.6s ease-out 1}
+.row{display:grid;gap:8px;margin-bottom:10px}
+.row.two{grid-template-columns:1fr 1fr}
+#pass-token{height:36px;width:100%;background:var(--bg-input);border:1px solid var(--border-light);border-radius:8px;padding:0 12px;color:var(--text-primary);outline:0;transition:border-color .16s,box-shadow .16s}
+#pass-token::placeholder{color:var(--text-muted)}
+#pass-token:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+.badge{font-size:11px;font-weight:650;padding:3px 9px;border-radius:var(--pill);background:var(--bg-input);border:1px solid var(--border-light);color:var(--text-secondary);white-space:nowrap;transition:color .16s,border-color .16s,background .16s}
+.badge.on{color:var(--accent);border-color:rgba(0,212,170,.4);background:rgba(0,212,170,.08)}
+.badge.off{color:var(--text-muted)}
+.badge.warn{color:var(--warning);border-color:rgba(255,170,51,.4);background:rgba(255,170,51,.08)}
+.badge.bad{color:var(--danger-text);border-color:rgba(255,68,102,.4);background:rgba(255,68,102,.08)}
+.check{display:flex;align-items:flex-start;gap:10px;font-size:12px;line-height:1.5;color:var(--text-secondary);cursor:pointer;padding:6px 0}
+.check input{margin-top:3px;width:14px;height:14px;accent-color:var(--accent);flex:none}
+.msg{margin-top:12px;padding:9px 12px;border-radius:8px;font-size:12px;line-height:1.5;display:none;word-break:break-word}
+.msg.show{display:block}
+.msg.err{background:rgba(255,68,102,.1);border:1px solid rgba(255,68,102,.3);color:var(--danger-text)}
+.msg.note{background:rgba(0,212,170,.08);border:1px solid rgba(0,212,170,.25);color:var(--accent)}
+.strip{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.45;background:var(--bg-input);border:1px solid var(--border);color:var(--text-secondary)}
+.strip svg{width:14px;height:14px;flex:none}
+.strip.warn{color:var(--warning);border-color:rgba(255,170,51,.4);background:rgba(255,170,51,.08)}
+.strip.on{color:var(--accent);border-color:rgba(0,212,170,.35);background:rgba(0,212,170,.08)}
+
+/* ── Hero: the connect control and the route ─────────────────────────── */
+.hero{padding:24px 28px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:28px;align-items:start;position:relative;overflow:hidden}
+.hero::before{content:"";position:absolute;inset:0;background:radial-gradient(600px 220px at 50% 0%,rgba(0,212,170,.10),transparent);opacity:0;transition:opacity .4s;pointer-events:none}
+.hero[data-state="connected"]::before{opacity:1}
+.hero-control{display:flex;flex-direction:column;align-items:center;text-align:center;position:relative}
+.ring{width:140px;height:140px;border-radius:50%;border:2px solid var(--border-light);display:grid;place-items:center;position:relative;color:var(--text-muted);transition:border-color .4s,box-shadow .4s,color .4s;background:var(--bg-input)}
+.ring svg{width:52px;height:52px}
+.ring::before{content:"";position:absolute;inset:-2px;border-radius:50%;background:conic-gradient(var(--accent) 0 22%,transparent 22% 100%);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));animation:spin 1.1s linear infinite;opacity:0;transition:opacity .2s}
+.hero[data-state="connecting"] .ring::before,.hero[data-busy="1"] .ring::before{opacity:1}
+.hero[data-state="connecting"] .ring{color:rgba(0,212,170,.7)}
+.hero[data-state="absent"] .ring{border-style:dashed}
+.hero[data-state="bad"] .ring{border-color:rgba(255,68,102,.5);color:var(--danger)}
+.hero[data-state="connected"] .ring{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 10px var(--accent-glow),0 0 60px rgba(0,212,170,.22);animation:breathe 3.2s ease-in-out infinite}
+.state{margin-top:16px;display:flex;align-items:center;gap:8px;justify-content:center}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--text-muted);flex:none;transition:background .3s,box-shadow .3s}
+.hero[data-state="connected"] .dot{background:var(--accent);box-shadow:0 0 8px var(--accent);animation:dot-pulse 2s ease-in-out infinite}
+.hero[data-state="off"] .dot,.hero[data-state="bad"] .dot{background:var(--danger);box-shadow:0 0 8px var(--danger)}
+.hero[data-state="connecting"] .dot{background:var(--warning);box-shadow:0 0 8px var(--warning);animation:dot-pulse 1s ease-in-out infinite}
+.state .label{font-size:24px;font-weight:650;letter-spacing:-.3px;line-height:1.2}
+.sub{font-size:13px;color:var(--text-secondary);margin-top:4px;min-height:20px}
+.sub.warn{color:var(--warning)}
+.explain{font-size:12.5px;line-height:1.45;color:var(--text-secondary);margin-top:8px;min-height:36px}
+.next{margin-top:10px;min-height:22px;font-size:12px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;color:var(--text-secondary)}
+.actions{margin-top:14px;width:100%;max-width:260px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.actions .btn{height:36px;font-size:12.5px;padding:0 10px}
+.actions .dominant{grid-column:1/-1;order:-1;height:48px;border-radius:24px;font-size:15px;letter-spacing:.4px;padding:0 28px}
+.actions #btn-disconnect[hidden] + #btn-identity{grid-column:1/-1}
+.hero-control .msg{width:100%;text-align:left}
+.hero-side{display:flex;flex-direction:column;gap:12px;min-width:0}
+
+/* The route: this machine, the hops, the internet, and what each sees. */
+.route{background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-height:96px;display:flex;align-items:flex-start;justify-content:space-between;gap:6px}
+.route.empty-route{flex-direction:column;align-items:stretch}
+.route.empty-route .stops{display:flex;align-items:flex-start;justify-content:center;gap:6px}
+.route.empty-route p{text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:6px}
+.stop{flex:1 1 0;min-width:0;text-align:center;display:flex;flex-direction:column;align-items:center}
+.orb{width:36px;height:36px;border-radius:50%;border:2px solid var(--border-light);background:var(--bg-input);display:grid;place-items:center;color:var(--text-muted);font-size:17px;line-height:1;transition:border-color .3s,box-shadow .3s}
+.orb .orb-cc{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--text-secondary)}
+.orb svg{width:18px;height:18px}
+.stop.this-machine .orb{border-color:rgba(0,204,255,.7);color:var(--cyan)}
+.stop.relay.fresh .orb{border-color:var(--accent);box-shadow:0 0 10px var(--accent-glow)}
+.stop.relay.stale .orb{border-color:var(--warning)}
+.stop.relay.none .orb{border-style:dashed}
+.stop-name{font-size:12.5px;font-weight:600;margin-top:6px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stop-cc{font-size:10.5px;color:var(--text-muted);letter-spacing:.04em}
+.stop-sees{font-size:10.5px;color:var(--text-secondary);line-height:1.35;margin-top:2px}
+.link{flex:0 1 44px;min-width:20px;height:10px;margin-top:13px;color:var(--border-light)}
+.link line{stroke:currentColor;stroke-width:2;stroke-dasharray:4 4}
+.link.flow{color:var(--accent)}
+.link.flow line{animation:flow 1.2s linear infinite}
+.modes{display:grid;grid-template-columns:1fr;gap:8px}
+.mode{display:block;position:relative;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;transition:border-color .15s,background .15s}
+.mode:hover{border-color:var(--border-light)}
+.mode.active{border-color:var(--accent);background:var(--accent-glow)}
+.mode:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.mode input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.mode-name{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;font-weight:600}
+.mode-name small{font-size:11px;color:var(--text-muted);font-weight:500}
+.mode .what{display:block;font-size:11.5px;line-height:1.5;color:var(--text-secondary);margin-top:3px}
+.mode .need{display:block;font-size:11px;color:var(--text-muted);margin-top:3px}
+#options summary{font-size:12px;color:var(--text-secondary);cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;padding:4px 0}
+#options summary::-webkit-details-marker{display:none}
+#options summary svg{width:12px;height:12px;transition:transform .16s;flex:none}
+#options[open] summary svg{transform:rotate(90deg)}
+#options-summary{font-size:11.5px;color:var(--text-muted);margin-left:auto;text-align:right}
+
+/* ── Status panel ────────────────────────────────────────────────────── */
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.tile{background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px 14px;min-height:76px}
+.tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600}
+.tile .v{font-size:15px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .c{font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.4}
+#bytes{white-space:normal;font-size:14px;line-height:1.35}
+#operator-row{margin-top:12px}
+.hops{margin-top:12px}
+.hop{display:grid;grid-template-columns:64px minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--border)}
+.hop:first-child{border-top:0}
+.hop .name{font-size:13px;font-weight:600}
+.hop .ep{font-size:11.5px;font-family:var(--mono);color:var(--text-muted)}
+.hop .cc{font-size:12px;color:var(--text-secondary)}
+.hop .hs{font-size:11.5px;color:var(--text-secondary);white-space:nowrap}
+.hop .hs.stale{color:var(--warning)}
+.legend{font-size:11.5px;color:var(--text-muted);margin-top:8px}
+
+/* ── Leak test ───────────────────────────────────────────────────────── */
+.leaks .l{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;padding:9px 0;border-top:1px solid var(--border);align-items:start}
+.leaks .l:first-child{border-top:0}
+.leaks .what{font-size:12.5px;font-weight:600}
+.leaks .why{font-size:12px;color:var(--text-secondary);line-height:1.5}
+#leaks{margin-top:12px}
+
+.foot{font-size:11.5px;line-height:1.6;color:var(--text-muted);text-align:center;max-width:640px;margin:8px auto 0}
+
+/* ── Settings drawer ─────────────────────────────────────────────────── */
+#settings-backdrop{position:fixed;inset:0;background:rgba(6,6,11,.6);z-index:19;opacity:1;transition:opacity .2s}
+#settings{position:fixed;top:0;right:0;width:440px;max-width:100vw;height:100vh;background:var(--bg-card);border-left:1px solid var(--border);box-shadow:-12px 0 40px rgba(0,0,0,.45);transform:translateX(100%);visibility:hidden;transition:transform .22s cubic-bezier(.2,.8,.2,1),visibility 0s .22s;display:flex;flex-direction:column;z-index:20}
+#settings[data-open="1"]{transform:none;visibility:visible;transition:transform .22s cubic-bezier(.2,.8,.2,1),visibility 0s 0s}
+.drawer-head{height:52px;flex:none;display:flex;align-items:center;padding:0 12px 0 20px;border-bottom:1px solid var(--border)}
+.drawer-head h2{font-size:14px;font-weight:600;flex:1}
+.drawer-body{overflow-y:auto;padding:8px 20px 32px}
+.section{padding:18px 0;border-top:1px solid var(--border)}
+.section:first-child{border-top:0}
+.section h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:10px;font-weight:600}
+.section .help{margin-bottom:12px;font-size:12px}
+.pass-nodes{margin-bottom:12px}
+.pn{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);font-size:12.5px}
+.pn:first-child{border-top:0}
+.pn .name{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pn .glyph{font-size:15px}
+.switch{display:flex;gap:10px;align-items:flex-start;margin-top:14px;cursor:pointer}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.track{width:36px;height:20px;border-radius:10px;background:var(--border-light);position:relative;flex:none;margin-top:1px;transition:background .16s}
+.knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#e0e0e8;transition:transform .16s}
+.switch input:checked ~ .track{background:var(--accent)}
+.switch input:checked ~ .track .knob{transform:translateX(16px)}
+.switch input:focus-visible ~ .track{box-shadow:0 0 0 2px var(--accent-glow),0 0 0 3px var(--accent)}
+.switch input:disabled ~ .track{opacity:.4}
+.switch-text{font-size:12px;line-height:1.5;color:var(--text-secondary)}
+.switch-text b{color:var(--text-primary)}
+
+/* ── Motion ──────────────────────────────────────────────────────────── */
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 10px var(--accent-glow),0 0 60px rgba(0,212,170,.22)}50%{box-shadow:0 0 0 16px var(--accent-glow),0 0 70px rgba(0,212,170,.28)}}
+@keyframes flow{to{stroke-dashoffset:-16}}
+@keyframes dot-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes pulse-ring{0%{box-shadow:0 0 0 0 var(--accent-glow)}100%{box-shadow:0 0 0 12px transparent}}
+@media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
+
+/* ── Narrow widths ───────────────────────────────────────────────────── */
+@media (max-width:1040px){
+  .hero{grid-template-columns:1fr}
+  .actions{max-width:320px}
+}
+@media (max-width:900px){
+  body{display:block;overflow:auto}
+  #topbar{position:sticky;top:0}
+  #main{padding:16px}
+  #sidebar{border-right:0;border-top:1px solid var(--border);overflow:visible}
+  .side-actions{position:static}
+  .tiles{grid-template-columns:repeat(2,1fr)}
+  #settings{width:100vw}
+}
+@media (max-width:560px){
+  .route{flex-direction:column;align-items:stretch}
+  .route.empty-route .stops{flex-direction:column;align-items:stretch}
+  .stop{flex-direction:row;text-align:left;gap:10px;align-items:center}
+  .stop .orb{flex:none}
+  .stop-name{margin-top:0}
+  .link{flex:none;width:28px;height:10px;align-self:center;transform:rotate(90deg);margin:12px 0}
+  .hop{grid-template-columns:56px minmax(0,1fr)}
+  .hop .cc,.hop .hs{grid-column:2}
+  .actions{grid-template-columns:1fr}
+  .actions #btn-disconnect[hidden] + #btn-identity{grid-column:auto}
+  #main{padding:16px}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="icon-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="icon-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="icon-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+    <symbol id="icon-laptop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 20h20"/></symbol>
+    <symbol id="icon-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 10l6 6 6-6M4 20h16"/></symbol>
+    <symbol id="icon-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="icon-flask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-6 10a1 1 0 0 0 1 1.5h14a1 1 0 0 0 1-1.5L14 9V3"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5v.5"/></symbol>
+    <symbol id="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></symbol>
+  </defs>
+</svg>
+
+<header id="topbar">
+  <div class="brand">
+    <img id="brand-logo" src="img/hidranet-logo.png" alt="" width="22" height="22">
+    <svg id="brand-mark" class="mark hidden" aria-hidden="true"><use href="#icon-shield"/></svg>
+    <span class="wordmark">HidraVPN</span>
+    <span class="wordmark-sub">HidraNet</span>
+  </div>
+  <div class="top-right">
+    <span id="last-read" class="stamp">Reading the service</span>
+    <button id="btn-settings" class="icon-btn" aria-label="Settings" aria-controls="settings" aria-expanded="false" title="Settings"><svg aria-hidden="true"><use href="#icon-gear"/></svg><span id="settings-dot" class="nav-dot" hidden></span></button>
+  </div>
+</header>
+
+<main id="main">
+  <div class="content">
+
+    <section class="card install" id="install-card" style="display:none">
+      <div class="card-head"><svg class="card-icon" aria-hidden="true"><use href="#icon-download"/></svg><h2>Install HidraVPN</h2></div>
+      <p class="help" id="install-why">HidraVPN is a separate program that protects the whole machine. The browser can install it for you:</p>
+      <ol class="steps">
+        <li>it downloads the release the HidraNet maintainers signed, and checks that signature against the key built into this browser before anything else;</li>
+        <li>it checks every downloaded file against the signed list of files;</li>
+        <li>it asks your system for administrator rights, once, because only the system may change how the whole machine reaches the network.</li>
+      </ol>
+      <button class="btn primary" id="btn-install">Install HidraVPN</button>
+      <div class="msg" id="install-msg" aria-live="polite"></div>
+    </section>
+
+    <section class="card hero" id="hero" data-state="checking" data-busy="0" data-ks="">
+      <div class="hero-control">
+        <div class="ring" id="ring" aria-hidden="true"><svg><use href="#icon-shield"/></svg></div>
+        <div class="state" aria-live="polite" aria-atomic="true"><span class="dot" id="dot"></span><span class="label" id="state-label">Checking</span></div>
+        <div class="sub" id="state-sub" aria-live="polite">Reading the service on this machine.</div>
+        <p class="explain" id="explain"></p>
+        <div class="next" id="next-step" hidden><span id="next-text"></span><button class="btn link" id="btn-next" type="button"></button></div>
+        <div class="actions">
+          <button class="btn primary dominant" id="btn-connect" disabled>Connect</button>
+          <button class="btn danger" id="btn-disconnect" hidden disabled>Disconnect</button>
+          <button class="btn" id="btn-identity" disabled title="Connect first">New identity</button>
+        </div>
+        <div class="msg" id="msg" aria-live="polite"></div>
+      </div>
+      <div class="hero-side">
+        <div class="route" id="route" hidden></div>
+        <div class="route empty-route" id="route-empty">
+          <div class="stops">
+            <div class="stop this-machine"><div class="orb"><svg aria-hidden="true"><use href="#icon-laptop"/></svg></div><div class="stop-name">This machine</div></div>
+            <svg class="link" viewBox="0 0 28 10" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="5" x2="28" y2="5"/></svg>
+            <div class="stop internet"><div class="orb"><svg aria-hidden="true"><use href="#icon-globe"/></svg></div><div class="stop-name">Internet</div></div>
+          </div>
+          <p id="route-empty-text">Nothing read from the service yet.</p>
+        </div>
+        <div class="strip warn" id="route-warn" hidden><svg aria-hidden="true"><use href="#icon-alert"/></svg><span id="route-warn-text"></span></div>
+        <div class="modes">
+          <label class="mode active" id="mode-rapido"><input type="radio" name="mode" value="rapido" checked><span class="mode-name">Fast, one hop <small>rapido</small></span><span class="what">rapido: the node sees your address and your traffic; it hides them from your network, not from the node</span></label>
+          <label class="mode" id="mode-privado"><input type="radio" name="mode" value="privado"><span class="mode-name">Private, two hops <small>privado</small></span><span class="what">privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic</span><span class="need">Needs an entry and an exit this machine is admitted to.</span></label>
+        </div>
+        <details id="options">
+          <summary><svg aria-hidden="true"><use href="#icon-chevron"/></svg><span>Options</span><span id="options-summary">Local network off, one operator on both hops not allowed</span></summary>
+          <label class="check"><input type="checkbox" id="allow-lan"><span>Allow the local network (printers, a Chromecast, a network drive). Devices on your own network can then be reached directly, outside the tunnel; everything else still goes through it.</span></label>
+          <label class="check"><input type="checkbox" id="allow-same-operator"><span>Allow two hops run by one operator. Two hops are refused when one operator runs both the entry and the exit, or when the node list does not say who runs them: that operator could see both who you are and where you go. Tick this only if you accept that.</span></label>
+        </details>
+      </div>
+    </section>
+
+    <section class="card" id="status-panel">
+      <div class="card-head"><svg class="card-icon" aria-hidden="true"><use href="#icon-activity"/></svg><h2>Status</h2></div>
+      <div class="tiles">
+        <div class="tile"><div class="k">Kill switch</div><div class="v"><span class="badge" id="vpn-killswitch">Unknown</span></div><div class="c">Holds the network if the tunnel drops</div></div>
+        <div class="tile"><div class="k">Mode</div><div class="v" id="mode-now">-</div></div>
+        <div class="tile"><div class="k">Traffic</div><div class="v" id="bytes">-</div></div>
+        <div class="tile"><div class="k">IPv6</div><div class="v"><span class="badge warn" id="ipv6-badge">Unknown</span></div><div class="c">From the service, while connected</div></div>
+      </div>
+      <div class="strip" id="operator-row" hidden><svg aria-hidden="true"><use href="#icon-alert"/></svg><span id="operator-badge"></span></div>
+      <div class="hops" id="hops"></div>
+      <p class="legend" id="legend" hidden></p>
+    </section>
+
+    <section class="card" id="leaks-card">
+      <div class="card-head"><svg class="card-icon" aria-hidden="true"><use href="#icon-flask"/></svg><h2>Leak test</h2><span class="badge" id="leaks-verdict">Not run</span><button class="btn" id="btn-leaks" disabled>Run the leak test</button></div>
+      <p class="help">Checks what the rest of this machine shows the internet while HidraVPN is connected: the address websites see, whether IPv6 goes through the exit or is blocked, whether a DNS query could leave outside the tunnel, and the kill switch. The address check asks api.ipify.org, directly, as any program on this machine would.</p>
+      <div class="leaks" id="leaks"></div>
+      <div class="msg" id="leaks-msg" aria-live="polite"></div>
+    </section>
+
+    <footer class="foot">This page does not contain the VPN. It drives the HidraVPN service installed on this machine; with no service, nothing here can connect. Anyone with an account on this computer, and any program they run, can switch HidraVPN on or off for the whole machine. Strong privacy, not anonymity: the service says what each node sees, and so does this page.</footer>
+  </div>
+</main>
+
+<aside id="sidebar" aria-label="Nodes">
+  <div class="side-head">
+    <h2>Nodes</h2><span class="count" id="nodes-count" hidden>0</span>
+    <button class="pill-link" id="btn-open-passes" type="button">Passes <span class="count" id="passes-count" hidden>0</span></button>
+  </div>
+  <div class="search"><svg aria-hidden="true"><use href="#icon-search"/></svg><input type="search" id="node-search" placeholder="Find a node, operator or country" autocomplete="off" spellcheck="false" aria-label="Find a node"></div>
+  <p class="side-note">The service picks the nodes for each connection from the ones this machine is admitted to. An open node admits it on Connect.</p>
+  <details class="side-help">
+    <summary><svg aria-hidden="true"><use href="#icon-chevron"/></svg>How nodes admit this machine</summary>
+    <p class="help">A signed list tells you which nodes exist and who runs them. A node that admits openly needs nothing more: on every Connect it is asked to admit a key made for that one connection, so it cannot tell one of your connections from the next. A node that admits with a pass takes one pass per connection; Settings, Passes asks the list's issuer for them, and the issuer never learns which node a pass is for. A node that admits by hand needs its operator, who hands you an invite to add with the hidravpn command line (<code>nodes add</code>).</p>
+  </details>
+  <ul id="nodes"><li class="empty">Checking</li></ul>
+  <div class="side-actions">
+    <button class="btn outline-accent wide" id="btn-fetch" disabled>Get the maintainers' list</button>
+    <button class="btn wide" id="btn-import" disabled>Import a signed list</button>
+    <div class="msg" id="nodes-msg" aria-live="polite"></div>
+  </div>
+</aside>
+
+<aside id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-open="0" inert>
+  <div class="drawer-head">
+    <h2 id="settings-title" tabindex="-1">Settings</h2>
+    <button class="icon-btn" id="btn-settings-close" aria-label="Close settings" title="Close"><svg aria-hidden="true"><use href="#icon-x"/></svg></button>
+  </div>
+  <div class="drawer-body">
+    <section class="section" id="settings-passes">
+      <h3>Passes</h3>
+      <p class="help">A node that admits with a pass takes one per connection, and sees a new key every time. Passes come from the issuer the signed list names, against an account: the issuer counts them but never learns which node a pass is for, and a node never learns whose account it came from.</p>
+      <div class="pass-nodes" id="pass-nodes"><p class="empty">No node on this machine admits with a pass.</p></div>
+      <div class="row"><input id="pass-token" type="password" autocomplete="off" spellcheck="false" placeholder="Account token" aria-label="Account token"></div>
+      <div class="row two"><button class="btn" id="btn-token" disabled>Keep the token</button><button class="btn outline-accent" id="btn-passes" disabled>Get 10 passes per node</button></div>
+      <p class="help note">The token is handed to the service on this machine, which keeps it where only an administrator can read it; this page does not keep it. Anyone with an account on this computer can spend the account's passes.</p>
+      <label class="switch"><input type="checkbox" id="auto-passes" disabled><span class="track"><span class="knob"></span></span><span class="switch-text"><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account's quota.</span></span></label>
+      <div class="msg" id="passes-msg" aria-live="polite"></div>
+    </section>
+    <section class="section" id="settings-service">
+      <h3>Service</h3>
+      <p class="help" id="version-line">Installed version: unknown.</p>
+      <div class="row two"><button class="btn" id="btn-check-update" disabled>Check for an update</button><button class="btn primary" id="btn-update" style="display:none">Install the update</button></div>
+      <div class="msg" id="manage-msg" aria-live="polite"></div>
+      <p class="help" style="margin-top:14px">A downloaded HidraVPN file is only worth running if its signature checks out against the release key built into this browser. Choose the file; its .sig must sit beside it.</p>
+      <button class="btn wide" id="btn-verify">Verify a downloaded file</button>
+      <div class="msg" id="verify-msg" aria-live="polite"></div>
+      <p class="help" style="margin-top:14px">A node that admits by hand needs an invite from its operator, added with the hidravpn command line (<code>nodes add --exit</code> or <code>--entry</code>).</p>
+    </section>
+    <section class="section" id="settings-remove">
+      <h3>Remove</h3>
+      <label class="check"><input type="checkbox" id="purge"><span>Also remove this machine's key and its nodes. Nodes know this machine by that key: after this, it is a new machine to every node, and an open node has to admit it again.</span></label>
+      <button class="btn danger wide" id="btn-uninstall" disabled style="margin-top:8px">Uninstall HidraVPN</button>
+      <div class="msg" id="manage-msg-remove" aria-live="polite"></div>
+    </section>
+  </div>
+</aside>
+<div id="settings-backdrop" hidden></div>
+
+<script>
+(function () {
+  'use strict';
+  // The same two sentences the service prints (hidravpn-service/src/ipc.rs),
+  // so the page never claims more than the command line does.
+  var EXPLAIN = {
+    privado: 'privado: no node sees both who you are and where you go; the entry sees your address, the exit sees your traffic',
+    rapido: 'rapido: the node sees your address and your traffic; it hides them from your network, not from the node'
+  };
+  var LABELS = {
+    'connected': 'Connected',
+    'connecting': 'Connecting',
+    'disconnected': 'Disconnected',
+    'stopped': 'Service not running',
+    'not-installed': 'Not installed',
+    'no-permission': 'No permission to drive the service',
+    'unauthorised': 'The service refused the token',
+    'unavailable': 'Service unavailable',
+    'bad-answer': 'The service answered something unreadable',
+    'timeout': 'The service did not answer',
+    'outdated': 'The service is older than this browser'
+  };
+  var REFILL_ON = 'When a node runs low, the service asks for more, only while connected: the issuer then sees the exit you use at that moment, not this machine. It spends the account\'s quota.';
+  var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node).';
+  var PURGE_QUESTION = 'Remove HidraVPN, its programs, its nodes and this machine\'s key? Every node will then see this as a new machine.';
+  var KEEP_QUESTION = 'Remove HidraVPN? The network goes back to normal; the key and nodes are kept for a later install.';
+  var STALE_SECS = 180;
+  // Messages that land inside the drawer: when it is closed, the gear says so.
+  var DRAWER_MSGS = { 'passes-msg': true, 'manage-msg': true, 'verify-msg': true, 'manage-msg-remove': true };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var api = window.hidra && window.hidra.vpn;
+  var busy = false;
+  var lastStatus = null;
+  var lastNodes = null;
+  var lastRefill = null;
+  var refillOk = false;
+  var lastGoodAt = 0;
+  var leakExit = null;
+  var pollWhileBusy = false;
+  // The last status rendered with no action in flight: what the person saw
+  // before pressing a button. Reads taken during an action do not count, or
+  // a refusal that left the circuit as it was would look like a change.
+  var settled = null;
+  // Set by any answer that says the service is older than this browser;
+  // only status() never says so, since every service knows that command.
+  var outdated = false;
+  // Whether the mode cards were set from the service's own mode since the
+  // page loaded (or came back): Reconnect must not quietly change the mode.
+  var modeSynced = false;
+  var SHELL = ['topbar', 'main', 'sidebar'];
+  var hasPassNode = false;
+  var updateKnown = false;
+  var unseenDrawerError = false;
+  var drawerOpen = false;
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KiB';
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MiB';
+    return (n / 1073741824).toFixed(2) + ' GiB';
+  }
+
+  function message(kind, text, id) {
+    var m = $(id || 'msg');
+    if (!text) { m.className = 'msg'; m.textContent = ''; return; }
+    m.className = 'msg show ' + kind;
+    m.textContent = text;
+    if (kind === 'err' && DRAWER_MSGS[id] && !drawerOpen) { unseenDrawerError = true; renderDot(); }
+  }
+
+  // Two letters, as the service passes them, shown as a flag and the letters
+  // themselves: a system without flag glyphs still shows the letters.
+  // Whether this system draws flags: Windows has no flag glyphs and shows
+  // the two letters instead, which next to the letters themselves read twice.
+  // A flag is drawn in colour; the letters are drawn in the fill colour only.
+  // The browser's canvas noise moves a channel by one, far under the margin.
+  var FLAGS = (function () {
+    try {
+      var c = document.createElement('canvas');
+      c.width = 32; c.height = 32;
+      var x = c.getContext('2d');
+      if (!x) return false;
+      x.textBaseline = 'top';
+      x.font = '26px sans-serif';
+      x.fillStyle = '#000';
+      x.fillText(String.fromCodePoint(0x1F1EB, 0x1F1EE), 0, 2);
+      var d = x.getImageData(0, 0, 32, 32).data;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 64 && (Math.abs(d[i] - d[i + 1]) > 24 || Math.abs(d[i + 1] - d[i + 2]) > 24)) return true;
+      }
+      return false;
+    } catch (e) { return false; }
+  })();
+  function flag(cc) {
+    if (!FLAGS || !/^[A-Z]{2}$/.test(cc || '')) return '';
+    return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+  }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function icon(name, cls) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    if (cls) s.setAttribute('class', cls);
+    s.setAttribute('aria-hidden', 'true');
+    var u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    u.setAttribute('href', '#icon-' + name);
+    s.appendChild(u);
+    return s;
+  }
+  function flagCell(cc) {
+    var f = el('span', 'flag');
+    var g = flag(cc);
+    if (g) f.appendChild(el('span', 'glyph', g));
+    f.appendChild(el('span', 'cc', cc || ''));
+    return f;
+  }
+
+  function selectedMode() {
+    var r = document.querySelector('input[name="mode"]:checked');
+    return r ? r.value : 'rapido';
+  }
+  // A circuit the service holds, live or not: it lists its hops.
+  function tunnelOf(r) { return Boolean(r && r.hops_detail && r.hops_detail.length); }
+  // Puts the mode cards on the mode the service is in, when it holds a
+  // circuit; says whether it did.
+  function followServiceMode(r) {
+    if (!r || !r.mode || !(r.connected || r.hops > 0)) return false;
+    var want = r.mode === 'privado' ? 'privado' : 'rapido';
+    document.querySelectorAll('input[name="mode"]').forEach(function (input) { input.checked = input.value === want; });
+    syncModes();
+    return true;
+  }
+  // The service's error, then what to do about it, as one sentence pair.
+  function withHint(e, h) {
+    e = String(e || '');
+    return h ? e + (/[.!?:]$/.test(e) ? ' ' : '. ') + h : e;
+  }
+  function noteAnswer(a) {
+    if (a && a.state === 'outdated' && !outdated) { outdated = true; renderDot(); renderNextStep(); }
+    return a;
+  }
+  function clearHeroError() {
+    var m = $('msg');
+    if (m.classList.contains('err')) message('', '');
+  }
+
+  // ── The settings drawer ─────────────────────────────────────────────
+  function renderDot() {
+    var d = $('settings-dot');
+    if (unseenDrawerError) { d.hidden = false; d.className = 'nav-dot warn'; }
+    else if (updateKnown || outdated) { d.hidden = false; d.className = 'nav-dot'; }
+    else { d.hidden = true; }
+  }
+  function openSettings(sectionId) {
+    drawerOpen = true;
+    unseenDrawerError = false;
+    renderDot();
+    $('settings').setAttribute('data-open', '1');
+    $('settings').inert = false;
+    // The page behind the drawer is out of reach until it closes, as the
+    // dialog role promises.
+    SHELL.forEach(function (id) { $(id).inert = true; });
+    $('settings-backdrop').hidden = false;
+    $('btn-settings').setAttribute('aria-expanded', 'true');
+    var section = sectionId ? $(sectionId) : null;
+    if (section) {
+      section.scrollIntoView({ block: 'start' });
+      var first = section.querySelector('input:not([disabled]), button:not([disabled])');
+      if (first) first.focus(); else $('settings-title').focus();
+    } else {
+      $('settings').querySelector('.drawer-body').scrollTop = 0;
+      $('settings-title').focus();
+    }
+  }
+  function closeSettings() {
+    if (!drawerOpen) return;
+    drawerOpen = false;
+    $('settings').setAttribute('data-open', '0');
+    $('settings').inert = true;
+    SHELL.forEach(function (id) { $(id).inert = false; });
+    $('settings-backdrop').hidden = true;
+    $('btn-settings').setAttribute('aria-expanded', 'false');
+    $('btn-settings').focus();
+  }
+
+  // ── The route picture ───────────────────────────────────────────────
+  function stop(cls, name) {
+    var s = el('div', 'stop ' + cls);
+    var orb = el('div', 'orb');
+    s.appendChild(orb);
+    s.appendChild(el('div', 'stop-name', name));
+    return s;
+  }
+  function link(flowing) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('class', 'link' + (flowing ? ' flow' : ''));
+    s.setAttribute('viewBox', '0 0 28 10');
+    s.setAttribute('preserveAspectRatio', 'none');
+    s.setAttribute('aria-hidden', 'true');
+    var l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    l.setAttribute('x1', '0'); l.setAttribute('y1', '5'); l.setAttribute('x2', '28'); l.setAttribute('y2', '5');
+    s.appendChild(l);
+    return s;
+  }
+  function freshness(h) {
+    if (!h.connected || h.last_handshake_secs == null) return 'none';
+    return Number(h.last_handshake_secs) < STALE_SECS ? 'fresh' : 'stale';
+  }
+  function renderRoute(r) {
+    var box = $('route');
+    box.textContent = '';
+    var hops = (r && r.hops_detail && r.hops_detail.length) ? r.hops_detail : [];
+    if (!hops.length) {
+      box.hidden = true;
+      $('route-empty').hidden = false;
+      // The placeholder's sentence is read from the report too: a held kill
+      // switch or a tunnel being built is not "traffic leaves as it is".
+      $('route-empty-text').textContent = !r ? 'Nothing read from the service yet.'
+        : r.connected ? 'Connected; the service sent no route.'
+        : r.hops > 0 ? 'Building the tunnel.'
+        : r.killswitch ? 'No tunnel. The kill switch is holding the network: nothing leaves this machine.'
+        : 'No tunnel. Your traffic leaves this machine as it is.';
+      return;
+    }
+    box.hidden = false;
+    $('route-empty').hidden = true;
+    var flowing = Boolean(r.connected);
+    var me = stop('this-machine', 'This machine');
+    me.firstChild.appendChild(icon('laptop'));
+    box.appendChild(me);
+    hops.forEach(function (h) {
+      box.appendChild(link(flowing));
+      var role = hops.length === 1 ? 'single' : (h.role === 'entry' ? 'entry' : 'exit');
+      var s = stop('relay ' + freshness(h), h.node_name || '');
+      s.setAttribute('data-role', role);
+      var g = flag(h.country);
+      // The flag in the circle with the letters under it; with no flag,
+      // the letters in the circle, once.
+      if (g) s.firstChild.textContent = g;
+      else if (h.country) s.firstChild.appendChild(el('span', 'orb-cc', h.country));
+      else s.firstChild.appendChild(icon('shield'));
+      s.querySelector('.stop-name').title = h.endpoint || '';
+      if (g) s.appendChild(el('div', 'stop-cc', h.country));
+      s.appendChild(el('div', 'stop-sees', role === 'entry' ? 'sees your address' : role === 'exit' ? 'sees where you go' : 'sees your address and your traffic'));
+      box.appendChild(s);
+    });
+    box.appendChild(link(flowing));
+    var net = stop('internet', 'Internet');
+    net.firstChild.appendChild(icon('globe'));
+    box.appendChild(net);
+  }
+
+  function renderHops(r) {
+    var hops = $('hops');
+    hops.textContent = '';
+    var list = (r && r.hops_detail && r.hops_detail.length) ? r.hops_detail : [];
+    // What each hop sees. With two hops they differ; one hop is the whole
+    // view, and saying the exit does not see the address would be false.
+    var twoHops = list.some(function (h) { return h.role === 'entry'; });
+    $('legend').hidden = !list.length;
+    $('legend').textContent = twoHops
+      ? 'entry: sees your address, not where you go. exit: sees where you go, not your address.'
+      : 'one hop: the node sees your address and your traffic.';
+    list.forEach(function (h) {
+      var row = el('div', 'hop');
+      row.appendChild(el('span', 'pill role-' + (h.role === 'entry' ? 'entry' : 'exit'), h.role || ''));
+      var node = el('div', 'node-cell');
+      node.appendChild(el('div', 'name', h.node_name || ''));
+      node.appendChild(el('div', 'ep', h.endpoint || ''));
+      row.appendChild(node);
+      var g = flag(h.country);
+      row.appendChild(el('span', 'cc', h.country ? ((g ? g + ' ' : '') + h.country) : ''));
+      var hs = el('span', 'hs' + (freshness(h) === 'stale' ? ' stale' : ''));
+      hs.textContent = h.connected
+        ? ('handshake ' + (h.last_handshake_secs == null ? 'none yet' : h.last_handshake_secs + 's ago'))
+        : 'no session';
+      row.appendChild(hs);
+      hops.appendChild(row);
+    });
+  }
+
+  function renderStamp(r) {
+    var s = $('last-read');
+    if (r) { lastGoodAt = Date.now(); s.textContent = 'Service read just now'; s.className = 'stamp'; }
+    else if (lastGoodAt) tickStamp();
+    else { s.textContent = 'No answer yet'; s.className = 'stamp warn'; }
+  }
+  // The stamp ages on its own: while an action holds the polls, "just now"
+  // would otherwise stay on screen for as long as the action takes.
+  function tickStamp() {
+    if (!lastGoodAt) return;
+    var secs = Math.max(0, Math.round((Date.now() - lastGoodAt) / 1000));
+    if (secs < 3) return;
+    var s = $('last-read');
+    s.textContent = 'Last answer ' + secs + 's ago';
+    s.className = 'stamp' + (secs > 10 ? ' warn' : '');
+  }
+
+  // The leak test speaks about one connection: once the tunnel is gone or
+  // goes through another exit, its verdict is about nothing on screen.
+  function exitOf(r) {
+    var h = r && r.hops_detail && r.hops_detail[r.hops_detail.length - 1];
+    return h ? (h.endpoint || h.node_name || '') : ((r && r.endpoint) || '');
+  }
+  function resetLeaksIfStale(r) {
+    if (leakExit === null) return;
+    if (r && r.connected && exitOf(r) === leakExit) return;
+    leakExit = null;
+    $('leaks').textContent = '';
+    var verdict = $('leaks-verdict');
+    verdict.textContent = 'Not run'; verdict.className = 'badge';
+    message('', '', 'leaks-msg');
+  }
+
+  // Whether a node could be the exit of a connection, and whether it would
+  // admit this machine now: a page-side estimate from the pocket, so the
+  // guidance line can point somewhere. The service decides.
+  // The service reads admission and role without regard to case or spaces.
+  function admissionOf(n) { return String((n && n.admission) || '').trim().toLowerCase(); }
+  // An admitted node is an exit only from the exits list, whatever its role
+  // says; a known one can be, unless its role is entry (none, or both, is
+  // either).
+  function isExit(n) {
+    if (n.admitted !== false) return n.slot === 'exit';
+    return String(n.role || '').trim().toLowerCase() !== 'entry';
+  }
+  function isEntry(n) {
+    if (n.admitted !== false) return n.slot === 'entry';
+    return String(n.role || '').trim().toLowerCase() !== 'exit';
+  }
+  // The service's rule for two hops: both say who runs them, and they are
+  // different operators (compared without regard to case), on two machines.
+  function operatorOf(n) { return String((n && n.operator) || '').trim().toLowerCase(); }
+  function hostOf(n) { return String((n && n.endpoint) || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, ''); }
+  function canPair(e, x, allowSame) {
+    if ((e.node_name || e.endpoint) === (x.node_name || x.endpoint)) return false;
+    if (hostOf(e) && hostOf(e) === hostOf(x)) return false;
+    if (allowSame) return true;
+    return Boolean(operatorOf(e) && operatorOf(x) && operatorOf(e) !== operatorOf(x));
+  }
+  function canAdmit(n) {
+    var a = admissionOf(n);
+    if (a === 'pass') return Number(n.passes) > 0;
+    if (a === 'open') return true;
+    return n.admitted !== false;
+  }
+
+  // The guidance line: a pointer from what the service and the pocket say,
+  // never a decision. Open nodes admit this machine on Connect, so Connect
+  // stays enabled whatever this line says.
+  function renderNextStep() {
+    var box = $('next-step');
+    var s = lastStatus;
+    var text = '';
+    var go = '';
+    if (!s || busy || s.state === 'connected' || s.state === 'connecting') { box.hidden = true; return; }
+    if (s.state === 'not-installed') text = 'Step 1 of 3: install HidraVPN (above).';
+    else if (outdated || s.state === 'outdated') { text = 'Update HidraVPN from Settings.'; go = 'settings'; }
+    else if (s.state === 'disconnected' && lastNodes && lastNodes.ok) {
+      var list = lastNodes.nodes || [];
+      if (!list.length) { text = 'Step 2 of 3: get the list of nodes.'; go = 'nodes'; }
+      else {
+        // Every connection needs an exit that would admit this machine.
+        var exits = list.filter(isExit);
+        var usableExits = exits.filter(canAdmit);
+        if (usableExits.length && selectedMode() === 'privado') {
+          var entries = list.filter(isEntry).filter(canAdmit);
+          var allowSame = $('allow-same-operator').checked;
+          var pairs = function (same) {
+            return entries.some(function (e) { return usableExits.some(function (x) { return canPair(e, x, same); }); });
+          };
+          if (!entries.length) text = 'Two hops need an entry this machine can use, and there is none yet.';
+          else if (pairs(false)) text = 'Ready. Press Connect for two hops.';
+          else if (allowSame && pairs(true)) text = 'Ready. One operator will run both hops: together they see who and where.';
+          else if (pairs(true)) { text = 'Two hops would be refused: one operator runs both, or the list does not say who runs them.'; go = 'options'; }
+          else text = 'Two hops need an entry and an exit on two different machines.';
+        }
+        else if (usableExits.length) text = 'Ready. Choose a mode and press Connect.';
+        else if (exits.some(function (n) { return admissionOf(n) === 'pass'; })) { text = 'Step 3 of 3: add passes so an exit admits this machine.'; go = 'passes'; }
+        else if (exits.length) text = 'The exits here admit by hand: ask an operator for an invite.';
+        else text = 'No exit node yet: nothing in the list can carry traffic out.';
+      }
+    }
+    if (!text) { box.hidden = true; return; }
+    box.hidden = false;
+    $('next-text').textContent = text;
+    var btn = $('btn-next');
+    btn.hidden = !go;
+    btn.setAttribute('data-go', go);
+    btn.textContent = go === 'nodes' ? 'Go to nodes' : go === 'passes' ? 'Go to passes' : go === 'options' ? 'Go to options' : 'Go to settings';
+  }
+
+  function render(s) {
+    var prev = lastStatus;
+    var prevSettled = settled;
+    lastStatus = s;
+    if (!busy) settled = s;
+    if (s.state === 'outdated') outdated = true;
+    var r = s.report;
+    var tunnel = tunnelOf(r);
+    if (!modeSynced && r) { followServiceMode(r); modeSynced = true; }
+    var hero = $('hero');
+    var notInstalled = s.state === 'not-installed';
+    var absent = notInstalled || s.state === 'stopped';
+    hero.setAttribute('data-state', s.state === 'connected' ? 'connected' : s.state === 'connecting' ? 'connecting' : absent ? 'absent' : s.state === 'disconnected' ? 'off' : 'bad');
+    hero.setAttribute('data-ks', r ? (r.killswitch ? '1' : '0') : '');
+    $('state-label').textContent = LABELS[s.state] || s.state;
+
+    // What sits under the label, and the explanation under that.
+    var sub = $('state-sub');
+    var explain = $('explain');
+    sub.className = 'sub';
+    if (r && r.connected) {
+      if (r.killswitch === false) { sub.textContent = 'Connected, kill switch off'; sub.className = 'sub warn'; }
+      else sub.textContent = r.mode === 'privado' ? 'Private, two hops (privado)' : 'Fast, one hop (rapido)';
+      explain.textContent = EXPLAIN[r.mode] || '';
+    } else if (r && s.state === 'connecting' && tunnel) {
+      // A circuit is held but a hop has no session: just built and waiting
+      // for its first handshake, or an exit that stopped answering.
+      var since = -1;
+      r.hops_detail.forEach(function (h) {
+        if (!h.connected && h.last_handshake_secs != null) since = Math.max(since, Number(h.last_handshake_secs) || 0);
+      });
+      sub.textContent = since < 0 ? 'Tunnel up, waiting for the first handshake' : 'No session: last handshake ' + since + 's ago';
+      if (since >= STALE_SECS) sub.className = 'sub warn';
+      explain.textContent = r.killswitch
+        ? 'The kill switch is holding the network: nothing leaves outside the tunnel. Reconnect rebuilds the circuit without letting go of it.'
+        : 'The kill switch is off: if the tunnel drops, traffic would leave in the clear.';
+    } else if (r && s.state === 'connecting') {
+      sub.textContent = 'Building the tunnel';
+      explain.textContent = r.killswitch
+        ? 'The kill switch is holding the network while the tunnel is built: nothing leaves outside it.'
+        : 'The kill switch arms as the last step; until this page shows it Armed, nothing is protected.';
+    } else if (r) {
+      sub.textContent = 'Choose a mode and press Connect';
+      explain.textContent = 'Not routed through HidraVPN. This machine is on its own network.' +
+        (r.killswitch ? ' The kill switch is still holding the network: nothing leaves until you connect again or press Disconnect.' : '');
+    } else if (notInstalled) {
+      sub.textContent = 'Install it above';
+      explain.textContent = 'HidraVPN is a separate program that protects the whole machine. The browser installs the release the maintainers signed.';
+    } else {
+      sub.textContent = s.hint || '';
+      explain.textContent = s.error || '';
+    }
+
+    // The kill switch is whatever the service says it is, including when
+    // the service cannot be reached: then nobody knows, and the page says so.
+    var ks = $('vpn-killswitch');
+    if (r) {
+      ks.textContent = r.killswitch ? 'Armed' : 'Off';
+      ks.className = 'badge ' + (r.killswitch ? 'on' : (r.connected ? 'bad' : 'off'));
+    } else {
+      ks.textContent = 'Unknown';
+      ks.className = 'badge warn';
+    }
+
+    $('mode-now').textContent = r && r.mode ? (r.mode === 'privado' ? 'Privado, two hops' : 'Rapido, one hop') : '-';
+    $('bytes').textContent = r && r.connected ? ('up ' + fmtBytes(r.tx_bytes) + ' · down ' + fmtBytes(r.rx_bytes)) : '-';
+
+    // IPv6 as the service reports it, and only that: an older service that
+    // does not say is "Not reported", never a guess from the leak test.
+    var v6 = $('ipv6-badge');
+    if (!r) { v6.textContent = 'Unknown'; v6.className = 'badge warn'; }
+    else if (!r.connected) { v6.textContent = '-'; v6.className = 'badge'; }
+    else if (typeof r.ipv6 === 'boolean') { v6.textContent = r.ipv6 ? 'Through the exit' : 'Blocked'; v6.className = 'badge ' + (r.ipv6 ? 'on' : 'off'); }
+    else { v6.textContent = 'Not reported'; v6.className = 'badge'; }
+
+    // Two hops under one operator are one operator's view: say so, from
+    // what the list says, and say when it does not say.
+    var orow = $('operator-row');
+    var ob = $('operator-badge');
+    if (r && r.connected && r.hops === 2) {
+      orow.hidden = false;
+      if (r.same_operator === true) { ob.textContent = 'One operator runs both hops: together they see who and where'; orow.className = 'strip warn'; }
+      else if (r.same_operator === false) { ob.textContent = 'Two different operators'; orow.className = 'strip on'; }
+      else { ob.textContent = 'Unknown: a node did not say who runs it'; orow.className = 'strip'; }
+    } else {
+      orow.hidden = true;
+    }
+    var warns = [];
+    if (r && r.connected && r.killswitch === false) warns.push('Kill switch off: if the tunnel drops, traffic would leave in the clear.');
+    if (r && r.connected && r.same_operator === true) warns.push('One operator runs both hops: together they see who and where.');
+    $('route-warn').hidden = !warns.length;
+    $('route-warn-text').textContent = warns.join(' ');
+
+    renderRoute(r);
+    renderHops(r);
+    renderStamp(r);
+
+    $('install-card').style.display = notInstalled ? '' : 'none';
+    $('version-line').textContent = r && r.version
+      ? 'Installed version: ' + r.version + '.'
+      : (notInstalled ? 'HidraVPN is not installed.' : 'Installed version: unknown (an older service, or the service is not answering).');
+
+    // A status error is already under the label (the hint, then the error);
+    // the message box is for what the last action said. An error stays
+    // until the next action, or until a tunnel comes up or the service
+    // answers again after being unreachable: the refusal it explained is
+    // then over. A poll that changes nothing never wipes it.
+    if (!busy && r && prevSettled && prevSettled.state !== s.state && (s.state === 'connected' || !prevSettled.report)) {
+      clearHeroError();
+    }
+    resetLeaksIfStale(r);
+
+    // Every button from the service's answer, never from a click.
+    var reachable = Boolean(r);
+    var connected = Boolean(r && r.connected);
+    var bc = $('btn-connect');
+    var bd = $('btn-disconnect');
+    var bi = $('btn-identity');
+    // A circuit the service holds, live or stalled, can be rebuilt with the
+    // kill switch held throughout: Reconnect and New identity stay on offer,
+    // and Disconnect keeps the big slot from the first read of a circuit to
+    // connected, so the button under the pointer does not change. Only a
+    // build in progress (hops, no circuit yet) takes Connect away.
+    var holds = connected || tunnel;
+    var building = Boolean(r && !r.connected && r.hops > 0 && !tunnel);
+    bc.disabled = busy || !reachable || building;
+    bc.textContent = holds ? 'Reconnect' : 'Connect';
+    bc.className = 'btn ' + (holds ? '' : 'primary dominant');
+    // Shown whenever there is something to release: a tunnel, a half-built
+    // one, or a kill switch still holding the network with no tunnel.
+    bd.hidden = !(reachable && (r.connected || r.hops > 0 || r.killswitch));
+    bd.disabled = busy || bd.hidden;
+    bd.className = 'btn danger' + (holds ? ' dominant' : '');
+    bi.disabled = busy || !holds;
+    bi.title = holds ? '' : 'Connect first';
+    $('btn-leaks').disabled = busy || !connected;
+    $('btn-import').disabled = busy || !reachable;
+    $('btn-fetch').disabled = busy || !reachable;
+    $('btn-token').disabled = busy || !reachable;
+    $('btn-passes').disabled = busy || !reachable || !hasPassNode;
+    $('btn-uninstall').disabled = busy || notInstalled;
+    $('btn-check-update').disabled = busy;
+    $('btn-update').disabled = busy;
+    $('btn-install').disabled = busy;
+    $('btn-next').disabled = busy;
+    $('auto-passes').disabled = busy || !refillOk;
+    renderDot();
+    renderNextStep();
+    // The sidebar's empty line depends on whether the service is there.
+    if (!prev || prev.state !== s.state) renderNodes(lastNodes);
+  }
+
+  // ── The nodes ───────────────────────────────────────────────────────
+  // Each connection through a node that admits with a pass spends one; the
+  // service shows the node a fresh key every time.
+  function passText(n) {
+    var c = Number(n.passes) || 0;
+    return c > 0 ? (c + ' left') : 'no pass left';
+  }
+  // How the node admits this machine comes first: it is what decides whether
+  // Connect can use it. Who runs it, and as what, follow.
+  function metaOf(n) {
+    var a = admissionOf(n);
+    // A known node that neither admits openly nor takes a pass admits by
+    // hand ("manual", or nothing said), as the command line puts it.
+    var admission = a === 'open' ? 'admits openly'
+      : a === 'pass' ? 'admits with a pass'
+      : n.admitted === false ? 'admits by hand: ask its operator for an invite'
+      : '';
+    var rest = [];
+    if (n.operator) rest.push('run by ' + n.operator);
+    if (n.role) rest.push(n.role);
+    return { admission: admission, rest: rest };
+  }
+  function matches(n, q) {
+    if (!q) return true;
+    var hay = [n.node_name, n.operator, n.country, n.role, n.endpoint].join(' ').toLowerCase();
+    return hay.indexOf(q) !== -1;
+  }
+  // The service lists a node once per slot it fills: an invite whose role
+  // is both sits in the entry list and in the exit list. One node, one row,
+  // one count. An admitted row wins over a known one for the same node.
+  function groupNodes(list) {
+    var at = {};
+    var out = [];
+    list.forEach(function (n) {
+      var key = n.node_name || n.endpoint || '';
+      var g = at[key];
+      if (!g) { g = at[key] = Object.assign({}, n, { slots: [] }); out.push(g); }
+      else if (g.admitted === false && n.admitted !== false) { var slots = g.slots; Object.assign(g, n); g.slots = slots; }
+      if (n.admitted !== false && n.slot && g.slots.indexOf(n.slot) === -1) g.slots.push(n.slot);
+    });
+    return out;
+  }
+  function slotLabel(n) {
+    if (n.admitted === false) return 'known';
+    var slots = n.slots && n.slots.length ? n.slots : [n.slot || ''];
+    return slots.indexOf('entry') !== -1 && slots.indexOf('exit') !== -1 ? 'entry + exit' : slots[0];
+  }
+  function nodeRow(n) {
+    var known = n.admitted === false;
+    var label = slotLabel(n);
+    var li = el('li', 'node');
+    li.setAttribute('data-slot', label);
+    li.setAttribute('data-admission', admissionOf(n));
+    li.appendChild(flagCell(n.country));
+    var text = el('div', 'node-text');
+    text.appendChild(el('div', 'node-name', n.node_name || ''));
+    var meta = el('div', 'node-meta');
+    var m = metaOf(n);
+    var sep = ' · ';
+    if (m.admission) meta.appendChild(document.createTextNode(m.admission));
+    if (admissionOf(n) === 'pass') {
+      meta.appendChild(document.createTextNode(sep));
+      meta.appendChild(el('span', (Number(n.passes) || 0) > 0 ? '' : 'warn', passText(n)));
+    }
+    if (m.rest.length) meta.appendChild(document.createTextNode((meta.textContent ? sep : '') + m.rest.join(sep)));
+    meta.title = meta.textContent;
+    text.appendChild(meta);
+    li.appendChild(text);
+    li.appendChild(el('span', 'pill slot slot-' + (known ? 'known' : label === 'entry' ? 'entry' : 'exit'), label));
+    return li;
+  }
+  function renderPassNodes(list) {
+    var box = $('pass-nodes');
+    box.textContent = '';
+    var pass = list.filter(function (n) { return admissionOf(n) === 'pass'; });
+    if (!pass.length) { box.appendChild(el('p', 'empty', 'No node on this machine admits with a pass.')); return; }
+    pass.forEach(function (n) {
+      var row = el('div', 'pn');
+      var g = flag(n.country);
+      if (g) row.appendChild(el('span', 'glyph', g));
+      row.appendChild(el('span', 'name', (n.country ? n.country + ' ' : '') + (n.node_name || '')));
+      var c = Number(n.passes) || 0;
+      row.appendChild(el('span', 'badge ' + (c > 0 ? 'on' : 'warn'), c > 0 ? c + ' left' : 'none left'));
+      box.appendChild(row);
+    });
+  }
+  function renderNodes(answer) {
+    noteAnswer(answer);
+    lastNodes = answer;
+    var box = $('nodes');
+    box.textContent = '';
+    var count = $('nodes-count');
+    var pc = $('passes-count');
+    if (!answer) {
+      box.appendChild(el('li', 'empty', 'Checking'));
+      count.hidden = true; pc.hidden = true;
+      return;
+    }
+    if (!answer.ok) {
+      var notInstalled = lastStatus && lastStatus.state === 'not-installed';
+      box.appendChild(el('li', 'empty' + (notInstalled ? '' : ' err'), notInstalled ? 'Install HidraVPN first.' : (answer && answer.error ? withHint(answer.error, answer.hint) : 'Could not read the pocket.')));
+      count.hidden = true; pc.hidden = true;
+      hasPassNode = false;
+      renderPassNodes([]);
+      renderNextStep();
+      return;
+    }
+    var list = groupNodes(answer.nodes || []);
+    hasPassNode = list.some(function (n) { return admissionOf(n) === 'pass'; });
+    $('btn-passes').disabled = busy || !hasPassNode;
+    count.hidden = false;
+    count.textContent = String(list.length);
+    var passNodes = list.filter(function (n) { return admissionOf(n) === 'pass'; });
+    if (passNodes.length) {
+      var total = passNodes.reduce(function (t, n) { return t + (Number(n.passes) || 0); }, 0);
+      pc.hidden = false;
+      pc.textContent = String(total);
+      pc.className = 'count' + (passNodes.some(function (n) { return !(Number(n.passes) > 0); }) ? ' warn' : '');
+    } else { pc.hidden = true; }
+    renderPassNodes(list);
+    if (!list.length) {
+      var e = el('li', 'empty-state');
+      e.appendChild(icon('globe'));
+      e.appendChild(el('b', '', 'No node yet'));
+      e.appendChild(el('p', '', 'A signed list says which nodes exist and who runs them. Get the maintainers\' list, or import one from a file.'));
+      box.appendChild(e);
+      renderNextStep();
+      return;
+    }
+    var q = $('node-search').value.trim().toLowerCase();
+    var admitted = list.filter(function (n) { return n.admitted !== false && matches(n, q); });
+    var known = list.filter(function (n) { return n.admitted === false && matches(n, q); });
+    if (admitted.length) {
+      box.appendChild(el('li', 'group-title', 'Admitted · ' + admitted.length));
+      admitted.forEach(function (n) { box.appendChild(nodeRow(n)); });
+    }
+    if (known.length) {
+      box.appendChild(el('li', 'group-title', 'Known · ' + known.length));
+      known.forEach(function (n) { box.appendChild(nodeRow(n)); });
+    }
+    if (!admitted.length && !known.length) box.appendChild(el('li', 'empty', 'No node matches.'));
+    renderNextStep();
+  }
+
+  async function refresh() {
+    if (!api) return;
+    try {
+      render(await api.status());
+    } catch (e) {
+      render({ state: 'unavailable', report: null, error: String(e && e.message || e), hint: '' });
+    }
+  }
+
+  async function refreshNodes() {
+    if (!api) return;
+    try { renderNodes(await api.nodes()); } catch (e) { renderNodes({ ok: false, error: String(e && e.message || e) }); }
+    await refreshRefill();
+  }
+
+  // Automatic passes: the box shows what the service last said it has
+  // (never what was clicked and not taken), and is usable only when the
+  // service answers and nothing else is under way.
+  function renderRefill(r) {
+    noteAnswer(r);
+    var box = $('auto-passes');
+    refillOk = Boolean(r && r.ok && r.refill);
+    if (refillOk) lastRefill = r.refill;
+    if (lastRefill) {
+      box.checked = !!lastRefill.enabled;
+      $('auto-passes-line').textContent = lastRefill.enabled ? REFILL_ON : REFILL_OFF;
+    }
+    box.disabled = busy || !refillOk;
+  }
+  async function refreshRefill() {
+    if (!api || !api.refill) return;
+    try { renderRefill(await api.refill()); } catch (e) { renderRefill(null); }
+  }
+
+  function setBusy(b) {
+    busy = b;
+    $('hero').setAttribute('data-busy', b ? '1' : '0');
+    if (b) {
+      ['btn-connect', 'btn-disconnect', 'btn-identity', 'btn-leaks', 'btn-fetch', 'btn-import', 'btn-token', 'btn-passes', 'btn-install', 'btn-update', 'btn-check-update', 'btn-uninstall', 'btn-next'].forEach(function (id) { $(id).disabled = true; });
+      $('auto-passes').disabled = true;
+      $('next-step').hidden = true;
+    }
+  }
+
+  async function act(fn, pending) {
+    if (!api || busy) return;
+    setBusy(true);
+    // The service answers status while it builds a tunnel, so the page keeps
+    // reading it: the state on screen moves with the service, not with the
+    // click. Only the buttons stay held.
+    pollWhileBusy = true;
+    message('note', pending);
+    try {
+      var r = noteAnswer(await fn());
+      if (r && r.ok === false) {
+        message('err', withHint(r.error || 'the service refused', r.hint));
+      } else if (r && r.note) {
+        message('note', r.note);
+      } else {
+        message('', '');
+      }
+    } catch (e) {
+      message('err', String(e && e.message || e));
+    } finally {
+      pollWhileBusy = false;
+      setBusy(false);
+      await refresh();
+      await refreshNodes();
+    }
+  }
+
+  // ── Mode cards and options ──────────────────────────────────────────
+  function syncModes() {
+    document.querySelectorAll('.mode').forEach(function (m) {
+      m.classList.toggle('active', m.querySelector('input').checked);
+    });
+    renderNextStep();
+  }
+  document.querySelectorAll('.mode input').forEach(function (input) {
+    input.addEventListener('change', syncModes);
+  });
+  function syncOptions() {
+    $('options-summary').textContent = ($('allow-lan').checked ? 'Local network on' : 'Local network off') + ', ' +
+      ($('allow-same-operator').checked ? 'one operator on both hops allowed' : 'one operator on both hops not allowed');
+    renderNextStep();
+  }
+  $('allow-lan').addEventListener('change', syncOptions);
+  $('allow-same-operator').addEventListener('change', syncOptions);
+
+  // ── Connect, disconnect, new identity ───────────────────────────────
+  $('btn-connect').addEventListener('click', function () {
+    var mode = selectedMode();
+    var allowLan = $('allow-lan').checked;
+    var allowSameOperator = $('allow-same-operator').checked;
+    var held = Boolean(lastStatus && lastStatus.report && lastStatus.report.killswitch);
+    act(function () { return api.connect(mode, { allowLan: allowLan, allowSameOperator: allowSameOperator }); }, 'Connecting (' + mode + (allowLan ? ', local network allowed' : '') + (allowSameOperator ? ', one operator allowed on both hops' : '') + ').' +
+      (held ? ' The kill switch is holding the network meanwhile: nothing leaves outside the tunnel.' : ' The kill switch arms as the last step; until this page shows it Armed, nothing is protected.'));
+  });
+  $('btn-disconnect').addEventListener('click', function () {
+    act(function () { return api.disconnect(); }, 'Disconnecting and putting the network back.');
+  });
+  $('btn-identity').addEventListener('click', function () {
+    act(function () { return api.newIdentity(); }, 'Rebuilding the circuit through other nodes. The connection pauses for a moment; the kill switch stays armed throughout.');
+  });
+  $('btn-next').addEventListener('click', function () {
+    var go = $('btn-next').getAttribute('data-go');
+    if (go === 'nodes') {
+      var b = $('btn-fetch');
+      b.classList.remove('pulse');
+      void b.offsetWidth;
+      b.classList.add('pulse');
+      b.scrollIntoView({ block: 'nearest' });
+      b.focus();
+    } else if (go === 'passes') {
+      openSettings('settings-passes');
+    } else if (go === 'settings') {
+      openSettings('settings-service');
+    } else if (go === 'options') {
+      var o = $('options');
+      o.open = true;
+      o.scrollIntoView({ block: 'nearest' });
+      $('allow-same-operator').focus();
+    }
+  });
+  $('btn-fetch').addEventListener('animationend', function () { $('btn-fetch').classList.remove('pulse'); });
+
+  // ── The leak test ───────────────────────────────────────────────────
+  $('btn-leaks').addEventListener('click', async function () {
+    if (!api || busy) return;
+    // Busy while it runs: a connect or disconnect in the middle would make
+    // the answer about neither connection.
+    setBusy(true);
+    var box = $('leaks');
+    box.textContent = '';
+    var verdict = $('leaks-verdict');
+    verdict.textContent = 'Testing'; verdict.className = 'badge warn';
+    message('note', 'Testing. This takes a few seconds.', 'leaks-msg');
+    var r;
+    try { r = await api.leakTest(); } catch (e) { r = { ran: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    // Enabled again only if still connected: refresh decides.
+    await refresh();
+    if (!r || !r.ran) {
+      verdict.textContent = 'Not run'; verdict.className = 'badge';
+      message('err', (r && r.error) || 'The test did not run.', 'leaks-msg');
+      return;
+    }
+    var words = { pass: 'Pass', warn: 'Check', fail: 'Leak' };
+    var cls = { pass: 'on', warn: 'warn', fail: 'bad' };
+    (r.checks || []).forEach(function (c) {
+      var row = el('div', 'l');
+      row.appendChild(el('span', 'badge ' + (cls[c.verdict] || ''), words[c.verdict] || c.verdict));
+      var t = el('div');
+      t.appendChild(el('div', 'what', c.label));
+      t.appendChild(el('div', 'why', c.detail));
+      row.appendChild(t);
+      box.appendChild(row);
+    });
+    verdict.textContent = words[r.verdict] || r.verdict; verdict.className = 'badge ' + (cls[r.verdict] || '');
+    leakExit = exitOf(lastStatus && lastStatus.report);
+    if (r.verdict === 'pass') message('note', 'No leak found.', 'leaks-msg');
+    else if (r.verdict === 'warn') message('note', 'Nothing leaked that the test could see, but one check needs a look.', 'leaks-msg');
+    else message('err', 'Something leaked. Do not rely on this connection until it is fixed.', 'leaks-msg');
+  });
+
+  // ── Install, update, remove ─────────────────────────────────────────
+  async function installOrUpdate(msgId, pending) {
+    if (!api || busy) return;
+    setBusy(true);
+    message('note', pending, msgId);
+    var r;
+    try { r = await api.install(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    if (r && r.ok) {
+      message('note', r.note || 'Installed.', msgId);
+      $('btn-update').style.display = 'none';
+      updateKnown = false;
+      outdated = false;
+    } else if (r && r.cancelled) {
+      message('err', r.error || 'Cancelled; nothing was installed.', msgId);
+    } else if (r && r.installed) {
+      // The new version is in place, only its service has not answered:
+      // no update is waiting any more. The poll shows whether it runs, and
+      // Check for an update offers the release again while it does not.
+      message('err', r.error, msgId);
+      $('btn-update').style.display = 'none';
+      updateKnown = false;
+      outdated = false;
+      renderDot();
+    } else {
+      message('err', (r && r.error) || 'Nothing was installed.', msgId);
+    }
+    await refresh();
+    await refreshNodes();
+  }
+  $('btn-install').addEventListener('click', function () {
+    installOrUpdate('install-msg', 'Fetching the signed release and checking it. Your system will then ask for administrator rights, once.');
+  });
+  $('btn-update').addEventListener('click', function () {
+    installOrUpdate('manage-msg', 'Fetching the signed release and checking it. The VPN disconnects for a moment while the service is replaced; your system will ask for administrator rights.');
+  });
+
+  $('btn-check-update').addEventListener('click', async function () {
+    if (!api || busy) return;
+    message('note', 'Checking the signed release.', 'manage-msg');
+    var r;
+    try { r = await api.checkRelease(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    if (!r || !r.ok) { message('err', (r && r.error) || 'Could not check.', 'manage-msg'); return; }
+    var st = await api.status().catch(function () { return null; });
+    var have = st && st.report && st.report.version;
+    if (!r.supported) { message('note', 'Release ' + r.version + ' is signed, but has no build for this system.', 'manage-msg'); return; }
+    if (have && compare(have, r.version) >= 0) {
+      message('note', 'Up to date: ' + have + ' is the newest signed release.', 'manage-msg');
+      $('btn-update').style.display = 'none';
+      updateKnown = false;
+    } else {
+      message('note', 'Signed release ' + r.version + ' is available' + (have ? ' (installed: ' + have + ')' : '') + '.', 'manage-msg');
+      $('btn-update').style.display = '';
+      updateKnown = true;
+    }
+    renderDot();
+  });
+
+  // Versions as X.Y.Z with an optional -pre part: 0.3.0-rc.1 < 0.3.0-rc.2 <
+  // 0.3.0. Anything unreadable counts as older than anything readable.
+  function compare(a, b) {
+    function parts(v) {
+      var m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(String(v || ''));
+      return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+    }
+    var pa = parts(a), pb = parts(b);
+    if (!pa || !pb) return pa ? 1 : pb ? -1 : 0;
+    for (var i = 0; i < 3; i++) {
+      if (pa.core[i] !== pb.core[i]) return pa.core[i] < pb.core[i] ? -1 : 1;
+    }
+    if (!pa.pre.length || !pb.pre.length) return pa.pre.length === pb.pre.length ? 0 : pa.pre.length ? -1 : 1;
+    for (var j = 0; j < Math.max(pa.pre.length, pb.pre.length); j++) {
+      var x = pa.pre[j], y = pb.pre[j];
+      if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+      var nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+      if (nx && ny) { if (+x !== +y) return +x < +y ? -1 : 1; continue; }
+      if (nx !== ny) return nx ? -1 : 1;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
+
+  $('btn-uninstall').addEventListener('click', async function () {
+    if (!api || busy) return;
+    // Busy before the dialog, so the poll cannot re-enable buttons under it.
+    setBusy(true);
+    var purge = $('purge').checked;
+    var question = purge ? PURGE_QUESTION : KEEP_QUESTION;
+    var r;
+    try {
+      if (!window.confirm(question)) return;
+      message('note', 'Disconnecting and removing. Your system will ask for administrator rights.', 'manage-msg-remove');
+      try { r = await api.uninstall(purge); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+      message(r && r.ok ? 'note' : 'err', (r && (r.note || r.error)) || 'Nothing was removed.', 'manage-msg-remove');
+    } finally {
+      setBusy(false);
+      await refresh();
+      await refreshNodes();
+    }
+  });
+
+  // ── Passes ──────────────────────────────────────────────────────────
+  async function keepToken() {
+    if (!api || busy) return;
+    var field = $('pass-token');
+    var token = field.value;
+    // The field is emptied at once: the page holds the token no longer than
+    // it takes to hand it over.
+    field.value = '';
+    if (!token.trim()) { message('err', 'Paste the account token first.', 'passes-msg'); return; }
+    setBusy(true);
+    var r;
+    try { r = await api.setPassToken(token); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    token = '';
+    setBusy(false);
+    noteAnswer(r);
+    if (r && r.ok) clearHeroError();
+    message(r && r.ok ? 'note' : 'err', (r && (r.ok ? r.note : withHint(r.error, r.hint))) || 'Could not keep the token.', 'passes-msg');
+    await refresh();
+  }
+  $('btn-token').addEventListener('click', keepToken);
+  $('pass-token').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); keepToken(); }
+  });
+
+  $('auto-passes').addEventListener('change', async function () {
+    var box = $('auto-passes');
+    if (!api || busy) {
+      if (lastRefill) box.checked = !!lastRefill.enabled;
+      return;
+    }
+    setBusy(true);
+    var want = box.checked;
+    var r;
+    try { r = await api.refill(want); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    if (r && r.ok) {
+      renderRefill(r);
+    } else {
+      message('err', (r && r.error) || 'Could not change automatic passes.', 'passes-msg');
+      // Back to what the service has, read again.
+      await refreshRefill();
+    }
+    await refresh();
+  });
+
+  $('btn-passes').addEventListener('click', async function () {
+    if (!api || busy) return;
+    setBusy(true);
+    message('note', 'Asking the issuer for passes.', 'passes-msg');
+    var r;
+    try { r = await api.getPasses(10); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    noteAnswer(r);
+    if (r && r.ok) {
+      clearHeroError();
+      message('note', r.note || 'Passes received.', 'passes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) ? withHint(r.error, r.hint) : 'Could not get passes.', 'passes-msg');
+    }
+    await refresh();
+  });
+
+  // ── The list ────────────────────────────────────────────────────────
+  $('btn-fetch').addEventListener('click', async function () {
+    if (!api || busy) return;
+    setBusy(true);
+    message('', '', 'nodes-msg');
+    var r;
+    try { r = await api.fetchList(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    noteAnswer(r);
+    await refresh();
+    if (r && r.ok) {
+      clearHeroError();
+      message('note', (r.note || 'Imported.') + ' From ' + r.url + '; checked against the list key built into this machine before a byte was read.', 'nodes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) ? withHint(r.error, r.hint) : 'The list was not fetched.', 'nodes-msg');
+    }
+    await refreshRefill();
+  });
+
+  $('btn-import').addEventListener('click', async function () {
+    if (!api || busy) return;
+    setBusy(true);
+    message('', '', 'nodes-msg');
+    var r;
+    try { r = await api.importNodes(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    setBusy(false);
+    noteAnswer(r);
+    await refresh();
+    if (r && r.cancelled) return;
+    if (r && r.ok) {
+      clearHeroError();
+      message('note', (r.note || 'Imported.') + ' Nothing was read from the list before its signature checked out.', 'nodes-msg');
+      renderNodes(r);
+    } else {
+      message('err', (r && r.error) ? withHint(r.error, r.hint) : 'The list was not imported.', 'nodes-msg');
+    }
+    await refreshRefill();
+  });
+
+  $('node-search').addEventListener('input', function () { renderNodes(lastNodes); });
+
+  // ── Release files ───────────────────────────────────────────────────
+  $('btn-verify').addEventListener('click', async function () {
+    if (!api) return;
+    message('', '', 'verify-msg');
+    var r;
+    try { r = await api.verifyFile(); } catch (e) { r = { ok: false, reason: 'error', detail: String(e && e.message || e) }; }
+    if (r && r.cancelled) return;
+    if (r && r.ok) {
+      message('note', r.file + ': the signature checks out against the release key. SHA-256 ' + r.sha256, 'verify-msg');
+    } else {
+      message('err', (r && r.file ? r.file + ': ' : '') + ((r && r.detail) || 'not verified'), 'verify-msg');
+    }
+  });
+
+  // ── The drawer ──────────────────────────────────────────────────────
+  $('btn-settings').addEventListener('click', function () { if (drawerOpen) closeSettings(); else openSettings(); });
+  $('btn-settings-close').addEventListener('click', closeSettings);
+  $('settings-backdrop').addEventListener('click', closeSettings);
+  $('btn-open-passes').addEventListener('click', function () { openSettings('settings-passes'); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && drawerOpen) closeSettings(); });
+
+  $('brand-logo').addEventListener('error', function () {
+    $('brand-logo').classList.add('hidden');
+    $('brand-mark').classList.remove('hidden');
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !busy) { refresh(); refreshNodes(); }
+  });
+
+  // Chromium restores form controls on a Back navigation after this script
+  // ran, without change events: the page would then show one choice and
+  // send another. pageshow fires after that restore, so back to the
+  // defaults, which is what the page shows.
+  window.addEventListener('pageshow', function () {
+    ['allow-lan', 'allow-same-operator', 'purge'].forEach(function (id) { $(id).checked = false; });
+    document.querySelector('input[name="mode"][value="rapido"]').checked = true;
+    // While a circuit is held, the cards show the mode the service is in,
+    // so Reconnect rebuilds the same kind of connection; with no answer yet,
+    // the first status read sets them.
+    var r0 = lastStatus && lastStatus.report;
+    followServiceMode(r0);
+    modeSynced = Boolean(r0);
+    syncModes();
+    syncOptions();
+  });
+  syncModes();
+  syncOptions();
+  setInterval(tickStamp, 1000);
+  if (!api) {
+    render({ state: 'unavailable', report: null, error: 'Open this page inside HidraNet Browser; outside it there is no bridge to the service.', hint: '' });
+    renderNodes({ ok: false, error: 'Not available outside the browser.' });
+  } else {
+    refresh();
+    refreshNodes();
+    setInterval(function () { if (document.visibilityState === 'visible' && (!busy || pollWhileBusy)) refresh(); }, 2000);
+    setInterval(function () { if (document.visibilityState === 'visible' && !busy) refreshNodes(); }, 15000);
+  }
+})();
+</script>
+</body>
+</html>

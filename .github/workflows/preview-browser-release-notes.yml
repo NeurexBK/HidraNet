@@ -1,0 +1,62 @@
+# Preview the browser release description using the current public packages.
+# This workflow cannot edit the release page.
+
+name: preview browser release notes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-browser-release-notes
+  cancel-in-progress: false
+
+jobs:
+  notes:
+    name: preview the release description
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Check the notes generator
+        working-directory: hidra-browser
+        run: node test/release-notes.js
+
+      # The notes are shown to users, so they are held to the same rule as the
+      # product: English only.
+      - name: The notes are in English
+        working-directory: hidra-browser
+        run: node test/english-only.js
+
+      - name: Download the packages on the release page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p assets
+          gh release download v1.0.0 --repo "$GITHUB_REPOSITORY" --dir assets --pattern '*.zip'
+          ls -l assets
+
+      - name: Compose the description
+        run: node hidra-browser/scripts/release-notes.js assets "$GITHUB_SHA" --preview > notes.md
+
+      - name: Show it
+        run: cat notes.md
+
+      - name: Keep the preview for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-release-notes-preview-${{ github.sha }}
+          path: notes.md
+          if-no-files-found: error
+          retention-days: 7

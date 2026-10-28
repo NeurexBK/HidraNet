@@ -1,0 +1,97 @@
+# The hourly check of the network: every node in the official list, the
+# list's and the release manifest's signatures as hidranet.org serves them,
+# the pass issuer, and the dates the list and the pass keys run out
+# (hidravpn/scripts/node-monitor.mjs says what each check means).
+#
+# A problem opens one issue, mentioning NODE_MONITOR_MENTION below, and the
+# next passing check closes it; GitHub's notifications are the e-mail. A
+# failed run means the check itself broke or reached nothing, never that a
+# node is down: that is what the issues are for.
+#
+# On a pull request that touches the check, what it copies from the client,
+# or the published files, the preview job checks the list in the branch
+# instead: that a client would accept it, that its sequence goes up, and that
+# every node it adds or changes answers with its key. Nothing is written then.
+name: node monitor
+
+on:
+  schedule:
+    # 41 minutes past every hour. Not on the hour: everything else is.
+    - cron: '41 * * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/node-monitor.yml'
+      - 'hidravpn/scripts/node-monitor.mjs'
+      - 'hidravpn/scripts/test-node-monitor.mjs'
+      - 'landing/vpn/**'
+      # What the check copies from the client; the test compares them.
+      - 'hidravpn/crates/hidravpn-core/src/admission.rs'
+      - 'hidravpn/crates/hidravpn-core/src/directory.rs'
+      - 'hidravpn/crates/hidravpn-core/src/http.rs'
+      - 'hidravpn/crates/hidravpn-core/src/pass.rs'
+      - 'hidravpn/crates/hidravpn-core/src/release.rs'
+      - 'hidravpn/crates/hidravpn-core/src/timefmt.rs'
+      - 'hidra-browser/src/main/main.js'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check the network
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Two runs at once would both open the same issue.
+    concurrency:
+      group: node-monitor
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every node in the official list
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # GitHub logins, without the @, separated by spaces: who is
+          # mentioned in every issue the check opens, and so e-mailed.
+          NODE_MONITOR_MENTION: NeurexBK
+        run: node hidravpn/scripts/node-monitor.mjs
+
+  test:
+    name: node monitor tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The check, against nodes and a GitHub of its own
+        run: node hidravpn/scripts/test-node-monitor.mjs
+
+  preview:
+    name: the list in this branch
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the list this branch would publish
+        run: node hidravpn/scripts/node-monitor.mjs --preview
+
+      # Everything the hourly check looks at, as it stands now, without
+      # opening anything. The site is compared with the base branch, which is
+      # what it should be serving until this is merged.
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: What the hourly check would report now
+        if: ${{ !cancelled() }}
+        run: node hidravpn/scripts/node-monitor.mjs --dry-run --landing base/landing

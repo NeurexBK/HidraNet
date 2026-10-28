@@ -3,7 +3,7 @@
 // thing executed with administrator rights is the service from that folder,
 // with arguments that cannot be turned into a command.
 //
-//   node hidravpn/browser/test/vpn-installer.js
+//   node hidra-browser/test/vpn-installer.js
 
 'use strict';
 
@@ -311,6 +311,22 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     const r = await inst.install();
     assert.strictEqual(r.ok, false);
     assert.ok(/changed after it was checked/.test(r.error), r.error);
+  });
+
+  await check('Windows: a service that installed but never answered is not reported as running', async () => {
+    const { inst } = rig({ platform: 'win32', runCode: 69 });
+    const r = await inst.install();
+    assert.deepStrictEqual([r.ok, r.installed, r.version], [false, true, '0.5.0']);
+    assert.ok(/is installed, but its service did not answer/.test(r.error), r.error);
+    assert.ok(/restart this computer/.test(r.error), r.error);
+    assert.ok(!/installed and running/.test(r.error), r.error);
+  });
+
+  await check('Linux: the same, with where to look', async () => {
+    const { inst } = rig({ runCode: 69 });
+    const r = await inst.install();
+    assert.deepStrictEqual([r.ok, r.installed], [false, true]);
+    assert.ok(/systemctl status hidravpn/.test(r.error), r.error);
   });
 
   await check('Windows: saying no to UAC is reported as cancelled', async () => {

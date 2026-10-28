@@ -11,6 +11,9 @@
 #   --role ROLE           entry, exit or both (default both): what this node lets itself be
 #   --operator WHO        who runs it, as clients and lists show it
 #   --contact HOW         how to reach the operator (an address, a page)
+#   --country CC          where the node is, two letters (ISO 3166-1, e.g. NL), as lists show it
+#   --tunnel CIDR         the IPv4 subnet clients get addresses from (default 10.77.0.0/16);
+#                         the maintainers give each node its own
 #   --open-admission      admit any client that asks (rate-limited, capped), not by hand
 #   --pass-admission      admit a client that redeems a pass (phase 5); then add the
 #                         issuer's key with: hidravpn-node pass-key add <record.json>
@@ -39,11 +42,11 @@ PREFIX="${HIDRAVPN_PREFIX:-/usr/local/bin}"
 ETC="${HIDRAVPN_ETC:-/etc/hidravpn}"
 UNIT="${HIDRAVPN_UNIT:-/etc/systemd/system/hidravpn-node.service}"
 
-ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; OPEN=0; PASS=0; ADM_PORT=51821
+ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; COUNTRY=""; TUNNEL=""; OPEN=0; PASS=0; ADM_PORT=51821
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --endpoint|--name|--out-interface|--role|--operator|--contact|--admission-port|--max-clients|--idle-days)
+    --endpoint|--name|--out-interface|--role|--operator|--contact|--country|--tunnel|--admission-port|--max-clients|--idle-days)
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; usage >&2; exit 2; }
       case "$1" in
         --endpoint) ENDPOINT="$2" ;;
@@ -52,6 +55,8 @@ while [ $# -gt 0 ]; do
         --role) ROLE="$2" ;;
         --operator) OPERATOR="$2" ;;
         --contact) CONTACT="$2" ;;
+        --country) COUNTRY="$2" ;;
+        --tunnel) TUNNEL="$2" ;;
         --admission-port) ADM_PORT="$2" ;;
         --max-clients) MAX_CLIENTS="$2" ;;
         --idle-days) IDLE_DAYS="$2" ;;
@@ -75,6 +80,23 @@ PORT="${ENDPOINT##*:}"
 case "$PORT" in ''|*[!0-9]*) echo "--endpoint has no port" >&2; exit 2 ;; esac
 case "$ROLE" in entry|exit|both) ;; *) echo "--role must be entry, exit or both" >&2; exit 2 ;; esac
 [ "$OPEN" = 1 ] && [ "$PASS" = 1 ] && { echo "--open-admission and --pass-admission are two ways to admit; choose one" >&2; exit 2; }
+if [ -n "$COUNTRY" ]; then
+  case "$COUNTRY" in [A-Za-z][A-Za-z]) COUNTRY="$(printf '%s' "$COUNTRY" | tr '[:lower:]' '[:upper:]')" ;;
+    *) echo "--country must be two letters, for instance NL" >&2; exit 2 ;; esac
+fi
+# The same rules the node's init applies (a private IPv4 network address,
+# /8 to /30), checked here so a dry run catches what a real run would stop on.
+if [ -n "$TUNNEL" ]; then
+  [[ "$TUNNEL" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})/([0-9]{1,2})$ ]] \
+    || { echo "--tunnel must be an IPv4 subnet, for instance 10.80.0.0/16" >&2; exit 2; }
+  o1=${BASH_REMATCH[1]}; o2=${BASH_REMATCH[2]}; o3=${BASH_REMATCH[3]}; o4=${BASH_REMATCH[4]}; plen=$((10#${BASH_REMATCH[5]}))
+  (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || { echo "--tunnel: $TUNNEL is not an IPv4 address" >&2; exit 2; }
+  (( plen >= 8 && plen <= 30 )) || { echo "--tunnel: the prefix must be between /8 and /30" >&2; exit 2; }
+  net=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 )); mask=$(( (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF ))
+  (( (net & mask) == net )) || { echo "--tunnel: $TUNNEL is not a network address (its host bits are set)" >&2; exit 2; }
+  (( o1 == 10 || (o1 == 172 && o2 >= 16 && o2 <= 31) || (o1 == 192 && o2 == 168) || (o1 == 100 && o2 >= 64 && o2 <= 127) )) \
+    || { echo "--tunnel: $TUNNEL is not private: use one inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10" >&2; exit 2; }
+fi
 case "$ADM_PORT" in ''|*[!0-9]*) echo "--admission-port must be a number" >&2; exit 2 ;; esac
 case "${MAX_CLIENTS:-}" in *[!0-9]*) echo "--max-clients must be a number" >&2; exit 2 ;; esac
 case "${IDLE_DAYS:-}" in *[!0-9]*) echo "--idle-days must be a number" >&2; exit 2 ;; esac
@@ -146,6 +168,8 @@ else
   INIT=("$PREFIX/hidravpn-node" --config "$ETC/node.toml" init --endpoint "$ENDPOINT" --port "$PORT" --name "$NAME" --out-interface "$OUT_IF" --role "$ROLE" --admission-port "$ADM_PORT")
   [ -n "$OPERATOR" ] && INIT+=(--operator "$OPERATOR")
   [ -n "$CONTACT" ] && INIT+=(--contact "$CONTACT")
+  [ -n "$COUNTRY" ] && INIT+=(--country "$COUNTRY")
+  [ -n "$TUNNEL" ] && INIT+=(--tunnel "$TUNNEL")
   [ "$OPEN" = 1 ] && INIT+=(--open-admission)
   [ "$PASS" = 1 ] && INIT+=(--pass-admission)
   [ -n "${MAX_CLIENTS:-}" ] && INIT+=(--max-clients "$MAX_CLIENTS")

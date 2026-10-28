@@ -7,12 +7,24 @@ const crypto = require('crypto');
 //
 // All profiles are Chrome because the engine underneath is Chromium — claiming
 // Firefox while exposing Chromium-only behaviour is the same kind of tell.
+//
+// And a tab only ever gets the profile of the system it really runs on. A
+// profile of another system was picked a third of the time or more, and the
+// system showed through anyway: in navigator.userAgentData, in a worker, in
+// the fonts and in how text renders. A Windows user agent on a Linux machine
+// was a stronger signal than the truth. The system family is not hidden —
+// Tor Browser does not hide it either — and everything else is picked within
+// it.
 const PROFILES = [
   {
+    os: 'win32',
     platform: 'Win32',
+    // What navigator.userAgentData reports, to match the user agent.
+    uaPlatform: 'Windows',
+    platformVersion: '10.0.0',
     userAgents: [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
     ],
     gpus: [
       { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
@@ -22,10 +34,13 @@ const PROFILES = [
     ],
   },
   {
+    os: 'darwin',
     platform: 'MacIntel',
+    uaPlatform: 'macOS',
+    platformVersion: '10.15.7',
     userAgents: [
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
     ],
     gpus: [
       { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)' },
@@ -34,10 +49,13 @@ const PROFILES = [
     ],
   },
   {
+    os: 'linux',
     platform: 'Linux x86_64',
+    uaPlatform: 'Linux',
+    platformVersion: '',
     userAgents: [
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
     ],
     gpus: [
       { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)' },
@@ -73,7 +91,7 @@ function pick(arr) {
 class FingerprintEngine {
   static generate() {
     const seed = crypto.randomBytes(32);
-    const profile = pick(PROFILES);
+    const profile = PROFILES.find((p) => p.os === process.platform) || PROFILES.find((p) => p.os === 'linux');
     const locale = pick(LOCALES);
     const gpu = pick(profile.gpus);
     const screen = pick(SCREEN_RESOLUTIONS);
@@ -82,6 +100,8 @@ class FingerprintEngine {
       seed: seed.toString('hex'),
       userAgent: pick(profile.userAgents),
       platform: profile.platform,
+      uaPlatform: profile.uaPlatform,
+      platformVersion: profile.platformVersion,
       screen: {
         width: screen.width,
         height: screen.height,
@@ -97,6 +117,50 @@ class FingerprintEngine {
       gpuRenderer: gpu.renderer,
       audioNoise: crypto.randomBytes(4).readFloatBE(0) * 0.0001,
     };
+  }
+
+  /**
+   * The user agent override for the DevTools protocol: the string, and the
+   * navigator.platform and navigator.userAgentData that go with it, so every
+   * one of them tells the same story in every frame and worker.
+   */
+  static userAgentOverride(fp) {
+    const major = (/Chrome\/(\d+)/.exec(fp.userAgent) || [])[1] || '152';
+    return {
+      userAgent: fp.userAgent,
+      acceptLanguage: fp.languages.join(','),
+      platform: fp.platform,
+      userAgentMetadata: {
+        brands: [{ brand: 'Not?A_Brand', version: '24' }, { brand: 'Chromium', version: major }],
+        fullVersionList: [{ brand: 'Not?A_Brand', version: '24.0.0.0' }, { brand: 'Chromium', version: major + '.0.0.0' }],
+        fullVersion: major + '.0.0.0',
+        platform: fp.uaPlatform,
+        platformVersion: fp.platformVersion,
+        architecture: 'x86',
+        bitness: '64',
+        model: '',
+        mobile: false,
+        wow64: false,
+      },
+    };
+  }
+
+  /** What a dedicated worker's navigator must say, run before its own code. */
+  static buildWorkerScript(fp) {
+    return `(function() {
+  const fp = ${JSON.stringify({
+    platform: fp.platform,
+    hardwareConcurrency: fp.hardwareConcurrency,
+    deviceMemory: fp.deviceMemory,
+    languages: fp.languages,
+  })};
+  const set = (k, v) => Object.defineProperty(WorkerNavigator.prototype, k, { get: () => v, configurable: true });
+  set('platform', fp.platform);
+  set('hardwareConcurrency', fp.hardwareConcurrency);
+  set('deviceMemory', fp.deviceMemory);
+  set('language', fp.languages[0]);
+  set('languages', Object.freeze([...fp.languages]));
+})();`;
   }
 
   static buildInjectionScript(fp) {
@@ -362,6 +426,17 @@ class FingerprintEngine {
   if (navigator.mediaDevices) {
     navigator.mediaDevices.enumerateDevices = async () => [];
     navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('NotAllowedError'); };
+  }
+
+  // === WORKERS OUT OF THE TAB'S REACH ===
+  // A shared worker and a service worker are not the tab's: they start
+  // outside it, where none of the above is in place, and would hand a page
+  // the real values. Firefox turns service workers off in private browsing
+  // for the same kind of reason; every tab here is private.
+  window.SharedWorker = undefined;
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register = () =>
+      Promise.reject(new DOMException('Service workers are disabled in this browser', 'SecurityError'));
   }
 
   // === GEOLOCATION BLOCK ===
