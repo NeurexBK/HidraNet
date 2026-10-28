@@ -58,7 +58,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # GitHub logins, without the @, separated by spaces: who is
           # mentioned in every issue the check opens, and so e-mailed.
-          NODE_MONITOR_MENTION: DefiMind7
+          NODE_MONITOR_MENTION: NeurexBK
         run: node hidravpn/scripts/node-monitor.mjs
 
   test:
