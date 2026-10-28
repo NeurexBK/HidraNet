@@ -26,6 +26,8 @@ packages the signed files with the Wintun driver and publishes the release.
 
 ## Code signing policy (for the project page)
 
+Published in full at <https://hidranet.org/code-signing/> (`landing/code-signing/index.html`), linked from the site's footer. Keep the two in step. In short:
+
 > HidraVPN's Windows executables are code-signed through SignPath.io under the
 > SignPath Foundation's free open-source programme. The signing certificate's
 > private key is held in SignPath's HSM and is never exported. Only the project

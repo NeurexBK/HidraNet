@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HidraNet Code Signing Policy</title>
+<meta name="description" content="How HidraNet's Windows programs are code-signed: free code signing provided by SignPath.io, certificate by SignPath Foundation. What is signed, how, by whom, and what the signed programs connect to.">
+<meta name="theme-color" content="#070809">
+<link rel="icon" type="image/png" href="../icons/favicon-32.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
+<link rel="stylesheet" href="../assets/paper.css">
+</head>
+<body>
+<div id="progress"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<header class="top">
+  <div class="in">
+    <a href="../" class="logo" aria-label="HidraNet home">
+      <img src="../assets/hidranet-logo.png" alt="" onerror="this.remove()">
+      <span>Hidra<span class="net">Net</span></span>
+    </a>
+    <nav>
+      <a href="../guide/">User guide</a>
+      <a href="../privacy/">Privacy</a>
+      <a href="../terms/">Terms</a>
+      <a href="../code-signing/" class="on">Code signing</a>
+      <a href="../">Home</a>
+    </nav>
+  </div>
+</header>
+
+<div class="cover">
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>Code signing policy &middot; version 1.0 &middot; October 2026</span>
+  <h1>How our Windows programs <span class="hl">are signed</span></h1>
+  <p class="lede">Free code signing provided by <a href="https://signpath.io" rel="noopener noreferrer">SignPath.io</a>, certificate by <a href="https://signpath.org" rel="noopener noreferrer">SignPath Foundation</a>.</p>
+  <div class="meta"><span><b>Version</b> 1.0</span><span><b>In force from</b> October 2026</span></div>
+</div>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h5>Contents</h5>
+    <a href="#what">1. What is signed</a>
+    <a href="#how">2. How a file gets signed</a>
+    <a href="#roles">3. Team roles</a>
+    <a href="#privacy">4. Privacy</a>
+    <a href="#check">5. Checking a file</a>
+    <a href="#report">6. Reporting a problem</a>
+  </nav>
+
+  <article>
+
+    <section id="what">
+      <h2>1. What is signed</h2>
+      <p>The Windows programs of HidraVPN, the network's VPN, are signed with an Authenticode certificate issued to SignPath Foundation under its free programme for open-source projects:</p>
+      <ul>
+        <li><code>hidravpn.exe</code>, the client;</li>
+        <li><code>hidravpn-service.exe</code>, the service that holds the tunnel;</li>
+        <li><code>hidravpn-sign.exe</code>, the tool that checks a download against its published signature.</li>
+      </ul>
+      <p>The Windows build of the HidraNet Browser is to be signed under this same policy.</p>
+      <p>The Wintun network driver (<code>wintun.dll</code>) that HidraVPN uses on Windows is not ours. It is shipped exactly as its authors publish and sign it, and is not signed again.</p>
+      <p>HidraVPN is in preview. Releases published before signing was in place are not signed.</p>
+    </section>
+
+    <section id="how">
+      <h2>2. How a file gets signed</h2>
+      <ul>
+        <li>Only files built by the project's GitHub Actions workflow (<code>.github/workflows/hidravpn-build.yml</code>), from the public source at <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a>, are signed. Nothing built on a developer's computer is.</li>
+        <li>SignPath checks that the files came from that build of that repository before it signs them.</li>
+        <li>The certificate's private key is held in SignPath's hardware security module and is never exported. It is never in the repository, on a build runner or on anyone's computer.</li>
+        <li>Signing requests are made only from the main branch and from release tags, never from a pull request or another branch, and nothing is signed until an approver (section 3) approves the request in SignPath.</li>
+        <li>Nothing is added to the programs during the build or the signing: no telemetry, no tracking, no extra code.</li>
+      </ul>
+    </section>
+
+    <section id="roles">
+      <h2>3. Team roles</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Role</th><th>Who</th></tr></thead>
+        <tbody>
+          <tr><td>Committers and reviewers</td><td>The repository's owner, <a href="https://github.com/NeurexBK" rel="noopener noreferrer">NeurexBK</a>, and the maintainers it grants write access. Every change reaches the source as a pull request and is reviewed before it is merged; outside contributions are reviewed the same way.</td></tr>
+          <tr><td>Approvers</td><td><a href="https://github.com/NeurexBK" rel="noopener noreferrer">NeurexBK</a>. No file is signed without this approval.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="privacy">
+      <h2>4. Privacy</h2>
+      <p>The signed programs do not transfer any information to other networked systems unless the user, or the person installing or operating them, asks them to.</p>
+      <ul>
+        <li>The client and the service connect only to the VPN nodes the user chooses to use, to be admitted and to carry the tunnel, and, when the user gets or buys passes, to the pass issuer named in the signed node list.</li>
+        <li>The download checker makes no network connection at all.</li>
+        <li>None of them sends telemetry, crash reports or usage statistics.</li>
+      </ul>
+      <p>What the network as a whole processes is in the <a href="../privacy/">privacy policy</a>.</p>
+    </section>
+
+    <section id="check">
+      <h2>5. Checking a file</h2>
+      <p>On Windows, right-click a file, choose <b>Properties</b> and open <b>Digital Signatures</b>: a signed HidraVPN file names SignPath Foundation as the signer. Separately, every release is published with a manifest that lists each file's SHA-256 hash and is signed with the project's own release key; the browser checks both before it installs anything.</p>
+    </section>
+
+    <section id="report">
+      <h2>6. Reporting a problem</h2>
+      <p>If you find a signed file that you believe we did not build, or a signature used in a way this policy does not allow, write to <a href="mailto:contact@hidranet.pro">contact@hidranet.pro</a>. Code questions are welcome as issues at <a href="https://github.com/NeurexBK/HidraNet/issues" rel="noopener noreferrer">github.com/NeurexBK/HidraNet/issues</a>.</p>
+    </section>
+
+  </article>
+</div>
+
+<div class="foot">HidraNet Code Signing Policy &middot; HidraNet &middot;
+  <a href="https://github.com/NeurexBK/HidraNet" rel="noopener noreferrer">github.com/NeurexBK/HidraNet</a></div>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function onScroll() {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+    var current = 0;
+    sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top < 140) current = i; });
+    links.forEach(function (a, i) { a.classList.toggle('on', i === current); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>
