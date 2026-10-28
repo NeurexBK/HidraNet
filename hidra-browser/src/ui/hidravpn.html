@@ -338,8 +338,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 
     <section class="card install" id="install-card" style="display:none">
       <div class="card-head"><svg class="card-icon" aria-hidden="true"><use href="#icon-download"/></svg><h2>Install HidraVPN</h2></div>
+      <p class="help" id="install-none" hidden>HidraVPN installs on Windows and Linux; macOS is not supported yet.</p>
       <p class="help" id="install-why">HidraVPN is a separate program that protects the whole machine. The browser can install it for you:</p>
-      <ol class="steps">
+      <ol class="steps" id="install-steps">
         <li>it downloads the release the HidraNet maintainers signed, and checks that signature against the key built into this browser before anything else;</li>
         <li>it checks every downloaded file against the signed list of files;</li>
         <li>it asks your system for administrator rights, once, because only the system may change how the whole machine reaches the network.</li>
@@ -825,7 +826,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var text = '';
     var go = '';
     if (!s || busy || s.state === 'connected' || s.state === 'connecting') { box.hidden = true; return; }
-    if (s.state === 'not-installed') text = 'Step 1 of 3: install HidraVPN (above).';
+    // With no installer for this system there is no first step: the
+    // install card already says why.
+    if (s.state === 'not-installed') text = s.installable === false ? '' : 'Step 1 of 3: install HidraVPN (above).';
     else if (outdated || s.state === 'outdated') { text = 'Update HidraVPN from Settings.'; go = 'settings'; }
     else if (s.state === 'disconnected' && lastNodes && lastNodes.ok) {
       var list = lastNodes.nodes || [];
@@ -872,6 +875,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     if (!modeSynced && r) { followServiceMode(r); modeSynced = true; }
     var hero = $('hero');
     var notInstalled = s.state === 'not-installed';
+    // A system with no installer (macOS): no Install to press, only why.
+    var noInstaller = notInstalled && s.installable === false;
     var absent = notInstalled || s.state === 'stopped';
     hero.setAttribute('data-state', s.state === 'connected' ? 'connected' : s.state === 'connecting' ? 'connecting' : absent ? 'absent' : s.state === 'disconnected' ? 'off' : 'bad');
     hero.setAttribute('data-ks', r ? (r.killswitch ? '1' : '0') : '');
@@ -906,6 +911,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       sub.textContent = 'Choose a mode and press Connect';
       explain.textContent = 'Not routed through HidraVPN. This machine is on its own network.' +
         (r.killswitch ? ' The kill switch is still holding the network: nothing leaves until you connect again or press Disconnect.' : '');
+    } else if (noInstaller) {
+      sub.textContent = 'Not available on this system yet';
+      explain.textContent = 'Everything else in the browser works without it.';
     } else if (notInstalled) {
       sub.textContent = 'Install it above';
       explain.textContent = 'HidraVPN is a separate program that protects the whole machine. The browser installs the release the maintainers signed.';
@@ -959,6 +967,10 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     renderStamp(r);
 
     $('install-card').style.display = notInstalled ? '' : 'none';
+    $('install-none').hidden = !noInstaller;
+    $('install-why').hidden = noInstaller;
+    $('install-steps').hidden = noInstaller;
+    $('btn-install').hidden = noInstaller;
     $('version-line').textContent = r && r.version
       ? 'Installed version: ' + r.version + '.'
       : (notInstalled ? 'HidraVPN is not installed.' : 'Installed version: unknown (an older service, or the service is not answering).');
@@ -1004,7 +1016,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     $('btn-uninstall').disabled = busy || notInstalled;
     $('btn-check-update').disabled = busy;
     $('btn-update').disabled = busy;
-    $('btn-install').disabled = busy;
+    $('btn-install').disabled = busy || noInstaller;
     $('btn-next').disabled = busy;
     $('auto-passes').disabled = busy || !refillOk;
     renderDot();
@@ -1113,7 +1125,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     }
     if (!answer.ok) {
       var notInstalled = lastStatus && lastStatus.state === 'not-installed';
-      box.appendChild(el('li', 'empty' + (notInstalled ? '' : ' err'), notInstalled ? 'Install HidraVPN first.' : (answer && answer.error ? withHint(answer.error, answer.hint) : 'Could not read the pocket.')));
+      box.appendChild(el('li', 'empty' + (notInstalled ? '' : ' err'), notInstalled ? (lastStatus.installable === false ? 'Not available on this system yet.' : 'Install HidraVPN first.') : (answer && answer.error ? withHint(answer.error, answer.hint) : 'Could not read the pocket.')));
       count.hidden = true; pc.hidden = true;
       hasPassNode = false;
       renderPassNodes([]);

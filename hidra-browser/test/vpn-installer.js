@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { VpnInstaller, parseManifest, compareVersions, installedService, LINUX_INSTALL_SCRIPT } = require('../src/main/vpn-installer');
+const { VpnInstaller, parseManifest, compareVersions, installable, NOT_INSTALLABLE, installedService, LINUX_INSTALL_SCRIPT } = require('../src/main/vpn-installer');
 const { execFile } = require('child_process');
 
 let passed = 0;
@@ -341,6 +341,12 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     assert.strictEqual(r.ok, false);
     assert.ok(/macOS/.test(r.error));
     assert.strictEqual(ran.length, 0);
+  });
+
+  await check('the page is told the same: only Windows and Linux have an installer', async () => {
+    assert.deepStrictEqual(['win32', 'linux', 'darwin'].map((p) => installable(p)), [true, true, false]);
+    const { inst } = rig({ platform: 'darwin' });
+    assert.strictEqual((await inst.install()).error, NOT_INSTALLABLE);
   });
 
   await check('a release with no build for this platform installs nothing', async () => {
