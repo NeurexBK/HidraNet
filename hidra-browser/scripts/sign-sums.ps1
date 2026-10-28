@@ -76,6 +76,11 @@ Write-Host "  sha256                $sha"
 Write-Host "  latest-version        $($fields["latest-version"])"
 Write-Host "  minimum-safe-version  $($fields["minimum-safe-version"])"
 Write-Host "  valid-until           $($fields["valid-until"])"
+# The prose is signed too: its headings, so one about other packages than
+# the ones listed is noticed before it is signed.
+foreach ($h in [regex]::Matches($text, "(?m)^([A-Z][^\r\n]*)\n-{10,}")) {
+  Write-Host "  section               $($h.Groups[1].Value)"
+}
 Write-Host ""
 $answer = Read-Host "  Sign this with the release key? Type yes"
 if ($answer -ne "yes") { Fail "not signed" }
@@ -107,3 +112,8 @@ Write-Host ""
 Write-Host "  wrote $Sums.sig" -ForegroundColor Green
 Write-Host "  Check it as CI will:  node hidra-browser\scripts\verify-sums.js"
 Write-Host "  Then commit $Sums and $Sums.sig together."
+$checkSrc = Get-Content -Raw -LiteralPath "hidra-browser\src\main\update-check.js"
+if ($checkSrc -notmatch "const SUMS_SIGNED = true;") {
+  Write-Host "  The first signature: also set SUMS_SIGNED = true in hidra-browser\src\main\update-check.js" -ForegroundColor Yellow
+  Write-Host "  and commit it with them. verify-sums.js refuses a signed table until it says true." -ForegroundColor Yellow
+}

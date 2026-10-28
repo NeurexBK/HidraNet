@@ -138,7 +138,10 @@ wrong is high.
   tab page says when a newer build is out, or when yours is below the
   minimum safe version, from a record signed offline with the release key
   and fetched through Tor, and you download and check the new build
-  yourself. Copies of 1.0.0 have no such check, and the published 1.0.0
+  yourself. Whoever controls hidranet.org cannot forge that record, but can
+  withhold it: the browser then relies on the last record it verified until
+  that record expires, and after that says it cannot confirm it is up to
+  date. Copies of 1.0.0 have no such check, and the published 1.0.0
   packages run Electron 33 (Chromium 130), which no longer gets fixes.
 
 ## Reporting something

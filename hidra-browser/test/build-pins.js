@@ -73,6 +73,14 @@ for (const b of ['build-mac.js', 'build-linux.js', 'build-win.js', 'pack-portabl
         /const VERSION\s*=\s*(require\(path\.join\(ROOT, ('hidra-browser', )?'package\.json'\)\)\.version|JSON\.parse\(fs\.readFileSync\(path\.join\(ROOT, 'package\.json'\))/.test(src) &&
         !/const VERSION\s*=\s*'/.test(src));
 }
+// The presence signal (newtab.html) says the version of the build that
+// sends it; a fixed '1.0.0' there outlived the version bump.
+{
+  const page = fs.readFileSync(path.join(ROOT, 'src', 'ui', 'newtab.html'), 'utf8');
+  const beacon = page.slice(page.indexOf('HidraNet node beacon'));
+  check('the presence signal carries the build\'s own version, not a fixed one',
+        !/VER\s*=\s*'\d+\.\d+\.\d+'/.test(beacon) && /apps\.status\(\)/.test(beacon) && /s\.about\.version/.test(beacon));
+}
 check('package.json has a version past the 1.0.0 every earlier build was published as',
       /^\d+\.\d+\.\d+$/.test(pkg.version) && pkg.version !== '1.0.0');
 

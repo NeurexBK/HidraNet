@@ -6,8 +6,9 @@
 // 33.4.11 (Chromium 130) and Tor 15.0.22 while lib/electron.js and lib/tor.js
 // said 44.9.3 and 15.0.26, under a Chrome 152 user agent. This checks the
 // refusals in lib/package-runtime.js on small stand-in packages, that
-// refresh-release.js applies them to its inputs before building and to its
-// outputs, that patch-zip.js refuses app/src files the tree no longer has,
+// refresh-release.js applies them to its inputs before building anything
+// and to its outputs, that patch-zip.js refuses app/src files the tree no
+// longer has and leaves a macOS package's helper apps as Electron made them,
 // and that check-engine.js reads the version out of the binary. With the
 // official Electron zip in a cache, it also checks a package laid out from
 // it passes; with the published 1.0.0 Linux package in dist/release-in, that
@@ -166,18 +167,89 @@ function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, ad
   });
 
   // ── refresh-release.js applies all of it ────────────────────────────────
-  await check('refresh-release.js checks every base package before building, and every output after', async () => {
+  const refresher = require('../scripts/refresh-release');
+  const baseName = 'HidraNet-Browser-' + refresher.BASE_VERSION + '-Linux-x64.zip';
+  // A base package on disk, the official zip it is checked against, and
+  // stand-ins for the engine build and patch-zip that record being called.
+  async function refreshWith(pkgOpts, opts) {
+    const inDir = fs.mkdtempSync(path.join(tmp, 'in-'));
+    fs.writeFileSync(path.join(inDir, baseName), writeZip(linuxPackage(pkgOpts)));
+    const calls = [];
+    const r = await refresher.refresh({
+      inDir, outDir: path.join(inDir, 'out'), names: [baseName],
+      electronFor: async () => officialLinux(),
+      engine: () => { calls.push('engine'); throw new Error('stopped before building'); },
+      patch: () => { calls.push('patch'); },
+      ...opts,
+    }).catch((e) => ({ thrown: e.message }));
+    return { r, calls };
+  }
+  await check('refresh-release.js refuses a base package on a Tor that is not pinned, before building anything', async () => {
+    const { r, calls } = await refreshWith({ torFiles: { ...TOR, tor: 'tor 15.0.22' } }, { version: '9.9.9' });
+    assert.deepStrictEqual(r, { ok: false, stage: 'base' });
+    assert.deepStrictEqual(calls, []);
+  });
+  await check('… and one on another Electron, also with --verify-inputs-only', async () => {
+    const old = engine('33.4.11', '130.0.6723.191');
+    for (const verifyOnly of [false, true]) {
+      const { r, calls } = await refreshWith({ bin: old }, { version: '9.9.9', verifyOnly });
+      assert.deepStrictEqual(r, { ok: false, stage: 'base' });
+      assert.deepStrictEqual(calls, []);
+    }
+  });
+  await check('refresh-release.js refuses to give a refreshed package the base version', async () => {
+    const { r, calls } = await refreshWith({}, { version: refresher.BASE_VERSION });
+    assert.deepStrictEqual(r, { ok: false, stage: 'version' });
+    assert.deepStrictEqual(calls, []);
+  });
+  await check('a base package that runs what is pinned passes the input checks, and only then is built on', async () => {
+    assert.deepStrictEqual((await refreshWith({}, { version: '9.9.9', verifyOnly: true })).r, { ok: true, stage: 'verified' });
+    const { r, calls } = await refreshWith({}, { version: '9.9.9' });
+    assert.deepStrictEqual(r, { thrown: 'stopped before building' });
+    assert.deepStrictEqual(calls, ['engine']);
+  });
+  await check('refresh-release.js checks every output with the same runtime checks and against the tree', async () => {
     const src = fs.readFileSync(path.join(ROOT, 'scripts', 'refresh-release.js'), 'utf8');
-    const inputs = src.indexOf('await runtimeProblemsOf(path.join(inDir, n))');
-    assert.ok(inputs !== -1, 'the inputs are not checked');
-    assert.ok(inputs < src.indexOf("process.argv.includes('--verify-inputs-only')"), 'inputs-only skips the runtime check');
-    assert.ok(inputs < src.indexOf('buildEngine();\n'), 'the runtime is checked after the build starts');
-    assert.ok(/runtime\.runtimeProblems\(es, await officialElectron\(name\), platform\)/.test(src) &&
-              /runtime\.torProblems\(es, platform, arch\)/.test(src) && /runtime\.engineProblems\(es, platform\)/.test(src));
-    assert.ok(/for \(const n of OUT_NAMES\) await verify\(/.test(src), 'the outputs are not verified');
+    assert.ok(/for \(const n of names\) await verify\(path\.join\(outDir, outName\(n\)\), version, electronFor\)/.test(src), 'the outputs are not verified');
+    assert.ok(/const rt = await runtimeProblemsOf\(file, electronFor\)/.test(src), 'the outputs\' runtime is not checked');
     assert.ok(/appSourceProblems\(es, pfx\)/.test(src), 'the outputs\' app/src is not compared with the tree');
-    assert.ok(/const VERSION = JSON\.parse\(fs\.readFileSync\(path\.join\(ROOT, 'package\.json'\)/.test(src) &&
-              /if \(VERSION === BASE_VERSION\)/.test(src), 'a refreshed package can reuse the base version');
+  });
+
+  // ── macOS: what patch-zip changes is what the check expects ─────────────
+  await check('a macOS package refreshed by patch-zip.js still has Electron\'s own helper apps', async () => {
+    const { patchPlist } = require('../scripts/lib/mac-extras');
+    const plist = (id) => '<plist><dict><key>CFBundleIdentifier</key><string>' + id + '</string>' +
+      '<key>CFBundleShortVersionString</key><string>' + electron.ELECTRON_VER + '</string></dict></plist>';
+    const HELPER = 'Contents/Frameworks/Electron Helper.app/Contents/Info.plist';
+    const FRAMEWORK = 'Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework';
+    const official = zipOf([
+      ['Electron.app/Contents/MacOS/Electron', 'stub'], ['Electron.app/Contents/Info.plist', plist('com.github.Electron')],
+      ['Electron.app/' + HELPER, plist('com.github.Electron.helper')], ['Electron.app/' + FRAMEWORK, GOOD_ENGINE],
+    ]);
+    // Laid out as build-mac.js writes it: only the outer plist patched.
+    const files = [
+      mkFile('HidraNet.app/Contents/MacOS/HidraNet', Buffer.from('stub')),
+      mkFile('HidraNet.app/Contents/Info.plist', Buffer.from(patchPlist(plist('com.github.Electron'), 'HidraNet', 'net.hidra.browser', '1.0.0'))),
+      mkFile('HidraNet.app/' + HELPER, Buffer.from(plist('com.github.Electron.helper'))),
+      mkFile('HidraNet.app/' + FRAMEWORK, Buffer.from(GOOD_ENGINE)),
+    ];
+    (function walk(dir, rel) {
+      for (const n of fs.readdirSync(dir).sort()) {
+        const abs = path.join(dir, n);
+        if (fs.statSync(abs).isDirectory()) walk(abs, rel + n + '/');
+        else files.push(mkFile('HidraNet.app/Contents/Resources/app/src/' + rel + n, fs.readFileSync(abs)));
+      }
+    })(path.join(ROOT, 'src'), '');
+    const base = path.join(tmp, 'HidraNet-Browser-1.0.0-macOS-arm64.zip');
+    const out = path.join(tmp, 'HidraNet-Browser-9.9.9-macOS-arm64.zip');
+    fs.writeFileSync(base, writeZip(files));
+    assert.deepStrictEqual(rt.runtimeProblems(readZip(fs.readFileSync(base)), official, 'darwin'), []);
+    patchZip(base, out, { version: '9.9.9' });
+    const es = readZip(fs.readFileSync(out));
+    assert.deepStrictEqual(rt.runtimeProblems(es, official, 'darwin'), []);
+    const main = es.find((e) => e.filename === 'HidraNet.app/Contents/Info.plist');
+    const text = (main.method === 8 ? require('zlib').inflateRawSync(main.rawData) : main.rawData).toString();
+    assert.ok(/net\.hidra\.browser/.test(text) && /<string>9\.9\.9<\/string>/.test(text), text);
   });
 
   // ── check-engine.js ─────────────────────────────────────────────────────

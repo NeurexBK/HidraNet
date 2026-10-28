@@ -44,21 +44,24 @@ else that key signs. To check it yourself with hidravpn-sign:
 For a first download, a key read from this site is only as trustworthy as
 the site. For a browser already installed, the key is built in: whoever
 controls this site cannot make it believe a record the maintainers did
-not sign. Until the maintainers publish the first signature there is no
-.sig, and the browser shows no notice.
+not sign. They can still take the record away or serve an older one. The
+browser keeps the newest record it has verified and believes it until
+its valid-until, and after that says it cannot confirm it is up to date.
+Until the maintainers publish the first signature there is no .sig, and
+a browser that has never verified a record shows no notice.
 
 
 KNOWN PROBLEMS WITH THE 1.0.0 PACKAGES
 -----------------------------------------------------------------------
 
-The Linux package below runs Electron 33.4.11 (Chromium 130), which no
-longer receives security fixes, and Tor 15.0.22. The Windows and macOS
-packages were made the same way; assume the same of them. The source
-they were refreshed from names Electron 44.9.3 and Tor 15.0.26, but the
-runtime and Tor were carried over from an older package without being
-checked against those pins. They are being rebuilt from scratch, on the
-pinned Electron and Tor, under a new version number, and will be
-replaced on this page by that version rather than under the same names.
+The 1.0.0 Linux package runs Electron 33.4.11 (Chromium 130), which no
+longer receives security fixes, and Tor 15.0.22. The 1.0.0 Windows and
+macOS packages were made the same way; assume the same of them. The
+source they were refreshed from names Electron 44.9.3 and Tor 15.0.26,
+but the runtime and Tor were carried over from an older package without
+being checked against those pins. They are rebuilt from scratch, on the
+pinned Electron and Tor, under a new version number: the 1.0.0 names are
+never given other files.
 
 Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
 22 October 2026 also lack some or all of the security fixes listed below,

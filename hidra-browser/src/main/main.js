@@ -10,7 +10,7 @@ const { VpnInstaller, installable } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
 const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
-const { UpdateCheck } = require('./update-check');
+const { UpdateCheck, STATE_FILE: UPDATE_STATE_FILE } = require('./update-check');
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
 const { TorManager } = require('./tor-manager');
@@ -131,13 +131,20 @@ const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText,
 // Whether a newer build is out (update-check.js): the signed checksum table,
 // fetched the same way as the node list, through Tor with the same bare
 // request, once the network lock has opened. It only ever leads to a notice
-// on the new tab page.
+// on the new tab page. The most it has verified is kept in the data folder,
+// so a site serving an older record is caught after a restart too.
 let updateCheck = null;
-function checkForUpdate() {
+function updater() {
   if (!updateCheck) {
-    updateCheck = new UpdateCheck({ fetchBytes: fetchSmall, currentVersion: app.getVersion(), log: (m) => console.log(m) });
+    updateCheck = new UpdateCheck({
+      fetchBytes: fetchSmall, currentVersion: app.getVersion(), log: (m) => console.log(m),
+      stateFile: path.join(app.getPath('userData'), UPDATE_STATE_FILE),
+    });
   }
-  updateCheck.run().catch((e) => console.log('[update] check failed: ' + ((e && e.message) || e)));
+  return updateCheck;
+}
+function checkForUpdate() {
+  updater().run().catch((e) => console.log('[update] check failed: ' + ((e && e.message) || e)));
 }
 
 // The leak test has to see what every other program on this machine sees,
@@ -1111,11 +1118,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    // update: a newer build, or this one below the minimum safe version,
-    // from the signed checksum table; null when there is nothing to say.
+    // update: a newer build, this one below the minimum safe version, or no
+    // signed record to confirm either, from the checksum table; null when
+    // there is nothing to say.
     return {
       chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo(),
-      update: updateCheck ? updateCheck.notice() : null,
+      update: updater().notice(),
     };
   });
 

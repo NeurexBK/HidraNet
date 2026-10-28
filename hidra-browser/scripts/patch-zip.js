@@ -185,8 +185,10 @@ function patchZip(inZip, outZip, opts) {
     //    the bundle-id patch landed, so they still say com.github.Electron —
     //    which is what LaunchServices, TCC permissions, preferences and
     //    keychain items get filed under, shared with every other Electron app
-    //    that never changed its default.
-    if (/\.app\/Contents\/Info\.plist$/.test(name)) {
+    //    that never changed its default. Only the outer bundle's plist, as
+    //    build-mac.js does: the helper apps inside Frameworks/ keep
+    //    Electron's own, and lib/package-runtime.js holds them to it.
+    if (/\.app\/Contents\/Info\.plist$/.test(name) && name.split('.app/').length === 2) {
       const raw = (e.method === 8 ? inflateRawSync(e.rawData) : e.rawData).toString('utf8');
       const fixed = patchPlist(raw, APP_NAME, APP_ID, VERSION_OF(e));
       if (fixed !== raw) {

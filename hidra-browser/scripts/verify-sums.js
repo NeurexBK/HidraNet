@@ -11,9 +11,12 @@
  *
  * No .sig yet passes, with a note, unless --require-signature is given; CI
  * gives it when the commit before the change already had one, so deleting the
- * signature is not a way around it. A record that has expired, or soon will,
- * is reported but not refused: the browser ignores an expired record, so
- * the fix is to sign a renewed one, not to break unrelated changes.
+ * signature is not a way around it. Once there is a .sig, SUMS_SIGNED in
+ * update-check.js must say true: a build made from this tree is then one
+ * made after the first signature, and must treat a missing one as a reason
+ * to doubt. A record that has expired, or soon will, is reported but not
+ * refused: browsers then say they cannot confirm they are up to date, so the
+ * fix is to sign a renewed one, not to break unrelated changes.
  *
  * Usage:
  *   node scripts/verify-sums.js [--require-signature] [path/to/SHA256SUMS.txt]
@@ -23,7 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const { verifyBrowserSums, RELEASE_PUBLIC_KEY } = require('../src/main/release-verify');
-const { parseRecord, compareVersions } = require('../src/main/update-check');
+const { parseRecord, compareVersions, SUMS_SIGNED } = require('../src/main/update-check');
 
 const SOON = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_SUMS = path.join(__dirname, '..', '..', 'landing', 'SHA256SUMS.txt');
@@ -33,7 +36,8 @@ const DEFAULT_SUMS = path.join(__dirname, '..', '..', 'landing', 'SHA256SUMS.txt
  * lines are what to print; `ok` false means refuse. `publicKey` defaults to
  * the key the browser embeds.
  */
-function checkSums(file, { requireSignature = false, publicKey = RELEASE_PUBLIC_KEY, now = Date.now(), version } = {}) {
+function checkSums(file, { requireSignature = false, publicKey = RELEASE_PUBLIC_KEY, now = Date.now(), version,
+                           signedBuild = SUMS_SIGNED } = {}) {
   const lines = [];
   const refuse = (msg) => { lines.push('  FAIL ' + msg); return { ok: false, lines }; };
   const name = path.basename(file);
@@ -60,7 +64,7 @@ function checkSums(file, { requireSignature = false, publicKey = RELEASE_PUBLIC_
   const sigFile = file + '.sig';
   if (!fs.existsSync(sigFile)) {
     if (requireSignature) return refuse(name + '.sig was there before this change and is gone: sign the table again');
-    lines.push('  no ' + name + '.sig yet: nothing to verify (the browser shows no notice until there is)');
+    lines.push('  no ' + name + '.sig yet: nothing to verify (a build from before the first signature shows no notice)');
     return { ok: true, lines };
   }
   if (!publicKey) return refuse('release-verify.js carries no release key');
@@ -69,11 +73,15 @@ function checkSums(file, { requireSignature = false, publicKey = RELEASE_PUBLIC_
                   ' was not made with the release key over it.\n       Sign it again offline: hidra-browser/scripts/sign-sums.ps1');
   }
   lines.push('  ok   ' + name + '.sig is the release key\'s signature of ' + name);
+  if (!signedBuild) {
+    return refuse('the table is signed, but SUMS_SIGNED in hidra-browser/src/main/update-check.js still says false:\n' +
+                  '       set it to true, so builds made from now on doubt a table whose signature has gone');
+  }
 
   const left = record.expires - now;
   if (left <= 0) {
     lines.push('::warning::the signed record in ' + name + ' expired on ' + record.validUntil +
-               '; browsers ignore it until a renewed one is signed');
+               '; browsers cannot confirm they are up to date until a renewed one is signed');
   } else if (left < SOON) {
     lines.push('::warning::the signed record in ' + name + ' expires on ' + record.validUntil +
                '; sign a renewed one before then');

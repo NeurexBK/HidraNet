@@ -381,6 +381,8 @@
     .update-notice.unsafe { border-color: rgba(255,68,102,0.5); background: rgba(255,68,102,0.1); }
     .update-notice strong { color: var(--warning); }
     .update-notice.unsafe strong { color: var(--danger); }
+    .update-notice.neutral { border-color: var(--border); background: transparent; }
+    .update-notice.neutral strong { color: var(--text-primary); }
 
     /* Footer */
     .footer {
@@ -1045,13 +1047,23 @@
     }
 
     // Shown when the signed checksum table names a newer build than this
-    // one, or a minimum safe version this one is below. Nothing is
-    // downloaded: the person gets the new build from the site and checks it.
+    // one, or a minimum safe version this one is below, or when there is no
+    // signed record to confirm that it is neither. Nothing is downloaded:
+    // the person gets the new build from the site and checks it.
     function showUpdate(update) {
       var box = document.getElementById('update-notice');
       if (!box) return;
+      if (update && update.state === 'unconfirmed') {
+        box.className = 'update-notice neutral';
+        document.getElementById('update-title').textContent = 'Could not confirm that this browser is up to date.';
+        document.getElementById('update-text').textContent = 'The signed version record on hidranet.org could not be ' +
+          'checked. Visit hidranet.org to see whether a newer version is out, and check its SHA-256 against ' +
+          'SHA256SUMS.txt there.';
+        box.hidden = false;
+        return;
+      }
       var version = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
-      if (!update || !version.test(update.current) || !version.test(update.latest) ||
+      if (!update || update.state !== 'update' || !version.test(update.current) || !version.test(update.latest) ||
           (update.unsafe && !version.test(update.minimum))) {
         box.hidden = true;
         return;
@@ -1495,7 +1507,18 @@
     'use strict';
     var TOPIC = 'hidra/node/v1';
     var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-    var VER = '1.0.0';
+    // The version this build says it is (the footer shows the same), read
+    // once from the main process; left out of the signal if it cannot be.
+    var VER = null;
+    async function version() {
+      if (VER) return VER;
+      try {
+        var s = await window.hidra.apps.status();
+        var v = s && s.about && s.about.version;
+        if (typeof v === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)) VER = v;
+      } catch (e) {}
+      return VER;
+    }
     // Ephemeral, per session. It used to be kept in localStorage, which made
     // it stable across restarts — a durable fingerprint of this installation,
     // published on a public channel. Counting presence does not require
@@ -1517,7 +1540,9 @@
       // that that machine, in that city, was at that moment running WITHOUT
       // protection (tor: false). That is a targeting signal. It now carries an
       // ephemeral id, the version and a timestamp, and nothing else.
-      var msg = { cid: cid, ver: VER, t: Date.now() };
+      var ver = await version();
+      if (!cli || !cli.connected) return;
+      var msg = ver ? { cid: cid, ver: ver, t: Date.now() } : { cid: cid, t: Date.now() };
       try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
     }
 

@@ -55,7 +55,6 @@ const DIST    = path.join(ROOT, 'dist');
 const BASE    = 'https://github.com/NeurexBK/HidraNet/releases/download/v' + BASE_VERSION + '/';
 const ARCHES  = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64'];
 const NAMES   = ARCHES.map(a => 'HidraNet-Browser-' + BASE_VERSION + '-' + a + '.zip');
-const OUT_NAMES = ARCHES.map(a => 'HidraNet-Browser-' + VERSION + '-' + a + '.zip');
 
 // Where support goes. It replaced a Bitcoin address, so the check below
 // also refuses a package that still carries the old one.
@@ -161,13 +160,13 @@ async function officialElectron(name) {
 }
 
 // What runs in the package is what the repository pins: the problems, or an
-// empty list.
-async function runtimeProblemsOf(file) {
+// empty list. electronFor(name) gives the official Electron zip's entries.
+async function runtimeProblemsOf(file, electronFor = officialElectron) {
   const name = path.basename(file);
   const { platform, arch } = runtime.platformOf(name);
   const es = readZip(fs.readFileSync(file));
   return [
-    ...runtime.runtimeProblems(es, await officialElectron(name), platform),
+    ...runtime.runtimeProblems(es, await electronFor(name), platform),
     ...runtime.torProblems(es, platform, arch),
     ...runtime.engineProblems(es, platform),
   ];
@@ -202,7 +201,7 @@ function appSourceProblems(es, pfx) {
  * things that have gone wrong before: Tor missing or not executable, the app
  * sources not actually updated, paths that only extract correctly on Windows.
  */
-async function verify(file) {
+async function verify(file, version = VERSION, electronFor = officialElectron) {
   const name = path.basename(file);
   const mac  = /macOS/.test(name);
   const win  = /Windows/.test(name);
@@ -222,14 +221,14 @@ async function verify(file) {
   check(by.has(tor), 'Tor is in the package (' + (by.has(tor) ? by.get(tor).uncompSz : 0) + ' bytes)');
   if (!win) check(mode(tor) === '755', 'Tor is executable (mode ' + mode(tor) + ')');
   check(by.has(res + '/bin/tor/geoip'), 'Tor geoip data present');
-  const rt = await runtimeProblemsOf(file);
+  const rt = await runtimeProblemsOf(file, electronFor);
   check(rt.length === 0, 'Electron ' + ELECTRON_VER + ' and Tor ' + TOR_VERSION +
         ' exactly as pinned, on the Chromium the user agent claims' +
         (rt.length ? ':\n           ' + rt.join('\n           ') : ''));
   const stale = appSourceProblems(es, pfx);
   check(stale.length === 0, 'app/src is exactly the tree' + (stale.length ? ': ' + stale.join(', ') : ''));
   const ap = by.get(appPackageInZip(name));
-  check(!!ap && JSON.parse(contents(ap).toString()).version === VERSION, 'the app says it is version ' + VERSION);
+  check(!!ap && JSON.parse(contents(ap).toString()).version === version, 'the app says it is version ' + version);
 
   if (!mac && !win) {
     check(mode('hidranet') === '755', 'hidranet is executable (mode ' + mode('hidranet') + ')');
@@ -283,7 +282,95 @@ async function verify(file) {
         'HidraVPN is in the package');
 }
 
-(async function main() {
+/**
+ * Everything after the base packages are downloaded and match their pinned
+ * SHA-256: refuse them unless they run what the repository pins, stop there
+ * for --verify-inputs-only, refuse to reuse their version, and only then
+ * build the engine, patch and check the outputs. Returns { ok, stage }, where
+ * stage says how far it got: 'base' (a base package refused), 'verified'
+ * (inputs only), 'version' (package.json still says the base version) or
+ * 'built'. Nothing is compiled or patched before the first three have passed.
+ *
+ * The defaults are the real ones; the test hands in stand-ins for the
+ * official Electron zip, the engine build and patch-zip.
+ */
+async function refresh({ inDir, outDir, names = NAMES, verifyOnly = false, version = VERSION,
+                         electronFor = officialElectron, engine = buildEngine, patch = patchZip }) {
+  // What the base packages run, before anything is built on them.
+  let runtimeFailures = 0;
+  for (const n of names) {
+    const problems = await runtimeProblemsOf(path.join(inDir, n), electronFor);
+    if (problems.length) {
+      runtimeFailures++;
+      console.error('\n  ' + n + ' does not run what the repository pins:');
+      for (const p of problems.slice(0, 20)) console.error('    ' + p);
+      if (problems.length > 20) console.error('    … and ' + (problems.length - 20) + ' more');
+    } else {
+      console.log('  verified Electron, Tor and engine: ' + n);
+    }
+  }
+  if (runtimeFailures) {
+    console.error('\n  ' + runtimeFailures + ' base package(s) refused. Refreshing them would ship their old Electron');
+    console.error('  and Tor under a new name. Build from scratch instead: build-win.js, build-linux.js, build-mac.js.\n');
+    return { ok: false, stage: 'base' };
+  }
+
+  if (verifyOnly) {
+    console.log('  All base packages match their pinned SHA-256, Electron and Tor. No build was run.');
+    return { ok: true, stage: 'verified' };
+  }
+
+  if (version === BASE_VERSION) {
+    console.error('  package.json says ' + version + ', the version of the packages this starts from. A refreshed');
+    console.error('  package is a new build: give it a new version in package.json. A published version is');
+    console.error('  never reused for different files.\n');
+    return { ok: false, stage: 'version' };
+  }
+
+  console.log('');
+  engine();
+
+  const stamp = buildStamp();
+  fs.writeFileSync(BUILD_JSON, JSON.stringify(stamp) + '\n');
+  console.log('\n  build ' + stamp.build + ' · ' + stamp.date);
+
+  fs.writeFileSync(APP_PACKAGE_JSON, JSON.stringify(
+    { name: 'hidra-browser', version, main: 'src/main/main.js' }, null, 2));
+
+  const outName = (n) => n.replace('-' + BASE_VERSION + '-', '-' + version + '-');
+  console.log('\n  patching\n');
+  for (const n of names) {
+    const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
+    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
+      // The bundle's icon: Electron's own until now. The binary is not
+      // touched, only the picture the Dock and the Finder show for it.
+      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
+      : {};
+    extras[buildInZip(n)] = BUILD_JSON;
+    extras[appPackageInZip(n)] = APP_PACKAGE_JSON;
+    patch(path.join(inDir, n), path.join(outDir, outName(n)), { binaries, extras, version });
+  }
+
+  console.log('\n  checking');
+  for (const n of names) await verify(path.join(outDir, outName(n)), version, electronFor);
+
+  console.log('\n  SHA-256 (node scripts/update-sums.js writes them into landing/SHA256SUMS.txt)\n');
+  for (const n of names) {
+    const h = crypto.createHash('sha256').update(fs.readFileSync(path.join(outDir, outName(n)))).digest('hex');
+    console.log('  ' + h + '  ' + outName(n));
+  }
+
+  console.log('');
+  if (failures) {
+    console.log('  ' + failures + ' check(s) failed. Do not upload these.\n');
+    return { ok: false, stage: 'built' };
+  }
+  console.log('  All checks passed. The packages are in ' + outDir + '.');
+  console.log('  These packages are for review. No release assets were published or replaced.\n');
+  return { ok: true, stage: 'built' };
+}
+
+async function main() {
   const inArg  = process.argv.indexOf('--in');
   const inDir  = inArg !== -1 ? process.argv[inArg + 1] : path.join(DIST, 'release-in');
   const outDir = path.join(DIST, 'release-out');
@@ -306,74 +393,12 @@ async function verify(file) {
     console.log('  verified base SHA-256: ' + n);
   }
 
-  // What the base packages run, before anything is built on them.
-  let runtimeFailures = 0;
-  for (const n of NAMES) {
-    const problems = await runtimeProblemsOf(path.join(inDir, n));
-    if (problems.length) {
-      runtimeFailures++;
-      console.error('\n  ' + n + ' does not run what the repository pins:');
-      for (const p of problems.slice(0, 20)) console.error('    ' + p);
-      if (problems.length > 20) console.error('    … and ' + (problems.length - 20) + ' more');
-    } else {
-      console.log('  verified Electron, Tor and engine: ' + n);
-    }
-  }
-  if (runtimeFailures) {
-    console.error('\n  ' + runtimeFailures + ' base package(s) refused. Refreshing them would ship their old Electron');
-    console.error('  and Tor under a new name. Build from scratch instead: build-win.js, build-linux.js, build-mac.js.\n');
-    process.exit(1);
-  }
+  const r = await refresh({ inDir, outDir, verifyOnly: process.argv.includes('--verify-inputs-only') });
+  if (!r.ok) process.exit(1);
+}
 
-  if (process.argv.includes('--verify-inputs-only')) {
-    console.log('  All base packages match their pinned SHA-256, Electron and Tor. No build was run.');
-    return;
-  }
+module.exports = { refresh, runtimeProblemsOf, BASE_VERSION };
 
-  if (VERSION === BASE_VERSION) {
-    console.error('  package.json says ' + VERSION + ', the version of the packages this starts from. A refreshed');
-    console.error('  package is a new build: give it a new version in package.json. A published version is');
-    console.error('  never reused for different files.\n');
-    process.exit(1);
-  }
-
-  console.log('');
-  buildEngine();
-
-  const stamp = buildStamp();
-  fs.writeFileSync(BUILD_JSON, JSON.stringify(stamp) + '\n');
-  console.log('\n  build ' + stamp.build + ' · ' + stamp.date);
-
-  fs.writeFileSync(APP_PACKAGE_JSON, JSON.stringify(
-    { name: 'hidra-browser', version: VERSION, main: 'src/main/main.js' }, null, 2));
-
-  console.log('\n  patching\n');
-  for (const [i, n] of NAMES.entries()) {
-    const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
-    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
-      // The bundle's icon: Electron's own until now. The binary is not
-      // touched, only the picture the Dock and the Finder show for it.
-      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
-      : {};
-    extras[buildInZip(n)] = BUILD_JSON;
-    extras[appPackageInZip(n)] = APP_PACKAGE_JSON;
-    patchZip(path.join(inDir, n), path.join(outDir, OUT_NAMES[i]), { binaries, extras, version: VERSION });
-  }
-
-  console.log('\n  checking');
-  for (const n of OUT_NAMES) await verify(path.join(outDir, n));
-
-  console.log('\n  SHA-256 (node scripts/update-sums.js writes them into landing/SHA256SUMS.txt)\n');
-  for (const n of OUT_NAMES) {
-    const h = crypto.createHash('sha256').update(fs.readFileSync(path.join(outDir, n))).digest('hex');
-    console.log('  ' + h + '  ' + n);
-  }
-
-  console.log('');
-  if (failures) {
-    console.log('  ' + failures + ' check(s) failed. Do not upload these.\n');
-    process.exit(1);
-  }
-  console.log('  All checks passed. The packages are in ' + outDir + '.');
-  console.log('  These packages are for review. No release assets were published or replaced.\n');
-})().catch(e => { console.error('\n  failed: ' + e.message + '\n'); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error('\n  failed: ' + e.message + '\n'); process.exit(1); });
+}

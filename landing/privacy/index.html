@@ -33,10 +33,10 @@
 </header>
 
 <div class="cover">
-  <span class="kicker"><span class="dot" aria-hidden="true"></span>Privacy policy &middot; version 1.0 &middot; October 2026</span>
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>Privacy policy &middot; version 1.1 &middot; October 2026</span>
   <h1>What HidraNet <span class="hl">knows about you</span></h1>
   <p class="lede">As little as possible, by design. This policy says exactly what reaches anyone, who they are, and what you can do about it. It covers the GDPR and Brazil's LGPD.</p>
-  <div class="meta"><span><b>Version</b> 1.0</span><span><b>In force from</b> October 2026</span></div>
+  <div class="meta"><span><b>Version</b> 1.1</span><span><b>In force from</b> October 2026</span></div>
 </div>
 
 <div class="layout">
@@ -92,9 +92,10 @@
         <tbody>
           <tr><td>Your browsing traffic</td><td>Tor network relays and the sites you visit, which see the Tor exit address, not yours</td><td>Anonymous routing</td></tr>
           <tr><td>One request to check.torproject.org after connecting</td><td>The Tor Project, which sees the Tor exit address</td><td>Confirming that the connection is protected</td></tr>
+          <tr><td>Once per connection, from version 1.1.0, a request for SHA256SUMS.txt and its signature on hidranet.org, sent through Tor</td><td>HidraNet's hosting provider (Vercel Inc., see 4.5), which sees the Tor exit address, not yours</td><td>Telling you when a newer or safer version exists; nothing is downloaded or installed</td></tr>
           </tbody>
       </table></div>
-      <p>HidraNet receives none of this data.</p>
+      <p>None of these requests carries your address, an identifier or anything about what you browse. HidraNet receives nothing from the first two; the third reaches the same host as this website and is logged as described in 4.5.</p>
       <h3>4.2 Messaging applications</h3>
       <p>In this version, HidraChat, HidraMail, the Forum and SevenNine exchange messages through public MQTT brokers run by third parties (EMQ Technologies at broker.emqx.io and HiveMQ at broker.hivemq.com). With Tor connected, these brokers see the Tor exit address, not yours.</p>
       <div class="tbl"><table>

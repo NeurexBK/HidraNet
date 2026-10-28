@@ -86,7 +86,11 @@ jobs:
         run: cargo test --test no_addresses_in_logs
 
       # Downloads the current packages as a build input, swaps in the current
-      # sources and engine, then checks the generated packages.
+      # sources and engine, then checks the generated packages. This and the
+      # steps after it run only once the pinned base packages pass the step
+      # above; the 1.0.0 ones do not. Packages built from scratch are checked
+      # by update-sums.js before they reach the table, and by the job below
+      # once they are published.
       - name: Build the packages
         working-directory: hidra-browser
         run: node scripts/refresh-release.js
@@ -111,3 +115,41 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+  # What the download page offers, whatever built it: the packages
+  # landing/SHA256SUMS.txt lists, fetched from the release of the version its
+  # record names, must hash to the table and run the Electron package.json
+  # pins on the Chromium the user agent claims. Independent of the job above,
+  # so it answers even while the base packages are refused.
+  published:
+    name: the packages the table lists run the pinned Electron
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Download the packages the table lists
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^  latest-version:[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*$/\1/p' landing/SHA256SUMS.txt)
+          test -n "$version"
+          mkdir -p published
+          grep -E "^[0-9a-f]{64}  HidraNet-Browser-${version//./\\.}-[A-Za-z0-9-]+\.zip$" landing/SHA256SUMS.txt > published/SHA256SUMS.txt
+          test -s published/SHA256SUMS.txt
+          while read -r _ name; do
+            curl -fsSL --retry 3 -o "published/$name" \
+              "https://github.com/NeurexBK/HidraNet/releases/download/v$version/$name"
+          done < published/SHA256SUMS.txt
+          (cd published && sha256sum -c SHA256SUMS.txt)
+
+      - name: They run the Electron package.json pins
+        working-directory: hidra-browser
+        run: node scripts/check-engine.js ../published/*.zip

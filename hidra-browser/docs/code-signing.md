@@ -38,7 +38,20 @@ The browser fetches the table and `SHA256SUMS.txt.sig` through Tor once the
 network lock opens, checks the signature with the release key it embeds
 (`release-verify.js`, `verifyBrowserSums`), and shows a notice on the new tab
 page when a newer build is out or this one is below the minimum. It never
-downloads or installs anything. With no `.sig` it shows nothing.
+downloads or installs anything.
+
+What the signature does and does not stop: whoever controls the site cannot
+make a browser believe a record the maintainers did not sign. They can still
+take the `.sig` away, serve one that does not verify, or serve an older
+signed record again. So the browser keeps the highest versions and the latest
+`valid-until` it has verified in its data folder and sets aside a record with
+lower versions; the last record it verified holds until that record's own
+`valid-until`, and after that, with nothing it can believe, the new tab page
+says it could not confirm the browser is up to date and to check the site. A
+build made before the first signature, that has never verified a record,
+shows nothing for a missing `.sig`: that is how things stand until the
+table is signed. `SUMS_SIGNED` in `update-check.js` marks the builds made
+after it, which show that notice for a missing `.sig` too.
 
 The signature is over the label `hidranet-browser-sums-v1`, a zero byte, then
 the file, never over the bare file: the same key signs HidraVPN's manifest
@@ -48,7 +61,10 @@ a signature made for one from passing as the other.
 ### Signing it (on the PC that holds the release key)
 
 Every time the table changes — a new build, a new minimum, a renewed
-`valid-until` — sign it again, in PowerShell, from the repository root:
+`valid-until` — sign it again, in PowerShell, from the repository root.
+The first time only, also set `SUMS_SIGNED = true` in
+`hidra-browser\src\main\update-check.js` and commit it with the signature:
+`verify-sums.js` refuses a signed table while it says false.
 
 ```
 git pull
@@ -67,20 +83,28 @@ label itself, signs, checks the result against the public key in
 `release-verify.js`, writes `landing/SHA256SUMS.txt.sig` and deletes its
 temporary copy. The key file is only read by `hidravpn-sign`.
 
+Before signing, read the whole table, not only the record: `update-sums.js`
+rewrites the title, the record and the rows, and refuses packages that do not
+run the pinned Electron, Chromium and Tor, but it leaves the prose alone. It
+warns when a `KNOWN PROBLEMS WITH THE <version> PACKAGES` section is about
+another version than the one listed; change or remove that section first.
+
 Choose `valid-until` so it is renewed well before it passes (180 days is the
-default `update-sums.js` writes): a browser ignores an expired record, and
-anyone who can change the site can keep serving the last signed record until
-then, hiding a newer one. Raise `minimum-safe-version` whenever a release
-fixes a security problem: every build below it then shows a warning instead
-of a plain update notice.
+default `update-sums.js` writes): once it passes, browsers say they cannot
+confirm they are up to date. It is also how long anyone who can change the
+site can keep serving the last signed record, hiding a newer one, so do not
+make it longer than you need. Raise `minimum-safe-version` whenever a
+release fixes a security problem: every build below it then shows a warning
+instead of a plain update notice.
 
 ### What CI does with it
 
 The `release-sums` job in `browser-tests.yml` runs `scripts/verify-sums.js`
 on every change: the record must parse, `package.json` must not be behind
 it, and once a `.sig` exists, the table must verify against it with the
-embedded release key. A change that removes a `.sig` the previous commit had
-is refused too. An expired record is only a warning there.
+embedded release key, and `SUMS_SIGNED` must say true. A change that
+removes a `.sig` the previous commit had is refused too. An expired record is
+only a warning there.
 
 ---
 

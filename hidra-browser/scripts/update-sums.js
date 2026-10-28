@@ -11,7 +11,15 @@
  * user checks, the hash does not match, and the honest conclusion for them is
  * that the download was tampered with.
  *
- * So the table is generated from the files that are actually going out.
+ * So the table is generated from the files that are actually going out, and
+ * only once each of them is shown to run what the repository pins: the
+ * Electron and Chromium compiled into its main binary are the pinned Electron
+ * and the Chrome the user agent claims, and its Tor is the pinned Tor
+ * (lib/package-runtime.js). Every package reaches the table through here,
+ * whichever script built it, so this is the check no package skips. When the
+ * pinned official Electron zip is in dist/electron-cache (the builders leave
+ * it there; HIDRA_ELECTRON_CACHE names another folder), every Electron file
+ * in the package is compared with it as well.
  *
  * The packages are the version package.json says, and a version already in
  * the table is never given other files: a rebuild gets a new version. The
@@ -35,6 +43,11 @@ const ROOT = path.join(__dirname, '..', '..');
 const VERSION = require(path.join(ROOT, 'hidra-browser', 'package.json')).version;
 const SUMS = process.env.HIDRA_SUMS_FILE || path.join(ROOT, 'landing', 'SHA256SUMS.txt');
 const { compareVersions, parseVersion } = require('../src/main/update-check');
+const { readZip } = require('./lib/zip');
+const runtime = require('./lib/package-runtime');
+const electron = require('./lib/electron');
+// Where the builders leave the official Electron zips.
+const ELECTRON_CACHE = process.env.HIDRA_ELECTRON_CACHE || path.join(ROOT, 'hidra-browser', 'dist', 'electron-cache');
 
 // How long a record stays valid when --valid-until is not given. A browser
 // ignores an expired record, so the table must be signed again before then.
@@ -80,7 +93,27 @@ if (!/^\d{4}-\d{2}-\d{2}$/.test(validUntil) || new Date(validUntil + 'T00:00:00Z
   fail('--valid-until must be a date (YYYY-MM-DD) that has not passed');
 }
 
-// ── Read what is actually there ───────────────────────────────────────────
+// ── Read what is actually there, and what it runs ─────────────────────────
+
+// The reasons a package does not run what the repository pins, or an empty
+// list, and how far it was compared.
+function runtimeOf(name, bytes) {
+  let depth = 'engine and Tor';
+  try {
+    const { platform, arch } = runtime.platformOf(name);
+    const es = readZip(bytes);
+    const problems = [...runtime.engineProblems(es, platform), ...runtime.torProblems(es, platform, arch)];
+    const official = path.join(ELECTRON_CACHE, electron.zipName(platform, arch));
+    if (fs.existsSync(official)) {
+      electron.verifyElectronZip(official);
+      problems.push(...runtime.runtimeProblems(es, readZip(fs.readFileSync(official)), platform));
+      depth = 'every Electron file, engine and Tor';
+    }
+    return { problems, depth };
+  } catch (e) {
+    return { problems: [e.message], depth };
+  }
+}
 
 const facts = ROWS.map(([arch, label]) => {
   const name = `HidraNet-Browser-${VERSION}-${arch}.zip`;
@@ -95,8 +128,25 @@ const facts = ROWS.map(([arch, label]) => {
     label,
     sha: crypto.createHash('sha256').update(bytes).digest('hex'),
     size: bytes.length,
+    ...runtimeOf(name, bytes),
   };
 });
+
+let refused = 0;
+for (const f of facts) {
+  if (!f.problems.length) {
+    console.log('  checked ' + f.depth + ': ' + f.name);
+    continue;
+  }
+  refused++;
+  console.error('  ' + f.name + ' does not run what the repository pins:');
+  for (const p of f.problems.slice(0, 20)) console.error('    ' + p);
+  if (f.problems.length > 20) console.error('    … and ' + (f.problems.length - 20) + ' more');
+}
+if (refused) {
+  fail(refused + ' package(s) refused; the table is unchanged. Do not publish them: build them again\n' +
+       '  with build-win.js, build-linux.js and build-mac.js, which take the pinned Electron and Tor.');
+}
 
 // ── Rewrite only the first table ──────────────────────────────────────────
 //
@@ -182,6 +232,14 @@ fs.writeFileSync(SUMS, head + tail);
 console.log(`  rewrote ${changed} row(s) in ${path.relative(ROOT, SUMS)}`);
 for (const f of facts) console.log(`  ${f.sha}  ${f.name}`);
 console.log(`  record: latest-version ${VERSION}, minimum-safe-version ${floor[1]}, valid-until ${validUntil}`);
+// Prose about another version's packages is not rewritten: it may still be
+// true of copies people have, but whoever signs the table must read it first.
+for (const m of (head + tail).matchAll(/^KNOWN PROBLEMS WITH THE (\d+\.\d+\.\d+) PACKAGES$/gm)) {
+  if (m[1] !== VERSION) {
+    console.log('\n  The table still has a section "' + m[0] + '". It is not about the ' + VERSION + ' packages');
+    console.log('  listed now: read it, and change or remove it, before signing the table.');
+  }
+}
 if (fs.existsSync(SUMS + '.sig') && before !== head + tail) {
   console.log('\n  The table changed, so ' + path.basename(SUMS) + '.sig no longer matches it. Sign it again');
   console.log('  offline (hidra-browser/scripts/sign-sums.ps1) before publishing; CI refuses it until then.');

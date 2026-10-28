@@ -7,8 +7,9 @@
 // IPC with stand-ins (the notice coming from a real UpdateCheck fed a record
 // signed by a test key), and reads what the page shows: below the minimum
 // safe version a security warning, a newer build an update notice, an
-// expired record or no signature nothing at all, and nothing for a notice
-// that is not made of versions.
+// expired record a plain "could not confirm" notice, no signature nothing in
+// a build from before the first signature and that plain notice in one made
+// after it, and nothing for a notice that is not made of versions.
 //
 //   cd hidra-browser && xvfb-run -a ./node_modules/.bin/electron --no-sandbox test/update-notice-electron.js
 //
@@ -38,7 +39,7 @@ function signedTable({ latest, minimum, validUntil }) {
   return { table, sig: crypto.sign(null, rv.browserSumsMessage(table), privateKey).toString('base64') };
 }
 // The notice a real check would hand the page, for this record and version.
-async function noticeFor(current, record) {
+async function noticeFor(current, record, signedBuild = false) {
   const files = {};
   if (record) {
     const { table, sig } = signedTable(record);
@@ -49,7 +50,7 @@ async function noticeFor(current, record) {
     if (!(url in files)) throw Object.assign(new Error(url + ': 404'), { status: 404 });
     return Buffer.from(files[url]);
   };
-  const check = new UpdateCheck({ fetchBytes, currentVersion: current, publicKey: pub });
+  const check = new UpdateCheck({ fetchBytes, currentVersion: current, publicKey: pub, signedBuild });
   await check.run();
   return check.notice();
 }
@@ -71,7 +72,8 @@ const expect = (name, ok, detail) => {
 
 const SHOWN = `JSON.stringify((() => {
   const box = document.getElementById('update-notice');
-  return { hidden: box.hidden, unsafe: box.classList.contains('unsafe'), text: box.textContent.replace(/\\s+/g, ' ').trim(),
+  return { hidden: box.hidden, unsafe: box.classList.contains('unsafe'), neutral: box.classList.contains('neutral'),
+           text: box.textContent.replace(/\\s+/g, ' ').trim(),
            html: box.innerHTML.indexOf('<script') !== -1 || box.querySelector('img,a,script') !== null };
 })())`;
 
@@ -119,12 +121,19 @@ app.whenReady().then(async () => {
   expect('the latest build: nothing shown', current.hidden, JSON.stringify(current));
 
   const expired = await pageWith(await noticeFor('1.1.0', { latest: '1.3.0', minimum: '1.2.0', validUntil: '2020-01-01' }));
-  expect('an expired record, even one that says unsafe: nothing shown', expired.hidden, JSON.stringify(expired));
+  expect('an expired record, even one that says unsafe: not believed, and "could not confirm" shown',
+         !expired.hidden && expired.neutral && !expired.unsafe && /Could not confirm that this browser is up to date/.test(expired.text) &&
+         !/1\.3\.0|1\.2\.0|security problems/.test(expired.text), JSON.stringify(expired));
 
   const unsigned = await pageWith(await noticeFor('1.1.0', null));
-  expect('no signature yet: nothing shown, no error', unsigned.hidden && unsigned.text === '', JSON.stringify(unsigned));
+  expect('no signature yet, in a build from before the first signature: nothing shown, no error',
+         unsigned.hidden && unsigned.text === '', JSON.stringify(unsigned));
 
-  const odd = await pageWith({ current: '1.1.0', latest: '<img src=x onerror=alert(1)>', minimum: '1.0.0', unsafe: false });
+  const removed = await pageWith(await noticeFor('1.1.0', null, true));
+  expect('no signature, in a build made after the first one: "could not confirm" shown',
+         !removed.hidden && removed.neutral && /check its SHA-256 against SHA256SUMS\.txt/.test(removed.text), JSON.stringify(removed));
+
+  const odd = await pageWith({ state: 'update', current: '1.1.0', latest: '<img src=x onerror=alert(1)>', minimum: '1.0.0', unsafe: false });
   expect('a notice that is not made of versions: nothing shown', odd.hidden && !odd.html, JSON.stringify(odd));
 
   console.log(failures.length ? `\n${failures.length} case(s) wrong` : '\nall cases correct');
