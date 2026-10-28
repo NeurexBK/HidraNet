@@ -11,9 +11,10 @@
 //! The sublayer is given the top weight so its decision is final. At the
 //! connect-authorisation layers, and at the receive-accept layers (a
 //! connection or datagram from a host this machine did not send to first),
-//! the default is to BLOCK; a handful of higher-
-//! weight PERMIT filters open just what must stay open: loopback, the tunnel
-//! interface, the encrypted packets to the node, and DHCP. IPv6 has the
+//! the default is to BLOCK; a handful of higher-weight PERMIT filters open
+//! just what must stay open: loopback, the tunnel interface (outbound only:
+//! nothing comes in through it unasked, so the node cannot reach a program
+//! listening here), the encrypted packets to the node, and DHCP. IPv6 has the
 //! loopback exception and, when the exit gave the tunnel an IPv6 address,
 //! the tunnel that carries the traffic (the only one of one hop, the inner
 //! one of two), so it never leaves the machine off the tunnel. Windows sends
@@ -105,14 +106,17 @@ const F_LAN_DNS_V4: [GUID; 4] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0004),
 ];
 /// Connections from outside, at the receive-accept layers: the same catch-all
-/// blocks and the same few openings (loopback, the tunnel that carries the
-/// traffic, DHCP, "Allow LAN"), so a program listening on this machine is
-/// reached off the tunnel by nobody. Replies to what this machine sent
-/// belong to the flow its connect opened, and pass without these.
+/// blocks and fewer openings (loopback, DHCP, "Allow LAN"), so a program
+/// listening on this machine is reached by nobody else, the node at the
+/// other end of a tunnel included. Replies to what this machine sent belong
+/// to the flow its connect opened, and pass without these.
 const F_IN_BLOCK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0001);
 const F_IN_BLOCK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0002);
 const F_IN_LOOPBACK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0003);
 const F_IN_LOOPBACK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0004);
+/// Retired: inbound permits on the tunnel interfaces, which let the node
+/// open connections to this machine. Never added any more; still deleted
+/// with the rest, so a kill switch an older version armed is replaced whole.
 const F_IN_TUNNEL_V4: [GUID; 2] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0005),
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0006),
@@ -254,7 +258,7 @@ fn v4(ep: &SocketAddr) -> Result<(u32, u16)> {
 /// interfaces given, the nodes given, DHCP.
 fn install(allow: &Allow<'_>) -> Result<()> {
     if allow.nodes.len() > F_NODE_V4.len()
-        || allow.tunnels.len() > F_IN_TUNNEL_V4.len()
+        || allow.tunnels.len() > [F_TUNNEL_V4, F_TUNNEL2_V4].len()
         || allow.peered.len() > F_PEERED_V4.len()
         || allow.direct_tcp.len() > F_DIRECT_TCP_V4.len()
     {
@@ -528,9 +532,14 @@ fn install(allow: &Allow<'_>) -> Result<()> {
         // Connections from outside, at the receive-accept layers. Replies to
         // what this machine sent belong to the flow its connect opened, and
         // pass; an unsolicited connection, or a datagram from a host this
-        // machine never sent to, reaches a listening program only through
-        // the tunnel that carries the traffic, from loopback, as a DHCP
-        // answer, or from the local network when "Allow LAN" is on.
+        // machine never sent to, reaches a listening program only from
+        // loopback, as a DHCP answer, or from the local network when "Allow
+        // LAN" is on. Not through a tunnel: the node at its other end
+        // chooses what comes out of it, and would otherwise reach every
+        // program listening here and learn the machine from what answers.
+        // The tunnel is treated as the physical link is, by the catch-all
+        // block, above Windows Firewall, whatever profile Windows gave the
+        // adapter.
         for (key, layer, name) in [
             (
                 F_IN_BLOCK_V4,
@@ -576,36 +585,6 @@ fn install(allow: &Allow<'_>) -> Result<()> {
                     weight: 12,
                     block: false,
                     conditions: &[Cond::LoopbackFlag],
-                },
-            )?;
-        }
-        // The tunnels allowed whole are allowed inbound too, as on Linux; an
-        // interface that is not up yet was skipped above, with a warning.
-        for (i, iface) in allow.tunnels.iter().enumerate() {
-            if let Ok(luid) = luid_of(iface) {
-                add_filter(
-                    engine,
-                    &Filter {
-                        key: F_IN_TUNNEL_V4[i],
-                        name: "allow inbound on the tunnel interface",
-                        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                        weight: 10,
-                        block: false,
-                        conditions: &[Cond::LocalInterface(luid)],
-                    },
-                )?;
-            }
-        }
-        if let Some(iface) = allow.tunnel_v6 {
-            add_filter(
-                engine,
-                &Filter {
-                    key: F_IN_TUNNEL_V6,
-                    name: "allow inbound IPv6 on the tunnel interface",
-                    layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                    weight: 10,
-                    block: false,
-                    conditions: &[Cond::LocalInterface(luid_of(iface)?)],
                 },
             )?;
         }
@@ -910,6 +889,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_retired_tunnel_permits_are_still_removed() {
+        // A kill switch an older version armed let the node in through the
+        // tunnel; arming this one, or turning it off, deletes those too.
+        for k in F_IN_TUNNEL_V4.iter().chain([&F_IN_TUNNEL_V6]) {
+            assert!(ALL_FILTER_KEYS.contains(k));
+        }
+    }
+
+    #[test]
     fn every_filter_has_its_own_key_and_is_removed_with_the_rest() {
         let mut keys: Vec<u128> = ALL_FILTER_KEYS.iter().map(|g| g.to_u128()).collect();
         keys.sort_unstable();
@@ -921,11 +909,9 @@ mod tests {
             F_IN_BLOCK_V6,
             F_IN_LOOPBACK_V4,
             F_IN_LOOPBACK_V6,
-            F_IN_TUNNEL_V6,
             F_IN_DHCP_V4,
         ]
         .iter()
-        .chain(F_IN_TUNNEL_V4.iter())
         .chain(F_IN_LAN_V4.iter())
         {
             assert!(

@@ -80,6 +80,12 @@ PUB=$($C "$BIN/hidravpn" --key "$WORK/client.key" pubkey --node "$NODE_PUB" 2>/d
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" admit --name laptop --pubkey "$PUB" > "$WORK/invite.json" 2> "$WORK/admit.log"
 grep -q '"client_address": "10.77.0.2/16"' "$WORK/invite.json" && pass "client admitted with 10.77.0.2 (invite: $(tr -d '\n ' < "$WORK/invite.json" | cut -c1-70)...)" || { cat "$WORK/invite.json" "$WORK/admit.log"; fail "admit"; }
 
+# A route the local network pushed for the address the node's resolver will
+# have (DHCP option 121 is how; NetworkManager gives such routes metric 100):
+# the client's own host route into the tunnel must win over it, or every
+# name would go to the local network.
+$C ip route add 10.77.0.1/32 via 10.200.0.1 dev c-n metric 100
+
 # ── Up ───────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client.log" 2>&1 & UP=$!; PIDS+=($UP)
 for i in $(seq 1 100); do grep -q "^connected" "$WORK/client.log" && break; sleep 0.2; done
@@ -97,6 +103,24 @@ BYNAME=$($C curl -s --max-time 5 http://whoami.test/ 2>/dev/null)
 $C ip -4 route | grep -q "^0.0.0.0/1 dev hvpn0" && $C ip -4 route | grep -q "^128.0.0.0/1 dev hvpn0" && pass "default traffic routed into hvpn0" || fail "routes: $($C ip -4 route | tr '\n' ';')"
 $C ip -4 route | grep -q "^10.200.0.1 " && pass "the node itself stays reachable outside the tunnel" || fail "no host route to the node"
 grep -q "nameserver 10.77.0.1" /etc/netns/hv-client/resolv.conf && pass "resolv.conf points at the node's tunnel address" || fail "resolv.conf: $(cat /etc/netns/hv-client/resolv.conf)"
+$C ip -4 route get 10.77.0.1 | grep -q " dev hvpn0 " && $C ip -4 route | grep -q "^10.77.0.1 dev hvpn0" && pass "the node's resolver has a host route into the tunnel, over the one the local network pushed" || fail "the route to the resolver: $($C ip -4 route get 10.77.0.1 | head -1)"
+
+echo "── what reaches the client through the tunnel unasked"
+# Programs listening on every address of the client, and a host behind the
+# node (the internet, given a route to the clients' subnet) trying to reach
+# them through the tunnel: nothing may answer, not even a closed port's
+# reset or an echo, which would show the address is there.
+$C python3 -I -m http.server 9901 --bind 0.0.0.0 >/dev/null 2>&1 & PIDS+=($!)
+$C python3 -I "$HERE/test/udp-echo.py" 0.0.0.0 9902 >/dev/null 2>&1 & PIDS+=($!)
+sleep 1
+$I ip route add 10.77.0.0/16 via 10.201.0.1
+for t in "tcp 10.77.0.2 9901:a TCP listener" "tcp 10.77.0.2 9903:a closed TCP port" \
+         "udp 10.77.0.2 9902:a UDP listener" "icmp 10.77.0.2:an echo request"; do
+  got=$($I python3 -I "$HERE/test/probe.py" ${t%%:*})
+  [ "$got" = silent ] && pass "from behind the node, ${t#*:} at the client's tunnel address: no answer" || fail "from behind the node, ${t#*:} at the client's tunnel address: $got"
+done
+$I ip route del 10.77.0.0/16 via 10.201.0.1
+[ "$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null)" = "10.201.0.1" ] && pass "what the client asks for through the tunnel is still answered" || fail "a request through the tunnel failed after the probes"
 # A bigger transfer, to exercise fragmentation-free MTU: 2 MB through the tunnel.
 $C dd if=/dev/urandom of="$WORK/blob" bs=1M count=2 status=none
 $I python3 -I -m http.server 8080 --directory "$WORK" > /dev/null 2>&1 & PIDS+=($!); sleep 1

@@ -87,6 +87,20 @@ function Pipe([hashtable]$req) {
 function Wait-Pipe { for ($i = 0; $i -lt 20; $i++) { $s = Pipe @{ cmd = 'status' }; if ($s.ok) { return $s }; Start-Sleep -Milliseconds 500 }; return $s }
 function Gateway { $r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1; if ($r) { return $r.NextHop }; return '' }
 function Reaches([string]$ip) { if (-not $ip) { return $false }; return [bool](Test-Connection -ComputerName $ip -Count 2 -Quiet -ErrorAction SilentlyContinue) }
+# Whether the node gets a datagram through the tunnel to a program listening
+# on every address of this machine, unasked. UDP, not TCP: the node's own
+# firewall drops what comes back to it from the tunnel, so a TCP probe from
+# the node could not complete either way. The kill switch must keep it out.
+function Unasked-Reaches {
+  $tun = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias 'hvpn0' -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+  if (-not $tun) { return $null }
+  $u = New-Object System.Net.Sockets.UdpClient(9902)
+  try {
+    Ssh "echo unasked > /dev/udp/$tun/9902" | Out-Null
+    Start-Sleep -Seconds 2
+    return ($u.Available -gt 0)
+  } finally { $u.Close() }
+}
 
 function Cleanup {
   if (Test-Path $ISvc) { & $ISvc down 2>&1 | Out-Null; & $ISvc uninstall 2>&1 | Out-Null; & $ISvc firewall off 2>&1 | Out-Null }
@@ -163,6 +177,7 @@ try {
   $v6 = Ip6; Expect (-not $v6) 'leak test, IPv6: nothing leaves' $v6
   $dns = $null; try { $dns = Resolve-DnsName example.com -Type A -ErrorAction Stop } catch {}
   Expect ($null -ne $dns) 'names still resolve (through the tunnel)'
+  $in = Unasked-Reaches; Expect ($in -eq $false) 'a datagram the node sends this machine unasked does not arrive' "$(if ($null -eq $in) { 'no tunnel address' } else { "arrived=$in" })"
   if ($gwBefore) { Expect (-not (Reaches $gw)) 'the local network is NOT reachable when not allowed' }
 
   Step 'reconnect with the local network allowed'
@@ -171,6 +186,7 @@ try {
   Expect ($r.ok) 'connect with allow_lan' "$($r.error)"
   Start-Sleep -Seconds 4
   if ($gwBefore) { Expect (Reaches $gw) 'the local network IS reachable when allowed' }
+  $in = Unasked-Reaches; Expect ($in -eq $false) 'and still nothing arrives from the node unasked' "$(if ($null -eq $in) { 'no tunnel address' } else { "arrived=$in" })"
   $ip = Ip4; Expect ($ip -eq $Exit) 'and the internet still goes through the node' (Mask $ip)
 
   Step 'disconnect'

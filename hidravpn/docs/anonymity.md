@@ -58,6 +58,9 @@ The other gaps are closed too:
 - Nodes that admit with a pass (phase 5) follow the same rule: each
   connection shows them the next pass's key, and the exit of two hops
   redeems it through the entry, never from your address (finding 16).
+- The node at the other end of the tunnel can no longer open connections
+  to your machine, and "Allow LAN" no longer lets a local network on Linux
+  take your DNS queries (finding 19).
 
 ## Who learns what
 
@@ -65,10 +68,10 @@ The other gaps are closed too:
 
 | Party | Learns | Does not learn |
 |---|---|---|
-| **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
+| **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names (also with "Allow LAN", and when the network routes the resolver's address to itself; finding 19), anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
 | **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
-| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
+| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). What listens on your machine (finding 19). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
 | **A site you visit** | The exit's address. | Your address, unless you tell it (cookies, logins: that is the browser's job, and the browser's own tabs go through Tor regardless). |
@@ -257,10 +260,11 @@ the request.
   address for you changes with every connection.
 - **Lease names** sent on admission are the constant "client"
   (`circuit.rs`, `prepare`).
-- **DNS** goes to the exit's resolver through both hops. Any other resolver is
-  dropped by the kill switch (`killswitch/linux.rs`, "DNS only to the
-  node"). Tests A and D: the resolver sees the canary name from the exit, and
-  no DNS packet appears on the client's link.
+- **DNS** goes to the exit's resolver through both hops. Any other resolver,
+  and that one off the tunnel, is dropped by the kill switch
+  (`killswitch/linux.rs`, "DNS only to the node, only through the tunnel";
+  finding 19). Tests A and D: the resolver sees the canary name from the
+  exit, and no DNS packet appears on the client's link.
 - **Rotation and reconnect** hold the kill switch from the moment the old
   circuit starts to come down. Test D also covers the new admission through
   the entry.
@@ -580,6 +584,73 @@ and that an exit with `ipv6 = "off"`, or whose host has no IPv6 route, hands
 out no IPv6 address and the client's IPv6 is then blocked, with nothing
 leaking either way. The leak test passes IPv6 that reaches a website when
 the service says the exit carries it, and fails it when the exit does not.
+
+### 19. High — "Allow LAN" let the local network take DNS on Linux, and the node could reach programs listening on the client (fifth round)
+
+**DNS with "Allow LAN".** On Linux the kill switch dropped DNS to any
+address but the node's resolver, and accepted DNS to that address on any
+interface. The resolver is a private address, inside the ranges "Allow LAN"
+opens. So when the machine's routes sent that address to the physical link
+(a route the local network pushes for it, as DHCP option 121 can; a local
+network on the nodes' default tunnel range, more specific than the
+tunnel's subnet; an invite whose prefix was widened on its way), every name
+the machine looked up left in the clear to the local network, which could
+answer it, while the client showed the kill switch armed. Machines whose
+`resolv.conf` is systemd-resolved's stub were probably spared (resolved
+binds each link's queries to that link); those where the client swaps
+`resolv.conf` were not. Windows already blocked DNS to the local ranges
+above its LAN permit.
+
+Now DNS leaves only out of the tunnel that carries the traffic, to the
+node's resolver, and every other packet to port 53 is dropped before the
+local network is let through, "Allow LAN" or not (`killswitch/linux.rs`,
+`ruleset`). The client also routes the resolver's address into that tunnel
+as a host route of its own, which a pushed route or an overlapping network
+cannot beat, and refuses the circuit if the system still resolves that
+route elsewhere (`netcfg/linux.rs`, `apply`). The local-network rules match
+the physical link only, never a tunnel interface: the nodes' tunnel
+addresses are private too.
+
+**What came in through the tunnel.** The kill switch accepted everything
+that arrived on the tunnel that carries the traffic, new connections
+included, and the client wrote every packet the node decrypted to the
+interface. So the node of one hop, or the exit of two, could connect to any
+program listening on the client (SSH, file sharing, development servers,
+the local network's address too, since Linux delivers a packet for any of
+its addresses), read identifiers that outlive keys and new identities (an
+SSH host key, a sync program's device ID), and, from what answered at all
+(a closed port's reset, an echo), find the client's other addresses: in two
+hops, the address the entry leased, which an entry and an exit that compare
+notes could join on exactly. Honest nodes forward nothing like this; a
+modified one could.
+
+Now only what answers the machine's own packets comes back in through that
+tunnel (and the ICMP errors path MTU discovery needs); anything the far end
+starts is dropped (`killswitch/linux.rs`, `carrying_rules`). The two-hop
+outer tunnel already let in only the exit's WireGuard packets. The client's
+tunnel also drops a decrypted packet not addressed to the address the node
+gave that end (`tunnel.rs`, `addressed_to`), kill switch or not. On Windows
+the kill switch no longer permits inbound connections on the tunnel at the
+receive-accept layers: the tunnel is treated as the physical link is, by
+the catch-all block, above Windows Firewall rules and whatever network
+profile Windows gave the adapter (`killswitch/windows.rs`). Replies to the
+machine's own connections belong to the flow its connect opened and pass
+without it.
+
+**Tests.** `test-killswitch.sh`, with a veth standing in for the tunnel: from
+its far end, a TCP listener at the tunnel address and at the
+local-network address, a closed port, a UDP listener and an echo all
+answer without the kill switch and give nothing with it, "Allow LAN" or not,
+while the client's own connections through it work; with "Allow LAN", a
+route pushed for the resolver through the local network and a local network
+on the tunnel's range both make the query fail with EPERM, the local
+network's own resolver is refused, and the local network is reached.
+`test-netns.sh` and `test-multihop-netns.sh`: a host behind the node, or
+behind the exit, given a route to the clients' subnet, gets no answer from
+the client's tunnel address; and in `test-netns.sh` a route pushed for the
+resolver's address before connecting does not take the lookups. On the code
+before the fix these checks fail. Windows: not yet probed from the exit side
+on a PC.
 
 ## Open
 

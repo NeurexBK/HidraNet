@@ -116,8 +116,12 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   a node that admits openly can admit a stranger but cannot send them
   somewhere else. Nor can anyone between them change where the client's
   lookups go: every invite, however it arrived, must name as its DNS server
-  an address inside the client's own private tunnel subnet, which only the
-  node answers; one that names a resolver anywhere else is refused. A lease granted openly expires after `--idle-days` (30)
+  an address inside the client's own private tunnel subnet; one that names a
+  resolver anywhere else is refused. The client routes that address into the
+  tunnel by a host route of its own and checks that it goes there, and the
+  kill switch lets DNS out only through the tunnel, to that address, so a
+  local network that routes the address to itself (a pushed route, a subnet
+  on the same range) receives no query. A lease granted openly expires after `--idle-days` (30)
   without a handshake — the node writes each client's last handshake down
   every quarter of an hour and when it stops, so a restart is not idleness —
   and one whose client never shook hands lapses within fifteen minutes, so
@@ -264,6 +268,10 @@ page that were still missing.
   when the button is pressed.
 - **Allow the local network**, a box under Connect, off unless ticked; the
   main process passes `allow_lan` to the service only for a strict `true`.
+  It opens the private ranges on the physical link, both ways, and never
+  DNS: names go to the node through the tunnel, on Linux as on Windows.
+  Through the tunnel itself only answers come in, ticked or not: the node
+  cannot open a connection to this machine.
 - **The route, with countries.** A signed list may now say where each node is
   (`"country": "FI"`, two letters, ISO 3166-1 alpha-2, validated as such;
   `hidravpn-node init --country FI` puts it in the node's own description). It
