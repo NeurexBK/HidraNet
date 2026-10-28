@@ -32,12 +32,14 @@
 // refused when it has expired (`expires`), when its `sequence` is lower than
 // the highest this browser has already accepted (kept in its data folder), or
 // when its version is below MIN_VERSION. It is never put over a newer
-// installed service unless the person agrees to that, separately; the service
-// itself refuses the same unless told (`--allow-downgrade`). And what is
-// installed is exactly the manifest the page was shown: install() is given
-// the version and digest checkRelease() returned, and stops if the manifest
-// it fetches again is any other. A manifest from before `sequence` and
-// `expires` (0.1.0's) counts as sequence 0 with no expiry.
+// installed service (as the service says, or, when it does not answer, as the
+// installed copy's own bytes say) unless the person agrees to that,
+// separately; the service itself refuses the same unless told
+// (`--allow-downgrade`). And what is installed is exactly the manifest the
+// page was shown: install() is given the version and digest checkRelease()
+// returned, and stops if the manifest it fetches again is any other. A
+// manifest from before `sequence` and `expires` (0.1.0's) counts as sequence
+// 0 with no expiry.
 //
 // Uninstalling asks for administrator rights the same way and runs the
 // installed service's own `uninstall` (with `--purge` to also remove the
@@ -162,6 +164,23 @@ function versionMark(bytes) {
   return null;
 }
 
+// The version mark of the service installed at `file`, read without running
+// it, or null when there is none to read (nothing installed, a build from
+// before the mark, a file that is not one).
+async function installedMark(file) {
+  let fh;
+  try {
+    fh = await fs.promises.open(file, 'r');
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > FILE_MAX_BYTES) return null;
+    return versionMark(await fh.readFile());
+  } catch {
+    return null;
+  } finally {
+    if (fh) await fh.close().catch(() => {});
+  }
+}
+
 // 0.4.10 > 0.4.9: numbers, not strings. Anything unparseable sorts lowest.
 function compareVersions(a, b) {
   const pa = String(a || '').split('.').map((n) => parseInt(n, 10));
@@ -251,6 +270,9 @@ class VpnInstaller {
     // -> true only when the person agreed to go back, asked on its own.
     this.installedVersion = options.installedVersion || (async () => null);
     this.confirmDowngrade = options.confirmDowngrade || (async () => false);
+    // When the service does not answer (stopped, or this account not yet in
+    // its group), the version is read from the installed copy's own bytes.
+    this.installedMark = options.installedMark || (() => installedMark(installedService(this.platform, this.env)));
     this._sequence = 0;
   }
 
@@ -268,22 +290,22 @@ class VpnInstaller {
     return { ok: true, version: m.version, digest: m.digest, generated: m.generated, expires: m.expires, supported };
   }
 
-  // The highest sequence accepted so far: in this run, or in the file.
-  async _seenSequence() {
-    let stored = 0;
-    if (this.stateFile) {
-      try {
-        const n = JSON.parse(await fs.promises.readFile(this.stateFile, 'utf8')).sequence;
-        if (Number.isSafeInteger(n) && n > 0) stored = n;
-      } catch { /* none yet, or unreadable: nothing remembered */ }
-    }
-    return Math.max(stored, this._sequence);
+  // The highest sequence the file holds, 0 for none.
+  async _storedSequence() {
+    if (!this.stateFile) return 0;
+    try {
+      const n = JSON.parse(await fs.promises.readFile(this.stateFile, 'utf8')).sequence;
+      if (Number.isSafeInteger(n) && n > 0) return n;
+    } catch { /* none yet, or unreadable: nothing remembered */ }
+    return 0;
   }
 
-  async _rememberSequence(n) {
-    if (n <= this._sequence) return;
-    this._sequence = n;
-    if (!this.stateFile) return;
+  // `stored` is what _storedSequence() just read. The file is written
+  // whenever it holds less, not only when this run's floor rises, so a write
+  // that failed is tried again on the next accept.
+  async _rememberSequence(n, stored) {
+    this._sequence = Math.max(this._sequence, n);
+    if (!this.stateFile || n <= stored) return;
     // Written whole and renamed into place, so a crash leaves the old file.
     const tmp = `${this.stateFile}.${process.pid}.tmp`;
     try {
@@ -317,14 +339,16 @@ class VpnInstaller {
     if (m.expiresAt !== null && this.now() > m.expiresAt) {
       throw new Error(`the release manifest expired on ${m.expires}, so it may not be the newest release; nothing was downloaded`);
     }
-    const seen = await this._seenSequence();
+    const stored = await this._storedSequence();
+    // The highest accepted so far: in this run, or in the file.
+    const seen = Math.max(stored, this._sequence);
     if (m.sequence < seen) {
       throw new Error(`the release manifest is older (sequence ${m.sequence}) than one this browser already accepted (sequence ${seen}); refusing to go back. Nothing was downloaded.`);
     }
     if (compareVersions(m.version, this.minVersion) < 0) {
       throw new Error(`release ${m.version} is older than ${this.minVersion}, the oldest this browser installs; nothing was downloaded`);
     }
-    await this._rememberSequence(m.sequence);
+    await this._rememberSequence(m.sequence, stored);
     m.digest = crypto.createHash('sha256').update(bytes).digest('hex');
     return m;
   }
@@ -360,6 +384,9 @@ class VpnInstaller {
     // installed one fixed.
     let installed = null;
     try { installed = await this.installedVersion(); } catch { installed = null; }
+    if (!VERSION_RE.test(String(installed || ''))) {
+      try { installed = await this.installedMark(); } catch { installed = null; }
+    }
     let downgrade = false;
     if (VERSION_RE.test(String(installed || '')) && compareVersions(m.version, installed) < 0) {
       let yes = false;

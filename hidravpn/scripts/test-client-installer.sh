@@ -91,6 +91,8 @@ OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" 2>&1); RC=$?
 OUT=$("$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" --allow-downgrade 2>&1); RC=$?
 [ $RC = 69 ] && cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service && grep -q "^stop hidravpn" "$HV_SYSTEMCTL_LOG" \
   && pass "with --allow-downgrade it goes back on purpose" || fail "--allow-downgrade: rc=$RC $OUT"
+# Whatever happened, the checks below run against the real installed copy.
+cmp -s "$BIN/hidravpn-service" /usr/local/bin/hidravpn-service || cp "$W/installed.bak" /usr/local/bin/hidravpn-service
 
 : > "$HV_SYSTEMCTL_LOG"
 OUT=$("$W/dl/hidravpn-service" install --user 'x;id' 2>&1); RC=$?

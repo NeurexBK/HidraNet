@@ -85,11 +85,14 @@ function elevatedPlan(file, args, env) {
 // What the page passes install() after checkRelease() showed it `text`.
 const approval = (text) => ({ version: JSON.parse(text).version, digest: sha(Buffer.from(text, 'utf8')) });
 
-function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCode = 0, user = 'joao', ...more } = {}) {
+// The installed copy on this machine, if any, is never read: `installedMark`
+// is stood in for unless a test passes its own (or undefined, for the real one).
+function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCode = 0, user = 'joao', env = { ProgramFiles: 'C:\\Program Files' }, ...more } = {}) {
   const fetched = [];
   const ran = [];
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hv-inst-test-'));
   const inst = new VpnInstaller({
+    installedMark: async () => null,
     ...more,
     manifestUrl: 'https://hidranet.org/vpn/release/manifest.json',
     publicKey: PUB,
@@ -97,7 +100,7 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     arch: 'x64',
     tmpRoot,
     user,
-    env: { ProgramFiles: 'C:\\Program Files' },
+    env,
     fetchText: async (url) => {
       fetched.push(url);
       if (url.endsWith('.sig')) return sig !== undefined ? sig : sign(text);
@@ -233,7 +236,7 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
       platforms: { 'linux-x64': { files: [own('hidravpn-service'), own('hidravpn')], service: 'hidravpn-service', client: 'hidravpn' } } });
     const inst = new VpnInstaller({
       manifestUrl: 'https://hidranet.org/vpn/release/manifest.json', publicKey: PUB, platform: 'linux', arch: 'x64',
-      tmpRoot: work, privRoot, user: 'joao', ...opts,
+      tmpRoot: work, privRoot, user: 'joao', installedMark: async () => null, ...opts,
       fetchText: async (url) => (url.endsWith('.sig') ? sign(text) : text),
       fetchBuffer: async (url) => files[url.split('/').pop()],
       run: (file, args) => new Promise((resolve) => {
@@ -464,9 +467,54 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
       assert.strictEqual(r.ok, true, `${installed}: ${r.error}`);
       assert.deepStrictEqual([asked.length, ran[0].plan.downgrade], [0, false], String(installed));
     }
-    // A service that cannot be asked is no reason to refuse.
+    // A service that cannot be asked, with no version on disk either (a
+    // build from before the mark, or nothing installed), is no reason to
+    // refuse.
     const { inst, approved } = rig({ installedVersion: async () => { throw new Error('no service'); } });
     assert.strictEqual((await inst.install(approved)).ok, true);
+  });
+
+  await check('a service that does not answer is still not gone back over: its version is read from the installed copy', async () => {
+    // Stopped, or this account not yet in its group: status has no version.
+    for (const status of [async () => null, async () => { throw new Error('no-permission'); }]) {
+      const asked = [];
+      const { inst, fetched, ran, approved } = rig({
+        installedVersion: status,
+        installedMark: async () => '0.6.0',
+        confirmDowngrade: async (q) => { asked.push(q); return false; },
+      });
+      const r = await inst.install(approved);
+      assert.ok(!r.ok && /HidraVPN 0\.6\.0 is installed, which is newer than the release offered \(0\.5\.0\)/.test(r.error), r.error);
+      assert.deepStrictEqual(asked, [{ installed: '0.6.0', offered: '0.5.0' }]);
+      assert.ok(fetched.every((u) => /manifest\.json(\.sig)?$/.test(u)) && ran.length === 0);
+    }
+    // The real reader: the installed service's own file (here on Windows,
+    // under a Program Files of the test's own), never run.
+    const pf = fs.mkdtempSync(path.join(os.tmpdir(), 'hv-pf-'));
+    const exe = installedService('win32', { ProgramFiles: pf });
+    fs.mkdirSync(path.dirname(exe), { recursive: true });
+    const cases = [
+      [Buffer.from('MZ service\0hidravpn-service-version=0.6.0\0', 'latin1'), 1],
+      [Buffer.from('MZ service from before the mark', 'latin1'), 0],
+      [null, 0],
+    ];
+    for (const [bytes, questions] of cases) {
+      fs.rmSync(exe, { force: true });
+      if (bytes) fs.writeFileSync(exe, bytes);
+      const asked = [];
+      const { inst, approved } = rig({
+        platform: 'win32', env: { ProgramFiles: pf }, installedMark: undefined,
+        installedVersion: async () => null,
+        confirmDowngrade: async (q) => { asked.push(q); return false; },
+      });
+      const r = await inst.install(approved);
+      assert.strictEqual(asked.length, questions, String(bytes));
+      assert.strictEqual(r.ok, questions === 0, r.error);
+    }
+    // What the service says comes first when it does answer.
+    const { inst, approved } = rig({ installedVersion: async () => '0.5.0', installedMark: async () => { throw new Error('not read'); } });
+    assert.strictEqual((await inst.install(approved)).ok, true);
+    fs.rmSync(pf, { recursive: true, force: true });
   });
 
   await check('Linux, for real: going back, agreed to, reaches the service as --allow-downgrade', async () => {
@@ -545,6 +593,15 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).sequence, 9);
     await rig({ text: seq5, stateFile }).inst.checkRelease();
     assert.strictEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).sequence, 9);
+    // A write that failed is tried again on the next accept, not lost
+    // because this run already knows the sequence.
+    const gone = path.join(dir, 'not-yet', 'vpn-release.json');
+    const w = rig({ text: seq9, stateFile: gone });
+    assert.strictEqual((await w.inst.checkRelease()).ok, true);
+    assert.ok(!fs.existsSync(gone));
+    fs.mkdirSync(path.dirname(gone));
+    assert.strictEqual((await w.inst.checkRelease()).ok, true);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(gone, 'utf8')), { sequence: 9 });
     // Without a file the floor holds for the run.
     const mem = rig({ text: seq5 });
     assert.strictEqual((await mem.inst.checkRelease()).ok, true);

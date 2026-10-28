@@ -118,8 +118,9 @@ async function fetchBuffer(url, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-// The installer asks the service which version is installed, so it never
-// puts an older one over it without asking the person first.
+// The installer asks the service which version is installed (and, when it
+// does not answer, reads it from the installed copy), so it never puts an
+// older one over it without asking the person first.
 const vpnInstaller = new VpnInstaller({
   manifestUrl: VPN_RELEASE_URL,
   fetchText,

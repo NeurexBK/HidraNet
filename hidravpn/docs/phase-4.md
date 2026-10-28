@@ -264,12 +264,15 @@ page that were still missing.
   page was shown: the page passes the version and digest "Check for an
   update" returned, and a manifest fetched again that differs stops the
   install before anything is downloaded. A release older than the service
-  the machine runs is installed only after the browser's own dialog asks the
-  person, separately; the service then has to be told too: `install` reads
+  the machine has (as the service says, or, when it is stopped or this
+  account cannot ask it, as the version written in the installed copy says)
+  is installed only after the browser's own dialog asks the person,
+  separately; the service then has to be told too: `install` reads
   the version written in the installed copy and refuses to replace a newer one
   without `--allow-downgrade`. The 0.1.0 manifest, from before `sequence` and
   `expires`, counts as sequence 0 with no expiry, so it still installs until
-  a later one has been seen.
+  a later one has been seen, or until `MIN_VERSION` is raised past it
+  (code-signing.md says when).
 - **A one-click leak test** (`src/main/vpn-leaktest.js`). While connected, it
   asks api.ipify.org and api6.ipify.org which address they see — from a
   session with no proxy, as any other program on the machine would, because
