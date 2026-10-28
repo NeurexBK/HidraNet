@@ -137,6 +137,92 @@ else bad('only this machine goes around the proxy', 'proxy-manager.js bypasses t
 if (/endsWith\('\.localhost'\)/.test(lock)) ok('the apps\' own hosts count as this machine for the lock');
 else bad('the apps\' own hosts count as this machine for the lock', 'network-lock.js would block the apps');
 
+// ── What carries the traffic ─────────────────────────────────────────────
+//
+// Connecting means Tor (main.js, proxy:connect). The HidraNet engine has a
+// post-quantum Noise handshake and a DHT, but carries none of the browsing,
+// and the apps meet on public MQTT brokers. The panel and the homepage named
+// the engine's primitives as if they protected the browser: a cipher name on
+// every hop, "encrypted" past the exit, ML-KEM in the footer.
+
+const mainJs = fs.readFileSync(path.join(MAIN, 'main.js'), 'utf8');
+const ENGINE_TERMS = /ML-KEM|Kyber|[Qq]uantum|\bNoise\b|BLAKE3|ChaCha20|AES-\d+|Kademlia|\bDHT\b/;
+const text = (html) => html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
+const markup = (html) => html.replace(/<!--[\s\S]*?-->/g, (c) => ' '.repeat(c.length));
+
+const routedByTor = /ipcMain\.handle\('proxy:connect'[\s\S]{0,200}?connectTor\(/.test(mainJs);
+if (!routedByTor) {
+  bad('what carries the traffic', 'main.js no longer connects through Tor: say what does, here and on the panel');
+} else {
+  const page = markup(newtab);
+  const hit = page.match(ENGINE_TERMS);
+  if (hit) {
+    bad(
+      'the panel names what really carries the traffic',
+      `newtab.html says "${hit[0]}", a primitive of the HidraNet engine, which carries none of the browsing (connecting means Tor)`
+    );
+  } else {
+    ok('the panel names no engine primitive the browsing does not use');
+  }
+
+  const hops = [...page.matchAll(/<span class="line-encrypted[^"]*">([^<]*)<\/span>/g)].map((m) => m[1].trim());
+  if (hops.length !== 4) {
+    bad('circuit labels', `expected four links (you, guard, middle, exit, site), found ${hops.length}`);
+  } else if (!hops.slice(0, 3).every((h) => /^Tor\b/.test(h))) {
+    bad('circuit labels', 'the hops to the exit are not labelled as Tor: ' + hops.slice(0, 3).join(' / '));
+  } else if (!/if the site uses HTTPS/i.test(hops[3])) {
+    bad(
+      'circuit labels',
+      `the link past the exit says "${hops[3]}". There is no HTTPS-only mode, so a plain-HTTP site leaves the exit in clear text`
+    );
+  } else {
+    ok('circuit labels: Tor to the exit, TLS past it only if the site uses HTTPS');
+  }
+
+  const dest = page.match(/<div class="circuit-node destination">[\s\S]*?<span class="node-ip">([^<]*)<\/span>/);
+  if (!dest) bad('the site the circuit ends at', 'could not find the destination node');
+  else if (/encrypt|secure|protected/i.test(dest[1])) bad('the site the circuit ends at', `labelled "${dest[1]}", which depends on the site`);
+  else ok('the site the circuit ends at is not labelled encrypted');
+
+  const foot = page.match(/<footer class="footer">([\s\S]*?)<\/footer>/);
+  if (!foot) bad('panel footer', 'could not find the footer');
+  else if (!/\bTor\b/.test(text(foot[1])) || !/MQTT brokers/.test(text(foot[1]))) {
+    bad('panel footer', 'the footer does not say that browsing goes through Tor and the apps through public MQTT brokers');
+  } else ok('panel footer: browsing through Tor, apps through public brokers');
+}
+
+// The homepage: an engine primitive may be named only on a card that says
+// it is the engine's and that the engine does not carry the traffic yet. A
+// stat, a chip or the page description cannot carry that qualification, so
+// there it is not allowed at all.
+const home = markup(fs.readFileSync(path.join(__dirname, '..', '..', 'landing', 'index.html'), 'utf8'))
+  .replace(/<(style|script)\b[\s\S]*?<\/\1>/g, (c) => ' '.repeat(c.length));
+const cards = [...home.matchAll(/<article\b[\s\S]*?<\/article>/g)].map((m) => ({ from: m.index, to: m.index + m[0].length, html: m[0], text: text(m[0]) }));
+const unqualified = [];
+for (const m of home.matchAll(new RegExp(ENGINE_TERMS.source, 'g'))) {
+  const card = cards.find((c) => m.index >= c.from && m.index < c.to);
+  const where = card ? card.text.slice(0, 80) : home.slice(Math.max(0, m.index - 60), m.index + 40).replace(/\s+/g, ' ');
+  if (!card || !/HidraNet engine/.test(card.text) || !/does not carry|not yet carr/i.test(card.text)) {
+    unqualified.push(`"${m[0]}" in: ${where}`);
+  }
+}
+if (unqualified.length) {
+  bad('homepage engine claims', 'named as if they protected the browser:\n      ' + unqualified.join('\n      '));
+} else {
+  ok('homepage: engine primitives only where it says the engine does not carry the traffic yet');
+}
+
+const browserCard = cards.find((c) => /<h3>HidraBrowser<\/h3>/.test(c.html));
+if (!browserCard) bad('homepage HidraBrowser card', 'could not find the HidraBrowser product card');
+else if (!/\bTor\b/.test(browserCard.text)) bad('homepage HidraBrowser card', 'the card does not say the browser goes through Tor');
+else ok('homepage HidraBrowser card: says it is Tor');
+
+if (/MQTT_BROKERS/.test(fs.readFileSync(path.join(UI, 'hidrachat.html'), 'utf8')) && !/public MQTT brokers/.test(text(home))) {
+  bad('homepage apps', 'the apps meet on public MQTT brokers and the homepage never says so');
+} else {
+  ok('homepage apps: says they meet on public MQTT brokers');
+}
+
 if (failed) {
   console.log('\n' + failed + ' claim(s) the browser does not keep');
   process.exit(1);
