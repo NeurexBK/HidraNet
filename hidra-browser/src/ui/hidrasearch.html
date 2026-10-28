@@ -458,49 +458,76 @@ function goHome() {
   } catch(e) {}
 }
 
+// The query and every result are a stranger's text: a website can open this
+// page with ?q= of its choosing, and results are scraped from search engines.
+// So results are built as elements, with text set as text and handlers
+// attached here, never as markup with the query pasted in (a suggestion once
+// carried it inside onclick="...", where a quote ended the attribute).
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+
+function emptyView(title, lines) {
+  var box = el('div', 'empty');
+  box.appendChild(el('h3', null, title));
+  var p = el('p');
+  lines.forEach(function(line, i) {
+    if (i) p.appendChild(document.createElement('br'));
+    p.appendChild(document.createTextNode(line));
+  });
+  box.appendChild(p);
+  return box;
+}
+
 function renderResults(data, q) {
   var meta = document.getElementById('resultsMeta');
   var list = document.getElementById('resultsList');
+  meta.textContent = '';
+  list.textContent = '';
 
   if (!data.results || data.results.length === 0) {
-    meta.innerHTML = 'No results for <strong>' + esc(q) + '</strong>';
-    list.innerHTML = [
-      '<div class="empty">',
-      '  <h3>No results found</h3>',
-      '  <p>Try different keywords, or check the spelling.</p>',
-      '  <div class="suggest">',
-      suggestionsFor(q).map(function(s) {
-        return '<span class="tag" onclick="doSearch(' + JSON.stringify(s) + ',1)">' + esc(s) + '</span>';
-      }).join(''),
-      '  </div>',
-      '</div>'
-    ].join('\n');
+    meta.appendChild(document.createTextNode('No results for '));
+    meta.appendChild(el('strong', null, q));
+    var empty = emptyView('No results found', ['Try different keywords, or check the spelling.']);
+    var suggest = el('div', 'suggest');
+    suggestionsFor(q).forEach(function(s) {
+      var tag = el('span', 'tag', s);
+      tag.addEventListener('click', function() { doSearch(s, 1); });
+      suggest.appendChild(tag);
+    });
+    empty.appendChild(suggest);
+    list.appendChild(empty);
     return;
   }
 
-  var elapsed = data.elapsed_ms ? (' in ' + data.elapsed_ms + 'ms') : '';
-  meta.innerHTML =
-    data.results.length + ' results' + elapsed + ' — ' +
-    '<span class="privacy-pill"><span class="dot" style="width:4px;height:4px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:3px"></span>Local proxy active</span>';
+  var ms = Number(data.elapsed_ms);
+  var elapsed = ms > 0 ? (' in ' + Math.round(ms) + 'ms') : '';
+  meta.appendChild(document.createTextNode(data.results.length + ' results' + elapsed + ' — '));
+  var pill = el('span', 'privacy-pill');
+  var dot = el('span', 'dot');
+  dot.style.cssText = 'width:4px;height:4px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:3px';
+  pill.appendChild(dot);
+  pill.appendChild(document.createTextNode('Local proxy active'));
+  meta.appendChild(pill);
 
-  list.innerHTML = data.results.map(function(r) {
+  data.results.forEach(function(r) {
     var domain = '';
-    try { domain = new URL(r.url).hostname.replace('www.', ''); } catch(e) { domain = r.url; }
-    var engine = r.engine ? '<span class="result-engine">' + esc(r.engine) + '</span>' : '';
-    var snippet = r.snippet
-      ? '<div class="result-snippet">' + esc(r.snippet) + '</div>'
-      : '';
-    return [
-      '<div class="result">',
-      '  <div class="result-domain">',
-      '    <span class="favicon">' + esc(domain.charAt(0).toUpperCase()) + '</span>',
-      '    ' + esc(domain) + engine,
-      '  </div>',
-      '  <a class="result-title" href="' + escAttr(r.url) + '">' + esc(r.title) + '</a>',
-      snippet,
-      '</div>'
-    ].join('\n');
-  }).join('\n');
+    try { domain = new URL(r.url).hostname.replace('www.', ''); } catch(e) { domain = String(r.url || ''); }
+    var item = el('div', 'result');
+    var head = el('div', 'result-domain');
+    head.appendChild(el('span', 'favicon', domain.charAt(0).toUpperCase()));
+    head.appendChild(document.createTextNode(domain));
+    if (r.engine) head.appendChild(el('span', 'result-engine', r.engine));
+    item.appendChild(head);
+    var link = el('a', 'result-title', r.title || '');
+    link.href = webHref(r.url);
+    item.appendChild(link);
+    if (r.snippet) item.appendChild(el('div', 'result-snippet', r.snippet));
+    list.appendChild(item);
+  });
 
   // Pagination
   var hasPrev = currentPage > 1;
@@ -515,42 +542,36 @@ function renderResults(data, q) {
 
 function renderError(msg, q) {
   var list = document.getElementById('resultsList');
-  var isMqtt = msg.indexOf('All') !== -1 || msg.indexOf('fetch') !== -1 || msg.indexOf('net') !== -1;
-  list.innerHTML = [
-    '<div class="empty">',
-    '  <h3>Search unavailable</h3>',
-    '  <p>Could not fetch results right now.<br>',
-    '     Check your internet connection and try again.</p>',
-    '  <div class="suggest" style="margin-top:16px">',
-    '    <a class="tag" href="https://duckduckgo.com/?q=' + encodeURIComponent(q) + '" style="text-decoration:none">DuckDuckGo</a>',
-    '    <a class="tag" href="https://search.brave.com/search?q=' + encodeURIComponent(q) + '" style="text-decoration:none">Brave Search</a>',
-    '    <a class="tag" href="https://searx.be/search?q=' + encodeURIComponent(q) + '" style="text-decoration:none">SearXNG</a>',
-    '  </div>',
-    '</div>'
-  ].join('\n');
+  list.textContent = '';
+  var empty = emptyView('Search unavailable', ['Could not fetch results right now.', 'Check your internet connection and try again.']);
+  var suggest = el('div', 'suggest');
+  suggest.style.marginTop = '16px';
+  [
+    ['DuckDuckGo', 'https://duckduckgo.com/?q='],
+    ['Brave Search', 'https://search.brave.com/search?q='],
+    ['SearXNG', 'https://searx.be/search?q='],
+  ].forEach(function(engine) {
+    var a = el('a', 'tag', engine[0]);
+    a.href = engine[1] + encodeURIComponent(q);
+    a.style.textDecoration = 'none';
+    suggest.appendChild(a);
+  });
+  empty.appendChild(suggest);
+  list.appendChild(empty);
 }
 
 function suggestionsFor(q) {
   return [q + ' download', q + ' tutorial', q + ' free', '"' + q + '"'];
 }
 
-function esc(s) {
-  if (!s) return '';
-  return String(s)
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;')
-    .replace(/'/g,'&#39;');
-}
 // A link from a result: a web address or nothing. The browser filters these
 // too; this holds even if a result reaches the page some other way.
-function escAttr(s) {
+function webHref(s) {
   if (!s) return '#';
   try {
     var u = new URL(String(s));
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return '#';
-    return esc(u.href);
+    return u.href;
   } catch (e) { return '#'; }
 }
 </script>

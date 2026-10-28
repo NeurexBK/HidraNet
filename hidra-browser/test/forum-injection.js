@@ -8,10 +8,16 @@
 //
 //   - markdown: esc() once left quotes alone, so ![x](https://a"onerror="...)
 //     closed the src attribute of the image it made;
+//   - markdown again: a bare URL inside the alt text of an image, or inside
+//     the address of a link or an image, was linked a second time by the
+//     autolink pass, right inside the attribute the first pass had made, and
+//     the quotes of that second link ended the attribute;
 //   - the post id and the relay topic, once pasted into onclick="report('...')".
 //
-// It reads every topic, presses every button, and checks that ordinary
-// markdown still renders and that Report and Delete act on their own post.
+// It reads every topic, presses every button, checks that every post body
+// holds only the elements and attributes markdown makes, and checks that
+// ordinary markdown still renders and that Report and Delete act on their
+// own post.
 //
 //   cd hidra-browser && xvfb-run -a npx electron test/forum-injection.js
 
@@ -32,7 +38,16 @@ const BODIES = [
   `<img src=x onerror="${PWN}">`,
   `\`<img src=x onerror=${PWN}>\``,
   `**<svg onload=${PWN}>**`,
+  `![see https://a.example/p onerror=${PWN} x](https://a.example/i.png)`,
+  `![x](https://a.example/i.png?https://b.example/p onerror=${PWN})`,
+  `[see https://a.example/p onmouseover=${PWN} x](https://a.example/)`,
+  `[x](https://a.example/?https://b.example/p onmouseover=${PWN})`,
+  `![https://a.example/p](https://a.example/i.png) [https://b.example/q](https://b.example/?https://c.example/)`,
+  `https://a.example/it's'onmouseover='${PWN}`,
+  `https://a.example/(x'onmouseover='${PWN})`,
 ];
+// What markdown makes, and the only attributes each may carry.
+const ALLOWED = { B: [], I: [], CODE: [], BR: [], A: ['href', 'target', 'rel'], IMG: ['src', 'alt'] };
 const BAD_IDS = [
   `t1"><img src=x onerror="${PWN}">`,
   `tabcdefghij');${PWN};('`,
@@ -108,15 +123,30 @@ app.whenReady().then(async () => {
     // The control, and one of the reader's own.
     await signedTopic(eve, __ids.good, { title: 'good', body: '**bold** *it* \`code\` [link](https://example.com/a) https://example.org/b' });
     await signedTopic(state.me, __ids.mine, { title: 'mine', nick: state.me.nick });
-  })(); 1`);
+  })()`);
+  // Every post is in before the reading below starts, or it reads nothing.
   await sleep(500);
 
   // Read every topic as a moderator would see it, hover and press everything.
   await run(`(async () => {
     state.mod = true;
+    window.__bodies = [];
+    window.__inspected = 0;
+    const ALLOWED = ${JSON.stringify(ALLOWED)};
     for (const id of Object.keys(state.topics)) {
       if (id === __ids.mine || id === __ids.good) continue;
       openTopic(id);
+      // Every element in a post body is one markdown makes, with only its own
+      // attributes, and every address is a web address.
+      __inspected += document.querySelectorAll('#view .p-body').length;
+      document.querySelectorAll('#view .p-body').forEach((b) => b.querySelectorAll('*').forEach((e) => {
+        const ok = ALLOWED[e.tagName];
+        const bad = !ok ? ['<' + e.tagName + '>'] : [...e.attributes].map((a) => a.name).filter((n) => !ok.includes(n));
+        for (const n of ['href', 'src']) {
+          if (e.hasAttribute(n) && !/^https?:\\/\\/[^\\s"<>]+$/.test(e.getAttribute(n))) bad.push(n + '=' + e.getAttribute(n));
+        }
+        if (bad.length) __bodies.push(b.innerHTML + '  ->  ' + bad.join(' '));
+      }));
       document.querySelectorAll('[onmouseover]').forEach((e) => e.dispatchEvent(new MouseEvent('mouseover')));
       document.querySelectorAll('#view .p-foot a').forEach((a) => { try { a.click(); } catch (e) {} });
       await new Promise((r) => setTimeout(r, 20));
@@ -130,6 +160,8 @@ app.whenReady().then(async () => {
     topics: Object.keys(state.topics).length,
     injected: document.querySelectorAll('#list img, #view img, [onmouseover], [onerror], [onload]').length,
     inline: [...document.querySelectorAll('#list [onclick], #view [onclick]')].map((e) => e.getAttribute('onclick')),
+    bodies: window.__bodies,
+    inspected: window.__inspected,
     ids: Object.keys(state.topics).concat(Object.keys(state.replies)),
     bound: Object.entries(state.topics).filter(([k, t]) => t.id !== k).length,
   })`);
@@ -138,6 +170,10 @@ app.whenReady().then(async () => {
   check('no script from a post ran', seen.pwned === 0, `window.__pwned = ${seen.pwned}`);
   check('no element or handler was injected through a post', seen.injected === 0, `${seen.injected} injected`);
   check('no button carries script built from post data', seen.inline.length === 0, seen.inline.join(' | '));
+  // A signed topic and its reply, and the same unsigned, for every body.
+  check('every hostile post body was read', seen.inspected >= 3 * BODIES.length, `${seen.inspected} read`);
+  check('every post body holds only what markdown makes, with no attribute but its own',
+    seen.bodies.length === 0, seen.bodies.slice(0, 4).join('\n      '));
   const badIds = seen.ids.filter((x) => !/^[tr][a-z2-7]{10}$/.test(x));
   check('a post whose relay topic is not a plain id is not kept', badIds.length === 0, JSON.stringify(badIds));
   check('a post is known by the topic it sits under, not by the id it claims', seen.bound === 0);
@@ -164,6 +200,40 @@ app.whenReady().then(async () => {
   check('ordinary markdown still renders',
     /<b>bold<\/b>/.test(good) && /<i>it<\/i>/.test(good) && /<code>code<\/code>/.test(good)
     && /<a href="https:\/\/example.com\/a"[^>]*>link<\/a>/.test(good) && /<a href="https:\/\/example.org\/b"/.test(good), good);
+
+  // A URL inside alt text, link text or an address stays where it was written.
+  const nested = await run(`(() => {
+    const dom = (h) => { const d = document.createElement('div'); d.innerHTML = h; return d; };
+    const img = dom(md('![see https://example.org/a](https://example.org/b.png)'));
+    const link = dom(md('[see https://example.org/a](https://example.org/b)'));
+    const addr = dom(md('[x](https://example.org/?u=https://example.net/)'));
+    const bold = dom(md('**https://example.org/c**'));
+    const code = dom(md('\`a\\nb\`'));
+    const apos = dom(md("https://example.org/it's"));
+    const paren = dom(md('(see https://example.org/a_(b) or https://example.org/c)'));
+    return {
+      img: img.children.length === 1 && img.firstChild.tagName === 'IMG'
+        && img.firstChild.getAttribute('alt') === 'see https://example.org/a'
+        && img.firstChild.getAttribute('src') === 'https://example.org/b.png' && img.firstChild.attributes.length === 2,
+      link: link.querySelectorAll('a').length === 1 && link.querySelector('a').textContent === 'see https://example.org/a'
+        && link.querySelector('a').getAttribute('href') === 'https://example.org/b',
+      addr: addr.querySelectorAll('a').length === 1
+        && addr.querySelector('a').getAttribute('href') === 'https://example.org/?u=https://example.net/',
+      bold: bold.querySelector('b > a[href="https://example.org/c"]') !== null,
+      code: code.querySelector('code > br') !== null && code.querySelector('code').textContent === 'ab',
+      apos: apos.querySelectorAll('a').length === 1 && apos.querySelector('a').getAttribute('href') === "https://example.org/it's"
+        && apos.querySelector('a').textContent === "https://example.org/it's",
+      paren: [...paren.querySelectorAll('a')].map((a) => a.getAttribute('href')).join(' ') === 'https://example.org/a_(b https://example.org/c',
+      html: [img.innerHTML, link.innerHTML, addr.innerHTML, bold.innerHTML, code.innerHTML, apos.innerHTML, paren.innerHTML],
+    };
+  })()`);
+  check('a URL in the alt text of an image stays alt text', nested.img, nested.html[0]);
+  check('a URL in the text of a link stays its text', nested.link, nested.html[1]);
+  check('a URL in the address of a link stays in the address', nested.addr, nested.html[2]);
+  check('a bold URL is a link in bold', nested.bold, nested.html[3]);
+  check('a line break in inline code stays a line break', nested.code, nested.html[4]);
+  check('a bare URL with an apostrophe is linked in full', nested.apos, nested.html[5]);
+  check('a bare URL keeps an opening parenthesis and ends at a closing one', nested.paren, nested.html[6]);
 
   win.destroy();
   console.log(`\n${passed} passed, ${failed} failed`);
