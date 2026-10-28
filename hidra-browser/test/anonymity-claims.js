@@ -74,29 +74,29 @@ for (const { claim, evidence, where, source } of UNCONDITIONAL) {
   else bad(claim, 'the panel claims it, but nothing in ' + where + ' does it');
 }
 
-// ── The claim that depends on being connected ────────────────────────────
+// ── DNS: no name reaches this machine's resolver ─────────────────────────
+//
+// The badge used to follow the connection: "Active" while routed, "Not
+// routed" otherwise, because disconnected Chromium resolved names itself. It
+// did so connected, too, for a page's dns-prefetch hints, which no proxy and
+// no request filter sees. Now Chromium resolves nothing but this machine's own
+// names in any state, so the badge is fixed, and it is true only while the
+// switch that does it is there and maps every other name to nothing.
 
-const dnsRow = newtab.match(
-  /DNS Leak Protection[\s\S]{0,400}?<\/div>\s*<\/div>/
-);
+const main = fs.readFileSync(path.join(MAIN, 'main.js'), 'utf8');
+const lockSrc = fs.readFileSync(path.join(MAIN, 'network-lock.js'), 'utf8');
+const rules = (lockSrc.match(/const HOST_RESOLVER_RULES = '([^']*)'/) || [])[1];
+const dnsRow = newtab.match(/DNS Leak Protection[\s\S]{0,400}?<\/div>\s*<\/div>/);
 if (!dnsRow) {
   bad('DNS Leak Protection', 'could not find the row in newtab.html');
-} else if (/setting-badge"[^>]*>\s*(Active|Enforced|Blocked|Stripped)\s*</.test(dnsRow[0])) {
-  bad(
-    'DNS Leak Protection',
-    'the badge is hardcoded. Names only reach an exit relay while traffic is ' +
-      'routed through the engine; disconnected, this machine resolves them ' +
-      'itself, and the badge would be claiming otherwise.'
-  );
-} else if (!/id="dns-badge"/.test(dnsRow[0])) {
-  bad('DNS Leak Protection', 'the badge has no id, so nothing can update it');
-} else if (!/dns-badge[\s\S]*?Not routed/.test(newtab)) {
-  bad(
-    'DNS Leak Protection',
-    'the badge is driven from script, but nothing ever sets the disconnected state'
-  );
+} else if (!/appendSwitch\('host-resolver-rules', HOST_RESOLVER_RULES\)/.test(main)) {
+  bad('DNS Leak Protection', 'main.js no longer gives Chromium the host-resolver-rules switch, so a page\'s dns-prefetch hint reaches the system resolver');
+} else if (!rules || !/^MAP \* ~NOTFOUND(, EXCLUDE [^,]+)*$/.test(rules)) {
+  bad('DNS Leak Protection', 'HOST_RESOLVER_RULES does not map every name to NOTFOUND: ' + rules);
+} else if (rules.split(', ').slice(1).some((r) => !['EXCLUDE localhost', 'EXCLUDE *.localhost', 'EXCLUDE 127.0.0.1', 'EXCLUDE ::1'].includes(r))) {
+  bad('DNS Leak Protection', 'HOST_RESOLVER_RULES lets Chromium resolve a name that is not this machine: ' + rules);
 } else {
-  ok('DNS Leak Protection: driven from the live connection state');
+  ok('DNS Leak Protection: Chromium resolves only this machine\'s names, in every state');
 }
 
 // ── No relay address reaches the panel ───────────────────────────────────
@@ -136,6 +136,42 @@ if (/LOOPBACK_ONLY = 'localhost,\*\.localhost,127\.0\.0\.1,\[::1\]'/.test(proxy)
 else bad('only this machine goes around the proxy', 'proxy-manager.js bypasses the proxy for more than loopback');
 if (/endsWith\('\.localhost'\)/.test(lock)) ok('the apps\' own hosts count as this machine for the lock');
 else bad('the apps\' own hosts count as this machine for the lock', 'network-lock.js would block the apps');
+
+// ── "Nothing left this computer" ────────────────────────────────────────
+//
+// The page a blocked tab shows says so. It holds only if no session is ever
+// left on a route of its own while the lock is shut: Disconnect and a Tor
+// crash used to set every session to 'direct', and tabs started out on
+// whatever answered on port 9050. Every session now gets Tor's route from the
+// lock the moment it is made, and nothing else sets one.
+const mainDir = fs.readdirSync(MAIN).filter((f) => f.endsWith('.js'))
+  .map((f) => [f, fs.readFileSync(path.join(MAIN, f), 'utf8')]);
+const direct = mainDir.filter(([, src]) => /mode:\s*['"]direct['"]|direct:\/\//.test(src)).map(([f]) => f);
+const setters = mainDir.filter(([f, src]) => f !== 'network-lock.js' && /\.setProxy\(/.test(src)
+  && src.replace(/probe\.setProxy\(\{ proxyRules, proxyBypassRules: LOOPBACK_ONLY \}\)/, '').includes('.setProxy(')).map(([f]) => f);
+if (!tabManager.includes('Nothing left this computer')) bad('the block page', 'it no longer makes this claim — drop it from this test');
+else if (direct.length) bad('the block page', 'a session can be set to direct in ' + direct.join(', '));
+else if (setters.length) bad('the block page', 'something besides the network lock gives a browsing session its route: ' + setters.join(', '));
+else if (!/protect\(electronSession\) \{[\s\S]*?setProxy\(this\.proxyConfig\(\)\)/.test(lock)) bad('the block page', 'the lock no longer routes the sessions it protects');
+else if (/9050|_probeSocks|configure\(/.test(proxy.replace(/^\s*\/\/.*$/gm, ''))) bad('the block page', 'proxy-manager.js still looks for a SOCKS proxy on 9050');
+else ok('the block page: no session is ever routed anywhere but Tor');
+
+// It also holds only while the lock is shut whenever Tor is not running. A
+// connect awaits its checks before opening, and a Disconnect or a Tor crash
+// during them used to be undone by the release that followed. And Disconnect
+// stopped Tor before closing, leaving Tor's port free behind an open lock.
+const connectBody = (main.match(/async function connectTorOnce\(\) \{[\s\S]*?\n\}/) || [''])[0];
+const disconnectBody = (main.match(/'proxy:disconnect'[\s\S]*?\n {2}\}\);/) || [''])[0];
+if (!/const generation = networkLock\.generation;\s*(\/\/.*\s*)*const started = await torManager\.start/.test(connectBody)) {
+  bad('the block page', 'connectTorOnce no longer takes the lock\'s generation before it awaits anything');
+} else if ((connectBody.match(/networkLock\.release\(/g) || []).length !== 1
+  || !/getStatus\(\)\.state !== 'ready' \|\| !networkLock\.release\(generation\)/.test(connectBody)) {
+  bad('the block page', 'connectTorOnce can open the lock without checking that Tor is still up and nothing closed it since');
+} else if (!/networkLock\.engage\('disconnected by the user'\);\s*await torManager\.stop\(\);/.test(disconnectBody)) {
+  bad('the block page', 'Disconnect stops Tor before it closes the lock');
+} else {
+  ok('the block page: a late connect cannot reopen the lock, and Disconnect closes it first');
+}
 
 // ── What carries the traffic ─────────────────────────────────────────────
 //
