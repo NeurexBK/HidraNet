@@ -44,21 +44,23 @@ see most two-hop clients' addresses, for a while.
 
 - **From the tunnel it forwards only two ports:** UDP 51820 (WireGuard) and
   TCP 51821 (the one admission request a client makes to an exit, so that the
-  exit is asked from the entry's address and never from the client's). The node
-  has no list of nodes, so it forwards those two ports to **any** address, not
-  only to nodes. It also answers its clients' DNS, resolving through Quad9 and
+  exit is asked from the entry's address and never from the client's), and a
+  client may hold at most 4 such requests open through it at once. The node
+  has no list of nodes, so it forwards those two ports to **any public**
+  address, not only to nodes; private, link-local and reserved addresses
+  (your provider's network, its metadata service) are never reached through
+  it. It also answers its clients' DNS, resolving through Quad9 and
   Cloudflare over HTTPS. Everything else from the tunnel is dropped by the
   node's own firewall rules: web, mail and every other port never leave from an
   entry.
-- **It admits clients openly**, with limits. A client normally asks for a key
+- **It admits clients openly**, with limits. A client asks an entry for a key
   valid for one connection, and each such request carries about a second of
-  proof of work; the node forgets that key ten minutes after the last packet.
-  The node admits at most 600 new one-connection keys every ten minutes, and
-  holds at most 4000 clients in all (`--max-clients`). A client may also ask for
-  a lasting key (`hidravpn nodes join`): that takes no proof of work, is limited
-  to three per address and 120 per node every ten minutes, and is forgotten
-  after 30 days without use (`--idle-days`), or after about fifteen minutes if
-  it is never used.
+  proof of work, more as the node fills; the node forgets that key ten
+  minutes after the last packet. The node admits at most 600 new
+  one-connection keys every ten minutes, and holds at most 4000 clients in all
+  (`--max-clients`). An entry gives no lasting key: it answers `hidravpn nodes
+  join` with a refusal, because a client never needs one to connect through
+  it.
 - **It keeps no traffic and writes down no address.** The node's log holds
   counts and states. The only client data on disk is
   `/var/lib/hidravpn/peers.json`: for each key admitted, its public key, its
@@ -373,9 +375,10 @@ say you cannot see addresses at all. Reply as the law-enforcement row of
 and talk to a lawyer before anything else.
 
 **Can someone use my entry to attack a site?** Only narrowly. An admitted
-client can send UDP to port 51820, or TCP to port 51821, of any host from your
-address, because the node does not check that the destination is a node.
-Nothing else leaves: the node's own firewall rules drop the rest.
+client can send UDP to port 51820, or TCP to port 51821, of any public host
+from your address, because the node does not check that the destination is a
+node. Nothing else leaves: the node's own firewall rules drop the rest, and
+private and reserved addresses are never reached.
 
 **Will this get me in trouble with my provider?** An entry looks like a small
 WireGuard server, which providers see every day. Check your provider's terms

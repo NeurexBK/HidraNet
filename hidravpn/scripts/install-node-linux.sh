@@ -237,7 +237,7 @@ Node public key:  $NODE_PUB
 Its record, for the node list:   hidravpn-node record > $NAME.json
 (send that file to whoever makes the list; scripts/make-node-list.sh signs it in)
 
-$([ "$OPEN" = 1 ] && echo "Clients that know this node (from the list, or hidravpn nodes discover $ENDPOINT) are admitted with: sudo hidravpn nodes join --all" || echo "To admit a client by hand, the person running it does:")
+$([ "$OPEN" = 1 ] && { [ "$ROLE" = entry ] && echo "Clients that know this node (from the list) ask it for a key for each connection as they connect; an entry gives no lasting lease, so there is nothing to join. To admit a client by hand, the person running it does:" || echo "Clients that know this node (from the list, or hidravpn nodes discover $ENDPOINT) are admitted with: sudo hidravpn nodes join --all"; } || echo "To admit a client by hand, the person running it does:")
   1. installs the client (hidravpn/scripts/install-linux.sh or the Windows build)
   2. runs            hidravpn pubkey --node '$NODE_PUB'      and sends you what it prints
 You then run:

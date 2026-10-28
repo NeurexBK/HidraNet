@@ -4,23 +4,33 @@
 //!
 //! `GET /` describes the node (its record, as a signed list would carry it).
 //! `POST /admit` with `{"public_key": ..., "name": ...}` admits that key and
-//! answers with its invite, unless admission is by hand (403), the source
-//! address asked too often (429), or the node is full (503). The request is
+//! answers with its invite, unless admission is by hand, or the node is an
+//! entry and the request is not for a session (403), the source address
+//! asked too often (429), or the node is full (503). The request is
 //! handed to the node's main loop, which owns the leases and the device, over
 //! a channel; this module never touches either.
 //!
-//! Limits are deliberate: a few admissions per address per ten minutes and a
-//! modest number overall, a short timeout per connection and a cap on
-//! concurrent ones, overall and per address. A script with enough addresses
-//! can still fill a node in hours, or hold its door shut while it keeps
-//! hundreds of connections open; what it cannot do is keep the node full, or
-//! touch the tunnel, because a lease that never
-//! completes a handshake lapses within a quarter of an hour (`leases.rs`),
-//! so filling a node costs real tunnels, not requests.
+//! Limits are deliberate. A lasting lease (`nodes join`) costs no work: it
+//! is counted per address (a few every ten minutes) and overall, the node
+//! keeps at most a quarter of its places for such leases, and an entry,
+//! which a client only ever asks for a key for one connection, gives none.
+//! A session costs a proof of work, more as the window of recent sessions
+//! or the node's table of leases fills, whichever is fuller, so the last
+//! places cost the most. A connection is accepted, then closed at once when
+//! the service holds all the connections it serves or the address holds
+//! its share; one that sends nothing for two seconds, or not a whole request
+//! in three, is closed. A lease that never completes a handshake lapses
+//! within a quarter of an hour (`leases.rs`), so filling a node costs real
+//! tunnels, not requests. What this does not stop: one handshake every few
+//! minutes keeps a session alive, so someone with enough processor time can
+//! still fill an open node with sessions and hold it while they keep them
+//! alive, and someone with hundreds of addresses can keep the door busy.
+//! Nodes that admit with a pass are the answer to that.
 //! Nothing here logs an address or a key: counts only.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,15 +69,38 @@ const GLOBAL_WINDOW: Duration = Duration::from_secs(600);
 /// and counting the entry's address would throttle all its clients
 /// together. They have a node-wide ceiling of their own.
 const SESSION_GLOBAL: usize = 600;
-/// Connections served at once. An idle one costs a task and a small
-/// buffer, so the cap is generous: what keeps one source from holding them
-/// all is the cap per address below, and the timeout.
-const CONNECTIONS: usize = 256;
-/// Connections one address may hold open at once; past it, a connection is
-/// closed at once. A few, for clients behind one address (a household, a
-/// carrier's NAT).
-const CONNECTIONS_PER_IP: usize = 8;
-const PER_CONNECTION: Duration = Duration::from_secs(5);
+
+/// How many connections the service holds open, and for how long.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    /// Connections served at once; past it a new one is closed at once.
+    connections: usize,
+    /// Connections one address may hold open at once; past it, too. A few,
+    /// for clients behind one address (a household, a carrier's NAT).
+    per_ip: usize,
+    /// The same for an address in `admission_relays`: an entry, every
+    /// two-hop client of which comes from its address.
+    per_relay: usize,
+    /// A connection that has sent nothing by then is closed.
+    first_byte: Duration,
+    /// The whole request, headers and body, must be in by then.
+    request: Duration,
+    /// The whole exchange, the answer included.
+    per_connection: Duration,
+}
+
+/// An idle connection costs a task and a small buffer, and the node's unit
+/// allows 65536 descriptors, so the overall cap is generous: one address's
+/// share is a small fraction of it, and a connection that sends nothing
+/// holds its place for two seconds.
+const LIMITS: Limits = Limits {
+    connections: 4096,
+    per_ip: 8,
+    per_relay: 1024,
+    first_byte: Duration::from_secs(2),
+    request: Duration::from_secs(3),
+    per_connection: Duration::from_secs(5),
+};
 
 /// Sliding windows: per source address and overall for lasting leases,
 /// overall only for session leases.
@@ -80,6 +113,20 @@ pub struct RateLimiter {
     /// minutes) takes no further room.
     sessions: VecDeque<(Instant, [u8; 32])>,
     session_keys: HashSet<[u8; 32]>,
+}
+
+/// The bits of work added as `used` nears `ceiling`: two from half full,
+/// four from three quarters, six from seven eighths.
+fn extra_bits(used: usize, ceiling: usize) -> u8 {
+    if used * 2 < ceiling {
+        0
+    } else if used * 4 < ceiling * 3 {
+        2
+    } else if used * 8 < ceiling * 7 {
+        4
+    } else {
+        6
+    }
 }
 
 /// Drops what has slid out of the window; true if there is room for one more.
@@ -125,23 +172,17 @@ impl RateLimiter {
         }
     }
 
-    /// The work a session admission costs now: `base` while the window is
-    /// at most half full, then two bits more (four times the work) for each
-    /// step closer to the ceiling, up to what a client agrees to do. A
-    /// person connecting pays about a second; whoever tries to fill the
-    /// window pays the most for the last places.
-    pub fn session_bits(&mut self, base: u8, now: Instant) -> u8 {
+    /// The work a session admission costs now: `base` while the window and
+    /// the node's table of leases (`held` of `max_clients`) are at most
+    /// half full, then two bits more (four times the work) for each step
+    /// the fuller of them is closer to its ceiling, up to what a client
+    /// agrees to do. A person connecting pays about a second; whoever tries
+    /// to fill the node pays the most for the last places, however slowly
+    /// they came.
+    pub fn session_bits(&mut self, base: u8, now: Instant, held: usize, max_clients: usize) -> u8 {
         self.slide_sessions(now);
-        let used = self.sessions.len();
-        let extra = if used < SESSION_GLOBAL / 2 {
-            0
-        } else if used < SESSION_GLOBAL * 3 / 4 {
-            2
-        } else if used < SESSION_GLOBAL * 7 / 8 {
-            4
-        } else {
-            6
-        };
+        let extra =
+            extra_bits(self.sessions.len(), SESSION_GLOBAL).max(extra_bits(held, max_clients));
         base.saturating_add(extra).min(work::MAX_BITS.max(base))
     }
 
@@ -184,11 +225,13 @@ pub fn lease_name(wanted: &str, counter: u64) -> String {
     }
 }
 
-/// Serves until the task is dropped.
+/// Serves until the task is dropped. `held` is how many leases the node
+/// holds now, which the main loop keeps up to date.
 pub async fn serve(
     listen: SocketAddr,
     cfg: Arc<NodeConfig>,
     tx: mpsc::Sender<Admit>,
+    held: Arc<AtomicUsize>,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
@@ -205,7 +248,7 @@ pub async fn serve(
         }
     );
     if listen.port() != hidravpn_core::admission::DEFAULT_ADMISSION_PORT
-        && !cfg.role.eq_ignore_ascii_case("entry")
+        && !cfg.is_entry()
         && (cfg.admission_is_open() || cfg.admits_with_passes())
     {
         warn!(
@@ -214,23 +257,35 @@ pub async fn serve(
         );
     }
     if cfg.public_endpoint.port() != hidravpn_core::admission::DEFAULT_WIREGUARD_PORT
-        && !cfg.role.eq_ignore_ascii_case("entry")
+        && !cfg.is_entry()
     {
         warn!(
             "entries forward WireGuard only to UDP {}: on another port this node is used as the only hop, never as the exit of two hops",
             hidravpn_core::admission::DEFAULT_WIREGUARD_PORT
         );
     }
+    if !cfg.admission_relays.is_empty() {
+        // How many, not which: no address goes into a log.
+        info!(
+            "{} entry address(es) relay admission requests here, each with a larger share of connections",
+            cfg.admission_relays.len()
+        );
+    }
+    serve_on(listener, cfg, tx, held, LIMITS).await
+}
+
+async fn serve_on(
+    listener: tokio::net::TcpListener,
+    cfg: Arc<NodeConfig>,
+    tx: mpsc::Sender<Admit>,
+    held: Arc<AtomicUsize>,
+    limits: Limits,
+) -> Result<()> {
     let limiter = Arc::new(Mutex::new(RateLimiter::default()));
-    let slots = Arc::new(Semaphore::new(CONNECTIONS));
+    let slots = Arc::new(Semaphore::new(limits.connections));
     let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
     let counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
     loop {
-        let Ok(slot) = slots.clone().acquire_owned().await else {
-            // The semaphore is never closed; if it ever were, waiting beats dying.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            continue;
-        };
         // An accept error (out of descriptors, out of buffers) is a condition
         // to wait out, never a reason for the node to stop serving its
         // tunnel: a client that could provoke one would take the node down.
@@ -242,20 +297,38 @@ pub async fn serve(
                 continue;
             }
         };
-        // Over its share, the connection is closed unread: it is not worth
-        // a slot, and an answer would be one more thing to wait on.
-        let Some(_held) = OpenPerIp::take(&open, peer.ip()) else {
+        // Accepted first, then given a slot or closed at once: a full
+        // service never stops accepting, so connections never wait in the
+        // kernel's queue past the client's patience while the ones it
+        // serves run out their time.
+        let Ok(slot) = slots.clone().try_acquire_owned() else {
             drop(stream);
             continue;
         };
-        let (cfg, tx, limiter, counter) =
-            (cfg.clone(), tx.clone(), limiter.clone(), counter.clone());
+        // Over its share, the connection is closed unread: it is not worth
+        // a slot, and an answer would be one more thing to wait on.
+        let share = if cfg.admission_relays.contains(&peer.ip()) {
+            limits.per_relay
+        } else {
+            limits.per_ip
+        };
+        let Some(open_here) = OpenPerIp::take(&open, peer.ip(), share) else {
+            drop(stream);
+            continue;
+        };
+        let (cfg, tx, limiter, counter, held) = (
+            cfg.clone(),
+            tx.clone(),
+            limiter.clone(),
+            counter.clone(),
+            held.clone(),
+        );
         tokio::spawn(async move {
             let _slot = slot;
-            let _held = _held;
+            let _open_here = open_here;
             let r = tokio::time::timeout(
-                PER_CONNECTION,
-                handle(stream, peer.ip(), cfg, tx, limiter, counter),
+                limits.per_connection,
+                handle(stream, peer.ip(), cfg, tx, limiter, counter, held, limits),
             )
             .await;
             if let Ok(Err(e)) = r {
@@ -270,12 +343,12 @@ pub async fn serve(
 struct OpenPerIp(HashMap<IpAddr, usize>);
 
 impl OpenPerIp {
-    /// One more connection for `ip`, or None when it holds its share. The
-    /// count goes down when the returned guard is dropped.
-    fn take(this: &Arc<std::sync::Mutex<Self>>, ip: IpAddr) -> Option<OpenGuard> {
+    /// One more connection for `ip`, or None when it holds its `share`.
+    /// The count goes down when the returned guard is dropped.
+    fn take(this: &Arc<std::sync::Mutex<Self>>, ip: IpAddr, share: usize) -> Option<OpenGuard> {
         let mut m = this.lock().unwrap_or_else(|e| e.into_inner());
         let n = m.0.entry(ip).or_insert(0);
-        if *n >= CONNECTIONS_PER_IP {
+        if *n >= share {
             return None;
         }
         *n += 1;
@@ -303,6 +376,7 @@ impl Drop for OpenGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle(
     mut stream: tokio::net::TcpStream,
     ip: IpAddr,
@@ -310,15 +384,31 @@ async fn handle(
     tx: mpsc::Sender<Admit>,
     limiter: Arc<Mutex<RateLimiter>>,
     counter: Arc<std::sync::atomic::AtomicU64>,
+    held: Arc<AtomicUsize>,
+    limits: Limits,
 ) -> Result<()> {
-    let answer = match read_request(&mut stream).await {
+    let accepted = tokio::time::Instant::now();
+    // A client sends its request as soon as it is connected. A connection
+    // that sends nothing, or not a whole request, in time is closed
+    // unanswered: it would hold its place for nothing.
+    let mut first = [0u8; 1];
+    match tokio::time::timeout(limits.first_byte, stream.peek(&mut first)).await {
+        Ok(Ok(n)) if n > 0 => {}
+        _ => return Ok(()),
+    }
+    let Ok(read) =
+        tokio::time::timeout_at(accepted + limits.request, read_request(&mut stream)).await
+    else {
+        return Ok(());
+    };
+    let answer = match read {
         Err(_) => http_response(400, &refusal("not a request this service reads")),
         Ok(req) => match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/") | ("GET", "/node") => match cfg.record() {
                 Ok(rec) => http_response(200, &serde_json::to_string(&rec)?),
                 Err(e) => http_response(500, &refusal(format!("{e:#}"))),
             },
-            ("POST", "/admit") => admit(&req.body, ip, &cfg, &tx, &limiter, &counter).await,
+            ("POST", "/admit") => admit(&req.body, ip, &cfg, &tx, &limiter, &counter, &held).await,
             ("POST", "/redeem") => redeem(&req.body, &cfg, &tx, &counter).await,
             ("POST", _) | ("GET", _) => http_response(404, &refusal("no such path")),
             _ => http_response(405, &refusal("GET or POST")),
@@ -337,6 +427,7 @@ async fn admit(
     tx: &mpsc::Sender<Admit>,
     limiter: &Mutex<RateLimiter>,
     counter: &std::sync::atomic::AtomicU64,
+    held: &AtomicUsize,
 ) -> Vec<u8> {
     if cfg.admits_with_passes() {
         return http_response(
@@ -369,13 +460,24 @@ async fn admit(
             );
         }
     };
+    // A client asks an entry only for a key for one connection, as it
+    // connects. A lasting lease there would cost no work and hold a place
+    // for weeks after one handshake, for nothing a client does.
+    if !req.session && cfg.is_entry() {
+        return http_response(
+            403,
+            &refusal("this node is an entry: it admits a key for one connection, which a client asks for as it connects; there is nothing to join here"),
+        );
+    }
     if req.session {
         // A session key is paid for with work, bound to this node and this
         // key, not counted against an address.
-        let bits = limiter
-            .lock()
-            .await
-            .session_bits(cfg.admission_work_bits, Instant::now());
+        let bits = limiter.lock().await.session_bits(
+            cfg.admission_work_bits,
+            Instant::now(),
+            held.load(Ordering::Relaxed),
+            cfg.max_clients as usize,
+        );
         let paid = match (
             req.work,
             hidravpn_core::keys::public_key_from_base64(&cfg.public_key().unwrap_or_default()),
@@ -493,18 +595,22 @@ mod tests {
     fn an_address_holds_a_few_connections_at_most_and_gets_them_back() {
         let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
         let ip: IpAddr = "203.0.113.5".parse().unwrap();
-        let held: Vec<_> = (0..CONNECTIONS_PER_IP)
-            .map(|_| OpenPerIp::take(&open, ip).expect("within its share"))
+        let share = LIMITS.per_ip;
+        let held: Vec<_> = (0..share)
+            .map(|_| OpenPerIp::take(&open, ip, share).expect("within its share"))
             .collect();
-        assert!(OpenPerIp::take(&open, ip).is_none(), "one more is closed");
+        assert!(
+            OpenPerIp::take(&open, ip, share).is_none(),
+            "one more is closed"
+        );
         let other: IpAddr = "203.0.113.6".parse().unwrap();
         assert!(
-            OpenPerIp::take(&open, other).is_some(),
+            OpenPerIp::take(&open, other, share).is_some(),
             "another address is not affected"
         );
         drop(held);
         assert!(
-            OpenPerIp::take(&open, ip).is_some(),
+            OpenPerIp::take(&open, ip, share).is_some(),
             "closed connections are given back"
         );
         assert_eq!(
@@ -589,7 +695,7 @@ mod tests {
         let t0 = Instant::now();
         let mut seen = Vec::new();
         for n in 0..SESSION_GLOBAL as u32 {
-            let b = l.session_bits(20, t0);
+            let b = l.session_bits(20, t0, 0, 4000);
             if seen.last() != Some(&b) {
                 seen.push(b);
             }
@@ -600,19 +706,44 @@ mod tests {
             vec![20, 22, 24, 26],
             "two bits a step, from half full"
         );
-        assert_eq!(l.session_bits(20, t0), 26, "never past what a client does");
-        assert_eq!(l.session_bits(25, t0), 26);
         assert_eq!(
-            l.session_bits(28, t0),
+            l.session_bits(20, t0, 0, 4000),
+            26,
+            "never past what a client does"
+        );
+        assert_eq!(l.session_bits(25, t0, 0, 4000), 26);
+        assert_eq!(
+            l.session_bits(28, t0, 0, 4000),
             28,
             "an operator's own choice stands"
         );
         let later = t0 + GLOBAL_WINDOW + Duration::from_secs(1);
         assert_eq!(
-            l.session_bits(20, later),
+            l.session_bits(20, later, 0, 4000),
             20,
             "back down once the window empties"
         );
+    }
+
+    #[test]
+    fn the_work_asked_rises_as_the_table_of_leases_fills_however_slowly() {
+        // Sessions that came one at a time, never many in a window, still
+        // make the last places cost the most.
+        let mut l = RateLimiter::default();
+        let t0 = Instant::now();
+        let max = 4000;
+        let bits: Vec<u8> = [0, 1999, 2000, 2999, 3000, 3499, 3500, 4000]
+            .iter()
+            .map(|held| l.session_bits(20, t0, *held, max))
+            .collect();
+        assert_eq!(bits, vec![20, 20, 22, 22, 24, 24, 26, 26]);
+        assert_eq!(l.session_bits(20, t0, 0, 0), 26, "no places: the most");
+        // The fuller of the window and the table decides.
+        for n in 0..(SESSION_GLOBAL as u32 * 3 / 4) {
+            assert!(l.allow_session(key(n), t0));
+        }
+        assert_eq!(l.session_bits(20, t0, 0, max), 24);
+        assert_eq!(l.session_bits(20, t0, 3600, max), 26);
     }
 
     #[test]
@@ -627,6 +758,231 @@ mod tests {
             }
         }
         assert_eq!(allowed, GLOBAL);
+    }
+
+    fn node(role: &str) -> NodeConfig {
+        let mut cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        cfg.set_role(role).unwrap();
+        cfg.admission = "open".into();
+        cfg
+    }
+
+    #[tokio::test]
+    async fn an_entry_refuses_a_lasting_lease_and_says_why() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let limiter = Mutex::new(RateLimiter::default());
+        let counter = std::sync::atomic::AtomicU64::new(1);
+        let held = AtomicUsize::new(0);
+        let key = wireguard_control::Key::generate_private()
+            .get_public()
+            .to_base64();
+        let ip: IpAddr = "203.0.113.5".parse().unwrap();
+        for body in [
+            format!(r#"{{"public_key":"{key}","name":"x"}}"#),
+            format!(r#"{{"public_key":"{key}","name":"x","session":false}}"#),
+        ] {
+            let answer = admit(
+                body.as_bytes(),
+                ip,
+                &node("entry"),
+                &tx,
+                &limiter,
+                &counter,
+                &held,
+            )
+            .await;
+            let text = String::from_utf8_lossy(&answer);
+            assert!(text.starts_with("HTTP/1.1 403"), "{text}");
+            assert!(text.contains("entry"), "{text}");
+        }
+        assert!(rx.try_recv().is_err(), "nothing reached the main loop");
+        // A session there is asked for its work, as on any node.
+        let body = format!(r#"{{"public_key":"{key}","name":"x","session":true}}"#);
+        let answer = admit(
+            body.as_bytes(),
+            ip,
+            &node("entry"),
+            &tx,
+            &limiter,
+            &counter,
+            &held,
+        )
+        .await;
+        assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 428"));
+        // An exit still gives a lasting lease (the main loop is asked).
+        let exit = node("exit");
+        let body = format!(r#"{{"public_key":"{key}","name":"x"}}"#);
+        let asked = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let limiter = Mutex::new(RateLimiter::default());
+                let counter = std::sync::atomic::AtomicU64::new(1);
+                let held = AtomicUsize::new(0);
+                admit(body.as_bytes(), ip, &exit, &tx, &limiter, &counter, &held).await
+            }
+        });
+        let req = rx.recv().await.expect("the exit asks the main loop");
+        assert!(!req.session);
+        let _ = req.reply.send(Err((503, "full".into())));
+        let answer = asked.await.unwrap();
+        assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"));
+    }
+
+    const QUICK: Limits = Limits {
+        connections: 4,
+        per_ip: 2,
+        per_relay: 6,
+        first_byte: Duration::from_millis(300),
+        request: Duration::from_millis(700),
+        per_connection: Duration::from_secs(3),
+    };
+
+    /// A service on a loopback port with `limits`; its main loop never
+    /// answers (nothing here is admitted).
+    async fn service(cfg: NodeConfig, limits: Limits) -> (SocketAddr, mpsc::Receiver<Admit>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(serve_on(
+            listener,
+            Arc::new(cfg),
+            tx,
+            Arc::new(AtomicUsize::new(0)),
+            limits,
+        ));
+        (addr, rx)
+    }
+
+    async fn connect_from(from: &str, to: SocketAddr) -> tokio::net::TcpStream {
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.bind(format!("{from}:0").parse().unwrap()).unwrap();
+        s.connect(to).await.unwrap()
+    }
+
+    /// Whether the service closed `s` within `wait`: end of stream or a
+    /// reset, not silence.
+    async fn closed_within(s: &mut tokio::net::TcpStream, wait: Duration) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 64];
+        matches!(
+            tokio::time::timeout(wait, s.read(&mut buf)).await,
+            Ok(Ok(0)) | Ok(Err(_))
+        )
+    }
+
+    async fn get_record(from: &str, to: SocketAddr) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut s = connect_from(from, to).await;
+        s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(2), s.read_to_end(&mut out)).await;
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_sends_nothing_or_too_little_is_closed_soon() {
+        let (addr, _rx) = service(node("exit"), QUICK).await;
+        let t0 = Instant::now();
+        let mut idle = connect_from("127.0.0.1", addr).await;
+        assert!(closed_within(&mut idle, Duration::from_secs(2)).await);
+        let idle_for = t0.elapsed();
+        assert!(
+            idle_for >= QUICK.first_byte && idle_for < QUICK.request,
+            "closed after {idle_for:?}, at the first-byte deadline"
+        );
+        let t0 = Instant::now();
+        let mut slow = connect_from("127.0.0.1", addr).await;
+        slow.write_all(b"POST /admit HTTP/1.1\r\nContent-Le")
+            .await
+            .unwrap();
+        assert!(closed_within(&mut slow, Duration::from_secs(2)).await);
+        let slow_for = t0.elapsed();
+        assert!(
+            slow_for >= QUICK.request && slow_for < QUICK.per_connection,
+            "closed after {slow_for:?}, at the request deadline"
+        );
+        assert!(get_record("127.0.0.1", addr)
+            .await
+            .starts_with("HTTP/1.1 200"));
+    }
+
+    #[tokio::test]
+    async fn a_full_service_closes_a_new_connection_at_once_and_serves_once_there_is_room() {
+        let limits = Limits {
+            per_ip: QUICK.connections,
+            first_byte: Duration::from_secs(10),
+            request: Duration::from_secs(10),
+            per_connection: Duration::from_secs(10),
+            ..QUICK
+        };
+        let (addr, _rx) = service(node("exit"), limits).await;
+        let mut held = Vec::new();
+        for _ in 0..limits.connections {
+            held.push(connect_from("127.0.0.1", addr).await);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for s in held.iter_mut() {
+            assert!(
+                !closed_within(s, Duration::from_millis(50)).await,
+                "within the cap: kept"
+            );
+        }
+        let mut late = connect_from("127.0.0.1", addr).await;
+        assert!(
+            closed_within(&mut late, Duration::from_millis(500)).await,
+            "one past the cap is closed at once, not left waiting"
+        );
+        drop(held);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(get_record("127.0.0.1", addr)
+            .await
+            .starts_with("HTTP/1.1 200"));
+    }
+
+    #[tokio::test]
+    async fn an_entry_listed_as_a_relay_holds_more_connections_than_another_address() {
+        let mut cfg = node("exit");
+        cfg.admission_relays = vec!["127.0.0.1".parse().unwrap()];
+        let limits = Limits {
+            connections: 16,
+            first_byte: Duration::from_secs(10),
+            request: Duration::from_secs(10),
+            per_connection: Duration::from_secs(10),
+            ..QUICK
+        };
+        let (addr, _rx) = service(cfg, limits).await;
+        // The relay: every two-hop client of that entry comes from it.
+        let mut relayed = Vec::new();
+        for _ in 0..limits.per_relay {
+            relayed.push(connect_from("127.0.0.1", addr).await);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for s in relayed.iter_mut() {
+            assert!(!closed_within(s, Duration::from_millis(50)).await);
+        }
+        let mut one_more = connect_from("127.0.0.1", addr).await;
+        assert!(closed_within(&mut one_more, Duration::from_millis(500)).await);
+        // Any other address keeps the ordinary share.
+        let mut other = Vec::new();
+        for _ in 0..limits.per_ip {
+            other.push(connect_from("127.0.0.2", addr).await);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for s in other.iter_mut() {
+            assert!(!closed_within(s, Duration::from_millis(50)).await);
+        }
+        let mut past = connect_from("127.0.0.2", addr).await;
+        assert!(closed_within(&mut past, Duration::from_millis(500)).await);
     }
 
     #[test]

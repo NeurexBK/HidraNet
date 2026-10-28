@@ -92,8 +92,9 @@ $C curl -6 -s --max-time 3 'http://[2001:db8:221::2]/' >/dev/null 2>&1 && fail "
 
 # ── Nodes ────────────────────────────────────────────────────────────────────
 mkdir -p "$WORK/run-entry" "$WORK/run-exit"
-$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --endpoint 10.220.0.1:51820 --name v6-entry --operator op-a --role entry --dns udp://10.221.0.2 --out-interface e-x > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "entry init"; exit 1; }
-$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --endpoint 10.222.0.1:51820 --name v6-exit --operator op-b --role exit --dns udp://10.221.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "exit init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --forward-private-destinations --endpoint 10.220.0.1:51820 --name v6-entry --operator op-a --role entry --dns udp://10.221.0.2 --out-interface e-x > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "entry init"; exit 1; }
+$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --forward-private-destinations --endpoint 10.222.0.1:51820 --name v6-exit --operator op-b --role exit --dns udp://10.221.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "exit init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/exit.toml"
 start_exit() {
   $X env HIDRAVPN_RUN_DIR="$WORK/run-exit" "$BIN/hidravpn-node" --config "$WORK/exit.toml" run > "$WORK/exit.log" 2>&1 & NODE_X=$!; PIDS+=("$NODE_X")

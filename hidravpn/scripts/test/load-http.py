@@ -9,9 +9,18 @@ line of what came back.
                       the passes no copy of which was taken written to UNTAKEN.json)
   load-http.py idle   H:P SOURCES PER_SOURCE GET_SOURCE
                       (that many idle connections, then one GET / from GET_SOURCE)
+  load-http.py hold   H:P SOURCE COUNT
+                      (COUNT connections that send nothing: how many the node
+                      took, refused or closed at once, and when it closed the rest)
+  load-http.py burst  H:P SOURCE COUNT
+                      (COUNT connections opened first, then a GET / on each)
+  load-http.py session H:P NODE_KEY SOURCES PER_SOURCE
+                      (session admissions with their proof of work, as a client
+                      makes them: asked, told the work, worked out, asked again)
   load-http.py wallet-to-redemptions WALLET OUT [NODE_KEY]
 """
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -146,6 +155,129 @@ def cmd_idle(addr, sources, per, get_source):
     print(json.dumps({"idle_connections": len(socks), "get_status": status, "get_secs": round(dt, 2)}))
 
 
+def connect(addr, source=None, timeout=5):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    if source:
+        s.bind((source, 0))
+    s.connect(addr)
+    return s
+
+
+def closed(s):
+    """Whether the other side has closed s (end of stream or reset), without waiting."""
+    s.setblocking(False)
+    try:
+        return s.recv(1) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+    finally:
+        s.setblocking(True)
+
+
+def cmd_hold(addr, source, count):
+    socks, refused = [], 0
+    for _ in range(count):
+        try:
+            socks.append(connect(addr, source, timeout=3))
+        except OSError:
+            refused += 1
+    t0 = time.monotonic()
+    time.sleep(0.3)
+    at_once = [s for s in socks if closed(s)]
+    kept = [s for s in socks if s not in at_once]
+    closed_after = []
+    while kept and time.monotonic() - t0 < 10:
+        for s in list(kept):
+            if closed(s):
+                closed_after.append(round(time.monotonic() - t0, 2))
+                kept.remove(s)
+        time.sleep(0.05)
+    for s in socks:
+        s.close()
+    print(json.dumps({
+        "connected": len(socks), "refused": refused, "closed_at_once": len(at_once),
+        "held": len(socks) - len(at_once), "still_open_after_10s": len(kept),
+        "held_for_secs": max(closed_after) if closed_after else None,
+    }))
+
+
+def cmd_burst(addr, source, count):
+    socks = []
+    for _ in range(count):
+        try:
+            socks.append(connect(addr, source))
+        except OSError:
+            socks.append(None)
+    time.sleep(0.3)
+    statuses = {}
+    for s in socks:
+        st = "refused"
+        if s is not None:
+            try:
+                s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+                buf = b""
+                while True:
+                    c = s.recv(65536)
+                    if not c:
+                        break
+                    buf += c
+                parts = buf.split(b" ", 2)
+                st = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else "closed"
+            except OSError:
+                st = "closed"
+            s.close()
+        statuses[str(st)] = statuses.get(str(st), 0) + 1
+    print(json.dumps({"sent": count, "statuses": statuses}))
+
+
+DOMAIN = b"HidraVPN admission work v1"
+
+
+def solve(node, client, bits):
+    """The client's proof of work (hidravpn-core admission::work)."""
+    minute = int(time.time()) // 60
+    base = hashlib.sha256(DOMAIN + node + client + minute.to_bytes(8, "big"))
+    nonce = 0
+    while True:
+        h = base.copy()
+        h.update(nonce.to_bytes(8, "big"))
+        if int.from_bytes(h.digest()[:8], "big") >> (64 - bits) == 0:
+            return {"minute": minute, "nonce": nonce}
+        nonce += 1
+
+
+def session(addr, node, source):
+    key = os.urandom(32)
+    req = {"public_key": base64.b64encode(key).decode(), "name": "client", "session": True}
+    st, body, _ = post(addr, "/admit", json.dumps(req).encode(), source)
+    tries = 0
+    while st == 428 and tries < 4:
+        bits = json.loads(body)["work_bits"]
+        req["work"] = solve(node, key, bits)
+        st, body, _ = post(addr, "/admit", json.dumps(req).encode(), source)
+        tries += 1
+    return st, body
+
+
+def cmd_session(addr, node_key, sources, per):
+    node = base64.b64decode(node_key)
+    results, addrs = [], []
+    for src in sources:
+        for _ in range(per):
+            st, body = session(addr, node, src)
+            results.append((st, body, 0))
+            if st == 200:
+                addrs.append(json.loads(body)["client_address"])
+    print(json.dumps({
+        "sent": len(results), "statuses": tally(results), "admitted": len(addrs),
+        "distinct_addresses": len(set(addrs)),
+        "last_answer": results[-1][1].decode(errors="replace")[:200] if results else "",
+    }))
+
+
 def cmd_wallet(wallet, out, node_key=None):
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
     from cryptography.hazmat.primitives import serialization
@@ -171,6 +303,12 @@ def main():
                    sys.argv[6] if len(sys.argv) > 6 else None)
     elif c == "idle":
         cmd_idle(hp(sys.argv[2]), sys.argv[3].split(","), int(sys.argv[4]), sys.argv[5])
+    elif c == "hold":
+        cmd_hold(hp(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
+    elif c == "burst":
+        cmd_burst(hp(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
+    elif c == "session":
+        cmd_session(hp(sys.argv[2]), sys.argv[3], sys.argv[4].split(","), int(sys.argv[5]))
     elif c == "wallet-to-redemptions":
         cmd_wallet(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
     else:

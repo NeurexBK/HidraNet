@@ -5,13 +5,15 @@
 #                                      │       └── hv-lr (a real client, connected the whole time)
 #                                      └── hv-lp (node-p, admits with passes, 40 at most; the issuer)
 #
-# It proves: 300 admissions at once from 150 addresses fill node-o exactly
-# to its limit (the real client holds two leases: the key its operator
-# admitted, and the session key made for its connection, which is the one
-# an open node is shown), every client with its own address, the rest told "full" or
-# "too many" and nobody left hanging; meanwhile the real client's tunnel
-# keeps carrying traffic; idle connections hold the door for no longer than
-# the per-connection timeout; 100 passes, each sent twice at once, fill
+# It proves: 300 lasting admissions at once from 150 addresses fill exactly
+# the share node-o keeps for lasting leases, a quarter of its places (the
+# real client holds two more leases: the key its operator admitted, and the
+# session key made for its connection, which is the one an open node is
+# shown), every client with its own address, the rest told "full" or "too
+# many" and nobody left hanging, and a new session is still admitted after
+# them; meanwhile the real client's tunnel keeps carrying traffic; idle
+# connections do not hold the door, and the node closes one that sends
+# nothing after two seconds; 100 passes, each sent twice at once, fill
 # node-p exactly to its limit, no pass taken twice, a pass refused for "full"
 # not spent (so the client keeps it); a node with 100 000 spent passes on
 # record still takes a redemption quickly; and afterwards both nodes and the
@@ -84,6 +86,10 @@ $LC python3 -I "$HERE/test/dns-stub.py" 10.220.0.10 > "$WORK/dns.log" 2>&1 & PID
 # ── node-o, open, and a real client on it ───────────────────────────────────
 $LO "$BIN/hidravpn-node" --config "$WORK/o.toml" init --endpoint 10.222.0.1:51820 --name node-o --role exit --open-admission --max-clients 41 --dns udp://10.220.0.10 --out-interface o-c > "$WORK/init-o.log" 2>&1 || { cat "$WORK/init-o.log"; fail "node-o init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvo0"/' "$WORK/o.toml"
+# Less work per session than the default 20 bits, so this script's own
+# proof of work (in Python) stays quick; the client does 20 bits anyway.
+sed -i 's/^admission_work_bits = .*/admission_work_bits = 14/' "$WORK/o.toml"
+grep -q '^admission_work_bits = 14' "$WORK/o.toml" || { fail "could not lower node-o's work"; exit 1; }
 mkdir -p "$WORK/run-o" "$WORK/run-p"
 NODE_PUB=$(grep -o 'node public key: .*' "$WORK/init-o.log" | cut -d' ' -f4)
 $LR "$BIN/hidravpn" --key "$WORK/real.key" keygen >/dev/null 2>&1
@@ -128,14 +134,20 @@ print(ok)' > "$WORK/lookups.log" 2>&1 & PING=$!
 R=$($LC $LOAD admit 10.220.0.1:51821 "$SOURCES" 2)
 echo "      $R"
 wait $PING
-[ "$(jget "$R" 'd["admitted"]')" = 39 ] && pass "node-o took exactly 39 of 300 (its limit, with the real client's two leases)" || fail "admitted: $R"
-[ "$(jget "$R" 'd["distinct_addresses"]')" = 39 ] && pass "every admitted client got its own address" || fail "addresses: $R"
-[ "$(jget "$R" 'd["statuses"].get("503", 0) + d["statuses"].get("429", 0)')" = 261 ] && pass "the other 261 were told the node is full or the requests too many" || fail "statuses: $R"
+[ "$(jget "$R" 'd["admitted"]')" = 10 ] && pass "node-o took exactly 10 of 300 lasting admissions (a quarter of its 41 places)" || fail "admitted: $R"
+[ "$(jget "$R" 'd["distinct_addresses"]')" = 10 ] && pass "every admitted client got its own address" || fail "addresses: $R"
+[ "$(jget "$R" 'd["statuses"].get("503", 0) + d["statuses"].get("429", 0)')" = 290 ] && pass "the other 290 were told there is no room or the requests are too many" || fail "statuses: $R"
 [ "$(jget "$R" 'int(d["slowest_secs"] < 6)')" = 1 ] && pass "nobody waited past the timeout (slowest $(jget "$R" 'd["slowest_secs"]') s)" || fail "slow answers: $R"
 LOOKUPS=$(cat "$WORK/lookups.log")
 [ "$LOOKUPS" -ge 38 ] 2>/dev/null && pass "the real client's tunnel kept working through it ($LOOKUPS of 40 lookups answered)" || fail "the real client's lookups: $LOOKUPS"
 LEASES=$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["leases"]))' "$WORK/run-o/peers.json")
-[ "$LEASES" = 41 ] && pass "the leases file holds 41 leases" || fail "leases: $LEASES"
+[ "$LEASES" = 12 ] && pass "the leases file holds 12 leases: the real client's two and the crowd's 10" || fail "leases: $LEASES"
+# One of the crowd's addresses, which has spent its lasting admissions and
+# found no room, asks for a key for one connection, as a client connecting
+# does: there is room for it.
+R=$($LC $LOAD session 10.220.0.1:51821 "$NODE_PUB" 10.220.0.11 1)
+echo "      $R"
+[ "$(jget "$R" 'd["admitted"]')" = 1 ] && pass "after the crowd, a new session (with its proof of work) is still admitted: lasting leases cannot take its place" || fail "a session after the crowd: $R"
 
 # ── Idle connections ────────────────────────────────────────────────────────
 R=$($LC $LOAD idle 10.220.0.1:51821 10.220.0.11 300 10.220.0.12)
@@ -144,6 +156,10 @@ echo "      $R"
 R=$($LC $LOAD idle 10.220.0.1:51821 "${SOURCES%,10.220.0.160}" 1 10.220.0.160)
 echo "      $R"
 [ "$(jget "$R" 'd["get_status"]')" = 200 ] && [ "$(jget "$R" 'int(d["get_secs"] < 1)')" = 1 ] && pass "nor do 149 idle connections from 149 addresses ($(jget "$R" 'd["get_secs"]') s)" || fail "behind 150 addresses' idle connections: $R"
+R=$($LC $LOAD hold 10.220.0.1:51821 10.220.0.13 12)
+echo "      $R"
+[ "$(jget "$R" 'd["connected"]')" = 12 ] && [ "$(jget "$R" 'd["closed_at_once"]')" = 4 ] && pass "a node accepts every connection, and closes at once the ones past an address's share (4 of 12)" || fail "past the share: $R"
+[ "$(jget "$R" 'd["still_open_after_10s"]')" = 0 ] && [ "$(jget "$R" 'int(1.5 <= (d["held_for_secs"] or 0) < 3.5)')" = 1 ] && pass "and closes the 8 that send nothing after about two seconds ($(jget "$R" 'd["held_for_secs"]') s), long before its five-second limit" || fail "idle connections held: $R"
 
 # ── node-p, with passes, and the issuer ─────────────────────────────────────
 ISS="$BIN/hidravpn-issuer --accounts $WORK/accounts.json"

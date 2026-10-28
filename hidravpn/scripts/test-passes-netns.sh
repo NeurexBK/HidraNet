@@ -94,7 +94,8 @@ for i in $(seq 1 50); do grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" &&
 grep -q "pass issuer on TCP 8730 with 1 key" "$WORK/issuer.log" && pass "the issuer is up with its key" || { cat "$WORK/issuer.log"; fail "issuer did not start"; exit 1; }
 
 # ── The node: admits with a pass, trusts the issuer's key ───────────────────
-$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvp0"/' "$WORK/p.toml"
 grep -q "admission pass" "$WORK/init.log" && pass "init records admission with a pass" || fail "init: $(cat "$WORK/init.log")"
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.json" > "$WORK/passkey.log" 2>&1 && grep -q "trusting passes under" "$WORK/passkey.log" && $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key list | grep -q "until" && pass "the node trusts the issuer's key (pass-key add, list)" || fail "pass-key: $(cat "$WORK/passkey.log")"
@@ -191,7 +192,7 @@ echo "$OUT" | grep -q '"t":{"ok":true' && ! echo "$OUT" | grep -qF "$TOKEN" && p
 echo "$OUT" | grep -q '2 pass(es) for 1 node(s); the account has 3 left today' && echo "$OUT" | grep -q '"passes":2' && pass "the browser's module gets two passes through the service: two in the wallet" || fail "browser passes: $OUT"
 
 # ── A new identity to another pass node redeems its next pass, through the tunnel
-$Q "$BIN/hidravpn-node" --config "$WORK/q.toml" init --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-q --role exit --operator others --pass-admission --dns udp://10.201.0.2 --out-interface q-i > "$WORK/init-q.log" 2>&1 || { cat "$WORK/init-q.log"; fail "node-q init"; }
+$Q "$BIN/hidravpn-node" --config "$WORK/q.toml" init --forward-private-destinations --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-q --role exit --operator others --pass-admission --dns udp://10.201.0.2 --out-interface q-i > "$WORK/init-q.log" 2>&1 || { cat "$WORK/init-q.log"; fail "node-q init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvq0"/' "$WORK/q.toml"
 $Q "$BIN/hidravpn-node" --config "$WORK/q.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-q"
@@ -242,7 +243,7 @@ ip netns add hv-e
 ip link add e-i type veth peer name i-e; ip link set e-i netns hv-e; ip link set i-e netns hv-inet
 $E ip addr add 10.206.0.2/24 dev e-i; $E ip link set e-i up; $E ip link set lo up; $E ip route add default via 10.206.0.1
 $I ip addr add 10.206.0.1/24 dev i-e; $I ip link set i-e up
-$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator third --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --forward-private-destinations --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator third --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hve0"/' "$WORK/e.toml"
 mkdir -p "$WORK/run-e"
 $E env HIDRAVPN_RUN_DIR="$WORK/run-e" "$BIN/hidravpn-node" --config "$WORK/e.toml" run > "$WORK/node-e.log" 2>&1 & PIDS+=($!)
@@ -297,7 +298,7 @@ ip netns add hv-f
 ip link add f-i type veth peer name i-f; ip link set f-i netns hv-f; ip link set i-f netns hv-inet
 $F ip addr add 10.207.0.2/24 dev f-i; $F ip link set f-i up; $F ip link set lo up; $F ip route add default via 10.207.0.1
 $I ip addr add 10.207.0.1/24 dev i-f; $I ip link set i-f up
-$F "$BIN/hidravpn-node" --config "$WORK/f.toml" init --endpoint 10.207.0.2:51820 --tunnel 10.80.0.0/16 --name node-f --role entry --operator fourth --pass-admission --dns udp://10.201.0.2 --out-interface f-i > "$WORK/init-f.log" 2>&1 || { cat "$WORK/init-f.log"; fail "node-f init"; }
+$F "$BIN/hidravpn-node" --config "$WORK/f.toml" init --forward-private-destinations --endpoint 10.207.0.2:51820 --tunnel 10.80.0.0/16 --name node-f --role entry --operator fourth --pass-admission --dns udp://10.201.0.2 --out-interface f-i > "$WORK/init-f.log" 2>&1 || { cat "$WORK/init-f.log"; fail "node-f init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvf0"/' "$WORK/f.toml"
 $F "$BIN/hidravpn-node" --config "$WORK/f.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-f" "$WORK/f"
@@ -346,10 +347,10 @@ $X ip addr add 10.208.0.2/24 dev x-i; $X ip link set x-i up; $X ip link set lo u
 $I ip addr add 10.208.0.1/24 dev i-x; $I ip link set i-x up
 $Y ip addr add 10.209.0.2/24 dev y-i; $Y ip link set y-i up; $Y ip link set lo up; $Y ip route add default via 10.209.0.1
 $I ip addr add 10.209.0.1/24 dev i-y; $I ip link set i-y up
-$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --endpoint 10.208.0.2:51820 --tunnel 10.81.0.0/16 --name node-x --role exit --operator fifth --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --forward-private-destinations --endpoint 10.208.0.2:51820 --tunnel 10.81.0.0/16 --name node-x --role exit --operator fifth --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
 $X "$BIN/hidravpn-node" --config "$WORK/x.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
-$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" init --endpoint 10.209.0.2:51820 --tunnel 10.81.0.0/16 --name node-y --role entry --operator sixth --open-admission --dns udp://10.201.0.2 --out-interface y-i > "$WORK/init-y.log" 2>&1 || { cat "$WORK/init-y.log"; fail "node-y init"; }
+$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" init --forward-private-destinations --endpoint 10.209.0.2:51820 --tunnel 10.81.0.0/16 --name node-y --role entry --operator sixth --open-admission --dns udp://10.201.0.2 --out-interface y-i > "$WORK/init-y.log" 2>&1 || { cat "$WORK/init-y.log"; fail "node-y init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvy0"/' "$WORK/y.toml"
 mkdir -p "$WORK/run-x" "$WORK/run-y" "$WORK/s"
 $X env HIDRAVPN_RUN_DIR="$WORK/run-x" "$BIN/hidravpn-node" --config "$WORK/x.toml" run > "$WORK/node-x.log" 2>&1 & PIDS+=($!)

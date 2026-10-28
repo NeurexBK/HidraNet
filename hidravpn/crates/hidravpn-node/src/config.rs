@@ -1,7 +1,7 @@
 //! The node's settings: its key, where it listens, the tunnel subnet, where
 //! DNS goes. Written once by `init`, read by everything else.
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -51,7 +51,9 @@ pub struct NodeConfig {
     pub max_clients: u32,
     /// An openly admitted client that has not completed a handshake for this
     /// long loses its lease, so the subnet is not used up by people who
-    /// tried once. Manually admitted clients are never expired.
+    /// tried once. Manually admitted clients are never expired. An entry
+    /// gives no lasting leases; one it holds from an older version lapses
+    /// as a session does, ten minutes after its last sign of life.
     #[serde(default = "default_idle_days")]
     pub idle_days: u32,
     /// How many bits of proof of work a session admission must carry
@@ -80,6 +82,22 @@ pub struct NodeConfig {
     /// lease needs nothing more than it holds today.
     #[serde(default = "default_tunnel_cidr6")]
     pub tunnel_cidr6: String,
+    /// False (the default): clients' traffic to private, loopback,
+    /// link-local (where clouds serve instance metadata), shared
+    /// (100.64.0.0/10), multicast, reserved and documentation addresses,
+    /// IPv4 and IPv6, is dropped here, so a client reaches the open internet
+    /// through the node and never what sits behind its outside interface.
+    /// True forwards those too: for a test network or a private deployment
+    /// whose "internet" is a private range, never for a public node.
+    #[serde(default)]
+    pub forward_private_destinations: bool,
+    /// On an exit: the addresses of the entries that relay their clients'
+    /// admission requests here (the entries of the signed list). Every
+    /// two-hop client of an entry comes from that entry's address, so each
+    /// of these may hold far more connections open at once than any other
+    /// address (`admission.rs`).
+    #[serde(default)]
+    pub admission_relays: Vec<IpAddr>,
 }
 
 fn default_interface() -> String {
@@ -185,6 +203,8 @@ impl NodeConfig {
             pass_idle_hours: default_pass_idle_hours(),
             ipv6: default_ipv6(),
             tunnel_cidr6: default_tunnel_cidr6(),
+            forward_private_destinations: false,
+            admission_relays: Vec::new(),
         };
         let net = cfg.tunnel_network()?;
         // A client refuses an invite whose tunnel is not a private network
@@ -261,6 +281,23 @@ impl NodeConfig {
         f.sync_all()?;
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
+    }
+
+    pub fn is_entry(&self) -> bool {
+        self.role.trim().eq_ignore_ascii_case("entry")
+    }
+
+    /// How many leases won through open admission and kept (`nodes join`)
+    /// this node holds at most. None on an entry: a client only ever asks
+    /// an entry for a key for one connection. A quarter of `max_clients`
+    /// elsewhere, so that whoever piles up lasting leases, which cost no
+    /// work, the rest of the places stay for sessions.
+    pub fn lasting_open_cap(&self) -> usize {
+        if self.is_entry() {
+            0
+        } else {
+            (self.max_clients / 4) as usize
+        }
     }
 
     pub fn set_role(&mut self, role: &str) -> Result<()> {
@@ -523,6 +560,58 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn lasting_leases_take_a_quarter_of_the_places_and_none_on_an_entry() {
+        let mut cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cfg.lasting_open_cap(), 1000, "both: a quarter of 4000");
+        cfg.set_role("exit").unwrap();
+        cfg.max_clients = 41;
+        assert_eq!(cfg.lasting_open_cap(), 10);
+        cfg.set_role("entry").unwrap();
+        assert_eq!(cfg.lasting_open_cap(), 0, "an entry gives sessions only");
+    }
+
+    #[test]
+    fn settings_from_before_the_destination_filter_read_with_it_on() {
+        let cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        let old = toml::to_string(&cfg)
+            .unwrap()
+            .lines()
+            .filter(|l| {
+                !l.starts_with("forward_private_destinations") && !l.starts_with("admission_relays")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let back: NodeConfig = toml::from_str(&old).unwrap();
+        assert!(
+            !back.forward_private_destinations,
+            "private destinations stay blocked"
+        );
+        assert!(back.admission_relays.is_empty());
+        let relays: NodeConfig =
+            toml::from_str(&format!("{old}\nadmission_relays = [\"203.0.113.9\"]\n")).unwrap();
+        assert_eq!(
+            relays.admission_relays,
+            vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]
