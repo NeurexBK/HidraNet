@@ -146,6 +146,46 @@ if (!vpn) {
   if (gone.length) bad('HidraVPN issuer records', 'the section does not say: ' + gone.join(', '));
   else ok('HidraVPN issuer records: accounts, orders, the ledger, and fetching outside the tunnel');
 
+  // When the issuer forgets an order: only as often as it prunes. While
+  // prune runs only inside the handlers for a new order and a claim, a
+  // stated deadline is not a bound, and the policy must say so.
+  const issuerSrc = read(ROOT, 'hidravpn', 'crates', 'hidravpn-issuer', 'src', 'main.rs');
+  const testsAt = issuerSrc.search(/\nmod tests\b/);
+  const live = testsAt < 0 ? issuerSrc : issuerSrc.slice(0, testsAt);
+  const pruners = [...new Set([...live.matchAll(/\.prune\(/g)].map((m) => {
+    const fns = [...live.slice(0, m.index).matchAll(/\bfn (\w+)/g)];
+    return fns.length ? fns[fns.length - 1][1] : '?';
+  }))];
+  const onDemand = pruners.length > 0 && pruners.every((f) => f === 'open' || f === 'before_claim');
+  if (!pruners.length) bad('HidraVPN order retention', 'could not find where the issuer prunes its orders');
+  else if (onDemand && (/orders? (?:are|is) deleted after/i.test(vpn) || !/next time anyone opens or claims an order/.test(vpn))) {
+    bad('HidraVPN order retention', `the issuer prunes orders only in ${pruners.join(' and ')}; the section must say old orders go when the next order is opened or claimed`);
+  } else ok('HidraVPN order retention: as the issuer prunes (' + pruners.join(', ') + ')');
+
+  // Account names: random only for one a purchase made.
+  if (/fn add\(&mut self, name: &str/.test(issuerSrc) && !/chosen by the maintainers/.test(vpn)) {
+    bad('HidraVPN account names', 'the maintainers name the accounts they make by hand (account add --name); the section must say so');
+  } else ok('HidraVPN account names: random for purchases, chosen for accounts handed out');
+
+  // Keys and journals the nodes keep.
+  const nodeCfg = read(ROOT, 'hidravpn', 'crates', 'hidravpn-node', 'src', 'config.rs');
+  const idle = nodeCfg.match(/fn default_idle_days\(\) -> u32 \{\s*(\d+)/);
+  if (!idle) bad('HidraVPN open leases', 'could not read default_idle_days from hidravpn-node/src/config.rs');
+  else if (!vpn.includes(`${idle[1]} days without a handshake`)) {
+    bad('HidraVPN open leases', `a key joined by hand is kept until ${idle[1]} days without a handshake, and the section does not say so`);
+  } else ok(`HidraVPN open leases: ${idle[1]} days`);
+  if (/last pass's key/.test(read(ROOT, 'hidravpn', 'docs', 'anonymity.md')) && !/last pass's key/.test(vpn)) {
+    bad('HidraVPN one-hop key', "with no pass left one hop reconnects with the last pass's key, and the section says every key is made for the connection");
+  } else ok("HidraVPN one-hop key: the last pass's key when none is left");
+  const nodeMain = read(ROOT, 'hidravpn', 'crates', 'hidravpn-node', 'src', 'main.rs');
+  if (/info!\("admitted a client/.test(nodeMain) && !/journals do record/.test(vpn)) {
+    bad('HidraVPN journals', 'the nodes and the issuer note admissions, expiries, issuances and orders in their journals, and the section does not say so');
+  } else ok('HidraVPN journals: admissions and orders are noted, without addresses');
+
+  // Every context where HidraNet itself processes data gives a legal basis.
+  if (!/Legal basis:/.test(vpn)) bad('HidraVPN legal basis', 'the section gives no legal basis, as sections 4.4 to 4.8 do');
+  else ok('HidraVPN legal basis: given');
+
   // Where the exits' DNS goes: the node's own defaults.
   const config = read(ROOT, 'hidravpn', 'crates', 'hidravpn-node', 'src', 'config.rs');
   const dns = config.match(/fn default_dns\(\)[\s\S]*?\{([\s\S]*?)\n {4}\}/);

@@ -434,7 +434,7 @@
         <div class="stat"><div class="n" data-count="0" data-suffix="">0</div><div class="l">Sign-ups</div></div>
         <div class="stat"><div class="n cyan">3</div><div class="l">Hops per route</div></div>
         <div class="stat"><div class="n">∞</div><div class="l">Possible nodes</div></div>
-        <div class="stat"><div class="n cyan">1</div><div class="l">Tor circuit per site</div></div>
+        <div class="stat"><div class="n cyan">1</div><div class="l">Tor circuit per destination</div></div>
         <div class="stat"><div class="n" data-count="4" data-suffix="">0</div><div class="l">Native apps</div></div>
         <div class="stat"><div class="n cyan" data-count="100" data-suffix="%">0</div><div class="l">Open source</div></div>
       </div>
@@ -446,7 +446,7 @@
     <div class="marquee">
       <div class="track" id="track">
         <span class="chip"><span class="d"></span>Tor onion routing</span>
-        <span class="chip"><span class="d"></span>A circuit per site</span>
+        <span class="chip"><span class="d"></span>A circuit per destination</span>
         <span class="chip"><span class="d"></span>WebRTC leak guard</span>
         <span class="chip"><span class="d"></span>Fingerprint protection</span>
         <span class="chip"><span class="d"></span>Kill switch</span>
@@ -474,7 +474,7 @@
         <article class="pill reveal"><span class="num">02</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
           <h3>Onion routing</h3>
-          <p>Through Tor&rsquo;s three hops, with a separate circuit for each site, so no single relay sees both your address and your destination.</p>
+          <p>Through Tor&rsquo;s three hops, with a separate circuit for each host a page connects to, so no single relay sees both your address and your destination.</p>
         </article>
         <article class="pill reveal"><span class="num">03</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg></div>
@@ -494,7 +494,7 @@
         <article class="pill reveal"><span class="num">06</span>
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></div>
           <h3>Native apps</h3>
-          <p>Chat, mail, forum and site builder, all built into the browser. They meet on public MQTT brokers, reached through Tor, so the brokers see a Tor exit, not you.</p>
+          <p>Chat, mail, forum and site builder, all built into the browser. They meet on public MQTT brokers, reached through Tor, so the brokers see a Tor exit&rsquo;s address, not yours.</p>
         </article>
       </div>
     </div>

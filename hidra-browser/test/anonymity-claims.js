@@ -217,6 +217,20 @@ if (!browserCard) bad('homepage HidraBrowser card', 'could not find the HidraBro
 else if (!/\bTor\b/.test(browserCard.text)) bad('homepage HidraBrowser card', 'the card does not say the browser goes through Tor');
 else ok('homepage HidraBrowser card: says it is Tor');
 
+// Tor isolates by destination host (IsolateDestAddr), not by the site in the
+// address bar: a tracker or a CDN embedded in many sites is reached over one
+// circuit for all of them. "A circuit per site" reads as Tor Browser's
+// first-party isolation, which would take per-site SOCKS credentials.
+const perSite = /circuits?\b[^.<]{0,30}?\b(?:per|for each|for every|each) (?:site|website)\b/i;
+if (!/IsolateSOCKSAuth/.test(torManager)) {
+  const claims = [['landing/index.html', text(home)], ['newtab.html', text(markup(newtab))]]
+    .map(([where, t]) => [where, t.match(perSite)])
+    .filter(([, m]) => m)
+    .map(([where, m]) => `"${m[0]}" in ${where}`);
+  if (claims.length) bad('circuit isolation claims', 'circuits are per destination host, not per site: ' + claims.join(', '));
+  else ok('circuit isolation claims: per destination, as Tor is started');
+}
+
 if (/MQTT_BROKERS/.test(fs.readFileSync(path.join(UI, 'hidrachat.html'), 'utf8')) && !/public MQTT brokers/.test(text(home))) {
   bad('homepage apps', 'the apps meet on public MQTT brokers and the homepage never says so');
 } else {
