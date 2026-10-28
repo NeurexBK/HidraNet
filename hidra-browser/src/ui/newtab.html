@@ -211,6 +211,8 @@
       font-size: 8px; color: var(--text-muted); white-space: nowrap;
       letter-spacing: 0.5px; text-transform: uppercase;
     }
+    /* A longer label wraps rather than running into the nodes beside it. */
+    .line-encrypted.long { white-space: normal; text-align: center; width: max-content; max-width: 100%; }
 
     /* Settings */
     .settings-list { display: flex; flex-direction: column; gap: 2px; }
@@ -597,7 +599,10 @@
         </div>
       </div>
 
-      <!-- Circuit Viewer -->
+      <!-- Circuit Viewer. Each hop is labelled with what carries it and no
+           more. The labels used to be cipher names (AES-256, ChaCha20) and the
+           last hop "encrypted": every hop here is Tor's, and past the exit a
+           site is only as encrypted as its own HTTPS. -->
       <div class="card">
         <div class="card-header">
           <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -619,7 +624,7 @@
             <span class="node-label">You</span>
             <span class="node-ip">localhost</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">AES-256</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-1">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -629,7 +634,7 @@
             <span class="node-label">Guard</span>
             <span class="node-ip" id="relay-1-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-2">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -639,7 +644,7 @@
             <span class="node-label">Middle</span>
             <span class="node-ip" id="relay-2-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-3">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -649,7 +654,7 @@
             <span class="node-label">Exit</span>
             <span class="node-ip" id="relay-3-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">TLS</span></div>
+          <div class="circuit-line"><span class="line-encrypted long">TLS if the site uses HTTPS</span></div>
           <div class="circuit-node destination">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -660,7 +665,7 @@
               </svg>
             </div>
             <span class="node-label">Internet</span>
-            <span class="node-ip">encrypted</span>
+            <span class="node-ip">sees the exit</span>
           </div>
         </div>
       </div>
@@ -934,10 +939,14 @@
     </section>
 
     <footer class="footer">
+      <!-- What carries the traffic, not what the HidraNet engine could. The
+           engine's post-quantum handshake was named here, but connecting
+           means Tor (main.js, proxy:connect) and the engine carries none of
+           the browsing; the apps meet on public brokers. -->
       <div class="footer-left">
         <span class="version" id="app-version">HidraNet Browser</span>
         <span class="separator">&middot;</span>
-        <span class="crypto">Noise XX · X25519 + ML-KEM-1024 · ChaCha20-Poly1305 · BLAKE3</span>
+        <span class="crypto">Browsing: Tor &middot; Apps: public MQTT brokers, through Tor</span>
       </div>
       <div class="footer-right">
         <span class="footer-indicator">
