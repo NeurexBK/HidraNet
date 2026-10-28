@@ -19,10 +19,15 @@ was done about each one.
 
 ## What changed, in short
 
-Every node that admits openly — all the nodes on the maintainers' list — is
-shown a key made for one connection. It sees that key once and forgets it
-about ten minutes after the connection ends. So no node can tell, by key,
-that two connections are the same person. This holds for:
+Every node on the maintainers' list is shown a key made for one connection.
+The entry admits openly: it sees that key once and forgets it about ten
+minutes after the connection ends. The exits admit with a pass: every
+connection spends a new pass with a new key while one is left, and the exit
+drops it six hours after its last handshake. Used as the node of one hop, an
+exit with no pass left is reconnected with its last pass's key, and a note
+says so; as the exit of two hops it is refused instead (finding 16).
+Otherwise no node can tell, by key, that two connections are the same
+person. This holds for:
 
 - the exit of two hops, which is asked for that key *through the entry*,
   so it never hears from your address;
@@ -61,8 +66,8 @@ The other gaps are closed too:
 | Party | Learns | Does not learn |
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
-| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:674`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:891`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
+| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
@@ -85,13 +90,13 @@ address next to your traffic. The admission test did exactly this
 (`test-admission-netns.sh`: node-a, the exit, was joined from the client).
 
 **Fixed.** An exit of two hops is asked for admission through the entry,
-with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:891`).
+with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:975`).
 While it runs, the kill switch allows only the encrypted packets to the entry
 and, inside the outer tunnel, one TCP connection to the exit's admission port
 (`killswitch/linux.rs`, `bridge_ruleset`). It sends no DNS and adds no
 default route into the entry. An entry forwards TCP 51821 for this, and still
 nothing else (`hidravpn-node/src/nat.rs:60`). For two hops the client asks
-only entries from its own address (`circuit.rs:674`, `prepare`, used by the service and `hidravpn/src/main.rs`).
+only entries from its own address (`circuit.rs:706`, `prepare`, used by the service and `hidravpn/src/main.rs`).
 
 **Test:** `test-anonymity-netns.sh` A: 0 packets from the client to any exit,
 0 packets at the exit from the client's address, and the exit's own peer
@@ -121,20 +126,30 @@ Even without an address, a stable key lets an exit build a profile: "this key
 visits these sites, every evening, for months". Openly admitted leases lived
 for 30 idle days.
 
-**Fixed, for exits that admit openly** (all listed nodes do):
+**Fixed, for exits that admit openly or with a pass** (the exits on the
+maintainers' list admit with a pass):
 
 - A fresh key on every connection and every new identity, even to the same
-  exit (`circuit.rs:674`).
-- The exit keeps such a "session" lease only until ten minutes after the
-  last packet it received under that key (`hidravpn-node/src/leases.rs:61`,
-  `:241`).
+  exit (`circuit.rs:706`).
+- An exit that admits openly keeps such a "session" lease only until ten
+  minutes after the last packet it received under that key
+  (`hidravpn-node/src/leases.rs:61`, `:241`).
+- An exit that admits with a pass is shown each key with a new pass (one
+  hop with no pass left reuses the last pass's key, with a note), and drops
+  the lease six hours after its last handshake (`phase-5.md`).
 
 **Not fixed for exits admitted by hand:** they see one stable key behind
 the entry. The operator who admitted it knows who asked for it. Use such
 nodes as entries.
 
-**Tests:** B and C (a new key on each connection and each new identity), E
-(the exit no longer holds any key a two-hop session showed it).
+**Tests:** for exits that admit openly, B and C (a new key on each
+connection and each new identity) and E (after the session the exit holds
+none of the keys two hops showed it). For exits that admit with a pass,
+`test-passes-netns.sh` (the second connection and a new identity through the
+same node each redeem a new pass with a fresh key) and the unit test in
+`leases.rs` (`a_pass_lease_lapses_on_its_own_clock...`) for the lapse. E does
+not apply to a pass exit: it keeps the lease until it has been idle for six
+hours.
 
 ### 4. High — DEBUG logging on a node recorded every name clients looked up
 
@@ -267,7 +282,7 @@ morning, a café at noon, the same key both times. Their leases also kept
 every key's activity on disk for 30 days.
 
 **Fixed.** Every node that admits openly is asked for a key for each
-connection, the first hop directly (`circuit::prepare`, `circuit.rs:674`).
+connection, the first hop directly (`circuit::prepare`, `circuit.rs:706`).
 Connecting no longer "joins" anything: the browser has no Join button and no
 `join` bridge any more. Rápido and the prober take open nodes from the list
 as they are. A node admitted by hand keeps its lease: its operator knows who
@@ -424,7 +439,9 @@ Getting there found three more bugs, now fixed:
   conditions: it runs on battery as on mains, for as long as the machine is
   up, and is told to stop so it can put the network back.
 
-**Not run on Windows:** passes and the browser page. A CI job runs the unit tests on Windows. It cannot arm a firewall on
+**Not run on Windows as a recorded test:** passes and the browser page.
+The maintainers have used both by hand on one PC since, but no run of them
+has been recorded the way the two-hop run above was. A CI job runs the unit tests on Windows. It cannot arm a firewall on
 a hosted runner: that would cut the runner off from GitHub.
 
 ### 16. Critical — passes would have shown the exit your address and its key again (merge with phases 5 and 6)
@@ -440,13 +457,13 @@ use.
 Fixed in the merge:
 
 - Passes are spent in one place, `circuit::prepare`
-  (`circuit.rs:674`), the same one that asks open nodes for a session key.
+  (`circuit.rs:706`), the same one that asks open nodes for a session key.
   The first hop redeems its pass directly: it sees the address anyway
-  (`circuit.rs:805`). The exit of two hops redeems its pass *through the
-  entry* (`admit_behind`, `circuit.rs:891`), so its redemption and its
+  (`circuit.rs:858`). The exit of two hops redeems its pass *through the
+  entry* (`admit_behind`, `circuit.rs:975`), so its redemption and its
   tunnel come from the entry's address.
 - The exit of two hops never falls back to a key it saw before: with no pass
-  left for it, the connection is refused and says so (`circuit.rs:865`). A
+  left for it, the connection is refused and says so (`circuit.rs:729`). A
   first hop with no pass left may reuse its last key, with a note, since it
   sees the address anyway.
 - A pick or a rotation prefers nodes it can build with: no pass exit without
@@ -582,7 +599,8 @@ None of these is claimed as solved.
    they must pass there, not be skipped. IPv6 through the tunnel on Windows
    has not yet run on a PC; "Allow LAN" opens no IPv6 local network.
 4. **Windows at run time**: one hop and two hops by hand, on one PC, as said
-   in 15; passes and the browser page not yet.
+   in 15; passes and the browser page used by hand since, with no recorded
+   run.
 5. **Nodes admitted by hand** keep a stable key. Their operator knows who
    asked; use them as entries.
 6. **The exit's resolver sees every name.** That is inherent: the exit sees

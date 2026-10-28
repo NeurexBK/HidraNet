@@ -99,8 +99,10 @@ resets what is inside to inherit from it; after the fix, on the same PC, the
 pocket showed SYSTEM and Administrators (inherited) and the service connected.
 
 The browser's VPN page on Windows, two hops, a new identity, passes and the
-phase-4 Windows script have still not run on a real PC; that is the next
-round.
+phase-4 Windows script had still not run on a real PC; that was the next
+round. Two hops and a new identity have run on one PC since (`anonymity.md`,
+finding 15). The VPN page and passes have been used there by hand, with no
+recorded run, and the phase-4 Windows script has still not run.
 
 ## What is honest about this phase
 

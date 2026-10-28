@@ -95,3 +95,31 @@ node hidravpn/scripts/node-monitor.mjs --dry-run
 GitHub turns off scheduled runs in a public repository after 60 days with no
 activity in it. If the repository goes quiet that long, turn the workflow back
 on in the Actions tab.
+
+## Starting it from outside
+
+GitHub starts scheduled runs late, by hours when it is busy, and may skip
+them. For a check that really runs every hour, have an outside scheduler
+start it as well. Any cron service that can send an HTTPS request will do.
+Each hour at 41 minutes past it sends:
+
+```
+POST https://api.github.com/repos/NeurexBK/HidraNet/actions/workflows/node-monitor.yml/dispatches
+Authorization: Bearer <token>
+Accept: application/vnd.github+json
+X-GitHub-Api-Version: 2022-11-28
+
+{"ref":"main"}
+```
+
+GitHub answers `204` when the run is queued.
+
+The token is a fine-grained personal access token of the repository's owner,
+for this repository only, with one permission: **Actions**, read and write. It
+reaches this repository's Actions and nothing else (no code, no issues, no
+settings), and it is kept by the scheduler alone, never in this repository. When it expires the outside runs
+stop; GitHub's own schedule still runs, late.
+
+A dispatched run and a scheduled run in the same hour do no harm: the
+`node-monitor` concurrency group runs them one after the other, and the second
+finds the issues the first opened and does not open them again.

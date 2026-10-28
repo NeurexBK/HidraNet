@@ -63,11 +63,17 @@ Only what the code proves, and the test scripts check:
   instead: signed blind by an issuer that counts passes against an account,
   so who may use the network is decided, while the issuer never learns which
   node a pass is for and the node never learns whose it was. Every
-  connection redeems a new pass with a new key. The test redeems one pass
-  twice and sees it refused.
-- **Open code, reproducible builds.** Everything is in this folder, built and
-  checked by CI from the committed source; Windows binaries come from that
-  build and are signed before any release.
+  connection redeems a new pass with a new key while one is left (a node of
+  one hop with none left gets the last pass's key again, with a note). The
+  test redeems one pass twice and sees it refused.
+- **Open code, built in CI.** Everything is in this folder, built and tested
+  by CI from the committed source. No release has come from that build yet:
+  the one release, the 0.1.0 preview, was built and published by hand,
+  without Authenticode (`docs/code-signing.md`). Its files are listed with
+  their SHA-256 in the release manifest (`landing/vpn/release/manifest.json`
+  in this repository), signed with the release key. Releases cut by the workflow (`hidravpn-build.yml`) start once
+  signing is on. The builds are not reproducible yet: rebuilding a release
+  from its source does not promise the same bytes.
 
 Strong privacy, not anonymity: `docs/phase-3.md` says exactly what each node
 can and cannot see.
