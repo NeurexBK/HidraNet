@@ -7,6 +7,12 @@ const fs = require('fs');
 const SOCKS_PORT = 9052;
 const CONTROL_PORT = 9053;
 
+// Tor's SOCKS port as Chromium proxy rules. Chromium sends the hostname to a
+// socks5:// proxy, so Tor, not this machine, resolves it.
+function proxyRulesFor(socksPort) {
+  return `socks5://127.0.0.1:${socksPort}`;
+}
+
 /**
  * Runs the bundled Tor daemon and reports its bootstrap progress.
  *
@@ -45,7 +51,7 @@ class TorManager {
       state: this.state,
       bootstrapPercent: this.bootstrapPercent,
       socksPort: this.socksPort,
-      proxyRules: `socks5://127.0.0.1:${this.socksPort}`,
+      proxyRules: proxyRulesFor(this.socksPort),
       exitIp: this.exitIp,
       lastError: this.lastError,
       readyAt: this.state === 'ready' ? this.readyAt : null,
@@ -172,7 +178,10 @@ class TorManager {
     // fifteen seconds. Wait that out instead of failing the connection.
     if (!(await this._waitPortFree(20000))) {
       this.state = 'failed';
-      this.lastError = `port ${this.socksPort} is already in use — another copy of HidraNet, or another Tor, is running; close it and press Connect`;
+      // Any program on this machine can hold the port, not only another
+      // copy of HidraNet or another Tor; the message must not tell the user
+      // which it is when nothing here knows.
+      this.lastError = `port ${this.socksPort} is already in use by another program (another copy of HidraNet, another Tor, or something else); close it and press Connect`;
       return { ok: false, error: this.lastError };
     }
 
@@ -422,4 +431,4 @@ class TorManager {
   }
 }
 
-module.exports = { TorManager, SOCKS_PORT };
+module.exports = { TorManager, SOCKS_PORT, proxyRulesFor };

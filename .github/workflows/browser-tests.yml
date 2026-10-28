@@ -6,7 +6,11 @@
 # Electron-only tests under Xvfb — among them the preload boundary, which
 # proves a downloaded .html or a website gets no bridge to Tor, the vault or
 # the VPN, and apps-e2e, which runs the chat, mail and forum between people
-# through two local MQTT brokers and takes one of them down halfway.
+# through two local MQTT brokers and takes one of them down halfway, plus
+# tor-route-electron, which proves no tab is ever routed anywhere but Tor
+# (while Tor bootstraps, after Disconnect, after a crash), and
+# dns-prefetch-electron, which proves a page's DNS hints never reach a
+# resolver.
 name: Browser tests
 
 on:
@@ -49,7 +53,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect build-pins release-base release-notes; do
+          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -78,7 +82,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"
