@@ -6,10 +6,9 @@ Solana to a wallet of the operator's, and the pack credited to an account
 nobody made by hand. It is built so that paying tells the issuer as little
 as a hand-made account did, and tells a node nothing at all.
 
-**Status:** built and tested against a stand-in for Solana's RPC; the next
-step is a real purchase on the main network, by the maintainers, before it
-is offered to anyone. The legal review (MiCA) comes before that offer; this
-phase makes the mechanism, not the offer.
+**Status:** built, tested against a stand-in for Solana's RPC, and used for
+real purchases on the main network by the maintainers. The legal review
+(MiCA) is still to come; this phase makes the mechanism, not the offer.
 
 ## How a purchase goes
 

@@ -65,9 +65,11 @@ Only what the code proves, and the test scripts check:
   node a pass is for and the node never learns whose it was. Every
   connection redeems a new pass with a new key. The test redeems one pass
   twice and sees it refused.
-- **Open code, reproducible builds.** Everything is in this folder, built and
-  checked by CI from the committed source; Windows binaries come from that
-  build and are signed before any release.
+- **Open code, built in CI.** Everything is in this folder, built and tested
+  by CI from the committed source. Windows release binaries come from that
+  build, and every release lists each file's SHA-256 in a manifest signed
+  with the release key. The builds are not reproducible yet: rebuilding a
+  release from its source does not promise the same bytes.
 
 Strong privacy, not anonymity: `docs/phase-3.md` says exactly what each node
 can and cannot see.

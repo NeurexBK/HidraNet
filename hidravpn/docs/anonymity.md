@@ -19,10 +19,12 @@ was done about each one.
 
 ## What changed, in short
 
-Every node that admits openly — all the nodes on the maintainers' list — is
-shown a key made for one connection. It sees that key once and forgets it
-about ten minutes after the connection ends. So no node can tell, by key,
-that two connections are the same person. This holds for:
+Every node on the maintainers' list is shown a key made for one connection.
+The entry admits openly: it sees that key once and forgets it about ten
+minutes after the connection ends. The exits admit with a pass: every
+connection spends a new pass with a new key, and the exit drops it six hours
+after its last handshake. So no node can tell, by key, that two connections
+are the same person. This holds for:
 
 - the exit of two hops, which is asked for that key *through the entry*,
   so it never hears from your address;
@@ -121,13 +123,16 @@ Even without an address, a stable key lets an exit build a profile: "this key
 visits these sites, every evening, for months". Openly admitted leases lived
 for 30 idle days.
 
-**Fixed, for exits that admit openly** (all listed nodes do):
+**Fixed, for exits that admit openly or with a pass** (the exits on the
+maintainers' list admit with a pass):
 
 - A fresh key on every connection and every new identity, even to the same
   exit (`circuit.rs:674`).
-- The exit keeps such a "session" lease only until ten minutes after the
-  last packet it received under that key (`hidravpn-node/src/leases.rs:61`,
-  `:241`).
+- An exit that admits openly keeps such a "session" lease only until ten
+  minutes after the last packet it received under that key
+  (`hidravpn-node/src/leases.rs:61`, `:241`).
+- An exit that admits with a pass is shown each key with a new pass, and
+  drops the lease six hours after its last handshake (`phase-5.md`).
 
 **Not fixed for exits admitted by hand:** they see one stable key behind
 the entry. The operator who admitted it knows who asked for it. Use such
@@ -424,7 +429,9 @@ Getting there found three more bugs, now fixed:
   conditions: it runs on battery as on mains, for as long as the machine is
   up, and is told to stop so it can put the network back.
 
-**Not run on Windows:** passes and the browser page. A CI job runs the unit tests on Windows. It cannot arm a firewall on
+**Not run on Windows as a recorded test:** passes and the browser page.
+The maintainers have used both by hand on one PC since, but no run of them
+has been recorded the way the two-hop run above was. A CI job runs the unit tests on Windows. It cannot arm a firewall on
 a hosted runner: that would cut the runner off from GitHub.
 
 ### 16. Critical — passes would have shown the exit your address and its key again (merge with phases 5 and 6)
@@ -582,7 +589,8 @@ None of these is claimed as solved.
    they must pass there, not be skipped. IPv6 through the tunnel on Windows
    has not yet run on a PC; "Allow LAN" opens no IPv6 local network.
 4. **Windows at run time**: one hop and two hops by hand, on one PC, as said
-   in 15; passes and the browser page not yet.
+   in 15; passes and the browser page used by hand since, with no recorded
+   run.
 5. **Nodes admitted by hand** keep a stable key. Their operator knows who
    asked; use them as entries.
 6. **The exit's resolver sees every name.** That is inherent: the exit sees
