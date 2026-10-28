@@ -114,6 +114,9 @@ expect('where there is no installer (macOS) the page says so and offers no Insta
   Boolean(notInstallable) && page.includes(notInstallable)
     && /var noInstaller = notInstalled && s\.installable === false;/.test(page)
     && /\$\('btn-install'\)\.hidden = noInstaller;/.test(page)
+    && /\$\('install-none'\)\.hidden = !noInstaller;/.test(page)
+    && /\$\('install-why'\)\.hidden = noInstaller;/.test(page)
+    && /\$\('install-steps'\)\.hidden = noInstaller;/.test(page)
     && /\$\('btn-install'\)\.disabled = busy \|\| noInstaller;/.test(page)
     && /installable: installable\(vpnInstaller\.platform\)/.test(main),
   'the status does not carry installable, or the page still offers Install where the installer refuses');
