@@ -147,7 +147,7 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   person says yes (`allow_same_operator`, `--allow-same-operator`, a box on
   the page, off by default); `status` then says `same_operator`. A new
   identity never moves to such a pair by itself. (Changed by the anonymity
-  audit, `anonymity.md`: it used to fall back silently. In Phase 0 every node
+  audit, `anonymity.md`: it used to fall back silently. In Phase 0 every exit
   is the maintainers', so Privado needs that yes until a second operator
   runs nodes.)
 - **A circuit belongs to the account that opened it.** The service remembers
@@ -510,9 +510,10 @@ New-Item "$env:ProgramData\HidraVPN\probe.txt" -ItemType File
   the node again and joins; a client that notices the silence and asks again
   on its own is the next step.
 - **The pair may still be one operator's, if you say so.** Privado refuses
-  one operator's pair unless the person ticks the box. In Phase 0 every node
-  is the maintainers', so Privado's sentence — no node sees both — is then
-  true of the nodes and not of their operator, and the page says so.
+  one operator's pair unless the person ticks the box. In Phase 0 every exit
+  is the maintainers', and until an independent entry is listed every entry
+  is too, so Privado's sentence — no node sees both — is then true of the
+  nodes and not of their operator, and the page says so.
 - **A pipe can be squatted while the service is down.** With the service
   running, every instance is the service's. With it stopped there is no pipe,
   and a user could make one: the command line notices (the server is not in

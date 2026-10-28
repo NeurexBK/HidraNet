@@ -67,5 +67,13 @@ bash "$S" --help 2>&1 | grep -q -- "--dry-run" && pass "--help prints the option
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:443 --name x 2>&1); echo "$OUT" | grep -q -- "--port 443 " && echo "$OUT" | grep -q "UDP 443 (the tunnel)" && pass "the port the node listens on is the port the firewall opens" || fail "port mismatch: $(echo "$OUT" | grep -E 'init --endpoint|UDP')"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --pass-admission 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --pass-admission" && echo "$OUT" | grep -q "Admission: with a pass" && pass "--pass-admission initialises a node that admits with a pass, and says to add the issuer's key" || fail "pass admission: $(echo "$OUT" | grep -E 'init --endpoint|Admission')"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --open-admission --pass-admission 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "choose one" && pass "open and pass admission together: refused" || fail "both admissions accepted"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --role entry --open-admission --country nl --tunnel 10.80.0.0/16 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --country NL --tunnel 10.80.0.0/16" && pass "--country (upper-cased) and --tunnel reach the node's settings" || fail "country/tunnel: $(echo "$OUT" | grep 'init --endpoint')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 2>&1); echo "$OUT" | grep -qE -- "--country|--tunnel" && fail "country/tunnel passed without being asked" || pass "without --country and --tunnel the node keeps its defaults"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --country NLD 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "two letters" && pass "a country that is not two letters: refused" || fail "country NLD: $OUT"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel 10.80.0.0 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "IPv4 subnet" && pass "a tunnel that is not a subnet: refused" || fail "tunnel without prefix: $OUT"
+for tun in 10.80.0.1/16 8.8.8.0/24 10.0.0.0/31 10.0.0.0/4 300.0.0.0/16 010.80.0.0/16; do
+  OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel "$tun" 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q -- "--tunnel" && pass "a tunnel init would refuse is refused before anything runs: $tun" || fail "tunnel $tun accepted: $(echo "$OUT" | grep 'init --endpoint')"
+done
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel 100.64.0.0/10 2>&1); echo "$OUT" | grep -q -- "--tunnel 100.64.0.0/10" && pass "a shared-address-space tunnel is accepted" || fail "100.64.0.0/10: $OUT"
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]
