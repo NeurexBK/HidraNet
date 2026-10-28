@@ -78,7 +78,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"
