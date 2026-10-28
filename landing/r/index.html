@@ -197,6 +197,11 @@ background:var(--card2);border:1px solid var(--line2)}
       </div>
       <label for="rtext">How was your experience?</label>
       <textarea id="rtext" maxlength="1200" placeholder="Tell people what you thought…"></textarea>
+      <p class="note" id="review-notice">Your review is public. The stars, the text and the name
+         and place you enter are published for anyone to read, and kept by the third-party
+         message brokers this page uses: EMQX (broker.emqx.io) and HiveMQ (broker.hivemq.com).
+         This page connects to them directly, without Tor, so they also see your IP address.
+         <a href="/privacy/#website" style="color:var(--acc)">Privacy policy</a></p>
       <button id="send">Post review</button>
       <div class="msg" id="msg"></div>
     </div>
@@ -270,14 +275,24 @@ background:var(--card2);border:1px solid var(--line2)}
       full browser, with Tor and <code style="color:var(--acc)">.hidra</code> addresses, is desktop only.
     </div>
   </div>
+
+  <div class="foot" id="relay-notice">
+    Reviews come from public MQTT brokers run by third parties, EMQX and HiveMQ.
+    This page connects to them from your browser, without Tor, so they see your
+    IP address and which business you look at.
+    <a href="/privacy/#website">Privacy policy</a>
+  </div>
 </div>
 
 <script>
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
 
-// The same relay the HidraNet browser uses. This is what lets this page,
-// on any phone, view and write the same reviews — with no server.
+// The same public brokers HidraReview uses in the browser, which is what lets
+// this page, on any phone, view and write the same reviews. They are run by
+// third parties, and this page reaches them straight from the visitor's
+// browser, without Tor, so they see the visitor's address: the review form
+// (#review-notice), the footer (#relay-notice) and the privacy policy say so.
 var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 var client = null, brokerIx = 0;
 var slug = '', biz = null, revs = {}, pics = {}, replies = {}, stars = 0, ready = false;
@@ -369,7 +384,7 @@ function rid(n) {
 /* ---- Notify the owner over HidraMail ----
    The same HidraNet E2E mail. When someone reviews here on a phone,
    the owner receives the review encrypted in their inbox (even offline, via retained).
-   There are no external services: it is the system itself. */
+   It goes through the same third-party broker as the rest of this page. */
 var subtle = crypto.subtle, te = new TextEncoder();
 var mailResolvers = {};
 function b32(b){var A='abcdefghijklmnopqrstuvwxyz234567',o='',bits=0,v=0;for(var i=0;i<b.length;i++){v=(v<<8)|b[i];bits+=8;while(bits>=5){o+=A[(v>>>(bits-5))&31];bits-=5;}}if(bits>0)o+=A[(v<<(5-bits))&31];return o;}

@@ -2,7 +2,9 @@
 # read: the English-only sweep (which also reads hidra-node and the landing
 # page), the storage and vault tests, who may call each handler, the VPN
 # control-channel module against a stand-in service, the VPN page lint (which
-# reads the service's ipc.rs), the release-signature verifier, and the
+# reads the service's ipc.rs), the privacy policy lint (which reads the site's
+# CSP, the review page's brokers and the node's default resolvers in
+# hidravpn-node's config.rs), the release-signature verifier, and the
 # Electron-only tests under Xvfb — among them the preload boundary, which
 # proves a downloaded .html or a website gets no bridge to Tor, the vault or
 # the VPN, and apps-e2e, which runs the chat, mail and forum between people
@@ -21,6 +23,7 @@ on:
       - "hidra-node/assets/**"
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-node/src/config.rs"
       - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
   pull_request:
@@ -30,6 +33,7 @@ on:
       - "hidra-node/assets/**"
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-node/src/config.rs"
       - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
 
@@ -53,7 +57,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect build-pins release-base release-notes release-runtime update-check; do
+          for t in anonymity-claims privacy-policy app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect build-pins release-base release-notes release-runtime update-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -82,7 +86,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron update-notice-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron update-notice-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

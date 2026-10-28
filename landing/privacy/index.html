@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="referrer" content="no-referrer">
 <title>HidraNet Privacy Policy</title>
-<meta name="description" content="HidraNet privacy policy: what the browser, the apps and this website process, who sees it, and your rights under the GDPR and the LGPD.">
+<meta name="description" content="HidraNet privacy policy: what the browser, the apps, HidraVPN and this website process, who sees it, and your rights under the GDPR and the LGPD.">
 <meta name="theme-color" content="#070809">
 <link rel="icon" type="image/png" href="../icons/favicon-32.png">
 <link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
@@ -33,10 +33,10 @@
 </header>
 
 <div class="cover">
-  <span class="kicker"><span class="dot" aria-hidden="true"></span>Privacy policy &middot; version 1.1 &middot; October 2026</span>
+  <span class="kicker"><span class="dot" aria-hidden="true"></span>Privacy policy &middot; version 1.1 &middot; 28 October 2026</span>
   <h1>What HidraNet <span class="hl">knows about you</span></h1>
   <p class="lede">As little as possible, by design. This policy says exactly what reaches anyone, who they are, and what you can do about it. It covers the GDPR and Brazil's LGPD.</p>
-  <div class="meta"><span><b>Version</b> 1.1</span><span><b>In force from</b> October 2026</span></div>
+  <div class="meta"><span><b>Version</b> 1.1</span><span><b>In force from</b> 28 October 2026</span></div>
 </div>
 
 <div class="layout">
@@ -68,15 +68,16 @@
     <section id="principle">
       <h2>2. The principle</h2>
       <p>HidraNet is designed to know as little as possible about the people who use it. There are no mandatory accounts, addresses are generated on your computer, and chat and mail content is encrypted before it leaves your device.</p>
-      <p>What HidraNet never collects:</p>
+      <p>What HidraNet never stores and never logs:</p>
       <ul>
         <li>your browsing or search history;</li>
         <li>the content of your HidraChat conversations or HidraMail messages;</li>
         <li>your private keys;</li>
-        <li>your IP address linked to your browsing activity;</li>
+        <li>your IP address together with your browsing activity;</li>
         <li>browser telemetry or usage reports.</li>
       </ul>
-      <p>Since we do not store this data, we cannot hand it to anyone, nor lose it in a breach.</p>
+      <p>One exception is processing while you are connected, not storage: if you use HidraVPN, its nodes are run by the HidraNet maintainers during the preview. In one-hop mode the node sees your IP address and your traffic at the same time, and in two-hop mode the maintainers run both the entry, which sees your address, and the exit, which sees your traffic (section 4.10). The nodes write neither your address nor your destinations down.</p>
+      <p>Since we do not store this data, we cannot hand over records of it, nor lose it in a breach. Someone who compelled or compromised a HidraVPN node could still watch what it carries while you are connected.</p>
     </section>
 
     <section id="local">
@@ -105,25 +106,45 @@
           <tr><td>HidraMail</td><td>Messages encrypted to the recipient's key, destination address</td><td>No</td></tr>
           <tr><td>Forum</td><td>Posts, nickname, category and time</td><td>Yes: the forum is public</td></tr>
           <tr><td>SevenNine</td><td>Published site content, encrypted</td><td>No, except by those who have the site address</td></tr>
+          <tr><td>HidraReview</td><td>Business listings and photos, reviews with the name and place the reviewer enters, owners' replies</td><td>Yes: reviews are public</td></tr>
           </tbody>
       </table></div>
-      <p>Messages awaiting delivery and forum posts are retained on those brokers. HidraNet does not control the operators' retention policies. Replacing the public brokers with HidraNet's own network is planned.</p>
+      <p>Messages awaiting delivery, forum posts and reviews are retained on those brokers. HidraNet does not control the operators' retention policies. Replacing the public brokers with HidraNet's own network is planned.</p>
       <h3>4.3 Search</h3>
       <p>HidraSearch sends queries through Tor to third-party search engines (DuckDuckGo, SearXNG, Brave Search). The engine sees the search text and the Tor exit address. The browser keeps no search history.</p>
       <h3>4.4 Network count (optional, off by default)</h3>
       <p>If you turn on "Count me on the network" in the browser's Anonymity Settings, the browser sends a presence signal every 30 seconds, made of a random code that changes each session, the software version and the time. It carries no location, no room, no name and no address. The signal goes to a public channel and is used only to count how many browsers are running.</p>
       <p>Legal basis: your consent (GDPR art. 6(1)(a); LGPD art. 7, I). The option is off by default, and turning it off stops the signal immediately.</p>
-      <h3>4.5 This website</h3>
+      <h3 id="website">4.5 This website</h3>
       <p>When you visit this website, the hosting provider (Vercel Inc.) logs technical request data, including the IP address, to serve the pages and protect them against abuse. Legal basis: legitimate interest in keeping the site available and secure (GDPR art. 6(1)(f)).</p>
       <p>The website uses no analytics, no advertising, no cookies and no third-party scripts, and its fonts are served from our own server.</p>
+      <p>The review page (hidranet.org/r/, also installable as a phone app) connects to third parties. To show and publish reviews, it connects your browser directly, without Tor, to the public MQTT brokers of EMQ Technologies (EMQX, broker.emqx.io) and, if that one does not answer, HiveMQ (broker.hivemq.com). They see your IP address and which business you look at. A review you post, with its stars, its text, the name and the place you enter, and the time, is published for anyone to read and retained on those brokers. The page then sends the business owner an encrypted HidraMail notice through the same broker. HidraNet does not control the operators' retention policies. The page says this next to the review form. In the HidraNet Browser, HidraReview reaches the same brokers through Tor (section 4.2).</p>
       <h3>4.6 Paid services</h3>
-      <p>When paid plans or business services are offered, we will process the data needed for the contract and invoicing: name or company name, tax number, billing address, email and payment history. Card data will be handled by the payment provider and never reach HidraNet. Legal basis: performance of the contract and tax obligations (GDPR art. 6(1)(b) and (c)). Retention: ten years for invoicing records, as Portuguese tax law requires; other data up to two years after the contract ends.</p>
+      <p>When paid plans or business services are offered, we will process the data needed for the contract and invoicing: name or company name, tax number, billing address, email and payment history. Card data will be handled by the payment provider and never reach HidraNet. Legal basis: performance of the contract and tax obligations (GDPR art. 6(1)(b) and (c)). Retention: ten years for invoicing records, as Portuguese tax law requires; other data up to two years after the contract ends. HidraVPN passes, sold for HNET during the preview, are covered in section 4.10: buying them asks for none of this data.</p>
       <h3>4.7 HNET and the support wallet</h3>
       <p>Support sent in HNET goes to a public Solana wallet. Solana is a public ledger: the sending wallet, the amount and the time are visible to anyone, permanently, and HidraNet cannot change or delete them. We do not ask who is behind a wallet and do not try to find out.</p>
       <h3>4.8 Contact and support requests</h3>
       <p>If you write to us, we process your address and the message to reply. Legal basis: legitimate interest in answering people who contact us. Retention: two years after the last exchange.</p>
       <h3>4.9 Security reports</h3>
       <p>Vulnerabilities may be reported anonymously. If you identify yourself, we keep your name to credit you, and only with your permission.</p>
+      <h3 id="vpn">4.10 HidraVPN (preview)</h3>
+      <p>HidraVPN is a separate program, installed from the browser's VPN page, that carries all of this computer's traffic over WireGuard through one node (one hop) or through an entry and an exit (two hops). During the preview, every node on the official node list and the pass issuer at passes.hidranet.org are run by the HidraNet maintainers. Unlike the browser's Tor routing, this means HidraNet itself processes your traffic while you are connected.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Who</th><th>What it sees while you are connected</th><th>What it writes down</th></tr></thead>
+        <tbody>
+          <tr><td>The node, in one-hop mode</td><td>Your IP address and your traffic at the same time: the sites and services you reach, the names you look up, and any content not encrypted end to end</td><td>A key made for that connection (or, with no pass left, the last pass's key), the tunnel address it was given, and when it was admitted and last seen; deleted six hours after the last handshake</td></tr>
+          <tr><td>The entry, in two-hop mode</td><td>Your IP address, which exit you use, when you are connected and how much you send and receive; not your destinations</td><td>The same kind of record, for a key made for that connection; deleted about ten minutes after the connection ends. A key you joined with by hand, with HidraVPN's join command, is the same for every connection to that node and is kept until 30 days without a handshake</td></tr>
+          <tr><td>The exit, in two-hop mode</td><td>Your traffic, as above, coming from the entry's address, not yours</td><td>The same kind of record; deleted six hours after the last handshake</td></tr>
+          <tr><td>The pass issuer</td><td>Your account token, over HTTPS, and the address a request comes from, when your computer fetches or buys passes</td><td>See below</td></tr>
+          </tbody>
+      </table></div>
+      <p>Two hops keep your address and your traffic on different machines, but until independent operators run entries, not with different people. Two hops under one operator are refused unless you allow it, and the VPN page says so.</p>
+      <p>The names you look up go through the tunnel to the exit, which asks DNS-over-HTTPS resolvers in turn. The node software's defaults are Quad9 (dns.quad9.net) and Cloudflare (cloudflare-dns.com). They see the names and the exit's address, not yours.</p>
+      <p>Passes are signed blind: the issuer does not learn which node a pass is for, and a node does not learn which account a pass came from. A node keeps a hash of each pass it has taken, so that the pass cannot be spent twice, until the issuer key it was made under expires. The automatic top-up asks the issuer only while HidraVPN is connected, through the tunnel, so the issuer then sees an exit's address. Fetching passes by hand, or buying them, while HidraVPN is not connected shows the issuer your own IP address.</p>
+      <p>The issuer keeps two files. The accounts file holds, for each account, a hash of its token (never the token), a name (random for an account made by a purchase; chosen by the maintainers for an account they hand out, and they know whom they gave it to) and the balance or daily quota with the day's use, for as long as the account exists. The orders file holds, for each purchase, the token's hash, the pack, the exact amount, the time and, once paid, a hash of the paying transaction's signature. An unpaid order is no longer needed after 24 hours, a paid order and the hash of the transaction that paid it after about two days. The issuer deletes them from the file the next time anyone opens or claims an order, so on a quiet issuer they can stay longer. While an order is kept, its exact amount and time can be matched against Solana's public ledger to find the wallet that paid (section 4.7). Pay from a wallet you use for nothing else.</p>
+      <p>No log of the nodes or the issuer records your IP address, the names you look up, an account token, a pass, a wallet, a transaction or an amount. Their system journals do record when things happen: a node notes when it admits a client and when idle clients expire, the issuer when it issues passes and when an order is opened or claimed, with the number of passes and with no address, token or wallet. How long the journals keep these lines: <span class="pill confirm">to be confirmed</span>. The issuer is served through a TLS proxy on the same machine; whether that proxy keeps access logs: <span class="pill confirm">to be confirmed</span>.</p>
+      <p>When you run the leak test on the VPN page, it asks api.ipify.org (and api6.ipify.org) which address it sees, only while HidraVPN is connected, so the service sees the exit's address. The browser downloads the node list and the release manifest from this website, and the VPN's programs from GitHub, through Tor, so neither sees your address.</p>
+      <p>Legal basis: performance of the contract, to carry your traffic and to issue, sell and redeem passes (GDPR art. 6(1)(b)), and legitimate interest in limiting abuse, for the leases, the hashes of spent passes and the rate limits (GDPR art. 6(1)(f)) <span class="pill confirm">to be confirmed</span>.</p>
     </section>
 
     <section id="sell">
@@ -137,12 +158,14 @@
         <thead><tr><th>Entity</th><th>Role</th><th>Data</th></tr></thead>
         <tbody>
           <tr><td>Vercel Inc.</td><td>Website hosting</td><td>Technical request logs</td></tr>
-          <tr><td>EMQ Technologies, HiveMQ</td><td>Message brokers used by the applications</td><td>See section 4.2</td></tr>
+          <tr><td>EMQ Technologies (EMQX), HiveMQ</td><td>Message brokers used by the applications and by the website's review page</td><td>See sections 4.2 and 4.5</td></tr>
+          <tr><td>Quad9, Cloudflare</td><td>DNS-over-HTTPS resolvers the HidraVPN exits ask by default</td><td>The names VPN users look up, from the exit's address (section 4.10)</td></tr>
+          <tr><td>ipify (api.ipify.org)</td><td>HidraVPN leak test, when you run it</td><td>The exit's address (section 4.10)</td></tr>
           <tr><td>Tor Project</td><td>Exit address check</td><td>The Tor exit address</td></tr>
           <tr><td>Our email provider</td><td>Company email</td><td>Messages exchanged with us</td></tr>
           </tbody>
       </table></div>
-      <p>The public message brokers are not HidraNet processors: the applications connect to them directly from your computer. They are listed so you know where information goes. When paid services launch, the payment provider will be added here.</p>
+      <p>The public message brokers are not HidraNet processors: the applications and the review page connect to them directly from your device. They are listed so you know where information goes. The HidraVPN nodes and the pass issuer are not third parties: HidraNet runs them during the preview (section 4.10). When paid services launch, the payment provider will be added here.</p>
     </section>
 
     <section id="transfers">
@@ -162,7 +185,7 @@
         <li>withdraw consent, without affecting earlier processing;</li>
         <li>not be subject to solely automated decisions. HidraNet makes none.</li>
       </ul>
-      <p>Since most data lives only on your computer, many of these rights are exercised directly: delete the data folder. For data we do process (sections 4.5 to 4.9), write to <a href="mailto:privacy@hidranet.org">privacy@hidranet.org</a>. We reply within one month, extendable under GDPR art. 12, or within fifteen days for data subjects covered by the LGPD.</p>
+      <p>Since most data lives only on your computer, many of these rights are exercised directly: delete the data folder. For data we do process (sections 4.5 to 4.10), write to <a href="mailto:privacy@hidranet.org">privacy@hidranet.org</a>. We reply within one month, extendable under GDPR art. 12, or within fifteen days for data subjects covered by the LGPD.</p>
       <p>One limit follows from the design: we cannot identify or delete messages retained on third-party brokers, forum posts or encrypted content, because we do not know whom they belong to. Forum posts can be hidden by moderation.</p>
     </section>
 
@@ -184,6 +207,7 @@
     <section id="changes">
       <h2>12. Changes</h2>
       <p>Each version of this policy is published with a date. If a change reduces your rights or widens processing, we announce it beforehand on this website and in the browser release notes.</p>
+      <p>Version 1.1, 28 October 2026: adds HidraVPN (section 4.10), the review page's brokers (section 4.5) and the browser's update check (section 4.1), adds HidraReview to section 4.2, points section 4.6 to section 4.10 for the passes sold during the preview, and says in section 2 what the HidraVPN nodes see while you are connected. It describes processing that was already taking place and was missing from version 1.0.</p>
     </section>
 
     <section id="contact">
