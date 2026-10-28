@@ -68,6 +68,14 @@ depend on volunteers early.**
   **≈ €50 per month**. This is paid by the founders personally, not by the
   company, consistent with Option B in [10](10-legal-and-regulatory-risk.md):
   the company publishes software, it does not operate the network.
+- **Independent entries, by decision of the founders (October 2026).** Phase 0
+  also takes entries run by operators who are not us: entries only, each
+  operator checked before their node goes into the list, at most two nodes per
+  operator (`hidravpn/docs/operators/running-an-entry.md`). An entry draws no
+  abuse mail for web or mail traffic, and a second operator is what makes
+  Privado's "no node sees both" true of people (§6). Users still do not depend
+  on them: a client that allows one operator on both hops keeps the founders'
+  own entries.
 - The two exits in this phase are run by the founders **as individuals, in
   jurisdictions where hosting Tor exits is established practice** (the
   Netherlands, Germany, Sweden, Finland), with a published abuse contact
@@ -188,7 +196,7 @@ because a portless entry with no exits behind it protects nobody.
 
 | Phase | Nodes | Jurisdictions | Operators other than us | Exits not ours |
 |---|---|---|---|---|
-| 0 | 10 | 3 | 0 | 0 |
+| 0 | 10 | 3 | entries only | 0 |
 | 1 | 25 | 4 | 5 | 1 |
 | 2 | 100 | 6 | 30 | more than half |
 
