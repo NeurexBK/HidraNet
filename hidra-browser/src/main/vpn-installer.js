@@ -109,6 +109,13 @@ function platformKey(platform = process.platform, arch = process.arch) {
   return `${platform}-${arch}`;
 }
 
+// The systems HidraVPN has an installer for. Anywhere else (macOS) the page
+// says so instead of offering an Install that could only fail.
+const NOT_INSTALLABLE = 'HidraVPN installs on Windows and Linux; macOS is not supported yet';
+function installable(platform = process.platform) {
+  return platform === 'win32' || platform === 'linux';
+}
+
 // Where an installed service lives (install/mod.rs installed_binary()).
 function installedService(platform = process.platform, env = process.env) {
   if (platform === 'win32') {
@@ -222,9 +229,7 @@ class VpnInstaller {
   // Downloads, checks and installs (or updates). Resolves to
   //   { ok: true, version, note } | { ok: false, error, cancelled? }
   async install() {
-    if (this.platform !== 'win32' && this.platform !== 'linux') {
-      return { ok: false, error: 'HidraVPN installs on Windows and Linux; macOS is not supported yet' };
-    }
+    if (!installable(this.platform)) return { ok: false, error: NOT_INSTALLABLE };
     let m;
     try {
       m = await this._manifest();
@@ -376,6 +381,6 @@ function runFile(file, args, extraEnv) {
 }
 
 module.exports = {
-  VpnInstaller, parseManifest, compareVersions, platformKey, installedService, MANIFEST_MAX_BYTES, FILE_MAX_BYTES,
+  VpnInstaller, parseManifest, compareVersions, platformKey, installable, NOT_INSTALLABLE, installedService, MANIFEST_MAX_BYTES, FILE_MAX_BYTES,
   LINUX_INSTALL_SCRIPT, WINDOWS_INSTALL_SCRIPT, CHANGED_AFTER_CHECK,
 };

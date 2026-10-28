@@ -6,7 +6,7 @@ const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./t
 const appOrigins = require('./app-origins');
 const { applyAppIcon, windowIcon } = require('./app-icon');
 const { VpnManager } = require('./vpn-manager');
-const { VpnInstaller } = require('./vpn-installer');
+const { VpnInstaller, installable } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
 const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
@@ -1101,7 +1101,9 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   // Reading the state is also offered to the new tab page, for its badge.
   ipcMain.handle('vpn:status', (event) => {
     if (!isVpnPage(event)) requirePage(event, UI_ROOT_URL, ['newtab.html'], 'the VPN status');
-    return vpnManager.status();
+    // Whether this system has an installer at all, so the page never offers
+    // an Install that can only be refused.
+    return vpnManager.status().then((st) => ({ ...st, installable: installable(vpnInstaller.platform) }));
   });
   ipcMain.handle('vpn:connect', (event, mode, options) => {
     vpnOnlyOurs(event);

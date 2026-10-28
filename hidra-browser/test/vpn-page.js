@@ -108,6 +108,15 @@ expect('the browser reads the token fresh on every request', /_readToken\(\)/.te
 
 // ── Phase 4 completion: install, leak test, local network, route ──────────
 expect('the install card is hidden until the service says it is not installed', /id="install-card" style="display:none"/.test(page) && /notInstalled \? '' : 'none'/.test(page), 'the install card is not tied to the not-installed state');
+const installer = read(ROOT, 'src', 'main', 'vpn-installer.js');
+const notInstallable = (installer.match(/const NOT_INSTALLABLE = '([^']+)'/) || [])[1];
+expect('where there is no installer (macOS) the page says so and offers no Install',
+  Boolean(notInstallable) && page.includes(notInstallable)
+    && /var noInstaller = notInstalled && s\.installable === false;/.test(page)
+    && /\$\('btn-install'\)\.hidden = noInstaller;/.test(page)
+    && /\$\('btn-install'\)\.disabled = busy \|\| noInstaller;/.test(page)
+    && /installable: installable\(vpnInstaller\.platform\)/.test(main),
+  'the status does not carry installable, or the page still offers Install where the installer refuses');
 expect('installing goes through the bridge, never a link the page follows', /api\.install\(\)/.test(page) && !/href=["'][^"']*\.(exe|zip|msi)/.test(page), 'no api.install(), or a download link in the page');
 expect('the bridge offers install, uninstall, leak test and release check', ['leakTest:', 'checkRelease:', 'install:', 'uninstall:'].every((k) => preload.includes(k)), 'tab-preload.js lacks one of them');
 for (const ch of ["'vpn:leak-test'", "'vpn:install'", "'vpn:uninstall'", "'vpn:check-release'"]) {
