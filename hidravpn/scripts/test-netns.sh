@@ -113,6 +113,19 @@ echo "── what reaches the client through the tunnel unasked"
 $C python3 -I -m http.server 9901 --bind 0.0.0.0 >/dev/null 2>&1 & PIDS+=($!)
 $C python3 -I "$HERE/test/udp-echo.py" 0.0.0.0 9902 >/dev/null 2>&1 & PIDS+=($!)
 sleep 1
+# A node forwards nothing to a client that the client did not start; a
+# modified one could. The node is made to pass the probes, and a counter
+# ahead of the kill switch shows they reached the client, so what keeps
+# them from an answer is the client's own kill switch.
+$N nft insert rule inet hidravpn forward iifname "n-i" oifname "hvpn0" accept comment '"probe"'
+$C nft -f - <<'NFT'
+table inet hv_seen {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvpn0" ip saddr 10.201.0.2 counter
+  }
+}
+NFT
 $I ip route add 10.77.0.0/16 via 10.201.0.1
 for t in "tcp 10.77.0.2 9901:a TCP listener" "tcp 10.77.0.2 9903:a closed TCP port" \
          "udp 10.77.0.2 9902:a UDP listener" "icmp 10.77.0.2:an echo request"; do
@@ -120,6 +133,10 @@ for t in "tcp 10.77.0.2 9901:a TCP listener" "tcp 10.77.0.2 9903:a closed TCP po
   [ "$got" = silent ] && pass "from behind the node, ${t#*:} at the client's tunnel address: no answer" || fail "from behind the node, ${t#*:} at the client's tunnel address: $got"
 done
 $I ip route del 10.77.0.0/16 via 10.201.0.1
+SEEN=$($C nft list table inet hv_seen | grep -o 'packets [0-9]*' | awk '{print $2}')
+$C nft delete table inet hv_seen
+$N nft delete rule inet hidravpn forward handle "$($N nft -a list chain inet hidravpn forward | sed -n 's/.*comment "probe" # handle \([0-9]*\)$/\1/p')"
+[ "${SEEN:-0}" -ge 4 ] && pass "the probes reached the client through the tunnel ($SEEN packets), and only its kill switch kept them from an answer" || fail "the probes did not reach the client: ${SEEN:-0} packet(s) on hvpn0"
 [ "$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null)" = "10.201.0.1" ] && pass "what the client asks for through the tunnel is still answered" || fail "a request through the tunnel failed after the probes"
 # A bigger transfer, to exercise fragmentation-free MTU: 2 MB through the tunnel.
 $C dd if=/dev/urandom of="$WORK/blob" bs=1M count=2 status=none
