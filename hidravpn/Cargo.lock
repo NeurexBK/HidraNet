@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1083,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-issuer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-node"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-service"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-sign"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "hidravpn-tun"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "tokio",

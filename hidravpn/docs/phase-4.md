@@ -97,7 +97,7 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   browser asks a Windows service that has no key nothing and says "Update
   HidraVPN", and asks an older Linux service in the clear, as before (only
   root can make its socket). **Release order:** a HidraVPN release that
-  writes `control.pub` (the version after 0.1.1) must be signed and
+  writes `control.pub` (0.1.2, the first after 0.1.1) must be signed and
   published before, or with, the first browser that seals; a browser out
   first would show every Windows user "Update HidraVPN" with nothing newer
   to install (the page cannot read the installed version from a service it
