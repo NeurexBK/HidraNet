@@ -17,7 +17,8 @@
 # dns-prefetch-electron, which proves a page's DNS hints never reach a
 # resolver. The release checks run here too: what a package must run
 # (release-runtime), the update notice and the signed record it reads
-# (update-check and update-notice-electron), and, in a job of its own, the
+# (update-check and update-notice-electron), the launch-day readiness check
+# against its fixtures (launch-check), and, in a job of its own, the
 # signature of landing/SHA256SUMS.txt.
 name: Browser tests
 
@@ -69,7 +70,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims privacy-policy app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes release-runtime update-check; do
+          for t in anonymity-claims privacy-policy app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes release-runtime update-check launch-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
