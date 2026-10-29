@@ -11,9 +11,13 @@
 //! The sublayer is given the top weight so its decision is final. At the
 //! connect-authorisation layers, and at the receive-accept layers (a
 //! connection or datagram from a host this machine did not send to first),
-//! the default is to BLOCK; a handful of higher-
-//! weight PERMIT filters open just what must stay open: loopback, the tunnel
-//! interface, the encrypted packets to the node, and DHCP. IPv6 has the
+//! the default is to BLOCK; a handful of higher-weight PERMIT filters open
+//! just what must stay open: loopback, the tunnel interface (outbound only:
+//! nothing comes in through it unasked, so the node cannot reach a program
+//! listening here; a block on each tunnel interface, above the inbound
+//! permits that match by address, keeps it so, and only the ICMP errors
+//! path MTU discovery needs are let in above it), the encrypted packets to
+//! the node, and DHCP. IPv6 has the
 //! loopback exception and, when the exit gave the tunnel an IPv6 address,
 //! the tunnel that carries the traffic (the only one of one hop, the inner
 //! one of two), so it never leaves the machine off the tunnel. Windows sends
@@ -53,8 +57,10 @@ use windows::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
 
 use super::{Bridge, KillConfig};
 
+const IPPROTO_ICMP: u8 = 1;
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
+const IPPROTO_ICMPV6: u8 = 58;
 
 // Fixed identity for everything we add, so removal is deterministic. The last
 // nibble distinguishes the objects; keep them unique.
@@ -105,18 +111,27 @@ const F_LAN_DNS_V4: [GUID; 4] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_0009_0004),
 ];
 /// Connections from outside, at the receive-accept layers: the same catch-all
-/// blocks and the same few openings (loopback, the tunnel that carries the
-/// traffic, DHCP, "Allow LAN"), so a program listening on this machine is
-/// reached off the tunnel by nobody. Replies to what this machine sent
-/// belong to the flow its connect opened, and pass without these.
+/// blocks and fewer openings (loopback, DHCP, "Allow LAN"), so a program
+/// listening on this machine is reached by nobody else, the node at the
+/// other end of a tunnel included. Replies to what this machine sent belong
+/// to the flow its connect opened, and pass without these. See `inbound`.
 const F_IN_BLOCK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0001);
 const F_IN_BLOCK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0002);
 const F_IN_LOOPBACK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0003);
 const F_IN_LOOPBACK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0004);
+/// Inbound blocks on the tunnel interfaces, above DHCP and "Allow LAN",
+/// whose permits match by address: the node at the other end of a tunnel
+/// chooses the addresses of what it puts inside. Older versions put inbound
+/// permits under these keys, which let the node open connections here;
+/// every key is deleted before any is added, so those go.
 const F_IN_TUNNEL_V4: [GUID; 2] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0005),
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0006),
 ];
+/// Retired: the inbound IPv6 permit on the tunnel. Nothing permits IPv6 in
+/// but loopback, so the catch-all blocks it on the tunnel too. Still
+/// deleted with the rest, so a kill switch an older version armed is
+/// replaced whole.
 const F_IN_TUNNEL_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0007);
 const F_IN_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0008);
 const F_IN_LAN_V4: [GUID; 4] = [
@@ -124,6 +139,46 @@ const F_IN_LAN_V4: [GUID; 4] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000a),
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000b),
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000c),
+];
+/// The ICMP errors let in through each tunnel interface, above its block,
+/// one key per tunnel and per `TUNNEL_ICMP_ERRORS` entry.
+const F_IN_TUNNEL_ICMP: [[GUID; 3]; 2] = [
+    [
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000d),
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000e),
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_000f),
+    ],
+    [
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0010),
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0011),
+        GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0012),
+    ],
+];
+/// The ICMP errors path MTU discovery and a failed connection need, by
+/// layer, protocol and type: destination unreachable (fragmentation needed
+/// is one of its codes) and, for IPv6, packet too big. An error answers a
+/// packet this machine sent and opens nothing (nothing answers an ICMP
+/// error); Linux lets the same in as `ct state related`. Echo requests,
+/// redirects and the rest stay blocked.
+const TUNNEL_ICMP_ERRORS: [(GUID, u8, u16, &str); 3] = [
+    (
+        FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+        IPPROTO_ICMP,
+        3,
+        "ICMP destination unreachable through the tunnel",
+    ),
+    (
+        FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+        IPPROTO_ICMPV6,
+        1,
+        "ICMPv6 destination unreachable through the tunnel",
+    ),
+    (
+        FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+        IPPROTO_ICMPV6,
+        2,
+        "ICMPv6 packet too big through the tunnel",
+    ),
 ];
 
 /// The private ranges "Allow LAN" opens: address and mask, host order.
@@ -134,7 +189,7 @@ const LAN_V4: [(u32, u32); 4] = [
     (0xA9FE_0000, 0xFFFF_0000), // 169.254.0.0/16
 ];
 
-const ALL_FILTER_KEYS: [GUID; 36] = [
+const ALL_FILTER_KEYS: [GUID; 42] = [
     F_BLOCK_V4,
     F_BLOCK_V6,
     F_LOOPBACK_V4,
@@ -171,6 +226,12 @@ const ALL_FILTER_KEYS: [GUID; 36] = [
     F_IN_LAN_V4[1],
     F_IN_LAN_V4[2],
     F_IN_LAN_V4[3],
+    F_IN_TUNNEL_ICMP[0][0],
+    F_IN_TUNNEL_ICMP[0][1],
+    F_IN_TUNNEL_ICMP[0][2],
+    F_IN_TUNNEL_ICMP[1][0],
+    F_IN_TUNNEL_ICMP[1][1],
+    F_IN_TUNNEL_ICMP[1][2],
 ];
 
 fn ok(code: u32) -> Result<()> {
@@ -254,7 +315,7 @@ fn v4(ep: &SocketAddr) -> Result<(u32, u16)> {
 /// interfaces given, the nodes given, DHCP.
 fn install(allow: &Allow<'_>) -> Result<()> {
     if allow.nodes.len() > F_NODE_V4.len()
-        || allow.tunnels.len() > F_IN_TUNNEL_V4.len()
+        || allow.tunnels.len() > [F_TUNNEL_V4, F_TUNNEL2_V4].len()
         || allow.peered.len() > F_PEERED_V4.len()
         || allow.direct_tcp.len() > F_DIRECT_TCP_V4.len()
     {
@@ -272,6 +333,21 @@ fn install(allow: &Allow<'_>) -> Result<()> {
         // rule: an interface that is not up is an error, not a skip.
         peered.push((luid_of(iface)?, *proto, v4(ep)?));
     }
+    // Every tunnel interface that is up, allowed whole or towards one
+    // destination, for the inbound blocks. One that is not up yet has
+    // nothing coming in on it.
+    let mut tunnel_luids: Vec<u64> = Vec::new();
+    for luid in allow
+        .tunnels
+        .iter()
+        .filter_map(|t| luid_of(t).ok())
+        .chain(peered.iter().map(|(l, _, _)| *l))
+    {
+        if !tunnel_luids.contains(&luid) {
+            tunnel_luids.push(luid);
+        }
+    }
+    let inbound = inbound(allow.lan, &tunnel_luids)?;
 
     let engine = open_engine()?;
     let result = (|| -> Result<()> {
@@ -525,122 +601,19 @@ fn install(allow: &Allow<'_>) -> Result<()> {
             },
         )?;
 
-        // Connections from outside, at the receive-accept layers. Replies to
-        // what this machine sent belong to the flow its connect opened, and
-        // pass; an unsolicited connection, or a datagram from a host this
-        // machine never sent to, reaches a listening program only through
-        // the tunnel that carries the traffic, from loopback, as a DHCP
-        // answer, or from the local network when "Allow LAN" is on.
-        for (key, layer, name) in [
-            (
-                F_IN_BLOCK_V4,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                "block all inbound IPv4",
-            ),
-            (
-                F_IN_BLOCK_V6,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                "block all inbound IPv6",
-            ),
-        ] {
+        // Connections from outside, at the receive-accept layers.
+        for f in &inbound {
             add_filter(
                 engine,
                 &Filter {
-                    key,
-                    name,
-                    layer,
-                    weight: 0,
-                    block: true,
-                    conditions: &[],
+                    key: f.key,
+                    name: f.name,
+                    layer: f.layer,
+                    weight: f.weight,
+                    block: f.block,
+                    conditions: &f.conditions,
                 },
             )?;
-        }
-        for (key, layer, name) in [
-            (
-                F_IN_LOOPBACK_V4,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                "allow inbound loopback IPv4",
-            ),
-            (
-                F_IN_LOOPBACK_V6,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                "allow inbound loopback IPv6",
-            ),
-        ] {
-            add_filter(
-                engine,
-                &Filter {
-                    key,
-                    name,
-                    layer,
-                    weight: 12,
-                    block: false,
-                    conditions: &[Cond::LoopbackFlag],
-                },
-            )?;
-        }
-        // The tunnels allowed whole are allowed inbound too, as on Linux; an
-        // interface that is not up yet was skipped above, with a warning.
-        for (i, iface) in allow.tunnels.iter().enumerate() {
-            if let Ok(luid) = luid_of(iface) {
-                add_filter(
-                    engine,
-                    &Filter {
-                        key: F_IN_TUNNEL_V4[i],
-                        name: "allow inbound on the tunnel interface",
-                        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                        weight: 10,
-                        block: false,
-                        conditions: &[Cond::LocalInterface(luid)],
-                    },
-                )?;
-            }
-        }
-        if let Some(iface) = allow.tunnel_v6 {
-            add_filter(
-                engine,
-                &Filter {
-                    key: F_IN_TUNNEL_V6,
-                    name: "allow inbound IPv6 on the tunnel interface",
-                    layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                    weight: 10,
-                    block: false,
-                    conditions: &[Cond::LocalInterface(luid_of(iface)?)],
-                },
-            )?;
-        }
-        // The DHCP server answers from its own address, not the broadcast
-        // the request went to, so its answer is a new remote: from the
-        // server port to the client port, and nothing else.
-        add_filter(
-            engine,
-            &Filter {
-                key: F_IN_DHCP_V4,
-                name: "allow DHCP answers",
-                layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                weight: 10,
-                block: false,
-                conditions: &[
-                    Cond::Protocol(IPPROTO_UDP),
-                    Cond::LocalPort(68),
-                    Cond::RemotePort(67),
-                ],
-            },
-        )?;
-        if allow.lan {
-            for (i, (addr, mask)) in LAN_V4.iter().enumerate() {
-                add_filter(
-                    engine,
-                    &Filter {
-                        key: F_IN_LAN_V4[i],
-                        name: "allow the local network inbound",
-                        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                        weight: 8,
-                        block: false,
-                        conditions: &[Cond::RemoteSubnetV4(*addr, *mask)],
-                    },
-                )?;
-            }
         }
 
         ok(unsafe { FwpmTransactionCommit0(engine) })?;
@@ -652,6 +625,138 @@ fn install(allow: &Allow<'_>) -> Result<()> {
     }
     let _ = unsafe { FwpmEngineClose0(engine) };
     result
+}
+
+/// A filter for the receive-accept layers, built before the transaction.
+struct InFilter {
+    key: GUID,
+    name: &'static str,
+    layer: GUID,
+    weight: u8,
+    block: bool,
+    conditions: Vec<Cond>,
+}
+
+/// The receive-accept filters. Replies to what this machine sent belong to
+/// the flow its connect opened, and pass; an unsolicited connection, or a
+/// datagram from a host this machine never sent to, reaches a listening
+/// program only from loopback, as a DHCP answer, or from the local network
+/// when "Allow LAN" is on — and never through a tunnel: the node at its
+/// other end chooses what comes out of it, its addresses included (the
+/// node's own tunnel address is a private one, inside what "Allow LAN"
+/// opens), and would otherwise reach every program listening here and
+/// learn the machine from what answers. So each tunnel interface has a
+/// block above the DHCP and "Allow LAN" permits, below loopback; the
+/// physical link has the catch-all. Above each tunnel's block, the ICMP
+/// errors path MTU discovery needs (`TUNNEL_ICMP_ERRORS`), as Linux lets
+/// in related ICMP: before the block they came in with the rest of the
+/// tunnel, and without them a path narrower than the tunnel would stall
+/// large transfers. What these block, Windows Firewall cannot let in,
+/// whatever profile Windows gave an adapter.
+fn inbound(lan: bool, tunnels: &[u64]) -> Result<Vec<InFilter>> {
+    if tunnels.len() > F_IN_TUNNEL_V4.len() || tunnels.len() > F_IN_TUNNEL_ICMP.len() {
+        bail!("the kill switch was given more tunnel interfaces than it has rules for");
+    }
+    let mut v = Vec::new();
+    for (key, layer, name) in [
+        (
+            F_IN_BLOCK_V4,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            "block all inbound IPv4",
+        ),
+        (
+            F_IN_BLOCK_V6,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+            "block all inbound IPv6",
+        ),
+    ] {
+        v.push(InFilter {
+            key,
+            name,
+            layer,
+            weight: 0,
+            block: true,
+            conditions: Vec::new(),
+        });
+    }
+    for (key, layer, name) in [
+        (
+            F_IN_LOOPBACK_V4,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            "allow inbound loopback IPv4",
+        ),
+        (
+            F_IN_LOOPBACK_V6,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+            "allow inbound loopback IPv6",
+        ),
+    ] {
+        v.push(InFilter {
+            key,
+            name,
+            layer,
+            weight: 12,
+            block: false,
+            conditions: vec![Cond::LoopbackFlag],
+        });
+    }
+    for (i, luid) in tunnels.iter().enumerate() {
+        v.push(InFilter {
+            key: F_IN_TUNNEL_V4[i],
+            name: "nothing in through the tunnel unasked",
+            layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            weight: 11,
+            block: true,
+            conditions: vec![Cond::LocalInterface(*luid)],
+        });
+        // WFP carries an ICMP message's type in the local port field (the
+        // SDK's FWPM_CONDITION_ICMP_TYPE is that field under another name).
+        // Weight 12 is loopback's too; a packet on a tunnel interface is
+        // never loopback, so the two never both match.
+        for (key, (layer, proto, kind, name)) in F_IN_TUNNEL_ICMP[i].iter().zip(TUNNEL_ICMP_ERRORS)
+        {
+            v.push(InFilter {
+                key: *key,
+                name,
+                layer,
+                weight: 12,
+                block: false,
+                conditions: vec![
+                    Cond::LocalInterface(*luid),
+                    Cond::Protocol(proto),
+                    Cond::LocalPort(kind),
+                ],
+            });
+        }
+    }
+    // The DHCP server answers from its own address, not the broadcast the
+    // request went to, so its answer is a new remote: from the server port
+    // to the client port, and nothing else.
+    v.push(InFilter {
+        key: F_IN_DHCP_V4,
+        name: "allow DHCP answers",
+        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+        weight: 10,
+        block: false,
+        conditions: vec![
+            Cond::Protocol(IPPROTO_UDP),
+            Cond::LocalPort(68),
+            Cond::RemotePort(67),
+        ],
+    });
+    if lan {
+        for (i, (addr, mask)) in LAN_V4.iter().enumerate() {
+            v.push(InFilter {
+                key: F_IN_LAN_V4[i],
+                name: "allow the local network inbound",
+                layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+                weight: 8,
+                block: false,
+                conditions: vec![Cond::RemoteSubnetV4(*addr, *mask)],
+            });
+        }
+    }
+    Ok(v)
 }
 
 pub fn apply(cfg: &KillConfig) -> Result<()> {
@@ -910,6 +1015,187 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_retired_tunnel_permits_are_still_removed() {
+        // A kill switch an older version armed let the node in through the
+        // tunnel; arming this one, or turning it off, deletes those too.
+        for k in F_IN_TUNNEL_V4.iter().chain([&F_IN_TUNNEL_V6]) {
+            assert!(ALL_FILTER_KEYS.contains(k));
+        }
+    }
+
+    const TUN: u64 = 0x11;
+    const OUTER: u64 = 0x12;
+    const PHYS: u64 = 0x13;
+
+    /// A connection or datagram at the receive-accept layer, IPv4 unless
+    /// `v6`. For ICMP, WFP puts the type in the local port and the code in
+    /// the remote one.
+    struct In {
+        luid: u64,
+        loopback: bool,
+        proto: u8,
+        remote: [u8; 4],
+        rport: u16,
+        lport: u16,
+        v6: bool,
+    }
+
+    fn from(luid: u64, remote: [u8; 4], proto: u8, rport: u16, lport: u16) -> In {
+        In {
+            luid,
+            loopback: false,
+            proto,
+            remote,
+            rport,
+            lport,
+            v6: false,
+        }
+    }
+
+    /// An ICMP message of this type and code from the node's tunnel address,
+    /// ICMPv6 if `v6`.
+    fn icmp(luid: u64, v6: bool, kind: u16, code: u16) -> In {
+        let proto = if v6 { IPPROTO_ICMPV6 } else { IPPROTO_ICMP };
+        In {
+            v6,
+            ..from(luid, [10, 77, 0, 1], proto, code, kind)
+        }
+    }
+
+    /// What the sublayer decides, as WFP arbitrates inside one: the
+    /// matching filter of the highest weight. Two of the same weight that
+    /// both match would leave the order to WFP; none may.
+    fn permitted(filters: &[InFilter], p: &In) -> bool {
+        let remote = u32::from_be_bytes(p.remote);
+        let layer = if p.v6 {
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6
+        } else {
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4
+        };
+        let matching: Vec<&InFilter> = filters
+            .iter()
+            .filter(|f| f.layer == layer)
+            .filter(|f| {
+                f.conditions.iter().all(|c| match c {
+                    Cond::LoopbackFlag => p.loopback,
+                    Cond::LocalInterface(l) => p.luid == *l,
+                    Cond::Protocol(x) => p.proto == *x,
+                    Cond::RemoteAddrV4(a) => remote == *a,
+                    Cond::RemotePort(x) => p.rport == *x,
+                    Cond::LocalPort(x) => p.lport == *x,
+                    Cond::RemoteSubnetV4(a, m) => remote & m == *a,
+                })
+            })
+            .collect();
+        let top = matching
+            .iter()
+            .map(|f| f.weight)
+            .max()
+            .expect("a catch-all");
+        let at_top: Vec<_> = matching.iter().filter(|f| f.weight == top).collect();
+        assert_eq!(at_top.len(), 1, "two filters of weight {top} match");
+        !at_top[0].block
+    }
+
+    #[test]
+    fn nothing_comes_in_through_a_tunnel_unasked_allow_lan_or_not() {
+        for lan in [false, true] {
+            let f = inbound(lan, &[TUN]).unwrap();
+            // The node, at its tunnel address (a private one, inside what
+            // "Allow LAN" opens), or at any other address it puts on a
+            // packet: a listener, a DHCP client's port.
+            for p in [
+                from(TUN, [10, 77, 0, 1], IPPROTO_UDP, 40000, 9902),
+                from(TUN, [10, 77, 0, 1], IPPROTO_TCP, 40000, 445),
+                from(TUN, [192, 168, 1, 1], IPPROTO_UDP, 137, 137),
+                from(TUN, [203, 0, 113, 10], IPPROTO_UDP, 51820, 9902),
+                from(TUN, [10, 77, 0, 1], IPPROTO_UDP, 67, 68),
+            ] {
+                assert!(!permitted(&f, &p), "lan={lan}: {:?}", p.remote);
+            }
+            // Off the tunnel: the local network only with "Allow LAN",
+            // DHCP answers always, the internet never.
+            assert_eq!(
+                permitted(&f, &from(PHYS, [192, 168, 1, 5], IPPROTO_TCP, 50000, 445)),
+                lan
+            );
+            assert!(permitted(
+                &f,
+                &from(PHYS, [192, 168, 1, 1], IPPROTO_UDP, 67, 68)
+            ));
+            assert!(!permitted(
+                &f,
+                &from(PHYS, [198, 51, 100, 7], IPPROTO_TCP, 50000, 445)
+            ));
+            let mut lo = from(0x1, [127, 0, 0, 1], IPPROTO_TCP, 50000, 8080);
+            lo.loopback = true;
+            assert!(permitted(&f, &lo));
+        }
+    }
+
+    #[test]
+    fn both_tunnels_of_two_hops_are_closed_inbound() {
+        let f = inbound(true, &[TUN, OUTER]).unwrap();
+        for luid in [TUN, OUTER] {
+            assert!(!permitted(
+                &f,
+                &from(luid, [10, 77, 0, 1], IPPROTO_UDP, 40000, 9902)
+            ));
+        }
+        assert!(permitted(
+            &f,
+            &from(PHYS, [10, 1, 2, 3], IPPROTO_UDP, 40000, 9902)
+        ));
+        assert!(inbound(true, &[TUN, OUTER, PHYS]).is_err());
+    }
+
+    #[test]
+    fn the_icmp_errors_path_mtu_discovery_needs_come_in_through_the_tunnels_and_nothing_else() {
+        for lan in [false, true] {
+            let f = inbound(lan, &[TUN, OUTER]).unwrap();
+            for luid in [TUN, OUTER] {
+                // Fragmentation needed, and the rest of destination
+                // unreachable; IPv6's packet too big and destination
+                // unreachable.
+                assert!(permitted(&f, &icmp(luid, false, 3, 4)), "lan={lan}");
+                assert!(permitted(&f, &icmp(luid, false, 3, 1)), "lan={lan}");
+                assert!(permitted(&f, &icmp(luid, true, 2, 0)), "lan={lan}");
+                assert!(permitted(&f, &icmp(luid, true, 1, 4)), "lan={lan}");
+                // Not an echo request, a redirect, a timestamp request,
+                // an IPv6 echo request or a router advertisement.
+                for kind in [8, 5, 13] {
+                    assert!(!permitted(&f, &icmp(luid, false, kind, 0)), "{kind}");
+                }
+                for kind in [128, 134] {
+                    assert!(!permitted(&f, &icmp(luid, true, kind, 0)), "{kind}");
+                }
+                // Nor anything else that has those numbers in its ports.
+                assert!(!permitted(
+                    &f,
+                    &from(luid, [10, 77, 0, 1], IPPROTO_UDP, 4, 3)
+                ));
+                let mut udp6 = from(luid, [10, 77, 0, 1], IPPROTO_UDP, 0, 2);
+                udp6.v6 = true;
+                assert!(!permitted(&f, &udp6));
+            }
+            // Off the tunnels nothing changes: from the internet the
+            // catch-all decides, as before.
+            for v6 in [false, true] {
+                let mut far = icmp(PHYS, v6, if v6 { 2 } else { 3 }, 4);
+                far.remote = [198, 51, 100, 7];
+                assert!(!permitted(&f, &far), "lan={lan} v6={v6}");
+            }
+        }
+        // No tunnel, no ICMP permit: a hold lets none in.
+        let held = inbound(false, &[]).unwrap();
+        assert!(held.iter().all(|x| !x
+            .conditions
+            .iter()
+            .any(|c| matches!(c, Cond::Protocol(IPPROTO_ICMP | IPPROTO_ICMPV6)))));
+        assert!(!permitted(&held, &icmp(TUN, false, 3, 4)));
+    }
+
+    #[test]
     fn every_filter_has_its_own_key_and_is_removed_with_the_rest() {
         let mut keys: Vec<u128> = ALL_FILTER_KEYS.iter().map(|g| g.to_u128()).collect();
         keys.sort_unstable();
@@ -921,12 +1207,11 @@ mod tests {
             F_IN_BLOCK_V6,
             F_IN_LOOPBACK_V4,
             F_IN_LOOPBACK_V6,
-            F_IN_TUNNEL_V6,
             F_IN_DHCP_V4,
         ]
         .iter()
-        .chain(F_IN_TUNNEL_V4.iter())
         .chain(F_IN_LAN_V4.iter())
+        .chain(F_IN_TUNNEL_ICMP.iter().flatten())
         {
             assert!(
                 ALL_FILTER_KEYS.contains(k),

@@ -188,8 +188,10 @@ enum Nodes {
     Remove { name: String },
     /// Ask admission from known nodes whose operators admit openly: by name,
     /// or every one with --all. Each node is shown the key derived for it
-    /// and its invite is checked against the list's record of it. Not while
-    /// two hops (privado) are up: the request would leave through the exit.
+    /// and its invite is checked against the list's record of it. An entry
+    /// refuses (403): it gives a key for each connection as this machine
+    /// connects, so there is nothing to join there. Not while two hops
+    /// (privado) are up: the request would leave through the exit.
     Join {
         /// The node to ask; absent with --all.
         #[arg(required_unless_present = "all")]

@@ -176,12 +176,8 @@ async function refreshProxyStatus() {
     proxyLabel.textContent = 'Tor: off';
   }
 
-  document.getElementById('panel-proxy').textContent =
-    `${status.host}:${status.port}`;
-  document.getElementById('panel-relays').textContent =
-    status.relayCount || '—';
-  document.getElementById('panel-latency').textContent =
-    status.latencyMs ? `${status.latencyMs}ms` : '—';
+  // Tor's SOCKS port: the route every tab has, connected or not.
+  document.getElementById('panel-proxy').textContent = status.proxy || '—';
 }
 
 // === WINDOW CONTROLS ===

@@ -127,9 +127,10 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "the client c
 # default 10.77.0.0/16 on purpose, the same as the exits, to prove the client
 # copes with both hops handing it the same subnet.
 mkdir -p "$WORK/run-entry" "$WORK/run-exit" "$WORK/run-exit2"
-$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --endpoint 10.200.0.1:51820 --name entry-node --operator op-entry --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
-$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --endpoint 10.202.0.1:51820 --name exit-node --operator op-exit-1 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
-$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --endpoint 10.202.0.3:51820 --name exit-two --operator op-exit-2 --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name entry-node --operator op-entry --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
+$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --forward-private-destinations --endpoint 10.202.0.1:51820 --name exit-node --operator op-exit-1 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
+$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --forward-private-destinations --endpoint 10.202.0.3:51820 --name exit-two --operator op-exit-2 --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/exit.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvx1"/' "$WORK/exit2.toml"
 grep -q '^interface = "hvx0"' "$WORK/exit.toml" && grep -q '^interface = "hvx1"' "$WORK/exit2.toml" && pass "three nodes set up: entry on hvpn0, exits on hvx0 and hvx1" || fail "could not give the exits their own interface names"
@@ -229,6 +230,62 @@ $C nft list table inet hidravpn_ks > "$WORK/ks.log" 2>&1 && pass "the kill switc
 grep -q 'ip daddr 10.200.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -v 'oifname' "$WORK/ks.log" | grep -q 'ip daddr 10.202.0.1' && pass "the entry's endpoint is the only address allowed off-tunnel" || fail "kill switch rules: $(grep -c accept "$WORK/ks.log") accepts"
 grep -q 'oifname "hvpn1" meta nfproto ipv4 accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -qE 'oifname "hvpn0" (meta nfproto ipv4 )?accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
 $C curl -s --max-time 3 http://10.200.0.1:8081/ >/dev/null 2>&1 && fail "a plain request to the physical link got through the kill switch" || pass "a plain request to a host on the physical link is blocked"
+$C ip -4 route | grep -q "^10.77.0.1 dev hvpn1" && $C ip -4 route get 10.77.0.1 | grep -q " dev hvpn1 " && pass "the exit's resolver has a host route into the inner tunnel" || fail "the route to the resolver: $($C ip -4 route get 10.77.0.1 | head -1)"
+# The inner tunnel takes in only answers, as one hop does: a host behind the
+# exit (the internet, given a route to the clients' subnet) reaches nothing
+# listening on the client, and draws no reset or echo that would show the
+# address is there.
+$C python3 -I -m http.server 9901 --bind 0.0.0.0 >/dev/null 2>&1 & PIDS+=($!)
+$C python3 -I "$HERE/test/udp-echo.py" 0.0.0.0 9902 >/dev/null 2>&1 & PIDS+=($!)
+sleep 1
+# An exit forwards nothing to a client that the client did not start; a
+# modified one could. The exit is made to pass the probes, and a counter
+# ahead of the kill switch shows they reached the client, so what keeps
+# them from an answer is the client's own kill switch.
+$X nft insert rule inet hidravpn forward iifname "x-i" oifname "hvx0" accept comment '"probe"'
+$C nft -f - <<'EOF'
+table inet hv_seen {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvpn1" ip saddr 10.201.0.2 counter
+  }
+}
+EOF
+$I ip route add 10.77.0.0/16 via 10.201.0.1
+for t in "tcp 10.77.0.2 9901:a TCP listener" "tcp 10.77.0.2 9903:a closed TCP port" \
+         "udp 10.77.0.2 9902:a UDP listener" "icmp 10.77.0.2:an echo request"; do
+  got=$($I python3 -I "$HERE/test/probe.py" ${t%%:*})
+  [ "$got" = silent ] && pass "from behind the exit, ${t#*:} at the client's inner address: no answer" || fail "from behind the exit, ${t#*:} at the client's inner address: $got"
+done
+SEEN=$($C nft list table inet hv_seen | grep -o 'packets [0-9]*' | awk '{print $2}')
+$C nft delete table inet hv_seen
+[ "${SEEN:-0}" -ge 4 ] && pass "the probes reached the client's inner tunnel ($SEEN packets), and only its kill switch kept them from an answer" || fail "the probes did not reach the client: ${SEEN:-0} packet(s) on hvpn1"
+# The exit can put any source on what it sends in, the entry's endpoint
+# included, which the kill switch lets in off the tunnel: inside the inner
+# tunnel that source must find nothing open either. A counter ahead of the
+# kill switch shows the datagram did reach the inner tunnel; a listener that
+# answers nothing shows whether it got further.
+$C python3 -I "$HERE/test/udp-sink.py" "$WORK/sink.log" 9904 >/dev/null 2>&1 & PIDS+=($!)
+$C nft -f - <<'EOF'
+table inet hv_probe {
+  chain pre {
+    type filter hook prerouting priority -300; policy accept;
+    iifname "hvpn1" ip saddr 10.200.0.1 udp sport 51820 udp dport 9904 counter comment "forged"
+  }
+}
+EOF
+$I ip addr add 10.200.0.1/32 dev lo
+sleep 1
+: > "$WORK/sink.log"
+$I python3 -I "$HERE/test/probe.py" send 10.200.0.1 51820 10.77.0.2 9904 >/dev/null
+sleep 1
+SEEN=$($C nft list table inet hv_probe | grep 'comment "forged"' | sed -E 's/.*packets ([0-9]+).*/\1/')
+[ "${SEEN:-0}" -gt 0 ] && [ ! -s "$WORK/sink.log" ] && pass "from behind the exit, a datagram with the entry's endpoint as source reaches the inner tunnel and goes no further" || fail "the datagram with the entry's endpoint as source: seen on hvpn1 ${SEEN:-0} times, the listener got: $(cat "$WORK/sink.log")"
+$I ip addr del 10.200.0.1/32 dev lo
+$C nft delete table inet hv_probe
+$X nft delete rule inet hidravpn forward handle "$($X nft -a list chain inet hidravpn forward | sed -n 's/.*comment "probe" # handle \([0-9]*\)$/\1/p')"
+$I ip route del 10.77.0.0/16 via 10.201.0.1
+[ "$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)" = "10.201.0.1" ] && pass "what the client asks for through both hops is still answered" || fail "a request through both hops failed after the probes"
 
 echo "── new identity: the exit changes"
 # While the circuit is rebuilt, a tight loop knocks on the host on the

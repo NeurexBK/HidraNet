@@ -57,6 +57,17 @@ fn parse_default_route(line: &str) -> Result<(Option<String>, String)> {
     }
 }
 
+/// The interface `ip route get` says a packet leaves through: "10.77.0.1
+/// dev hvpn0 src 10.77.0.2 uid 0".
+fn route_device(out: &str) -> Option<String> {
+    let words: Vec<&str> = out.split_whitespace().collect();
+    words
+        .iter()
+        .position(|w| *w == "dev")
+        .and_then(|i| words.get(i + 1))
+        .map(|d| d.to_string())
+}
+
 fn resolved_active() -> bool {
     // resolvectl must answer AND /etc/resolv.conf must be systemd-resolved's
     // stub (127.0.0.53). If resolved is running but resolv.conf points
@@ -140,8 +151,31 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
         }
     }
 
-    // DNS: the node, and only the node.
+    // The node's resolver gets a host route of its own into the tunnel: a
+    // network that sends that address elsewhere (a route it pushes, or a
+    // subnet of its own on the tunnel's private range) is more specific
+    // than the tunnel's subnet, never than this. Then the route is checked,
+    // as the system resolves it: the lookups leave through the tunnel, or
+    // the circuit is refused. (The kill switch drops any that would not.)
     let dns = w.dns.to_string();
+    let r = format!("{dns}/32");
+    run("ip", &["-4", "route", "replace", &r, "dev", &w.interface])?;
+    plan.via_routes.push(ViaRouteAdded {
+        prefix: r,
+        interface: w.interface.clone(),
+        if_index: None,
+    });
+    save_plan(&plan)?;
+    let through = route_device(&run("ip", &["-4", "route", "get", &dns])?);
+    if through.as_deref() != Some(w.interface.as_str()) {
+        return Err(anyhow!(
+            "the route to the node's resolver leaves through {} instead of the tunnel ({}); refusing to send this machine's lookups off it",
+            through.as_deref().unwrap_or("no interface"),
+            w.interface
+        ));
+    }
+
+    // DNS: the node, and only the node.
     if resolved_active() {
         run("resolvectl", &["dns", &w.interface, &dns])?;
         run("resolvectl", &["domain", &w.interface, "~."])?;
@@ -304,5 +338,21 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!e.contains("10.0.0.1"), "an error names no address: {e}");
+    }
+
+    #[test]
+    fn the_resolvers_route_names_its_interface() {
+        assert_eq!(
+            route_device("10.77.0.1 dev hvpn0 src 10.77.0.2 uid 0 \n    cache \n").as_deref(),
+            Some("hvpn0")
+        );
+        assert_eq!(
+            route_device("10.77.0.1 via 192.168.1.1 dev wlan0 src 192.168.1.20 uid 0").as_deref(),
+            Some("wlan0")
+        );
+        assert_eq!(
+            route_device("RTNETLINK answers: Network is unreachable"),
+            None
+        );
     }
 }

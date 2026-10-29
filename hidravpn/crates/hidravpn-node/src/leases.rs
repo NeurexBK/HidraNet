@@ -321,6 +321,38 @@ impl Leases {
         self.next_free(net).is_ok()
     }
 
+    /// How many leases came from `source` ("open", "session", ...).
+    pub fn count_source(&self, source: &str) -> usize {
+        self.leases.iter().filter(|l| l.source == source).count()
+    }
+
+    /// Why `public_key` cannot be given a new lease now, if it cannot: the
+    /// node holds `max_clients`, or its subnet is used up, or — for a
+    /// lasting lease won openly, whose cap `lasting_open` then is — the
+    /// share kept for those is taken. Lasting leases cost no work, so they
+    /// get a share and the rest of the places stay for sessions. A key that
+    /// already has a lease is given it again.
+    pub fn refusal_for_room(
+        &self,
+        public_key: &str,
+        net: &TunnelNet,
+        max_clients: u32,
+        lasting_open: Option<usize>,
+    ) -> Option<String> {
+        if self.find(public_key).is_some() {
+            return None;
+        }
+        if self.leases.len() as u64 >= u64::from(max_clients) || !self.has_room(net) {
+            return Some("this node is full; try another".into());
+        }
+        match lasting_open {
+            Some(cap) if self.count_source("open") >= cap => Some(
+                "this node keeps its other places for keys made for one connection: no room for another lasting lease; connect without joining, or try another node".into(),
+            ),
+            _ => None,
+        }
+    }
+
     /// The lowest unused address after the node's own.
     fn next_free(&self, net: &TunnelNet) -> Result<Ipv4Addr> {
         let hosts = 1u32 << (32 - net.prefix);
@@ -542,6 +574,44 @@ mod tests {
             prefix: 16,
             node_ip: Ipv4Addr::new(10, 77, 0, 1),
         }
+    }
+
+    #[test]
+    fn lasting_leases_fill_their_share_and_sessions_still_find_room() {
+        let mut l = Leases::default();
+        let key = || Key::generate_private().get_public().to_base64();
+        let (max, cap) = (40, 10);
+        // One source, or many, piles up lasting leases: it gets the share.
+        let mut lasting = 0;
+        for _ in 0..100 {
+            let k = key();
+            if l.refusal_for_room(&k, &net(), max, Some(cap)).is_none() {
+                l.admit_open("x", &k, &net(), false).unwrap();
+                lasting += 1;
+            }
+        }
+        assert_eq!(lasting, cap, "lasting leases stop at their share");
+        let why = l.refusal_for_room(&key(), &net(), max, Some(cap)).unwrap();
+        assert!(why.contains("lasting"), "{why}");
+        // A key that already holds one is given it again.
+        let held = l.iter().next().unwrap().public_key.clone();
+        assert!(l.refusal_for_room(&held, &net(), max, Some(cap)).is_none());
+        // Sessions still find the other places, and then the node is full.
+        let mut sessions = 0;
+        loop {
+            let k = key();
+            if l.refusal_for_room(&k, &net(), max, None).is_some() {
+                break;
+            }
+            l.admit_open("s", &k, &net(), true).unwrap();
+            sessions += 1;
+        }
+        assert_eq!(sessions, max as usize - cap);
+        assert_eq!(l.count_source("session"), max as usize - cap);
+        assert!(l
+            .refusal_for_room(&key(), &net(), max, None)
+            .unwrap()
+            .contains("full"));
     }
 
     #[test]

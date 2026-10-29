@@ -1351,14 +1351,25 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   });
 
   // ── Install, update, remove ─────────────────────────────────────────
-  async function installOrUpdate(msgId, pending) {
+  // The release the last check offered. Install the update installs that
+  // one and no other: the browser refuses a manifest that changed since.
+  var offered = null;
+  async function installOrUpdate(msgId, pending, release) {
     if (!api || busy) return;
     setBusy(true);
     message('note', pending, msgId);
     var r;
-    try { r = await api.install(); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+    try {
+      if (!release) {
+        var c = await api.checkRelease();
+        if (!c || !c.ok) throw new Error((c && c.error) || 'Could not check the release.');
+        release = c;
+      }
+      r = await api.install({ version: release.version, digest: release.digest });
+    } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
     setBusy(false);
     if (r && r.ok) {
+      offered = null;
       message('note', r.note || 'Installed.', msgId);
       $('btn-update').style.display = 'none';
       updateKnown = false;
@@ -1384,7 +1395,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     installOrUpdate('install-msg', 'Fetching the signed release and checking it. Your system will then ask for administrator rights, once.');
   });
   $('btn-update').addEventListener('click', function () {
-    installOrUpdate('manage-msg', 'Fetching the signed release and checking it. The VPN disconnects for a moment while the service is replaced; your system will ask for administrator rights.');
+    installOrUpdate('manage-msg', 'Fetching the signed release and checking it. The VPN disconnects for a moment while the service is replaced; your system will ask for administrator rights.', offered);
   });
 
   $('btn-check-update').addEventListener('click', async function () {
@@ -1400,7 +1411,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       message('note', 'Up to date: ' + have + ' is the newest signed release.', 'manage-msg');
       $('btn-update').style.display = 'none';
       updateKnown = false;
+      offered = null;
     } else {
+      offered = { version: r.version, digest: r.digest };
       message('note', 'Signed release ' + r.version + ' is available' + (have ? ' (installed: ' + have + ')' : '') + '.', 'manage-msg');
       $('btn-update').style.display = '';
       updateKnown = true;
