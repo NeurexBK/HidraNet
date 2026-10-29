@@ -15,7 +15,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="1.0.0"
+# The version package.json says, as build-mac.js uses it.
+VERSION="$(node -p "require('./package.json').version")"
 DESKTOP="$HOME/Desktop"
 FAIL=0
 
@@ -152,9 +153,12 @@ if [ "$FAIL" -eq 0 ]; then
 
   They are on your Desktop. Next:
 
-    1. Upload both to the v1.0.0 release, replacing the old assets.
-    2. Copy the checksums above into landing/SHA256SUMS.txt (the macOS
-       lines change; Windows and Linux stay as they are).
+    1. Upload both to a new release for this version, never over the
+       assets of one already published: a published version keeps its
+       files. If this version has been published, bump the version in
+       package.json and build again.
+    2. Write the checksums into landing/SHA256SUMS.txt with
+       scripts/update-sums.js, then sign it offline (scripts/sign-sums.ps1).
     3. Test-launch one of them before announcing it:
          xattr -cr HidraNet.app
          codesign --force --sign - \

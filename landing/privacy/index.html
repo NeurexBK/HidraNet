@@ -93,9 +93,10 @@
         <tbody>
           <tr><td>Your browsing traffic</td><td>Tor network relays and the sites you visit, which see the Tor exit address, not yours</td><td>Anonymous routing</td></tr>
           <tr><td>One request to check.torproject.org after connecting</td><td>The Tor Project, which sees the Tor exit address</td><td>Confirming that the connection is protected</td></tr>
+          <tr><td>Once per connection, from version 1.1.0, a request for SHA256SUMS.txt and its signature on hidranet.org, sent through Tor</td><td>HidraNet's hosting provider (Vercel Inc., see 4.5), which sees the Tor exit address, not yours</td><td>Telling you when a newer or safer version exists; nothing is downloaded or installed</td></tr>
           </tbody>
       </table></div>
-      <p>HidraNet receives none of this data.</p>
+      <p>None of these requests carries your address, an identifier or anything about what you browse. HidraNet receives nothing from the first two; the third reaches the same host as this website and is logged as described in 4.5.</p>
       <h3>4.2 Messaging applications</h3>
       <p>In this version, HidraChat, HidraMail, the Forum and SevenNine exchange messages through public MQTT brokers run by third parties (EMQ Technologies at broker.emqx.io and HiveMQ at broker.hivemq.com). With Tor connected, these brokers see the Tor exit address, not yours.</p>
       <div class="tbl"><table>
@@ -206,7 +207,7 @@
     <section id="changes">
       <h2>12. Changes</h2>
       <p>Each version of this policy is published with a date. If a change reduces your rights or widens processing, we announce it beforehand on this website and in the browser release notes.</p>
-      <p>Version 1.1, 28 October 2026: adds HidraVPN (section 4.10) and the review page's brokers (section 4.5), adds HidraReview to section 4.2, points section 4.6 to section 4.10 for the passes sold during the preview, and says in section 2 what the HidraVPN nodes see while you are connected. It describes processing that was already taking place and was missing from version 1.0.</p>
+      <p>Version 1.1, 28 October 2026: adds HidraVPN (section 4.10), the review page's brokers (section 4.5) and the browser's update check (section 4.1), adds HidraReview to section 4.2, points section 4.6 to section 4.10 for the passes sold during the preview, and says in section 2 what the HidraVPN nodes see while you are connected. It describes processing that was already taking place and was missing from version 1.0.</p>
     </section>
 
     <section id="contact">

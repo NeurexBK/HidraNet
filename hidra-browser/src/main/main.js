@@ -11,6 +11,7 @@ const { VpnInstaller, installable } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
 const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
+const { UpdateCheck, STATE_FILE: UPDATE_STATE_FILE } = require('./update-check');
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
 const { TorManager, SOCKS_PORT, proxyRulesFor } = require('./tor-manager');
@@ -77,14 +78,21 @@ function vpnFetchAllowed(url) {
 }
 
 async function fetchText(url, maxBytes) {
+  return (await fetchSmall(url, maxBytes)).toString('utf8');
+}
+
+// The bytes of a small file (a node list, a signature, the checksum table),
+// exactly as served. An HTTP error carries its status, so a caller can tell
+// "not there" from "not reachable".
+async function fetchSmall(url, maxBytes) {
   vpnFetchAllowed(url);
   const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  const tooBig = new Error(`${url}: far larger than a node list`);
+  if (!res.ok) throw Object.assign(new Error(`${url}: ${res.status}`), { status: res.status });
+  const tooBig = new Error(`${url}: larger than ${maxBytes} bytes, far more than this file should be`);
   const declared = Number(res.headers.get('content-length') || 0);
   if (declared > maxBytes) throw tooBig;
   // Read with the cap, so a server that lies about its length (or sends no
-  // length) cannot make this process buffer more than a node list.
+  // length) cannot make this process buffer more than the cap.
   const reader = res.body.getReader();
   const chunks = [];
   let total = 0;
@@ -95,7 +103,7 @@ async function fetchText(url, maxBytes) {
     if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw tooBig; }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 // The same, for a release file: bytes, capped at what the signed manifest
@@ -118,6 +126,25 @@ async function fetchBuffer(url, maxBytes) {
 }
 
 const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+
+// Whether a newer build is out (update-check.js): the signed checksum table,
+// fetched the same way as the node list, through Tor with the same bare
+// request, once the network lock has opened. It only ever leads to a notice
+// on the new tab page. The most it has verified is kept in the data folder,
+// so a site serving an older record is caught after a restart too.
+let updateCheck = null;
+function updater() {
+  if (!updateCheck) {
+    updateCheck = new UpdateCheck({
+      fetchBytes: fetchSmall, currentVersion: app.getVersion(), log: (m) => console.log(m),
+      stateFile: path.join(app.getPath('userData'), UPDATE_STATE_FILE),
+    });
+  }
+  return updateCheck;
+}
+function checkForUpdate() {
+  updater().run().catch((e) => console.log('[update] check failed: ' + ((e && e.message) || e)));
+}
 
 // The leak test has to see what every other program on this machine sees,
 // not what the browser's own Tor route sees, so it asks through Node's own
@@ -231,6 +258,7 @@ async function connectTorOnce() {
   if (torManager.getStatus().state !== 'ready' || !networkLock.release(generation)) {
     return { ok: false, msg: 'Tor stopped before the connection was confirmed; the network stays blocked' };
   }
+  checkForUpdate();
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
@@ -1090,7 +1118,13 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo() };
+    // update: a newer build, this one below the minimum safe version, or no
+    // signed record to confirm either, from the checksum table; null when
+    // there is nothing to say.
+    return {
+      chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo(),
+      update: updater().notice(),
+    };
   });
 
   // HidraVPN. The service picks the nodes and holds the tunnel; the browser

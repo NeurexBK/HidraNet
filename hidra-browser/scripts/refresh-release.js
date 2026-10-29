@@ -2,11 +2,25 @@
 /**
  * HidraNet — rebuild the published release packages from the published ones.
  *
- * Downloads the four v1.0.0 assets, runs scripts/patch-zip.js over each, and
- * checks the result before telling you it is good. Everything it cannot
- * reproduce — the Electron runtime, the bundled Tor — comes from the package
- * it started with, so this works on a machine that cannot reach the Tor
- * Project's servers, which is the whole reason it exists.
+ * Downloads the four pinned base packages (lib/release-base.js), runs
+ * scripts/patch-zip.js over each, and checks the result before telling you it
+ * is good. What it does not rebuild — the Electron runtime, the bundled Tor —
+ * comes from the package it started with, so this works on a machine that
+ * cannot reach the Tor Project's servers, which is the whole reason it exists.
+ *
+ * That is also how the v1.0.0 packages went out on Electron 33.4.11 and Tor
+ * 15.0.22 while the repository pinned 44.9.3 and 15.0.26: nothing compared
+ * them. Now a base package is refused, before anything is built, unless every
+ * Electron file in it is the file of the pinned official Electron zip, every
+ * Tor file hashes to its pin in lib/tor.js, and the engine compiled into it is
+ * the Chromium the user agent claims (lib/package-runtime.js). The same checks
+ * run again on the packages it writes, with one more: app/src holds exactly
+ * the tree's files. When a base package fails, build from scratch instead
+ * (build-win.js, build-linux.js, build-mac.js), which enforce the pins.
+ *
+ * A refreshed package is a new build, so it gets the version package.json
+ * says, which must not be the base packages' own: a published version is never
+ * reused for different files.
  *
  * Usage:
  *   node scripts/refresh-release.js              # download, patch, verify
@@ -27,14 +41,20 @@ const { inflateRawSync } = require('zlib');
 const { readZip, validDosDate } = require('./lib/zip');
 const { download } = require('./lib/net');
 const { verifyReleaseBase } = require('./lib/release-base');
+const { electronZip, ELECTRON_VER } = require('./lib/electron');
+const { TOR_VERSION } = require('./lib/tor');
+const runtime = require('./lib/package-runtime');
 const { patchZip } = require('./patch-zip');
 
-const VERSION = '1.0.0';
+// The version of the pinned base packages, and the version of what this
+// writes: package.json's, which every builder uses.
+const BASE_VERSION = '1.0.0';
 const ROOT    = path.join(__dirname, '..');
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 const DIST    = path.join(ROOT, 'dist');
-const BASE    = 'https://github.com/NeurexBK/HidraNet/releases/download/v' + VERSION + '/';
-const NAMES   = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64']
-                  .map(a => 'HidraNet-Browser-' + VERSION + '-' + a + '.zip');
+const BASE    = 'https://github.com/NeurexBK/HidraNet/releases/download/v' + BASE_VERSION + '/';
+const ARCHES  = ['macOS-arm64', 'macOS-x64', 'Linux-x64', 'Windows-x64'];
+const NAMES   = ARCHES.map(a => 'HidraNet-Browser-' + BASE_VERSION + '-' + a + '.zip');
 
 // Where support goes. It replaced a Bitcoin address, so the check below
 // also refuses a package that still carries the old one.
@@ -69,6 +89,10 @@ const MAC_ICON_IN_ZIP = 'HidraNet.app/Contents/Resources/electron.icns';
 // uncommitted changes says so: "-dirty" is not something to publish.
 const BUILD_JSON = path.join(DIST, 'build.json');
 const buildInZip = (name) => (/macOS/.test(name) ? 'HidraNet.app/Contents/Resources/' : 'resources/') + 'app/build.json';
+// The app's package.json, where Electron's app.getVersion() reads the version
+// the new tab page shows and the update check compares.
+const APP_PACKAGE_JSON = path.join(DIST, 'app-package.json');
+const appPackageInZip = (name) => (/macOS/.test(name) ? 'HidraNet.app/Contents/Resources/' : 'resources/') + 'app/package.json';
 function buildStamp() {
   let build = 'unknown';
   try {
@@ -122,12 +146,62 @@ function check(cond, msg) {
 }
 function contents(e) { return e.method === 8 ? inflateRawSync(e.rawData) : e.rawData; }
 
+// The official Electron zip for a package's system, checked against its pin
+// (downloaded once into dist/electron-cache), read.
+const electronEntries = new Map();
+async function officialElectron(name) {
+  const { platform, arch } = runtime.platformOf(name);
+  const key = platform + '-' + arch;
+  if (!electronEntries.has(key)) {
+    const zip = await electronZip(platform, arch, path.join(DIST, 'electron-cache'));
+    electronEntries.set(key, zip);
+  }
+  return readZip(fs.readFileSync(electronEntries.get(key)));
+}
+
+// What runs in the package is what the repository pins: the problems, or an
+// empty list. electronFor(name) gives the official Electron zip's entries.
+async function runtimeProblemsOf(file, electronFor = officialElectron) {
+  const name = path.basename(file);
+  const { platform, arch } = runtime.platformOf(name);
+  const es = readZip(fs.readFileSync(file));
+  return [
+    ...runtime.runtimeProblems(es, await electronFor(name), platform),
+    ...runtime.torProblems(es, platform, arch),
+    ...runtime.engineProblems(es, platform),
+  ];
+}
+
+// Every app/src entry of the package is a file of the tree with the same
+// bytes, and every file of the tree is there.
+function appSourceProblems(es, pfx) {
+  const tree = new Map();
+  (function walk(dir, rel) {
+    for (const n of fs.readdirSync(dir).sort()) {
+      const abs = path.join(dir, n);
+      if (fs.statSync(abs).isDirectory()) walk(abs, rel + n + '/');
+      else tree.set(rel + n, abs);
+    }
+  })(path.join(ROOT, 'src'), '');
+  const problems = [];
+  const seen = new Set();
+  for (const e of es) {
+    if (e.filename.indexOf(pfx) !== 0 || e.filename.endsWith('/')) continue;
+    const rel = e.filename.slice(pfx.length);
+    seen.add(rel);
+    if (!tree.has(rel)) problems.push(rel + ' is not in the tree');
+    else if (!contents(e).equals(fs.readFileSync(tree.get(rel)))) problems.push(rel + ' differs from the tree');
+  }
+  for (const rel of tree.keys()) if (!seen.has(rel)) problems.push(rel + ' is missing');
+  return problems;
+}
+
 /**
  * Does this package actually hold together? Not "did the script run" — the
  * things that have gone wrong before: Tor missing or not executable, the app
  * sources not actually updated, paths that only extract correctly on Windows.
  */
-function verify(file) {
+async function verify(file, version = VERSION, electronFor = officialElectron) {
   const name = path.basename(file);
   const mac  = /macOS/.test(name);
   const win  = /Windows/.test(name);
@@ -147,6 +221,14 @@ function verify(file) {
   check(by.has(tor), 'Tor is in the package (' + (by.has(tor) ? by.get(tor).uncompSz : 0) + ' bytes)');
   if (!win) check(mode(tor) === '755', 'Tor is executable (mode ' + mode(tor) + ')');
   check(by.has(res + '/bin/tor/geoip'), 'Tor geoip data present');
+  const rt = await runtimeProblemsOf(file, electronFor);
+  check(rt.length === 0, 'Electron ' + ELECTRON_VER + ' and Tor ' + TOR_VERSION +
+        ' exactly as pinned, on the Chromium the user agent claims' +
+        (rt.length ? ':\n           ' + rt.join('\n           ') : ''));
+  const stale = appSourceProblems(es, pfx);
+  check(stale.length === 0, 'app/src is exactly the tree' + (stale.length ? ': ' + stale.join(', ') : ''));
+  const ap = by.get(appPackageInZip(name));
+  check(!!ap && JSON.parse(contents(ap).toString()).version === version, 'the app says it is version ' + version);
 
   if (!mac && !win) {
     check(mode('hidranet') === '755', 'hidranet is executable (mode ' + mode('hidranet') + ')');
@@ -200,14 +282,102 @@ function verify(file) {
         'HidraVPN is in the package');
 }
 
-(async function main() {
+/**
+ * Everything after the base packages are downloaded and match their pinned
+ * SHA-256: refuse them unless they run what the repository pins, stop there
+ * for --verify-inputs-only, refuse to reuse their version, and only then
+ * build the engine, patch and check the outputs. Returns { ok, stage }, where
+ * stage says how far it got: 'base' (a base package refused), 'verified'
+ * (inputs only), 'version' (package.json still says the base version) or
+ * 'built'. Nothing is compiled or patched before the first three have passed.
+ *
+ * The defaults are the real ones; the test hands in stand-ins for the
+ * official Electron zip, the engine build and patch-zip.
+ */
+async function refresh({ inDir, outDir, names = NAMES, verifyOnly = false, version = VERSION,
+                         electronFor = officialElectron, engine = buildEngine, patch = patchZip }) {
+  // What the base packages run, before anything is built on them.
+  let runtimeFailures = 0;
+  for (const n of names) {
+    const problems = await runtimeProblemsOf(path.join(inDir, n), electronFor);
+    if (problems.length) {
+      runtimeFailures++;
+      console.error('\n  ' + n + ' does not run what the repository pins:');
+      for (const p of problems.slice(0, 20)) console.error('    ' + p);
+      if (problems.length > 20) console.error('    … and ' + (problems.length - 20) + ' more');
+    } else {
+      console.log('  verified Electron, Tor and engine: ' + n);
+    }
+  }
+  if (runtimeFailures) {
+    console.error('\n  ' + runtimeFailures + ' base package(s) refused. Refreshing them would ship their old Electron');
+    console.error('  and Tor under a new name. Build from scratch instead: build-win.js, build-linux.js, build-mac.js.\n');
+    return { ok: false, stage: 'base' };
+  }
+
+  if (verifyOnly) {
+    console.log('  All base packages match their pinned SHA-256, Electron and Tor. No build was run.');
+    return { ok: true, stage: 'verified' };
+  }
+
+  if (version === BASE_VERSION) {
+    console.error('  package.json says ' + version + ', the version of the packages this starts from. A refreshed');
+    console.error('  package is a new build: give it a new version in package.json. A published version is');
+    console.error('  never reused for different files.\n');
+    return { ok: false, stage: 'version' };
+  }
+
+  console.log('');
+  engine();
+
+  const stamp = buildStamp();
+  fs.writeFileSync(BUILD_JSON, JSON.stringify(stamp) + '\n');
+  console.log('\n  build ' + stamp.build + ' · ' + stamp.date);
+
+  fs.writeFileSync(APP_PACKAGE_JSON, JSON.stringify(
+    { name: 'hidra-browser', version, main: 'src/main/main.js' }, null, 2));
+
+  const outName = (n) => n.replace('-' + BASE_VERSION + '-', '-' + version + '-');
+  console.log('\n  patching\n');
+  for (const n of names) {
+    const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
+    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
+      // The bundle's icon: Electron's own until now. The binary is not
+      // touched, only the picture the Dock and the Finder show for it.
+      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
+      : {};
+    extras[buildInZip(n)] = BUILD_JSON;
+    extras[appPackageInZip(n)] = APP_PACKAGE_JSON;
+    patch(path.join(inDir, n), path.join(outDir, outName(n)), { binaries, extras, version });
+  }
+
+  console.log('\n  checking');
+  for (const n of names) await verify(path.join(outDir, outName(n)), version, electronFor);
+
+  console.log('\n  SHA-256 (node scripts/update-sums.js writes them into landing/SHA256SUMS.txt)\n');
+  for (const n of names) {
+    const h = crypto.createHash('sha256').update(fs.readFileSync(path.join(outDir, outName(n)))).digest('hex');
+    console.log('  ' + h + '  ' + outName(n));
+  }
+
+  console.log('');
+  if (failures) {
+    console.log('  ' + failures + ' check(s) failed. Do not upload these.\n');
+    return { ok: false, stage: 'built' };
+  }
+  console.log('  All checks passed. The packages are in ' + outDir + '.');
+  console.log('  These packages are for review. No release assets were published or replaced.\n');
+  return { ok: true, stage: 'built' };
+}
+
+async function main() {
   const inArg  = process.argv.indexOf('--in');
   const inDir  = inArg !== -1 ? process.argv[inArg + 1] : path.join(DIST, 'release-in');
   const outDir = path.join(DIST, 'release-out');
   fs.mkdirSync(inDir,  { recursive: true });
   fs.mkdirSync(outDir, { recursive: true });
 
-  console.log('HidraNet — refreshing the v' + VERSION + ' packages\n');
+  console.log('HidraNet — refreshing the v' + BASE_VERSION + ' packages as ' + VERSION + '\n');
 
   for (const n of NAMES) {
     const src = path.join(inDir, n);
@@ -223,44 +393,12 @@ function verify(file) {
     console.log('  verified base SHA-256: ' + n);
   }
 
-  if (process.argv.includes('--verify-inputs-only')) {
-    console.log('  All base packages match their pinned SHA-256. No build was run.');
-    return;
-  }
+  const r = await refresh({ inDir, outDir, verifyOnly: process.argv.includes('--verify-inputs-only') });
+  if (!r.ok) process.exit(1);
+}
 
-  console.log('');
-  buildEngine();
+module.exports = { refresh, runtimeProblemsOf, BASE_VERSION };
 
-  const stamp = buildStamp();
-  fs.writeFileSync(BUILD_JSON, JSON.stringify(stamp) + '\n');
-  console.log('\n  build ' + stamp.build + ' · ' + stamp.date);
-
-  console.log('\n  patching\n');
-  for (const n of NAMES) {
-    const binaries = /Windows/.test(n) ? { [ENGINE_IN_ZIP]: ENGINE_OUT } : {};
-    const extras = /Linux/.test(n) ? { [LIBEVENT_IN_ZIP]: LIBEVENT_LOCAL }
-      // The bundle's icon: Electron's own until now. The binary is not
-      // touched, only the picture the Dock and the Finder show for it.
-      : /macOS/.test(n) ? { [MAC_ICON_IN_ZIP]: MAC_ICON_LOCAL }
-      : {};
-    extras[buildInZip(n)] = BUILD_JSON;
-    patchZip(path.join(inDir, n), path.join(outDir, n), { binaries, extras });
-  }
-
-  console.log('\n  checking');
-  for (const n of NAMES) verify(path.join(outDir, n));
-
-  console.log('\n  SHA-256 (paste into landing/SHA256SUMS.txt)\n');
-  for (const n of NAMES) {
-    const h = crypto.createHash('sha256').update(fs.readFileSync(path.join(outDir, n))).digest('hex');
-    console.log('  ' + h + '  ' + n);
-  }
-
-  console.log('');
-  if (failures) {
-    console.log('  ' + failures + ' check(s) failed. Do not upload these.\n');
-    process.exit(1);
-  }
-  console.log('  All checks passed. The packages are in ' + outDir + '.');
-  console.log('  These packages are for review. No release assets were published or replaced.\n');
-})().catch(e => { console.error('\n  failed: ' + e.message + '\n'); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error('\n  failed: ' + e.message + '\n'); process.exit(1); });
+}

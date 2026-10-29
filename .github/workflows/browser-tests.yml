@@ -12,7 +12,10 @@
 # tor-route-electron, which proves no tab is ever routed anywhere but Tor
 # (while Tor bootstraps, after Disconnect, after a crash), and
 # dns-prefetch-electron, which proves a page's DNS hints never reach a
-# resolver.
+# resolver. The release checks run here too: what a package must run
+# (release-runtime), the update notice and the signed record it reads
+# (update-check and update-notice-electron), and, in a job of its own, the
+# signature of landing/SHA256SUMS.txt.
 name: Browser tests
 
 on:
@@ -57,7 +60,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims privacy-policy app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes; do
+          for t in anonymity-claims privacy-policy app-storage chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes release-runtime update-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -86,8 +89,38 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron update-notice-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"
           done
+
+  # Once the maintainers have signed the checksum table, a change to it
+  # without a new signature made offline with the release key is refused,
+  # and so is a change that drops the signature. Before the first signature
+  # there is nothing to check but the record's shape.
+  release-sums:
+    name: the checksum table is signed once it has been
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: verify landing/SHA256SUMS.txt against SHA256SUMS.txt.sig
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -e
+          flag=""
+          # Was the table already signed before this change?
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if git cat-file -e "$BASE:landing/SHA256SUMS.txt.sig" 2>/dev/null; then flag=--require-signature; fi
+          elif git cat-file -e "HEAD~1:landing/SHA256SUMS.txt.sig" 2>/dev/null; then
+            flag=--require-signature
+          fi
+          node hidra-browser/scripts/verify-sums.js $flag

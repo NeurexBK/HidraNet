@@ -373,6 +373,19 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 1s linear infinite; }
 
+    /* Update notice: a newer build, or this one below the minimum safe
+       version, from the signed checksum table. A notice only. */
+    .update-notice {
+      margin: 0 0 20px; padding: 12px 16px; border-radius: var(--radius-sm);
+      border: 1px solid rgba(255,170,51,0.4); background: rgba(255,170,51,0.08);
+      color: var(--text-primary); font-size: 13px; line-height: 1.5;
+    }
+    .update-notice.unsafe { border-color: rgba(255,68,102,0.5); background: rgba(255,68,102,0.1); }
+    .update-notice strong { color: var(--warning); }
+    .update-notice.unsafe strong { color: var(--danger); }
+    .update-notice.neutral { border-color: var(--border); background: transparent; }
+    .update-notice.neutral strong { color: var(--text-primary); }
+
     /* Footer */
     .footer {
       display: flex; justify-content: space-between; align-items: center;
@@ -440,6 +453,11 @@
         </div>
       </div>
     </header>
+
+    <div class="update-notice" id="update-notice" role="status" hidden>
+      <strong id="update-title"></strong>
+      <span id="update-text"></span>
+    </div>
 
     <div class="search-container">
       <div class="search-box">
@@ -1028,9 +1046,47 @@
       }
     }
 
+    // Shown when the signed checksum table names a newer build than this
+    // one, or a minimum safe version this one is below, or when there is no
+    // signed record to confirm that it is neither. Nothing is downloaded:
+    // the person gets the new build from the site and checks it.
+    function showUpdate(update) {
+      var box = document.getElementById('update-notice');
+      if (!box) return;
+      if (update && update.state === 'unconfirmed') {
+        box.className = 'update-notice neutral';
+        document.getElementById('update-title').textContent = 'Could not confirm that this browser is up to date.';
+        document.getElementById('update-text').textContent = 'The signed version record on hidranet.org could not be ' +
+          'checked. Visit hidranet.org to see whether a newer version is out, and check its SHA-256 against ' +
+          'SHA256SUMS.txt there.';
+        box.hidden = false;
+        return;
+      }
+      var version = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+      if (!update || update.state !== 'update' || !version.test(update.current) || !version.test(update.latest) ||
+          (update.unsafe && !version.test(update.minimum))) {
+        box.hidden = true;
+        return;
+      }
+      if (update.unsafe) {
+        box.className = 'update-notice unsafe';
+        document.getElementById('update-title').textContent = 'This browser has known security problems.';
+        document.getElementById('update-text').textContent = 'HidraNet Browser ' + update.current +
+          ' is older than ' + update.minimum + ', the oldest version still considered safe. Download ' +
+          update.latest + ' from hidranet.org, check its SHA-256 against SHA256SUMS.txt there, and replace this copy.';
+      } else {
+        box.className = 'update-notice';
+        document.getElementById('update-title').textContent = 'HidraNet Browser ' + update.latest + ' is available.';
+        document.getElementById('update-text').textContent = 'This is ' + update.current +
+          '. Download the new version from hidranet.org and check its SHA-256 against SHA256SUMS.txt there.';
+      }
+      box.hidden = false;
+    }
+
     async function detectApps() {
       detectVpn();
       var status = await appsStatus();
+      showUpdate(status.update);
       // The exact build, so an older copy can be told apart at a glance.
       var about = status.about;
       if (about && typeof about.version === 'string') {
@@ -1428,7 +1484,18 @@
     'use strict';
     var TOPIC = 'hidra/node/v1';
     var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-    var VER = '1.0.0';
+    // The version this build says it is (the footer shows the same), read
+    // once from the main process; left out of the signal if it cannot be.
+    var VER = null;
+    async function version() {
+      if (VER) return VER;
+      try {
+        var s = await window.hidra.apps.status();
+        var v = s && s.about && s.about.version;
+        if (typeof v === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)) VER = v;
+      } catch (e) {}
+      return VER;
+    }
     // Ephemeral, per session. It used to be kept in localStorage, which made
     // it stable across restarts — a durable fingerprint of this installation,
     // published on a public channel. Counting presence does not require
@@ -1450,7 +1517,9 @@
       // that that machine, in that city, was at that moment running WITHOUT
       // protection (tor: false). That is a targeting signal. It now carries an
       // ephemeral id, the version and a timestamp, and nothing else.
-      var msg = { cid: cid, ver: VER, t: Date.now() };
+      var ver = await version();
+      if (!cli || !cli.connected) return;
+      var msg = ver ? { cid: cid, ver: ver, t: Date.now() } : { cid: cid, t: Date.now() };
       try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
     }
 

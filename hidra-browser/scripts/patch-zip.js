@@ -13,8 +13,11 @@
  * through with its bytes untouched.
  *
  * What it does:
- *   1. Replaces the files under `.../app/src/` with the current working tree,
- *      adds files that are new, and leaves anything else alone.
+ *   1. Replaces the files under `.../app/src/` with the current working tree
+ *      and adds files that are new. A file the archive carries under app/src/
+ *      that the tree no longer has stops the run: code removed from src/,
+ *      perhaps for a security reason, must not keep shipping in a package
+ *      refreshed from an older one.
  *   2. Normalises path separators. The published Windows and Linux packages
  *      were zipped on Windows (version-made-by says MS-DOS) and store
  *      `resources\app\...`. The ZIP spec requires forward slashes; Info-ZIP
@@ -73,7 +76,7 @@ function modeFor(name) {
 const APP_NAME = 'HidraNet';
 const APP_ID   = 'net.hidra.browser';
 
-function replacementsFor(zipName) {
+function replacementsFor(zipName, version) {
   // Each launcher is keyed under the name it had in the September archive AND
   // the name it has now. Keyed only under the old one, a package that had
   // already been refreshed kept whatever launcher it carried, and any change
@@ -100,7 +103,7 @@ function replacementsFor(zipName) {
   const m = /-(\d+\.\d+\.\d+)-macOS-(arm64|x64)\./.exec(zipName);
   if (m) {
     const launcher = { name: 'Start HidraNet.command', body: launcherScript(APP_NAME) };
-    const readme   = { name: 'README-macOS.txt',       body: readmeText(APP_NAME, m[1], m[2]), mode: 0o644 };
+    const readme   = { name: 'README-macOS.txt',       body: readmeText(APP_NAME, version || m[1], m[2]), mode: 0o644 };
     r['Iniciar HidraNet.command'] = launcher;
     r['Start HidraNet.command']   = launcher;   // already-refreshed package
     r['LEIA-ME.txt']              = readme;
@@ -135,16 +138,19 @@ const RE = /(^|.*\/)app\/src\/(.+)$/;
  *        to a package that was not built to carry it.
  * @param {Object<string,string>} [opts.extras] archive path -> local file, for
  *        files the package does not have yet (a shared library beside Tor).
+ * @param {string} [opts.version] the version the refreshed package is, for
+ *        its Info.plist and README; the input's file name says it otherwise.
  */
 function patchZip(inZip, outZip, opts) {
   opts = opts || {};
   const dry = !!opts.dry;
   const binaries = opts.binaries || {};
   const extras = opts.extras || {};
-  // The package states its own version in its filename.
-  const VERSION_OF = () => (/-(\d+\.\d+\.\d+)-/.exec(path.basename(inZip)) || [, '1.0.0'])[1];
+  // The package states its own version in its filename, unless the refresh
+  // gives it a new one.
+  const VERSION_OF = () => opts.version || (/-(\d+\.\d+\.\d+)-/.exec(path.basename(inZip)) || [, '1.0.0'])[1];
 
-  const LAUNCHERS = replacementsFor(path.basename(inZip));
+  const LAUNCHERS = replacementsFor(path.basename(inZip), opts.version);
   const entries = readZip(fs.readFileSync(inZip));
   const local   = scan(SRC);
   const byRel   = new Map(local.map(f => [f.rel, f]));
@@ -155,7 +161,8 @@ function patchZip(inZip, outZip, opts) {
   const hasModes = entries.some(e => (e.versionMadeBy >> 8) === 3 && (e.extAttr >>> 16) !== 0);
   const hasBackslashes = entries.some(e => e.filename.indexOf('\\') !== -1);
 
-  let prefix = null, replaced = 0, same = 0, stale = 0, renamed = 0, plists = 0;
+  let prefix = null, replaced = 0, same = 0, renamed = 0, plists = 0;
+  const stale = [];
   let binsDone = 0, extrasDone = 0;
   const seen = new Set();
   const binsWanted = new Set(Object.keys(binaries));
@@ -178,8 +185,10 @@ function patchZip(inZip, outZip, opts) {
     //    the bundle-id patch landed, so they still say com.github.Electron —
     //    which is what LaunchServices, TCC permissions, preferences and
     //    keychain items get filed under, shared with every other Electron app
-    //    that never changed its default.
-    if (/\.app\/Contents\/Info\.plist$/.test(name)) {
+    //    that never changed its default. Only the outer bundle's plist, as
+    //    build-mac.js does: the helper apps inside Frameworks/ keep
+    //    Electron's own, and lib/package-runtime.js holds them to it.
+    if (/\.app\/Contents\/Info\.plist$/.test(name) && name.split('.app/').length === 2) {
       const raw = (e.method === 8 ? inflateRawSync(e.rawData) : e.rawData).toString('utf8');
       const fixed = patchPlist(raw, APP_NAME, APP_ID, VERSION_OF(e));
       if (fixed !== raw) {
@@ -223,8 +232,8 @@ function patchZip(inZip, outZip, opts) {
       seen.add(rel);
       const f = byRel.get(rel);
       if (!f) {
-        stale++;
-        console.log('  stale (kept)  ' + rel);
+        stale.push(rel);
+        console.log('  stale         ' + rel);
       } else {
         const data = fs.readFileSync(f.abs);
         if (data.length === e.uncompSz && crc32(data) === e.crc) same++;
@@ -254,6 +263,10 @@ function patchZip(inZip, outZip, opts) {
 
   let added = 0;
   if (!prefix) throw new Error('no app/src/ entries in ' + inZip + ' — wrong archive?');
+  if (stale.length) {
+    throw new Error(path.basename(inZip) + ' carries ' + stale.length + ' file(s) under app/src/ that the tree no longer has: ' +
+                    stale.join(', ') + '\n  Build the package from scratch (build-win.js, build-linux.js, build-mac.js) instead.');
+  }
   // Silence here would mean shipping the old engine and believing otherwise.
   if (binsWanted.size)
     throw new Error('not in ' + path.basename(inZip) + ': ' + [...binsWanted].join(', '));
@@ -267,7 +280,7 @@ function patchZip(inZip, outZip, opts) {
   console.log('\n  ' + path.basename(inZip));
   console.log('  entries ' + entries.length + ' -> ' + out.length +
               ' | updated ' + replaced + ' | added ' + added +
-              ' | unchanged ' + same + ' | stale kept ' + stale +
+              ' | unchanged ' + same +
               ' | launchers ' + renamed + ' | plists ' + plists +
               ' | engines ' + binsDone + ' | extras ' + extrasDone);
   console.log('  separators fixed: ' + (hasBackslashes ? 'yes (were backslashes)' : 'no (already /)') +

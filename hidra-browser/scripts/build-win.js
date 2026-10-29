@@ -36,8 +36,11 @@ const { buildJson } = require('./lib/build-stamp');
 const { electronZip } = require('./lib/electron');
 const { torDir, verifyTorDir } = require('./lib/tor');
 
-const VERSION      = '1.0.0';
 const ROOT         = path.join(__dirname, '..');
+// Every published build has a version of its own, from package.json: a
+// rebuild under a version already published would be told apart from the
+// old files only by its hash.
+const VERSION      = require(path.join(ROOT, 'package.json')).version;
 const DIST         = path.join(ROOT, 'dist');
 const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
 const NODE_ROOT    = path.join(ROOT, '..', 'hidra-node');
