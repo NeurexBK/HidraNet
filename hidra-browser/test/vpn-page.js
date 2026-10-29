@@ -125,6 +125,18 @@ expect('the token never comes back to the page: the module sends it and the serv
 expect('the page never names a file path: the person chooses in a dialog', /dialog\.showOpenDialog/.test(main) && !/filePaths?\s*[:=]/.test(page), 'a path travels from the page');
 expect('the browser does not verify the list itself; the service that writes the pocket does', !/releaseVerify\.verify(File|Bytes)\([^)]*list/.test(main), 'the browser verifies the node list, which would let a convinced browser feed an unconvinced service');
 expect('the browser reads the token fresh on every request', /_readToken\(\)/.test(manager) && !/this\.token\s*=/.test(manager), 'the token is cached');
+const sealRs = read(ROOT, '..', 'hidravpn', 'crates', 'hidravpn-service', 'src', 'seal.rs');
+const rsScheme = (sealRs.match(/pub const SCHEME: &str = "([^"]+)";/) || [])[1];
+const rsInfo = (sealRs.match(/const INFO: &\[u8\] = b"([^"]+)";/) || [])[1];
+expect('the browser seals with the scheme and the derivation the service opens with',
+  Boolean(rsScheme) && Boolean(rsInfo) && manager.includes(`const SEAL = '${rsScheme}';`) && manager.includes(`const SEAL_INFO = Buffer.from('${rsInfo}');`),
+  `seal.rs says ${rsScheme} / ${rsInfo}; vpn-manager.js does not match`);
+expect('every request is sealed when the service has a key, and an answer that does not open is not believed',
+  /sealed = sealRequest\(key, plain\);/.test(manager) && /if \(answer === null\) throw new VpnUnavailable\('unavailable', NOT_THE_SERVICE/.test(manager),
+  'vpn-manager.js sends in the clear, or believes an answer that did not open');
+expect('on Windows a service without a key is never asked in the clear',
+  /\} else if \(this\.platform === 'win32'\) \{[\s\S]{0,300}throw new VpnUnavailable\('outdated'/.test(manager),
+  'a keyless Windows service would be sent the token');
 
 // ── Phase 4 completion: install, leak test, local network, route ──────────
 expect('the install card is hidden until the service says it is not installed', /id="install-card" style="display:none"/.test(page) && /notInstalled \? '' : 'none'/.test(page), 'the install card is not tied to the not-installed state');

@@ -10,7 +10,15 @@
 //     IPv6 answer can only have come through the exit.
 //   - DNS: whether a name can be looked up outside the tunnel. The kill
 //     switch forbids it, so the test reads it from the service: armed or not.
+//     No lookup is made, and the row says so.
 //   - The kill switch itself, as the service reports it.
+//
+// Only the two address checks are measured; the rest is the service's own
+// report. That report is the service's and nobody else's: the browser
+// believes an answer only once it opens under the service's key
+// (vpn-manager.js), so something else holding the service's address cannot
+// make this test pass. It cannot catch the service being wrong about its own
+// kill switch.
 //
 // The two network checks go to api.ipify.org / api6.ipify.org through Node's
 // own https, with the system resolver and no proxy (directProbe in main.js),
@@ -144,7 +152,7 @@ async function runLeakTest(status, probe) {
       : { id: 'ipv6', label: 'IPv6', verdict: 'pass', detail: 'Nothing leaves over IPv6.' });
   }
 
-  checks.push({ id: 'dns', label: 'DNS', verdict: 'pass', detail: 'No DNS query can leave outside the tunnel: the kill switch blocks every one that does not go through it.' });
+  checks.push({ id: 'dns', label: 'DNS', verdict: 'pass', detail: 'Not measured: the service reports the kill switch armed, and it blocks every DNS query that does not go through the tunnel.' });
 
   const worst = checks.some((c) => c.verdict === 'fail') ? 'fail' : checks.some((c) => c.verdict === 'warn') ? 'warn' : 'pass';
   return { ran: true, verdict: worst, checks };

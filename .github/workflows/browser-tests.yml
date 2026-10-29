@@ -2,7 +2,8 @@
 # read: the English-only sweep (which also reads hidra-node and the landing
 # page), the storage and vault tests, who may call each handler, the VPN
 # control-channel module against a stand-in service, the VPN page lint (which
-# reads the service's ipc.rs), the privacy policy lint (which reads the site's
+# reads the service's ipc.rs, and seal.rs for the sealing the browser must
+# match), the privacy policy lint (which reads the site's
 # CSP, the review page's brokers, the node's default resolvers in
 # hidravpn-node's config.rs, and what the issuer keeps and for how long, in
 # hidravpn-issuer's main.rs and hidravpn-core's payment.rs), the
@@ -28,6 +29,7 @@ on:
       - "hidra-node/assets/**"
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-service/src/seal.rs"
       - "hidravpn/crates/hidravpn-node/src/config.rs"
       - "hidravpn/crates/hidravpn-issuer/src/main.rs"
       - "hidravpn/crates/hidravpn-core/src/payment.rs"
@@ -40,6 +42,7 @@ on:
       - "hidra-node/assets/**"
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
+      - "hidravpn/crates/hidravpn-service/src/seal.rs"
       - "hidravpn/crates/hidravpn-node/src/config.rs"
       - "hidravpn/crates/hidravpn-issuer/src/main.rs"
       - "hidravpn/crates/hidravpn-core/src/payment.rs"

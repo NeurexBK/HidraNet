@@ -2,8 +2,9 @@
 // the VPN page would. Run by hidravpn/scripts/test-browser-netns.sh inside the
 // client namespace, where the service is listening; not meant to be run alone.
 //
-//   node vpn-live.js <step>        step: before | connect-privado-refused |
-//                                        connect-rapido | status | identity | down | after
+//   node vpn-live.js <step>        step: before | not-the-service |
+//                                        connect-privado-refused | connect-rapido |
+//                                        status | identity | down | after
 //
 // Prints one line of JSON with what it saw, and exits non-zero on anything
 // unexpected, so the shell script can judge each step and check the network
@@ -35,6 +36,14 @@ function done(extra) {
       if (!n.ok) fail('nodes failed', n);
       if (n.nodes.some((x) => 'node_public_key' in x)) fail('a key reached the browser', n);
       done({ state: s.state, nodes: n.nodes.map((x) => `${x.slot}:${x.node_name}`) });
+      break;
+    }
+    case 'not-the-service': {
+      // The script has put another key where the service's public key
+      // lives: every answer then fails to open, and none may be believed.
+      const s = await vpn.status();
+      if (s.state !== 'unavailable' || s.report) fail('an answer that did not open was believed', s);
+      done({ state: s.state, error: s.error });
       break;
     }
     case 'connect-privado-refused': {

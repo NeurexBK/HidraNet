@@ -398,7 +398,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 
     <section class="card" id="leaks-card">
       <div class="card-head"><svg class="card-icon" aria-hidden="true"><use href="#icon-flask"/></svg><h2>Leak test</h2><span class="badge" id="leaks-verdict">Not run</span><button class="btn" id="btn-leaks" disabled>Run the leak test</button></div>
-      <p class="help">Checks what the rest of this machine shows the internet while HidraVPN is connected: the address websites see, whether IPv6 goes through the exit or is blocked, whether a DNS query could leave outside the tunnel, and the kill switch. The address check asks api.ipify.org, directly, as any program on this machine would.</p>
+      <p class="help">Checks what the rest of this machine shows the internet while HidraVPN is connected: the address websites see and whether IPv6 goes through the exit or is blocked, both measured; the kill switch and DNS, as the service reports them. The address check asks api.ipify.org, directly, as any program on this machine would.</p>
       <div class="leaks" id="leaks"></div>
       <div class="msg" id="leaks-msg" aria-live="polite"></div>
     </section>
@@ -508,8 +508,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   // before pressing a button. Reads taken during an action do not count, or
   // a refusal that left the circuit as it was would look like a change.
   var settled = null;
-  // Set by any answer that says the service is older than this browser;
-  // only status() never says so, since every service knows that command.
+  // Set by any answer that says the service is older than this browser.
+  // Every service knows status(), but on Windows it says so too when the
+  // service wrote no key (one from before sealed requests): it is not asked.
   var outdated = false;
   // Whether the mode cards were set from the service's own mode since the
   // page loaded (or came back): Reconnect must not quietly change the mode.

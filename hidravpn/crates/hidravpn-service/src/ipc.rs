@@ -8,6 +8,12 @@
 //! drive it can read it (root and the group on Unix, mode 0640; on Windows
 //! SYSTEM, administrators and signed-in users), so a web page that guesses
 //! the address still cannot drive the tunnel.
+//!
+//! A client may also seal its request to the service's key (`seal.rs`), and
+//! then believes only an answer the service sealed: that is how it knows
+//! the service, and not something else holding the pipe's name, is what
+//! answers. The command line and the browser always seal when the service
+//! has a key; a plain request is still read, so older clients keep working.
 
 use std::sync::Arc;
 
@@ -18,6 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::daemon::Daemon;
 use crate::paths;
+use crate::seal::{self, AnswerSealer, ServiceKey};
 
 /// A request from a client. The token is checked before the command is read.
 #[derive(Serialize, Deserialize)]
@@ -346,40 +353,64 @@ pub fn write_token() -> Result<String> {
     getrandom::fill(&mut bytes).map_err(|e| anyhow!("no randomness: {e}"))?;
     use base64::Engine;
     let token = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let path = paths::control_token();
+    write_shared(&paths::control_token(), &token)?;
+    Ok(token)
+}
+
+/// Makes the service's key for this run and writes its public half beside
+/// the token, with the token's rights. The private half is never written.
+pub fn write_service_key() -> Result<ServiceKey> {
+    let key = ServiceKey::generate()?;
+    write_shared(&paths::control_public_key(), &key.public_base64())?;
+    Ok(key)
+}
+
+/// Writes a file the service owns and those who may drive it can read.
+///
+/// Written beside its place and then moved into it, so a client never finds
+/// the file missing or half written while the service starts: a browser
+/// that found the token but no key would take the service for one from
+/// before sealed requests.
+fn write_shared(path: &std::path::Path, contents: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    #[cfg(unix)]
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".new");
+    let fresh = path.with_file_name(name);
+    // A file of its own every time, never one left from an earlier run: that
+    // keeps its mode and group (Unix), or the owner who made it first
+    // (Windows), which may not be the ones wanted.
+    let _ = std::fs::remove_file(&fresh);
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        // A file of its own every time: one left from an earlier run keeps
-        // its mode and group, which may no longer be the ones wanted.
-        let _ = std::fs::remove_file(&path);
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("writing {}", path.display()))?;
-        f.write_all(token.as_bytes())?;
-        share_with_control_group(&path, 0o640)?;
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut f = open
+            .open(&fresh)
+            .with_context(|| format!("writing {}", fresh.display()))?;
+        f.write_all(contents.as_bytes())
+            .with_context(|| format!("writing {}", fresh.display()))?;
     }
+    // Then its own rights: on Unix root's, the control group's to read; on
+    // Windows inherited from nowhere, SYSTEM and administrators everything,
+    // interactive users read.
+    #[cfg(unix)]
+    share_with_control_group(&fresh, 0o640)?;
     #[cfg(windows)]
-    {
-        // Never over an existing file: a file a user made first would keep
-        // that user as its owner. Then its own rights, inherited from nowhere:
-        // SYSTEM and administrators everything, interactive users read.
-        let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
-        protect_token(&path)?;
+    protect_shared(&fresh)?;
+    if std::fs::rename(&fresh, path).is_err() {
+        // Windows refuses to replace a file someone holds open without
+        // letting it be deleted; it is removed first then, as before.
+        let _ = std::fs::remove_file(path);
+        std::fs::rename(&fresh, path).with_context(|| format!("writing {}", path.display()))?;
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        std::fs::write(&path, &token).with_context(|| format!("writing {}", path.display()))?;
-    }
-    Ok(token)
+    Ok(())
 }
 
 fn read_token() -> Result<String> {
@@ -393,35 +424,86 @@ fn read_token() -> Result<String> {
     Ok(t.trim().to_string())
 }
 
+/// The service's public key, when it has one. None from a service older
+/// than sealed requests, which wrote no key: it is asked in the clear, as
+/// before. A key file that is there but unreadable is an error, never a
+/// reason to fall back to the clear.
+fn read_service_key() -> Result<Option<x25519_dalek::PublicKey>> {
+    let path = paths::control_public_key();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => seal::public_from_base64(&text)
+            .map(Some)
+            .with_context(|| format!("the service's key at {} is unreadable", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("could not read {}", path.display())),
+    }
+}
+
 // ---- server --------------------------------------------------------------
 
-/// Serves the control channel until the process ends. Each connection is one
-/// request and one response.
-pub async fn serve(daemon: Arc<Daemon>) -> Result<()> {
+/// The control channel, made but not yet served: the socket bound, or the
+/// pipe's first instance created. Made before the service says it is
+/// running, so a service that cannot have its channel never runs.
+pub struct Listener {
+    #[cfg(unix)]
+    unix: tokio::net::UnixListener,
+    #[cfg(windows)]
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
+}
+
+/// Makes the control channel. An error here is the end of the service: on
+/// Windows it means another program already holds the pipe's name, and
+/// would answer every client in the service's place.
+pub fn listen() -> Result<Listener> {
     #[cfg(unix)]
     {
-        serve_unix(daemon).await
+        Ok(Listener {
+            unix: bind_unix(&paths::control_socket())?,
+        })
     }
     #[cfg(windows)]
     {
-        serve_windows(daemon, paths::CONTROL_PIPE).await
+        Ok(Listener {
+            first: first_instance(paths::CONTROL_PIPE)?,
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = daemon;
         anyhow::bail!("no control channel on this operating system")
     }
 }
 
-#[cfg(unix)]
-async fn serve_unix(daemon: Arc<Daemon>) -> Result<()> {
-    serve_unix_at(&paths::control_socket(), daemon).await
+/// Serves the control channel until the process ends. Each connection is one
+/// request and one response, sealed with `key` when the client sealed it.
+pub async fn serve(listener: Listener, daemon: Arc<Daemon>, key: Arc<ServiceKey>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        serve_unix_listener(listener.unix, daemon, key).await
+    }
+    #[cfg(windows)]
+    {
+        serve_windows(listener.first, paths::CONTROL_PIPE, daemon, key).await
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (listener, daemon, key);
+        anyhow::bail!("no control channel on this operating system")
+    }
 }
 
 /// The Unix server, on a given path. Split out so a test can use a temporary
 /// socket instead of the one in /run that only root may create.
 #[cfg(unix)]
-pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Result<()> {
+pub async fn serve_unix_at(
+    path: &std::path::Path,
+    daemon: Arc<Daemon>,
+    key: Arc<ServiceKey>,
+) -> Result<()> {
+    serve_unix_listener(bind_unix(path)?, daemon, key).await
+}
+
+#[cfg(unix)]
+fn bind_unix(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::UnixListener;
 
@@ -431,11 +513,30 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
         // has to be able to enter it to reach the socket.
         share_with_control_group(dir, 0o750)?;
     }
+    // A socket left by a service that has ended refuses a connection and is
+    // replaced. One that takes it belongs to a service still running: taken
+    // from it, that one would hold the tunnel and the kill switch with
+    // nobody able to reach it, so this one does not start.
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        anyhow::bail!(
+            "binding the control socket {}: another HidraVPN service is running and holds it",
+            path.display()
+        );
+    }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding the control socket {}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
     share_with_control_group(path, 0o660)?;
+    Ok(listener)
+}
+
+#[cfg(unix)]
+async fn serve_unix_listener(
+    listener: tokio::net::UnixListener,
+    daemon: Arc<Daemon>,
+    key: Arc<ServiceKey>,
+) -> Result<()> {
     tracing::info!("control channel ready");
     // So many at once and no more: a member of the group could otherwise
     // open connections until the service ran out of memory.
@@ -457,19 +558,21 @@ pub async fn serve_unix_at(path: &std::path::Path, daemon: Arc<Daemon>) -> Resul
         // another account switched on.
         let caller = stream.peer_cred().ok().map(|c| c.uid());
         let d = daemon.clone();
+        let key = key.clone();
         tokio::spawn(async move {
             let _slot = slot;
-            if let Err(e) = handle_conn(stream, d, caller).await {
+            if let Err(e) = handle_conn(stream, d, &key, caller).await {
                 tracing::debug!("control connection ended: {e}");
             }
         });
     }
 }
 
-/// The control token's own rights on Windows, inherited from nowhere:
-/// SYSTEM and administrators everything, interactive users read.
+/// The rights of the control token and the service's public key on
+/// Windows, inherited from nowhere: SYSTEM and administrators everything,
+/// interactive users read.
 #[cfg(windows)]
-pub fn protect_token(path: &std::path::Path) -> Result<()> {
+pub fn protect_shared(path: &std::path::Path) -> Result<()> {
     let out = std::process::Command::new("icacls")
         .arg(path)
         .args([
@@ -480,10 +583,11 @@ pub fn protect_token(path: &std::path::Path) -> Result<()> {
             "*S-1-5-4:R",
         ])
         .output()
-        .context("running icacls on the control token")?;
+        .with_context(|| format!("running icacls on {}", path.display()))?;
     if !out.status.success() {
         anyhow::bail!(
-            "could not set the control token's rights: {}",
+            "could not set the rights of {}: {}",
+            path.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -509,36 +613,64 @@ fn share_with_control_group(path: &std::path::Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
-/// Sends one request to a given Unix socket path (used by tests).
+/// Sends one request to a given Unix socket path, in the clear (used by
+/// tests, and as an older client would).
 #[cfg(unix)]
 pub async fn call_unix_at(path: &std::path::Path, token: &str, cmd: Command) -> Result<Response> {
-    let req = Request {
-        token: token.to_string(),
-        cmd,
-    };
-    let mut line = serde_json::to_string(&req)?;
-    line.push('\n');
+    call_unix_sealed_at(path, token, None, cmd).await
+}
+
+/// The same, sealed to `key` when one is given (used by tests).
+#[cfg(unix)]
+pub async fn call_unix_sealed_at(
+    path: &std::path::Path,
+    token: &str,
+    key: Option<&x25519_dalek::PublicKey>,
+    cmd: Command,
+) -> Result<Response> {
     let stream = tokio::net::UnixStream::connect(path)
         .await
         .map_err(|e| anyhow!("could not reach the service ({e})"))?;
-    round_trip(stream, line.as_bytes()).await
+    exchange(stream, token, key, cmd).await
 }
 
-/// The pipe's instances, at most `PIPE_INSTANCES`: the limit means another
-/// user's instance (the squat a shared pipe invites) has no free slot to
-/// take while the service holds them. One instance always listens: as soon
-/// as a client connects to it, it goes to that client and a fresh one is
-/// made to listen, so there is never a moment with nothing listening while
-/// a client is served. An instance serves one client and is closed: one
-/// disconnected and listened on again no longer tells its next clients
-/// that the service, in session 0, holds it (seen on Windows). It is closed
-/// only once the client has closed its end, so the answer is never cut off
-/// and the slot is free again at once for the next instance (closing first
-/// left the slot taken until the client let go, and after eight clients in
-/// a row nothing listened for seconds; seen on Windows).
+/// The pipe's first instance. It fails when the name already exists: then
+/// some other program made the pipe first, and the service must not run
+/// beside it (its clients could reach that program instead).
 #[cfg(windows)]
-async fn serve_windows(daemon: Arc<Daemon>, pipe: &'static str) -> Result<()> {
-    let mut listening = pipe_acl::instance(pipe, true).context("creating the control pipe")?;
+fn first_instance(pipe: &str) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    pipe_acl::instance(pipe, true).with_context(|| {
+        format!("creating the control pipe {pipe}: another program may already hold that name")
+    })
+}
+
+/// The pipe's instances, at most `PIPE_INSTANCES`. One instance always
+/// listens: as soon as a client connects to it, it goes to that client and
+/// a fresh one is made to listen, so there is never a moment with nothing
+/// listening while a client is served. The limit does not keep other users
+/// out: an idle service holds one instance of the eight, and a signed-in
+/// user may add an instance of their own beside it (the pipe's descriptor
+/// has to grant them write, and on a pipe write includes the right to make
+/// an instance). A client cannot know which instance answers it; the
+/// command line checks the server is in session 0, and both it and the
+/// browser seal their requests (`seal.rs`), so whatever else answers can
+/// neither read them nor answer them.
+///
+/// An instance serves one client and is closed: one disconnected and
+/// listened on again no longer tells its next clients that the service, in
+/// session 0, holds it (seen on Windows). It is closed only once the client
+/// has closed its end, so the answer is never cut off and the slot is free
+/// again at once for the next instance (closing first left the slot taken
+/// until the client let go, and after eight clients in a row nothing
+/// listened for seconds; seen on Windows).
+#[cfg(windows)]
+async fn serve_windows(
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
+    pipe: &'static str,
+    daemon: Arc<Daemon>,
+    key: Arc<ServiceKey>,
+) -> Result<()> {
+    let mut listening = first;
     tracing::info!("control channel ready");
     loop {
         if let Err(e) = listening.connect().await {
@@ -548,7 +680,7 @@ async fn serve_windows(daemon: Arc<Daemon>, pipe: &'static str) -> Result<()> {
             continue;
         }
         let d = daemon.clone();
-        tokio::spawn(serve_one(listening, d));
+        tokio::spawn(serve_one(listening, d, key.clone()));
         listening = fresh_instance(pipe).await;
     }
 }
@@ -582,6 +714,7 @@ async fn fresh_instance(pipe: &str) -> tokio::net::windows::named_pipe::NamedPip
 async fn serve_one(
     mut server: tokio::net::windows::named_pipe::NamedPipeServer,
     daemon: Arc<Daemon>,
+    key: Arc<ServiceKey>,
 ) {
     // Windows has no uid on a pipe; an elevated caller counts as root, and
     // everyone else as one unnamed account.
@@ -590,7 +723,7 @@ async fn serve_one(
     } else {
         None
     };
-    if let Err(e) = handle_conn(&mut server, daemon, caller).await {
+    if let Err(e) = handle_conn(&mut server, daemon, &key, caller).await {
         tracing::debug!("control connection ended: {e}");
     }
     let mut rest = [0u8; 256];
@@ -626,6 +759,11 @@ mod pipe_acl {
     // include service accounts and network logons, which have no business
     // here. A client's GENERIC_READ|GENERIC_WRITE maps to exactly what GRGW
     // grants, so a plain user's open succeeds; nothing narrower would let it.
+    // On a pipe that write includes FILE_APPEND_DATA, which is also
+    // FILE_CREATE_PIPE_INSTANCE: a signed-in user may add an instance of
+    // this pipe. It cannot be taken out without breaking the browser, whose
+    // Node opens a pipe with GENERIC_WRITE or read only, so the clients do
+    // not trust the name: they seal (`seal.rs`).
     const SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
 
     struct Descriptor(PSECURITY_DESCRIPTOR);
@@ -737,10 +875,10 @@ mod pipe_acl {
 }
 
 /// A request is one line: a command, or a node list of a few hundred nodes
-/// at most (a few hundred kilobytes). Past this it is not a client talking,
-/// and the line is cut, which makes it unreadable JSON and so a refused
-/// request.
-const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+/// at most (a few hundred kilobytes, a third more when sealed). Past this it
+/// is not a client talking, and the line is cut, which makes it unreadable
+/// JSON and so a refused request.
+const MAX_REQUEST_BYTES: u64 = 2 * 1024 * 1024;
 /// A client that opens a connection says what it wants within this, and takes
 /// the answer within this; otherwise the connection is dropped, so a client
 /// that only opens connections holds nothing for long.
@@ -752,7 +890,12 @@ const MAX_CONNECTIONS: usize = 16;
 #[cfg(windows)]
 const PIPE_INSTANCES: u32 = 8;
 
-async fn handle_conn<S>(stream: S, daemon: Arc<Daemon>, caller: Option<u32>) -> Result<()>
+async fn handle_conn<S>(
+    stream: S,
+    daemon: Arc<Daemon>,
+    key: &ServiceKey,
+    caller: Option<u32>,
+) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -765,27 +908,39 @@ where
     if n == 0 {
         return Ok(());
     }
+    let mut sealer = None;
     let resp = if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST_BYTES {
         Response::err("bad request: larger than anything the service accepts")
     } else {
-        // The token first: whoever does not hold it learns nothing of how
-        // the service reads a command, not even what is wrong with theirs.
-        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok();
-        let token = value
-            .as_ref()
-            .and_then(|v| v.get("token"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-        if !daemon.token_ok(token) {
-            Response::err(crate::daemon::UNAUTHORISED)
-        } else {
-            match serde_json::from_value::<Request>(value.unwrap_or_default()) {
-                Ok(req) => daemon.handle(req, caller).await,
-                Err(e) => Response::err(format!("bad request: {e}")),
+        match open_line(line.trim(), key) {
+            // Sealed, but not to this service's key, or not sealed right:
+            // said in the clear, since there is no key to answer under.
+            Err(e) => Response::err(format!("bad request: {e:#}")),
+            Ok((value, s)) => {
+                sealer = s;
+                // The token first: whoever does not hold it learns nothing
+                // of how the service reads a command, not even what is
+                // wrong with theirs.
+                let token = value
+                    .as_ref()
+                    .and_then(|v| v.get("token"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                if !daemon.token_ok(token) {
+                    Response::err(crate::daemon::UNAUTHORISED)
+                } else {
+                    match serde_json::from_value::<Request>(value.unwrap_or_default()) {
+                        Ok(req) => daemon.handle(req, caller).await,
+                        Err(e) => Response::err(format!("bad request: {e}")),
+                    }
+                }
             }
         }
     };
     let mut out = serde_json::to_string(&resp)?;
+    if let Some(sealer) = sealer {
+        out = sealer.seal(out.as_bytes())?;
+    }
     out.push('\n');
     tokio::time::timeout(REQUEST_TIMEOUT, async {
         w.write_all(out.as_bytes()).await?;
@@ -796,17 +951,37 @@ where
     Ok(())
 }
 
+/// The request a line carries: the line itself, or, for a sealed line, what
+/// it opens to, with what seals its answer. A line that is not JSON is no
+/// request at all, refused for its missing token.
+fn open_line(
+    line: &str,
+    key: &ServiceKey,
+) -> Result<(Option<serde_json::Value>, Option<AnswerSealer>)> {
+    match serde_json::from_str::<serde_json::Value>(line).ok() {
+        Some(value) if value.get("seal").is_some() => {
+            let sealed: seal::SealedRequest = serde_json::from_value(value)
+                .map_err(|_| anyhow!("a sealed request missing a part"))?;
+            let (plain, sealer) = key.open(&sealed)?;
+            Ok((serde_json::from_slice(&plain).ok(), Some(sealer)))
+        }
+        value => Ok((value, None)),
+    }
+}
+
 // ---- client --------------------------------------------------------------
 
-/// The service's pipe is answered by something that is not the service. A
-/// client says so and stops: it never goes around the service by changing
-/// the network itself, which would undo the service's kill switch.
+/// The service's channel is answered by something that is not the service:
+/// a pipe served outside session 0, or an answer not sealed with the
+/// service's key. A client says so and stops: it never goes around the
+/// service by changing the network itself, which would undo the service's
+/// kill switch.
 #[derive(Debug)]
 pub struct Impostor;
 
 impl std::fmt::Display for Impostor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("something other than the HidraVPN service is answering on its pipe; refusing to talk to it")
+        f.write_str("something other than the HidraVPN service is answering on its control channel; refusing to believe it (restart the HidraVPN service, or this computer)")
     }
 }
 
@@ -827,12 +1002,12 @@ impl std::fmt::Display for NotRunning {
 
 impl std::error::Error for NotRunning {}
 
-/// Sends one command to the running service and returns its answer.
+/// Sends one command to the running service and returns its answer. Sealed
+/// to the service's key when it has one, and then only an answer the
+/// service sealed is believed.
 pub async fn call(cmd: Command) -> Result<Response> {
     let token = read_token().map_err(|e| NotRunning(format!("{e:#}")))?;
-    let req = Request { token, cmd };
-    let mut line = serde_json::to_string(&req)?;
-    line.push('\n');
+    let key = read_service_key()?;
 
     #[cfg(unix)]
     {
@@ -840,23 +1015,67 @@ pub async fn call(cmd: Command) -> Result<Response> {
         let stream = UnixStream::connect(paths::control_socket())
             .await
             .map_err(|e| NotRunning(format!("the HidraVPN service is not running ({e})")))?;
-        round_trip(stream, line.as_bytes()).await
+        exchange(stream, &token, key.as_ref(), cmd).await
     }
     #[cfg(windows)]
     {
-        call_pipe(paths::CONTROL_PIPE, &line, true).await
+        let stream = open_pipe(paths::CONTROL_PIPE, true).await?;
+        exchange(stream, &token, key.as_ref(), cmd).await
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = line;
+        let _ = (token, key, cmd);
         anyhow::bail!("no control channel on this operating system")
     }
 }
 
-/// One request over the pipe `pipe`. `only_the_service` is false only in
-/// tests, which cannot run a server in session 0.
+/// One request and its answer on a connected stream: sealed to `key` when
+/// there is one, and then the answer must open with it.
+async fn exchange<S>(
+    stream: S,
+    token: &str,
+    key: Option<&x25519_dalek::PublicKey>,
+    cmd: Command,
+) -> Result<Response>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let plain = serde_json::to_string(&Request {
+        token: token.to_string(),
+        cmd,
+    })?;
+    let (mut line, opener) = match key {
+        Some(key) => {
+            let (line, opener) = seal::seal_request(key, plain.as_bytes())?;
+            (line, Some(opener))
+        }
+        None => (plain, None),
+    };
+    line.push('\n');
+    // The service refuses a longer line in the clear, which a sealed request
+    // could not tell from an impostor's answer: said here, before sending.
+    if line.len() as u64 > MAX_REQUEST_BYTES {
+        anyhow::bail!(
+            "the request is {} bytes, larger than anything the service accepts ({MAX_REQUEST_BYTES})",
+            line.len()
+        );
+    }
+    let mut answer = round_trip(stream, line.as_bytes()).await?;
+    if let Some(opener) = opener {
+        let plain = opener.open(&answer).map_err(|_| Impostor)?;
+        answer = String::from_utf8(plain).map_err(|_| Impostor)?;
+    }
+    serde_json::from_str(answer.trim()).context("the service sent an unreadable answer")
+}
+
+/// Opens the pipe `pipe`, and checks before anything is sent that its
+/// server is in session 0. `only_the_service` is false only in tests, which
+/// cannot run a server in session 0.
 #[cfg(windows)]
-async fn call_pipe(pipe: &str, line: &str, only_the_service: bool) -> Result<Response> {
+async fn open_pipe(
+    pipe: &str,
+    only_the_service: bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
     use std::time::Duration;
     use tokio::net::windows::named_pipe::ClientOptions;
     // ERROR_PIPE_BUSY: every instance of the fixed pool is serving another
@@ -891,10 +1110,11 @@ async fn call_pipe(pipe: &str, line: &str, only_the_service: bool) -> Result<Res
     if only_the_service && !pipe_acl::server_is_a_service(&stream) {
         return Err(Impostor.into());
     }
-    round_trip(stream, line.as_bytes()).await
+    Ok(stream)
 }
 
-async fn round_trip<S>(stream: S, request: &[u8]) -> Result<Response>
+/// Writes the request line and reads the answer line.
+async fn round_trip<S>(stream: S, request: &[u8]) -> Result<String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -910,7 +1130,7 @@ where
         let _ = reader.read_to_string(&mut rest).await;
         line.push_str(&rest);
     }
-    serde_json::from_str(line.trim()).context("the service sent an unreadable answer")
+    Ok(line)
 }
 
 #[cfg(all(test, unix))]
@@ -946,16 +1166,24 @@ mod tests {
         token: &str,
         pocket: Option<std::path::PathBuf>,
     ) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let sock = dir.join(format!("ctl-{}.sock", rand_suffix()));
         let d = match pocket {
             Some(p) => Daemon::with_pocket(token.to_string(), p),
             None => Daemon::new(token.to_string()),
         };
+        serve_daemon(d).await.0
+    }
+
+    /// Serves `d` on a temporary socket with a key of its own: the socket,
+    /// and the public key a client seals to.
+    async fn serve_daemon(d: Arc<Daemon>) -> (std::path::PathBuf, x25519_dalek::PublicKey) {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join(format!("ctl-{}.sock", rand_suffix()));
+        let key = Arc::new(ServiceKey::generate().unwrap());
+        let public = seal::public_from_base64(&key.public_base64()).unwrap();
         let s = sock.clone();
         tokio::spawn(async move {
-            let _ = serve_unix_at(&s, d).await;
+            let _ = serve_unix_at(&s, d, key).await;
         });
         // Give the listener a moment to bind.
         for _ in 0..50 {
@@ -964,7 +1192,7 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        sock
+        (sock, public)
     }
 
     fn rand_suffix() -> u64 {
@@ -1419,17 +1647,7 @@ mod tests {
         let (json, sig) = signed_list(&sk);
 
         let d = Daemon::with_pocket_and_key("tok".to_string(), pocket_path.clone(), Some(key));
-        let sock = dir.join(format!("ctl-{}.sock", rand_suffix()));
-        let s = sock.clone();
-        tokio::spawn(async move {
-            let _ = serve_unix_at(&s, d).await;
-        });
-        for _ in 0..50 {
-            if sock.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let (sock, _) = serve_daemon(d).await;
 
         // Changed after signing: refused, and no pocket file appears.
         let tampered = json.replace("203.0.113.10", "198.51.100.7");
@@ -1699,6 +1917,219 @@ mod tests {
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("larger than anything"));
     }
+
+    #[tokio::test]
+    async fn a_sealed_request_is_answered_sealed_and_a_plain_one_still_in_the_clear() {
+        let (sock, public) = serve_daemon(Daemon::new("tok".into())).await;
+        let resp = call_unix_sealed_at(&sock, "tok", Some(&public), Command::Status)
+            .await
+            .unwrap();
+        assert!(resp.ok && !resp.status.unwrap().connected);
+        // The token inside the seal is still checked.
+        let resp = call_unix_sealed_at(&sock, "wrong", Some(&public), Command::Ping)
+            .await
+            .unwrap();
+        assert!(!resp.ok && resp.error.unwrap().contains("unauthorised"));
+        // An older client, or a script, that does not seal is still answered.
+        let resp = call_unix_at(&sock, "tok", Command::Ping).await.unwrap();
+        assert!(resp.ok);
+
+        // On the wire: the token never travels readable, and the answer is
+        // sealed too.
+        let plain = serde_json::to_string(&Request {
+            token: "tok".into(),
+            cmd: Command::Status,
+        })
+        .unwrap();
+        let (mut line, opener) = seal::seal_request(&public, plain.as_bytes()).unwrap();
+        assert!(!line.contains("tok"), "{line}");
+        line.push('\n');
+        let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+        let answer = round_trip(stream, line.as_bytes()).await.unwrap();
+        assert!(
+            answer.contains(seal::SCHEME) && !answer.contains("connected"),
+            "{answer}"
+        );
+        let opened: Response = serde_json::from_slice(&opener.open(&answer).unwrap()).unwrap();
+        assert!(opened.ok && opened.status.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_request_sealed_to_another_key_is_refused_and_the_client_believes_nothing() {
+        let (sock, _) = serve_daemon(Daemon::new("tok".into())).await;
+        // The key of the service before it restarted, say.
+        let stale = ServiceKey::generate().unwrap();
+        let stale = seal::public_from_base64(&stale.public_base64()).unwrap();
+        let e = call_unix_sealed_at(&sock, "tok", Some(&stale), Command::Status)
+            .await
+            .unwrap_err();
+        assert!(e.is::<Impostor>(), "{e:#}");
+    }
+
+    #[tokio::test]
+    async fn a_request_too_large_for_the_service_is_refused_before_it_is_sent() {
+        let (sock, public) = serve_daemon(Daemon::new("tok".into())).await;
+        // Under the cap in the clear, past it once sealed: the service would
+        // refuse it in the clear, which reads as an impostor. The client
+        // says why itself, and sends nothing.
+        let list = "a".repeat(MAX_REQUEST_BYTES as usize * 9 / 10);
+        let e = call_unix_sealed_at(
+            &sock,
+            "tok",
+            Some(&public),
+            Command::ImportNodes {
+                list: list.clone(),
+                signature: "x".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(!e.is::<Impostor>(), "{e:#}");
+        assert!(format!("{e:#}").contains("larger than anything the service accepts"));
+        // A request that fits still goes, sealed.
+        let resp = call_unix_sealed_at(&sock, "tok", Some(&public), Command::Ping)
+            .await
+            .unwrap();
+        assert!(resp.ok);
+    }
+
+    /// Something else answering on the channel, as a squatter on the
+    /// Windows pipe would: it reads the request and answers whatever it
+    /// likes. Returns the socket and the lines it read.
+    async fn impostor(
+        answer: &'static str,
+    ) -> (std::path::PathBuf, Arc<std::sync::Mutex<Vec<String>>>) {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join(format!("impostor-{}.sock", rand_suffix()));
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let lines = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (r, mut w) = tokio::io::split(stream);
+                let mut line = String::new();
+                let _ = BufReader::new(r).read_line(&mut line).await;
+                lines.lock().unwrap().push(line);
+                let _ = w.write_all(answer.as_bytes()).await;
+            }
+        });
+        (sock, seen)
+    }
+
+    #[tokio::test]
+    async fn an_impostor_that_cannot_seal_is_not_believed_and_never_sees_the_token() {
+        let service = ServiceKey::generate().unwrap();
+        let public = seal::public_from_base64(&service.public_base64()).unwrap();
+        for answer in [
+            "{\"ok\":true,\"status\":{\"connected\":true,\"node_name\":\"exit\",\"endpoint\":\"203.0.113.10:51820\",\"last_handshake_secs\":3,\"tx_bytes\":0,\"rx_bytes\":0,\"killswitch\":true}}\n",
+            "{\"seal\":\"x25519-aes256gcm\",\"nonce\":\"AAAAAAAAAAAAAAAA\",\"data\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}\n",
+            "{\"ok\":false,\"error\":\"unauthorised: wrong or missing control token\"}\n",
+        ] {
+            let (sock, seen) = impostor(answer).await;
+            let e = call_unix_sealed_at(
+                &sock,
+                "the-control-token",
+                Some(&public),
+                Command::SetPassToken {
+                    pass_token: Secret("the-account-token".into()),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(e.is::<Impostor>(), "{answer}: {e:#}");
+            let seen = seen.lock().unwrap().join("");
+            assert!(
+                !seen.contains("the-control-token") && !seen.contains("the-account-token"),
+                "the impostor read a token: {seen}"
+            );
+        }
+        // Asked in the clear, as a client of an older service does, the
+        // same impostor is believed: which is why the browser on Windows
+        // does not ask in the clear.
+        let (sock, _) = impostor(
+            "{\"ok\":true,\"status\":{\"connected\":true,\"node_name\":null,\"endpoint\":null,\"last_handshake_secs\":null,\"tx_bytes\":0,\"rx_bytes\":0,\"killswitch\":true}}\n",
+        )
+        .await;
+        let r = call_unix_at(&sock, "t", Command::Status).await.unwrap();
+        assert!(r.status.unwrap().connected);
+    }
+
+    #[test]
+    fn a_shared_file_is_replaced_whole_and_never_found_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-shared-{}", rand_suffix()));
+        let path = dir.join("control.pub");
+        // A file left from an earlier run, readable by anyone, and a
+        // half-written one from a start that was cut short.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        std::fs::write(dir.join("control.pub.new"), "half").unwrap();
+        // Read over and over while it is written: never missing, never half.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let text = std::fs::read_to_string(&path).expect("the file went missing");
+                    assert!(text == "old" || text == "new key", "read {text:?}");
+                }
+            })
+        };
+        for _ in 0..200 {
+            write_shared(&path, "new key").unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new key");
+        // A file of its own, not the old one's mode.
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o037, 0, "mode {mode:o}");
+        assert!(!dir.join("control.pub.new").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_control_socket_that_cannot_be_made_is_an_error_not_a_silent_service() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-bind-{}", rand_suffix()));
+        // Something that is not a socket, and that removing a file does not
+        // clear, where the socket should be.
+        let sock = dir.join("control.sock");
+        std::fs::create_dir_all(sock.join("in-the-way")).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let e = rt.block_on(async { bind_unix(&sock) }).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("binding the control socket"),
+            "{e:#}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_second_service_does_not_take_the_socket_of_one_still_running() {
+        let (sock, public) = serve_daemon(Daemon::new("tok".into())).await;
+        let e = bind_unix(&sock).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("another HidraVPN service is running"),
+            "{e:#}"
+        );
+        // The running one still has its socket, and still answers.
+        let resp = call_unix_sealed_at(&sock, "tok", Some(&public), Command::Ping)
+            .await
+            .unwrap();
+        assert!(resp.ok);
+
+        // A socket left by a service that has ended is replaced.
+        let left = sock.with_file_name(format!("ctl-{}.sock", rand_suffix()));
+        drop(std::os::unix::net::UnixListener::bind(&left).unwrap());
+        assert!(left.exists());
+        bind_unix(&left).unwrap();
+        let _ = std::fs::remove_file(&left);
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -1706,32 +2137,52 @@ mod windows_tests {
     use super::*;
     use crate::daemon::Daemon;
 
-    fn line(token: &str, cmd: Command) -> String {
-        let mut l = serde_json::to_string(&Request {
-            token: token.into(),
-            cmd,
-        })
-        .unwrap();
-        l.push('\n');
-        l
+    fn test_pipe(what: &str) -> &'static str {
+        let mut b = [0u8; 8];
+        getrandom::fill(&mut b).unwrap();
+        Box::leak(
+            format!(
+                r"\\.\pipe\hidravpn-test-{what}-{}-{}",
+                std::process::id(),
+                u64::from_le_bytes(b)
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    async fn ask(
+        pipe: &str,
+        token: &str,
+        key: Option<&x25519_dalek::PublicKey>,
+        cmd: Command,
+    ) -> Result<Response> {
+        exchange(open_pipe(pipe, false).await?, token, key, cmd).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_control_pipe_answers_every_client_one_after_another_and_at_once() {
         let id = std::process::id();
-        let pipe: &'static str =
-            Box::leak(format!(r"\\.\pipe\hidravpn-test-{id}").into_boxed_str());
+        let pipe = test_pipe("pool");
         let dir = std::env::temp_dir().join(format!("hidravpn-pipe-test-{id}"));
         std::fs::create_dir_all(&dir).unwrap();
         let daemon = Daemon::with_pocket("pipe-test-token".into(), dir.join("circuit.json"));
-        tokio::spawn(serve_windows(daemon, pipe));
+        let key = Arc::new(ServiceKey::generate().unwrap());
+        let public = seal::public_from_base64(&key.public_base64()).unwrap();
+        tokio::spawn(serve_windows(
+            first_instance(pipe).unwrap(),
+            pipe,
+            daemon,
+            key,
+        ));
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let ping = line("pipe-test-token", Command::Ping);
 
         // One after another, as the command line asks: a probe, then the
-        // command, many times over (the pool has eight instances).
+        // command, many times over (the pool has eight instances). Sealed,
+        // as the command line and the browser ask, and in the clear, as an
+        // older client does.
         for i in 0..200 {
-            let r = call_pipe(pipe, &ping, false)
+            let key = (i % 2 == 0).then_some(&public);
+            let r = ask(pipe, "pipe-test-token", key, Command::Ping)
                 .await
                 .unwrap_or_else(|e| panic!("request {i}: {e:#}"));
             assert!(r.ok, "request {i}: {:?}", r.error);
@@ -1740,10 +2191,9 @@ mod windows_tests {
         // And at once: twice as many clients as the pool has instances.
         let mut set = tokio::task::JoinSet::new();
         for c in 0..16 {
-            let ping = ping.clone();
             set.spawn(async move {
                 for i in 0..20 {
-                    let r = call_pipe(pipe, &ping, false)
+                    let r = ask(pipe, "pipe-test-token", Some(&public), Command::Ping)
                         .await
                         .unwrap_or_else(|e| panic!("client {c}, request {i}: {e:#}"));
                     assert!(r.ok, "client {c}, request {i}: {:?}", r.error);
@@ -1754,5 +2204,57 @@ mod windows_tests {
             r.unwrap();
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pipe_name_someone_else_holds_stops_the_service_from_starting() {
+        let pipe = test_pipe("taken");
+        // Another program made the pipe first.
+        let _squat = pipe_acl::instance(pipe, true).unwrap();
+        let e = first_instance(pipe).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("another program may already hold"),
+            "{e:#}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_impostor_on_the_pipe_that_cannot_seal_is_not_believed_and_never_sees_the_token() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let pipe = test_pipe("impostor");
+        let mut squat = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(pipe)
+            .unwrap();
+        let seen = tokio::spawn(async move {
+            squat.connect().await.unwrap();
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut squat);
+                let _ = reader.read_line(&mut line).await;
+            }
+            let _ = squat
+                .write_all(b"{\"ok\":true,\"status\":{\"connected\":true,\"node_name\":null,\"endpoint\":null,\"last_handshake_secs\":3,\"tx_bytes\":0,\"rx_bytes\":0,\"killswitch\":true}}\n")
+                .await;
+            line
+        });
+        let service = ServiceKey::generate().unwrap();
+        let public = seal::public_from_base64(&service.public_base64()).unwrap();
+        let e = ask(
+            pipe,
+            "the-control-token",
+            Some(&public),
+            Command::SetPassToken {
+                pass_token: Secret("the-account-token".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(e.is::<Impostor>(), "{e:#}");
+        let seen = seen.await.unwrap();
+        assert!(
+            !seen.contains("the-control-token") && !seen.contains("the-account-token"),
+            "{seen}"
+        );
     }
 }

@@ -439,7 +439,7 @@ fn run_daemon() -> Result<()> {
         }
     }
     init_logging();
-    run_daemon_until(foreground_stop())
+    run_daemon_until(foreground_stop(), || {})
 }
 
 /// Sets up the daemon's logging. On Windows the service has no console, so
@@ -472,43 +472,82 @@ fn init_logging() {
 
 /// Builds the runtime and serves until `stop` completes. The synchronous
 /// entry both the foreground path and the Windows service call. `pub(crate)`
-/// so the service's `mod service` can drive it with the SCM's stop signal.
-pub(crate) fn run_daemon_until<S>(stop: S) -> Result<()>
+/// so the service's `mod service` can drive it with the SCM's stop signal,
+/// and be told by `ready` when the control channel exists.
+pub(crate) fn run_daemon_until<S, R>(stop: S, ready: R) -> Result<()>
 where
     S: std::future::Future<Output = ()>,
+    R: FnOnce(),
 {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(serve_until(stop))
+    rt.block_on(serve_until(stop, ready))
 }
 
 /// Serves the control channel and the refill loop until `stop` completes,
 /// then puts the network back. Shared by the foreground and the service.
-async fn serve_until<S>(stop: S) -> Result<()>
+///
+/// The service never runs without its control channel: without it nobody
+/// could send `down`, and on Windows whatever held the pipe's name instead
+/// would answer every client. So the channel is made before `ready` says
+/// the service runs, an error making it is the service's error, and if the
+/// channel ever ends the service stops with an error too.
+async fn serve_until<S, R>(stop: S, ready: R) -> Result<()>
 where
     S: std::future::Future<Output = ()>,
+    R: FnOnce(),
 {
+    tracing::info!("HidraVPN service starting");
+    // A machine that lost power while connected gets its DNS back whether or
+    // not this start goes on to have its channel.
+    hidravpn_core::netcfg::recover_dns();
+    let listener = match ipc::listen() {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("{e:#}; not starting");
+            return Err(e.context("the service cannot run without its control channel"));
+        }
+    };
+    // Only a service that holds the channel writes the key and the token: a
+    // second one that could not have it leaves the running service's alone.
+    // The key first, so a client that finds the new token finds the new key.
+    // Clients that connect meanwhile wait until `serve` takes them.
+    let key =
+        std::sync::Arc::new(ipc::write_service_key().context("writing the control channel's key")?);
     let token = ipc::write_token().context("writing the control token")?;
     let daemon = Daemon::new(token);
-    tracing::info!("HidraVPN service starting");
-    hidravpn_core::netcfg::recover_dns();
+    ready();
 
-    let serve = {
+    let mut serve = {
         let d = daemon.clone();
-        tokio::spawn(async move { ipc::serve(d).await })
+        tokio::spawn(async move { ipc::serve(listener, d, key).await })
     };
     let refill = {
         let d = daemon.clone();
         tokio::spawn(async move { d.refill_loop().await })
     };
 
-    stop.await;
-    tracing::info!("stopping; putting the network back");
+    tokio::pin!(stop);
+    let ended = tokio::select! {
+        _ = &mut stop => None,
+        r = &mut serve => Some(match r {
+            Ok(Ok(())) => anyhow::anyhow!("the control channel stopped"),
+            Ok(Err(e)) => e,
+            Err(e) => anyhow::anyhow!("the control channel failed: {e}"),
+        }),
+    };
+    match &ended {
+        None => tracing::info!("stopping; putting the network back"),
+        Some(e) => tracing::error!("{e:#}; stopping, and putting the network back"),
+    }
     refill.abort();
     daemon.shutdown().await;
     serve.abort();
-    Ok(())
+    match ended {
+        None => Ok(()),
+        Some(e) => Err(e.context("the service cannot run without its control channel")),
+    }
 }
 
 #[cfg(unix)]

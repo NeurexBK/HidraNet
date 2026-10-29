@@ -27,8 +27,8 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
-  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key
+  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/control.pub \
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/resolv.conf.saved
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -88,6 +88,23 @@ grep -q "not connected" "$WORK/st0.log" && grep -q "kill switch off" "$WORK/st0.
 printf '{"token":"wrong","cmd":"status"}\n' | $C python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect("/run/hidravpn/control.sock"); s.sendall(sys.stdin.buffer.read()); print(s.recv(4096).decode())' > "$WORK/noauth.log" 2>&1
 grep -q "unauthorised" "$WORK/noauth.log" && pass "a request without the control token is refused" || { cat "$WORK/noauth.log"; fail "the service answered without a token"; }
 
+# ── Only the service's own answers are believed ─────────────────────────────
+# The command line seals its requests to the key whose public half the
+# service wrote beside the token; a request in the clear, as an older client
+# sends, is still answered.
+[ -s /run/hidravpn/control.pub ] && [ "$(stat -c '%U' /run/hidravpn/control.pub)" = root ] && [ $(( 0$(stat -c '%a' /run/hidravpn/control.pub) & 022 )) -eq 0 ] \
+  && pass "the service wrote its public key beside the token, root's and writable by root alone ($(stat -c '%a' /run/hidravpn/control.pub))" || fail "public key: $(ls -l /run/hidravpn/control.pub 2>&1)"
+python3 -I -c 'import json,socket; t=open("/run/hidravpn/control.token").read().strip(); s=socket.socket(socket.AF_UNIX); s.connect("/run/hidravpn/control.sock"); s.sendall((json.dumps({"token":t,"cmd":"ping"})+"\n").encode()); print(s.recv(4096).decode())' > "$WORK/plain.log" 2>&1
+grep -q '"ok":true' "$WORK/plain.log" && pass "a request in the clear, as an older client sends it, is still answered" || { cat "$WORK/plain.log"; fail "a plain request was not answered"; }
+# Another key where the service's should be: the command line can open no
+# answer, so it believes none and says so.
+cp -p /run/hidravpn/control.pub "$WORK/control.pub"
+python3 -I -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())' > /run/hidravpn/control.pub
+$C "$BIN/hidravpn-service" status > "$WORK/st-key.log" 2>&1; RC=$?
+[ $RC -ne 0 ] && grep -q "something other than the HidraVPN service" "$WORK/st-key.log" && ! grep -q "not connected" "$WORK/st-key.log" \
+  && pass "an answer that does not open under the service's key is not believed" || { cat "$WORK/st-key.log"; fail "the command line believed an answer it could not open"; }
+cp -p "$WORK/control.pub" /run/hidravpn/control.pub
+
 # ── Up ──────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn-service" up "$WORK/invite.json" > "$WORK/up.log" 2>&1 && pass "service connected" || { cat "$WORK/up.log" "$WORK/svc.log"; fail "service up"; }
 
@@ -101,6 +118,24 @@ BYNAME=$($C curl -s --max-time 5 http://whoami.test/ 2>/dev/null)
 $C "$BIN/hidravpn-service" status > "$WORK/st1.log" 2>&1
 grep -q "connected through test-node" "$WORK/st1.log" && grep -q "kill switch on" "$WORK/st1.log" && pass "status while connected: connected, kill switch on" || { cat "$WORK/st1.log"; fail "unexpected connected status"; }
 
+# A second service started beside the running one (by hand, as root) must not
+# take its socket: the running one would hold the tunnel and the kill switch
+# with nobody able to send it `down`. The second says why and stops, and
+# leaves the token and the key as they were.
+cp -p /run/hidravpn/control.token "$WORK/token.running"; cp -p /run/hidravpn/control.pub "$WORK/pub.running"
+$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc-second.log" 2>&1 & SECOND=$!; PIDS+=($SECOND)
+for i in $(seq 1 25); do kill -0 $SECOND 2>/dev/null || break; sleep 0.2; done
+if kill -0 $SECOND 2>/dev/null; then
+  fail "a second service runs beside the first, on its socket"; kill -INT $SECOND 2>/dev/null; wait $SECOND 2>/dev/null
+else
+  wait $SECOND; RC=$?
+  [ $RC -ne 0 ] && grep -q "another HidraVPN service is running" "$WORK/svc-second.log" && pass "a second service stops with an error and says one is running (exit $RC)" || { cat "$WORK/svc-second.log"; fail "the second service stopped, but not with the reason (exit $RC)"; }
+fi
+cmp -s "$WORK/token.running" /run/hidravpn/control.token && cmp -s "$WORK/pub.running" /run/hidravpn/control.pub \
+  && pass "the second service left the running one's token and key as they were" || fail "the second service rewrote the token or the key"
+$C "$BIN/hidravpn-service" status > "$WORK/st2.log" 2>&1
+grep -q "connected through test-node" "$WORK/st2.log" && pass "the running service still answers on its socket" || { cat "$WORK/st2.log"; fail "the running service lost its socket: $(head -1 "$WORK/st2.log")"; }
+
 # ── Down ────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn-service" down > "$WORK/down.log" 2>&1 && pass "service disconnected" || { cat "$WORK/down.log"; fail "service down"; }
 $C nft list table inet hidravpn_ks >/dev/null 2>&1 && fail "the kill switch is still armed after down" || pass "the kill switch was lifted"
@@ -112,5 +147,31 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "still reachi
 # ── Clean shutdown of the daemon ────────────────────────────────────────────
 kill -INT $SVC; for i in $(seq 1 25); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done
 kill -0 $SVC 2>/dev/null && fail "the service did not stop on SIGINT" || pass "the service stopped cleanly"
+
+# ── No service without its control channel ──────────────────────────────────
+# Something in the way of the socket: the service must not run deaf (nobody
+# could send it `down`, and on Windows whatever held the pipe's name would
+# answer in its place). It says why and exits with an error, and leaves the
+# token and key of whatever holds the channel as they were. A resolv.conf left
+# by a connection cut short (a power cut) is put back all the same.
+rm -rf /run/hidravpn/control.sock; mkdir -p /run/hidravpn/control.sock/in-the-way
+cp -p /run/hidravpn/control.token "$WORK/token.before"; cp -p /run/hidravpn/control.pub "$WORK/pub.before"
+rm -f /run/hidravpn/netcfg.json
+python3 -I -c 'import json,sys; print(json.dumps({"link": None, "content": sys.argv[1]}))' "$ORIG_RESOLV
+" > /etc/hidravpn/resolv.conf.saved
+printf '# HidraVPN: restored by `hidravpn down`\nnameserver 10.66.0.1\n' > /etc/netns/hv-client/resolv.conf
+$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc-deaf.log" 2>&1 & DEAF=$!; PIDS+=($DEAF)
+for i in $(seq 1 25); do kill -0 $DEAF 2>/dev/null || break; sleep 0.2; done
+if kill -0 $DEAF 2>/dev/null; then
+  fail "the service runs without its control channel"; kill -INT $DEAF 2>/dev/null
+else
+  wait $DEAF; RC=$?
+  [ $RC -ne 0 ] && grep -q "binding the control socket" "$WORK/svc-deaf.log" && grep -q "ERROR" "$WORK/svc-deaf.log" && pass "with no control channel the service stops with an error and says why (exit $RC)" || { cat "$WORK/svc-deaf.log"; fail "the service stopped, but not with the reason (exit $RC)"; }
+fi
+cmp -s "$WORK/token.before" /run/hidravpn/control.token && cmp -s "$WORK/pub.before" /run/hidravpn/control.pub \
+  && pass "a service that could not have the channel left the token and the key as they were" || fail "a service without the channel rewrote the token or the key"
+[ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] && [ ! -e /etc/hidravpn/resolv.conf.saved ] \
+  && pass "the DNS a connection cut short had left is put back even when the start then fails" || fail "resolv.conf left as the tunnel's: $(cat /etc/netns/hv-client/resolv.conf)"
+rm -rf /run/hidravpn/control.sock
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

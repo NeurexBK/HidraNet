@@ -41,7 +41,7 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
-  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
+  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/control.pub \
          /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/refill.json /etc/hidravpn/circuit.json
   [ "$MADE_GROUP" = 1 ] && groupdel hidravpn 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
@@ -107,6 +107,7 @@ for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; 
 st() { stat -c '%U:%G %a' "$1"; }
 [ "$(st /run/hidravpn/control.sock)" = "root:hidravpn 660" ] && pass "the socket is root:hidravpn 0660" || fail "socket is $(st /run/hidravpn/control.sock)"
 [ "$(st /run/hidravpn/control.token)" = "root:hidravpn 640" ] && pass "the token is root:hidravpn 0640" || fail "token is $(st /run/hidravpn/control.token)"
+[ "$(st /run/hidravpn/control.pub)" = "root:hidravpn 640" ] && pass "the service's public key is root:hidravpn 0640, beside the token" || fail "public key is $(st /run/hidravpn/control.pub)"
 [ "$(stat -c '%G' /run/hidravpn)" = "hidravpn" ] && pass "the directory belongs to the group, so a member can enter it" || fail "directory is $(st /run/hidravpn)"
 [ "$(st /etc/hidravpn/client.key)" = "root:root 600" ] && pass "the client key stays root-only" || fail "client key is $(st /etc/hidravpn/client.key)"
 
@@ -126,6 +127,13 @@ drive() { $C $AS_USER node "$DRIVER" "$1"; }
 
 # ── The sequence the page performs ──────────────────────────────────────────
 OUT=$(drive before); echo "$OUT" | grep -q '"ok":true' && pass "before: disconnected, kill switch off, pocket lists exit:test-node without a key ($OUT)" || fail "before: $OUT"
+# Every request above was sealed to the service's key, and every answer
+# opened. With another key in its place (a service that restarted, or a key
+# nobody on the channel holds), nothing the channel says is believed.
+cp -p /run/hidravpn/control.pub "$WORK/control.pub"
+node -e "const k = require('crypto').generateKeyPairSync('x25519').publicKey.export({ format: 'jwk' }).x; console.log(Buffer.from(k, 'base64url').toString('base64'))" > /run/hidravpn/control.pub
+OUT=$(drive not-the-service); echo "$OUT" | grep -q '"ok":true' && pass "sealed to a key the service does not hold, the browser believes nothing ($OUT)" || fail "not the service: $OUT"
+cp -p "$WORK/control.pub" /run/hidravpn/control.pub
 OUT=$(drive connect-privado-refused); echo "$OUT" | grep -q '"ok":true' && pass "privado with no entry is refused by the service and changes nothing" || fail "privado: $OUT"
 OUT=$(drive connect-rapido); echo "$OUT" | grep -q '"ok":true' && pass "rapido connects through the node the service picked ($OUT)" || { fail "rapido: $OUT"; cat "$WORK/svc.log" | tail -20; }
 OUT=$(drive status); echo "$OUT" | grep -q '"ok":true' && pass "status: connected, kill switch armed, one exit hop ($OUT)" || fail "status: $OUT"
