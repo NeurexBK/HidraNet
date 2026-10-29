@@ -7,8 +7,8 @@
 // a failure seen in every round is an alert and only a pass in the latest one
 // closes; that a list or manifest whose signature does not hold, a site
 // serving other bytes than main, an issuer that does not sign under the key
-// clients ask with or sells nothing, and a list or pass key about to run out
-// are each reported; that when nothing answers no issue is touched, and that
+// clients ask with or sells nothing, and a list, pass key, release manifest
+// or signed checksum record about to run out are each reported; that when nothing answers no issue is touched, and that
 // an issue whose check could not run stays open; that only the workflow's
 // own issues count; that nothing a node says reaches an issue as markup, and
 // no node address reaches anything written; and that --preview refuses a
@@ -22,6 +22,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 import * as mon from './node-monitor.mjs';
 
@@ -134,13 +135,19 @@ function listFor(nodes, { sequence = 5, expires = day(28), keys = [{ ...PK1, not
     ...(noIssuer ? {} : { pass_issuer: { url: issuerUrl, keys } }),
   }, null, 2));
 }
-const manifestFor = (version = '0.1.0') => Buffer.from(JSON.stringify({ product: 'hidravpn', version, platforms: {} }));
+// No expires by default, as the 0.1.0 manifest: one that never expires.
+const manifestFor = (version = '0.1.0', extra = {}) => Buffer.from(JSON.stringify({ product: 'hidravpn', version, platforms: {}, ...extra }));
+// The browser's checksum table, with its record, as update-sums.js writes it.
+const sumsFor = (validUntil, extra = '') => Buffer.from(`HidraNet Browser 1.1.0 — SHA-256 checksums\n\nSIGNED RECORD\n\n  latest-version:        1.1.0\n  minimum-safe-version:  1.1.0\n  valid-until:           ${validUntil}\n${extra}\n${'a'.repeat(64)}  HidraNet-Browser-1.1.0-linux-x64.zip\n`);
+const sumsSig = (bytes, key = RELK) => key.sign(Buffer.concat([Buffer.from('hidranet-browser-sums-v1\0'), bytes]));
 
 let landing;
 const scratch = mkdtempSync(join(tmpdir(), 'node-monitor-'));
 // Writes the list and manifest to "main" (the landing dir) and, unless told
 // otherwise, the same bytes to the site.
-function publish(list, manifest = manifestFor(), { sig = LISTK.sign(list), msig = RELK.sign(manifest), siteToo = true } = {}) {
+// `sums` is the checksum table, and `ssig` its signature (none: not signed
+// yet, as today).
+function publish(list, manifest = manifestFor(), { sig = LISTK.sign(list), msig = RELK.sign(manifest), sums = null, ssig = null, siteToo = true } = {}) {
   if (landing) rmSync(landing, { recursive: true, force: true });
   landing = mkdtempSync(join(scratch, 'landing-'));
   mkdirSync(join(landing, 'vpn', 'release'), { recursive: true });
@@ -148,10 +155,13 @@ function publish(list, manifest = manifestFor(), { sig = LISTK.sign(list), msig 
   writeFileSync(join(landing, 'vpn', 'nodes.json.sig'), sig + '\n');
   writeFileSync(join(landing, 'vpn', 'release', 'manifest.json'), manifest);
   writeFileSync(join(landing, 'vpn', 'release', 'manifest.json.sig'), msig + '\n');
+  if (sums) writeFileSync(join(landing, 'SHA256SUMS.txt'), sums);
+  if (ssig) writeFileSync(join(landing, 'SHA256SUMS.txt.sig'), ssig + '\n');
   if (siteToo) {
     site.files = new Map([
       ['/vpn/nodes.json', list], ['/vpn/nodes.json.sig', Buffer.from(sig + '\n')],
       ['/vpn/release/manifest.json', manifest], ['/vpn/release/manifest.json.sig', Buffer.from(msig + '\n')],
+      ...(sums ? [['/SHA256SUMS.txt', sums]] : []), ...(ssig ? [['/SHA256SUMS.txt.sig', Buffer.from(ssig + '\n')]] : []),
     ]);
   }
 }
@@ -163,6 +173,7 @@ const cfg = (extra = {}) => ({
   ...mon.defaults(),
   listUrl: `http://127.0.0.1:${port(siteServer)}/vpn/nodes.json`,
   manifestUrl: `http://127.0.0.1:${port(siteServer)}/vpn/release/manifest.json`,
+  sumsUrl: `http://127.0.0.1:${port(siteServer)}/SHA256SUMS.txt`,
   listKey: LISTK.pub,
   releaseKey: RELK.pub,
   defaultAdmissionPort: port(alpha.server),
@@ -228,6 +239,10 @@ expect('the list key is the one the client embeds', releaseRs.includes(`LIST_PUB
 expect('the release key is the one the client embeds', releaseRs.includes(`RELEASE_PUBLIC_KEY_B64: &str = "${mon.RELEASE_PUBLIC_KEY_B64}"`), 'RELEASE_PUBLIC_KEY_B64 differs from release.rs');
 expect('the default admission port is the node\'s', admissionRs.includes(`DEFAULT_ADMISSION_PORT: u16 = ${mon.DEFAULT_ADMISSION_PORT};`), 'DEFAULT_ADMISSION_PORT differs from admission.rs');
 expect('the list and manifest addresses are the browser\'s', mainJs.includes(`VPN_LIST_URL = '${mon.LIST_URL}'`) && mainJs.includes(`VPN_RELEASE_URL = '${mon.MANIFEST_URL}'`), 'LIST_URL or MANIFEST_URL differs from main.js');
+const updateCheck = createRequire(import.meta.url)(join(REPO, 'hidra-browser', 'src', 'main', 'update-check.js'));
+expect('the checksum record\'s address is the browser\'s', mon.SUMS_URL === updateCheck.SUMS_URL, `${mon.SUMS_URL} / ${updateCheck.SUMS_URL}`);
+const realSums = readFileSync(join(REPO, 'landing', 'SHA256SUMS.txt'), 'utf8');
+expect('the published checksum record\'s valid-until reads as the browser reads it', mon.recordValidUntil(realSums).validUntil === updateCheck.parseRecord(realSums).validUntil, JSON.stringify(mon.recordValidUntil(realSums)));
 const real = readFileSync(join(REPO, 'landing', 'vpn', 'nodes.json'));
 const realSig = readFileSync(join(REPO, 'landing', 'vpn', 'nodes.json.sig'), 'utf8');
 const realRead = mon.readList(real, realSig, mon.LIST_PUBLIC_KEY_B64);
@@ -302,7 +317,8 @@ publish(listFor([alpha, beta]));
 let r = await check();
 expect('all well: nothing to report', r.confirmed.size === 0, `reported ${[...r.confirmed.keys()]}: ${JSON.stringify([...r.confirmed.values()])}`);
 expect('all well: one round, no wait', r.rounds === 1 && sleeps.length === 0, `${r.rounds} rounds`);
-expect('all well: every check passed', ['list', 'manifest', 'site', 'expiry', 'issuer', 'issuer-sales', 'node:alpha-1', 'node:beta-1'].every((k) => r.passed.has(k)), `passed: ${[...r.passed.keys()]}`);
+expect('all well: every check passed', ['list', 'manifest', 'sums', 'site', 'expiry', 'release-expiry', 'issuer', 'issuer-sales', 'node:alpha-1', 'node:beta-1'].every((k) => r.passed.has(k)), `passed: ${[...r.passed.keys()]}`);
+expect('a manifest with no expiry (0.1.0\'s) and no signed checksum record: nothing runs out', r.passed.get('release-expiry') === 'the release manifest has no expiry; no checksum record is signed yet', r.passed.get('release-expiry'));
 expect('a node with no admission port in the list is asked on the default one', alpha.hits === 1, `${alpha.hits} hits on alpha`);
 await reconcile(r);
 expect('all well: no issue', gh.issues.length === 0, `${gh.issues.length} issues`);
@@ -508,6 +524,80 @@ publish(listFor([alpha, beta], { expires: day(60), keys: [{ ...PK1, not_after: d
 await reconcile(await check());
 expect('a renewed list closes it', !openKeys().includes('expiry') && reminder.state === 'closed', openKeys().join());
 
+// ── The release's dates ───────────────────────────────────────────────────
+const fine = listFor([alpha, beta]);
+publish(fine, manifestFor('0.1.1', { sequence: 2, expires: day(10) }));
+r = await check();
+let rexp = r.confirmed.get('release-expiry');
+expect('ten days before the manifest runs out: reported', rexp?.title === `Renew before ${day(10).slice(0, 10)}: the release manifest or the browser's checksum record runs out` && rexp.detail === `the release manifest expires on ${day(10)} (in 10 days).`, JSON.stringify(rexp));
+expect('as a lasting problem, not retried, that does not block a list', r.rounds === 1 && !rexp?.transient && !rexp?.blocks && !r.confirmed.has('expiry'), JSON.stringify([r.rounds, rexp]));
+await reconcile(r);
+const relReminder = openIssue('release-expiry');
+expect('its issue says how to renew the manifest', relReminder?.title === `[node monitor] ${rexp?.title}` && relReminder.body.includes('make-release-manifest.sh') && relReminder.body.includes('every Install and Update'), relReminder?.body);
+publish(fine, manifestFor('0.1.1', { sequence: 2, expires: day(-1) }));
+r = await check();
+rexp = r.confirmed.get('release-expiry');
+expect('an expired manifest says so', rexp?.title === "The release manifest or the browser's checksum record has expired" && rexp.detail.includes(`the release manifest expired on ${day(-1)}`), JSON.stringify(rexp));
+await reconcile(r);
+expect('the reminder becomes the expiry, in the same issue', relReminder.title === `[node monitor] ${rexp?.title}` && gh.comments.at(-1)?.number === relReminder.number, relReminder.title);
+publish(fine, manifestFor('0.1.1', { sequence: 3, expires: day(15) }));
+r = await check();
+expect('a manifest good for more than two weeks passes', r.passed.get('release-expiry') === 'the release manifest is good for more than two weeks; no checksum record is signed yet' && !r.confirmed.size, JSON.stringify([...r.confirmed]));
+await reconcile(r);
+expect('and closes the issue', relReminder.state === 'closed', relReminder.state);
+publish(fine, manifestFor('0.1.1', { sequence: 3, expires: 'soon' }));
+r = await check();
+expect('a manifest whose expiry is not a date is one browsers refuse', r.confirmed.get('manifest')?.detail.includes('browsers refuse it: its expiry is not a date') && !r.confirmed.has('release-expiry') && !r.passed.has('release-expiry'), JSON.stringify([...r.confirmed]));
+// The checksum record: nothing to watch until it is signed.
+publish(fine, manifestFor(), { sums: sumsFor(day(-30).slice(0, 10)) });
+r = await check();
+expect('an unsigned checksum table, however old, is no alert', !r.confirmed.size && r.passed.has('sums') && r.passed.has('release-expiry'), JSON.stringify([...r.confirmed]));
+let table = sumsFor(day(10).slice(0, 10));
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+r = await check();
+rexp = r.confirmed.get('release-expiry');
+expect('a signed record ten days from its valid-until: reported', rexp?.title === `Renew before ${day(11).slice(0, 10)}: the release manifest or the browser's checksum record runs out` && rexp.detail === `the browser's checksum record is valid until ${day(10).slice(0, 10)} (in 10 days).`, JSON.stringify(rexp));
+expect('its signature is the one browsers check', r.passed.get('sums') === 'hidranet.org serves a checksum record signed with the release key', JSON.stringify([...r.confirmed]));
+table = sumsFor(day(-1).slice(0, 10));
+publish(fine, manifestFor('0.1.1', { sequence: 2, expires: day(5) }), { sums: table, ssig: sumsSig(table) });
+r = await check();
+rexp = r.confirmed.get('release-expiry');
+expect('a record past its valid-until has expired, and a manifest running out is named with it', rexp?.title === "The release manifest or the browser's checksum record has expired" && rexp.detail.includes(`ran out after ${day(-1).slice(0, 10)}`) && rexp.detail.includes('the release manifest expires on'), JSON.stringify(rexp));
+table = sumsFor(day(0).slice(0, 10));
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+r = await check();
+expect('a record is believed through its valid-until day', r.confirmed.get('release-expiry')?.detail.includes('(in 0 days)'), JSON.stringify(r.confirmed.get('release-expiry')));
+table = sumsFor(day(60).slice(0, 10));
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+r = await check();
+expect('a record good for more than two weeks passes', !r.confirmed.size && r.passed.get('release-expiry') === "the release manifest has no expiry; the browser's checksum record is good for more than two weeks", JSON.stringify([...r.confirmed]));
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table, OTHER) });
+r = await check();
+expect('a record not signed with the release key is reported, and its date not believed', r.confirmed.get('sums')?.detail.includes('signature does not match the release key') && !r.confirmed.has('release-expiry') && !r.passed.has('release-expiry'), JSON.stringify([...r.confirmed]));
+publish(fine, manifestFor(), { sums: table, ssig: RELK.sign(table) });
+r = await check();
+expect('a record signed without the label is not one browsers believe', r.confirmed.has('sums'), JSON.stringify([...r.confirmed]));
+for (const [what, t] of [['two valid-until lines', sumsFor(day(60).slice(0, 10), `  valid-until:           ${day(90).slice(0, 10)}\n`)], ['a valid-until that is not a day', sumsFor('2027-02-30')]]) {
+  publish(fine, manifestFor(), { sums: t, ssig: sumsSig(t) });
+  r = await check();
+  expect(`a signed record with ${what} is one browsers set aside`, r.confirmed.get('sums')?.detail.includes('browsers set it aside'), JSON.stringify([...r.confirmed]));
+}
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+site.files.delete('/SHA256SUMS.txt');
+r = await check();
+expect('a .sig with no table beside it is reported', r.confirmed.get('sums')?.detail.includes('SHA256SUMS.txt: answers HTTP 404'), JSON.stringify([...r.confirmed]));
+// Once main holds a signed record, a site that stops serving its .sig is
+// one browsers cannot confirm they are up to date against.
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+site.files.delete('/SHA256SUMS.txt.sig');
+r = await check();
+expect('a site without the .sig main holds is reported', r.confirmed.get('sums')?.detail.includes('its .sig answers HTTP 404') && r.confirmed.get('sums').transient && !r.passed.has('sums') && !r.passed.has('release-expiry'), JSON.stringify([...r.confirmed, ...r.passed]));
+await reconcile(r);
+expect('and opens an issue', openKeys().includes('sums'), openKeys().join());
+publish(good);
+await reconcile(await check());
+expect('all well again: no release issue left open', !openKeys().some((k) => ['sums', 'release-expiry'].includes(k)), openKeys().join());
+
 // ── The pass issuer ───────────────────────────────────────────────────────
 const twoKeys = { expires: day(60), keys: [{ ...PK1, not_after: day(60) }, { ...PK2, not_after: day(90) }] };
 publish(listFor([alpha, beta], twoKeys));
@@ -619,6 +709,17 @@ publish(withDelta, manifestFor(), { sig: OTHER.sign(withDelta), siteToo: false }
 expect('preview: a list signed with another key is unfit', (await preview()) === 1, 'fit');
 publish(withDelta, manifestFor(), { msig: OTHER.sign(manifestFor()), siteToo: false });
 expect('preview: a manifest signed with another key is unfit', (await preview()) === 1, 'fit');
+publish(withDelta, manifestFor('0.1.1', { sequence: 2, expires: day(-1) }), { siteToo: false });
+expect('preview: an expired manifest is unfit', (await preview()) === 1, 'fit');
+publish(withDelta, manifestFor('0.1.1', { sequence: 2, expires: day(10) }), { siteToo: false });
+expect('preview: a manifest two weeks from running out is still fit', (await preview()) === 0, 'unfit');
+const oldTable = sumsFor(day(-1).slice(0, 10));
+publish(withDelta, manifestFor(), { sums: oldTable, ssig: sumsSig(oldTable), siteToo: false });
+expect('preview: a checksum record past its valid-until is unfit', (await preview()) === 1, 'fit');
+publish(withDelta, manifestFor(), { sums: oldTable, ssig: sumsSig(oldTable, OTHER), siteToo: false });
+expect('preview: a checksum record signed with another key is unfit', (await preview()) === 1, 'fit');
+publish(withDelta, manifestFor(), { sums: oldTable, siteToo: false });
+expect('preview: an unsigned checksum table is fit, as today', (await preview()) === 0, 'unfit');
 
 // ── No node address anywhere ──────────────────────────────────────────────
 const written = JSON.stringify({ issues: gh.issues, comments: gh.comments, logs, summaries });

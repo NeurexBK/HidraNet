@@ -11,12 +11,14 @@ and costs nothing.
 | Check | Fails when | Issue key |
 |---|---|---|
 | The node list on hidranet.org | it does not load, its signature does not hold under the list key the client embeds, or a client would refuse it for any other reason (a bad node record, an operator name over 64 characters, an expiry that is not a date) | `list` |
-| The release manifest on hidranet.org | the same, under the release key | `manifest` |
+| The release manifest on hidranet.org | the same, under the release key, or its `expires` is not a date | `manifest` |
+| The browser's checksum record on hidranet.org | once `SHA256SUMS.txt.sig` is on hidranet.org or in `landing/` on main: the table or the `.sig` does not load (a site without the `.sig` main holds included), the signature does not hold under the release key (with the browser's label), or the record has no single `valid-until` day | `sums` |
 | hidranet.org against main | the site serves different bytes from `landing/vpn/` on main: a merge the deployment never picked up | `site` |
 | Every node in the list | it does not answer `GET /` on its admission port (TCP 51821 unless the list says otherwise), or answers with a key other than the one the list names | `node:<name>` |
 | The pass issuer the list names | `/keys` does not answer, or does not hold as current the key clients ask passes under (the newest current key in the list); or the list names no issuer while nodes in it take passes | `issuer` |
 | Passes for sale | `/packs` does not answer, or lists nothing (with packs priced in dollars, usually a stale HNET rate) | `issuer-sales` |
 | Dates | the list's `expires`, or the `not_after` of the key clients ask passes under, is less than 14 days away, or past | `expiry` |
+| Release dates | the release manifest's `expires`, or the signed checksum record's `valid-until`, is less than 14 days away, or past. A manifest with no `expires` (0.1.0's) never expires, and before the first `SHA256SUMS.txt.sig` there is no record to run out | `release-expiry` |
 
 What it does **not** check: that WireGuard answers on the node's UDP port, or
 that traffic flows through a node. Only a client the node admitted gets an
@@ -68,13 +70,15 @@ sends with `[node monitor]` in the subject.
 
 ## On a pull request
 
-A pull request that changes the check, anything under `landing/vpn/`, or the
-client code the check copies its rules from runs the tests
+A pull request that changes the check, anything under `landing/vpn/`,
+`landing/SHA256SUMS.txt` or its `.sig`, or the client code the check copies
+its rules from runs the tests
 (`scripts/test-node-monitor.mjs`) and two checks that write nothing:
 
 - `--preview`: the list in the branch, as it would be published. It fails when
   that list's or the manifest's signature does not hold, when a client would
-  refuse the list, when the list has expired, when its sequence is lower than
+  refuse the list, when the list or the manifest has expired, when a signed
+  checksum record in the branch does not verify or is past its `valid-until`, when its sequence is lower than
   the published one (or the same, with the list changed: clients would keep
   what they have), when nodes in it take passes and it names no issuer, or
   when a node it adds or changes (a new key, address or admission port) does

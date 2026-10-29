@@ -117,7 +117,7 @@ expect('the page asks for no passes while two hops are up or being built, whatev
       && (daemonRs.match(/account_one_hop_only: true,/g) || []).length === 2
       && /return Boolean\(r && r\.account_one_hop_only !== true\);/.test(page)
       && /tokenThroughTwoHops\(lastStatus\) \? REFILL_ON_OLD : REFILL_ON/.test(page)
-      && /if \(s\.state === 'outdated' \|\| tokenThroughTwoHops\(s\)\) outdated = true;/.test(page)
+      && /if \(tokenThroughTwoHops\(s\)\) outdated = true;/.test(page)
       && /privado too/.test(old) && /through the exit/.test(old) && /Update HidraVPN/.test(old),
     'the status field, the service setting it, or the page\'s use of it is missing');
 }
@@ -137,6 +137,23 @@ expect('every request is sealed when the service has a key, and an answer that d
 expect('on Windows a service without a key is never asked in the clear',
   /\} else if \(this\.platform === 'win32'\) \{[\s\S]{0,300}throw new VpnUnavailable\('outdated'/.test(manager),
   'a keyless Windows service would be sent the token');
+// A service that has not started since it was installed or updated wrote no
+// key either, so the page does not call it older, and offers to start it.
+expect('a Windows service with no key is shown as not running, or older, with starting it as the first step',
+  page.includes("'outdated': 'Service not running, or older than this browser'")
+    && /if \(s\.state === 'outdated'\) \{ text = 'Start the HidraVPN service, or, if it is running, update HidraVPN from Settings\.'/.test(page),
+  'the page says only that the service is older');
+// Nor does it remember one as older: once the service starts, its status is
+// no longer "outdated", and nothing may still send the person to update it.
+// Only an answer that shows the service is older is kept for the page's life.
+expect('the page remembers a service as older only from an answer that shows it, not from "outdated" alone',
+  /if \(a && a\.older === true && !outdated\) \{ outdated = true;/.test(page)
+    && !/state === 'outdated'[^;\n]*\) outdated = true/.test(page)
+    && !/a\.state === 'outdated' && !outdated/.test(page)
+    && /updateKnown \|\| outdated \|\| \(lastStatus && lastStatus\.state === 'outdated'\)/.test(page)
+    && /'Update HidraVPN: the installed service does not know the commands this page uses\.', \{ older: true \}\);/.test(manager)
+    && /throw new VpnUnavailable\('outdated', 'the HidraVPN service on this machine is not running, or is older than this browser',\n\s+'[^']*'\);/.test(manager),
+  'a status of "outdated" still marks the service as older for as long as the page is open, or the keyless answer claims to show it');
 
 // ── Phase 4 completion: install, leak test, local network, route ──────────
 expect('the install card is hidden until the service says it is not installed', /id="install-card" style="display:none"/.test(page) && /notInstalled \? '' : 'none'/.test(page), 'the install card is not tied to the not-installed state');

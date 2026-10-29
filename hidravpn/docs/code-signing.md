@@ -127,7 +127,8 @@ hidravpn-sign verify --pubkey <project public key> SHA256SUMS-hidravpn-v0.3.0.tx
 
 The browser installs from a manifest signed with the same key
 (`landing/vpn/release/manifest.json` and its `.sig`). Make it with a sequence
-higher than the published one's, sign it, and publish both:
+higher than the published one's (the script refuses 0, which is what the
+0.1.0 manifest counts as), sign it, and publish both:
 
 ```
 hidravpn/scripts/make-release-manifest.sh --version 0.3.0 --sequence 2026110101 \

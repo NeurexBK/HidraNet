@@ -1,6 +1,7 @@
 # The hourly check of the network: every node in the official list, the
 # list's and the release manifest's signatures as hidranet.org serves them,
-# the pass issuer, and the dates the list and the pass keys run out
+# the pass issuer, and the dates the list, the pass keys, the release
+# manifest and the browser's signed checksum record run out
 # (hidravpn/scripts/node-monitor.mjs says what each check means).
 #
 # A problem opens one issue, mentioning NODE_MONITOR_MENTION below, and the
@@ -25,6 +26,8 @@ on:
       - 'hidravpn/scripts/node-monitor.mjs'
       - 'hidravpn/scripts/test-node-monitor.mjs'
       - 'landing/vpn/**'
+      - 'landing/SHA256SUMS.txt'
+      - 'landing/SHA256SUMS.txt.sig'
       # What the check copies from the client; the test compares them.
       - 'hidravpn/crates/hidravpn-core/src/admission.rs'
       - 'hidravpn/crates/hidravpn-core/src/directory.rs'
@@ -33,6 +36,7 @@ on:
       - 'hidravpn/crates/hidravpn-core/src/release.rs'
       - 'hidravpn/crates/hidravpn-core/src/timefmt.rs'
       - 'hidra-browser/src/main/main.js'
+      - 'hidra-browser/src/main/update-check.js'
 
 permissions:
   contents: read

@@ -155,6 +155,12 @@ svc '{"cmd":"down"}' >/dev/null
 
 # ── An entry gives no lasting lease; its operator may still admit by hand ───
 OUT=$($C "$BIN/hidravpn" nodes join node-b 2>&1); echo "$OUT" | grep -q "(403)" && echo "$OUT" | grep -q "is an entry" && ! grep -q '"source": "open"' "$WORK/run-b/peers.json" && pass "an entry refuses a lasting lease (join) with 403, and says it gives keys for one connection only" || fail "join an entry: $OUT"
+# Joining every node leaves the entry out, and says so, rather than asking it
+# for what it always refuses. A copy of the pocket that knows only node-b, so
+# that node-a's leases stay as the checks below count them.
+python3 -I -c "import json; p=json.load(open('/etc/hidravpn/circuit.json')); p['known']=[k for k in p['known'] if k['node_name']=='node-b']; json.dump(p, open('$WORK/entry-only.json','w'))"
+OUT=$($C "$BIN/hidravpn" --pocket "$WORK/entry-only.json" nodes join --all 2>&1); RC=$?
+[ $RC = 0 ] && echo "$OUT" | grep -q "node-b: skipped, an entry gives no lasting lease" && ! echo "$OUT" | grep -q "(403)" && echo "$OUT" | grep -q "joined 0 node(s)" && pass "nodes join --all skips the entry, says why, and asks it nothing" || fail "join --all with an entry: rc $RC, $OUT"
 B_PUB=$(grep -o 'node public key: .*' "$WORK/init-b.log" | cut -d' ' -f4)
 SHOWN=$($C "$BIN/hidravpn" --key /etc/hidravpn/client.key pubkey --node "$B_PUB" 2>/dev/null)
 $E env HIDRAVPN_RUN_DIR="$WORK/run-b" "$BIN/hidravpn-node" --config "$WORK/b.toml" admit --name by-hand --pubkey "$SHOWN" > "$WORK/b-invite.json" 2>/dev/null

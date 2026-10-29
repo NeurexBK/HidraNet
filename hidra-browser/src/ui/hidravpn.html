@@ -481,7 +481,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     'unavailable': 'Service unavailable',
     'bad-answer': 'The service answered something unreadable',
     'timeout': 'The service did not answer',
-    'outdated': 'The service is older than this browser'
+    // Said by status() only on Windows, when the service wrote no key.
+    'outdated': 'Service not running, or older than this browser'
   };
   var REFILL_ON = 'When a node runs low, the service asks for more, only while connected in rapido: the issuer then sees the node you use at that moment, not this machine. Never in privado: the request would leave through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Get passes before you connect in privado. It spends the account\'s quota.';
   var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node), and not while connected in privado.';
@@ -508,9 +509,12 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   // before pressing a button. Reads taken during an action do not count, or
   // a refusal that left the circuit as it was would look like a change.
   var settled = null;
-  // Set by any answer that says the service is older than this browser.
-  // Every service knows status(), but on Windows it says so too when the
-  // service wrote no key (one from before sealed requests): it is not asked.
+  // Set by any answer that shows the service is older than this browser: a
+  // command it does not know (`older`), or a status that tops passes up
+  // through two hops. Not by "outdated" alone: on Windows every answer says
+  // that when there is no key beside the token, and the service may only be
+  // not running. That is the current status's to say, and it goes when the
+  // service starts.
   var outdated = false;
   // Whether the mode cards were set from the service's own mode since the
   // page loaded (or came back): Reconnect must not quietly change the mode.
@@ -620,7 +624,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     return Boolean(r && r.account_one_hop_only !== true);
   }
   function noteAnswer(a) {
-    if (a && a.state === 'outdated' && !outdated) { outdated = true; renderDot(); renderNextStep(); }
+    if (a && a.older === true && !outdated) { outdated = true; renderDot(); renderNextStep(); }
     return a;
   }
   function clearHeroError() {
@@ -632,7 +636,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   function renderDot() {
     var d = $('settings-dot');
     if (unseenDrawerError) { d.hidden = false; d.className = 'nav-dot warn'; }
-    else if (updateKnown || outdated) { d.hidden = false; d.className = 'nav-dot'; }
+    else if (updateKnown || outdated || (lastStatus && lastStatus.state === 'outdated')) { d.hidden = false; d.className = 'nav-dot'; }
     else { d.hidden = true; }
   }
   function openSettings(sectionId) {
@@ -841,7 +845,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     // With no installer for this system there is no first step: the
     // install card already says why.
     if (s.state === 'not-installed') text = s.installable === false ? '' : 'Step 1 of 3: install HidraVPN (above).';
-    else if (outdated || s.state === 'outdated') { text = 'Update HidraVPN from Settings.'; go = 'settings'; }
+    else if (s.state === 'outdated') { text = 'Start the HidraVPN service, or, if it is running, update HidraVPN from Settings.'; go = 'settings'; }
+    else if (outdated) { text = 'Update HidraVPN from Settings.'; go = 'settings'; }
     else if (s.state === 'disconnected' && lastNodes && lastNodes.ok) {
       var list = lastNodes.nodes || [];
       if (!list.length) { text = 'Step 2 of 3: get the list of nodes.'; go = 'nodes'; }
@@ -881,7 +886,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var prevSettled = settled;
     lastStatus = s;
     if (!busy) settled = s;
-    if (s.state === 'outdated' || tokenThroughTwoHops(s)) outdated = true;
+    if (tokenThroughTwoHops(s)) outdated = true;
     var r = s.report;
     var tunnel = tunnelOf(r);
     if (!modeSynced && r) { followServiceMode(r); modeSynced = true; }

@@ -9,8 +9,9 @@
 // cannot use. It also checks what everyone depends on and nobody looks at: the
 // release manifest's signature, that hidranet.org serves what main holds, that
 // the pass issuer signs under the key clients ask with and has passes for
-// sale, and the dates on which the list and the pass key stop being valid, two
-// weeks ahead.
+// sale, and the dates on which the list, the pass key, the release manifest
+// and the browser's checksum record (SHA256SUMS.txt, once it is signed) stop
+// being valid, two weeks ahead.
 //
 // Each problem is one GitHub issue, opened by the workflow and closed by it
 // when the check passes again; GitHub sends the e-mail. A network check is
@@ -48,6 +49,8 @@ export const DEFAULT_ADMISSION_PORT = 51821;
 // Where the browser fetches them (hidra-browser/src/main/main.js).
 export const LIST_URL = 'https://hidranet.org/vpn/nodes.json';
 export const MANIFEST_URL = 'https://hidranet.org/vpn/release/manifest.json';
+// Where the browser fetches its checksum record (hidra-browser/src/main/update-check.js).
+export const SUMS_URL = 'https://hidranet.org/SHA256SUMS.txt';
 
 const WARN_DAYS = 14;
 const DAY = 24 * 60 * 60;
@@ -60,11 +63,15 @@ const BOT = 'github-actions[bot]';
 const MARKER = /<!-- node-monitor:([a-z0-9:._-]{1,80}) -->/i;
 const TITLE_PREFIX = '[node monitor] ';
 const PASS_KEY_ID_DOMAIN = Buffer.from('HidraVPN pass key id v1\0');
+// The label the checksum table's signature is made over, before the file
+// (hidra-browser/src/main/release-verify.js, browserSumsMessage).
+const SUMS_CONTEXT = Buffer.from('hidranet-browser-sums-v1\0');
 
 export const defaults = () => ({
   preview: false,
   listUrl: LIST_URL,
   manifestUrl: MANIFEST_URL,
+  sumsUrl: SUMS_URL,
   listKey: LIST_PUBLIC_KEY_B64,
   releaseKey: RELEASE_PUBLIC_KEY_B64,
   defaultAdmissionPort: DEFAULT_ADMISSION_PORT,
@@ -259,10 +266,38 @@ export function readManifest(bytes, sigText, releaseKey) {
   try {
     const m = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     if (!m || typeof m !== 'object' || typeof m.version !== 'string') return { error: 'it names no version' };
+    // A manifest from before `expires` (0.1.0's) never expires.
+    if (m.expires !== undefined && parseTime(m.expires) === null) return { error: 'browsers refuse it: its expiry is not a date' };
     return { manifest: m };
   } catch {
     return { error: 'it is signed but is not UTF-8 JSON' };
   }
+}
+
+// update-check.js, endOfDay: a valid-until day is believed through its end,
+// UTC; null when it is not a real YYYY-MM-DD date.
+function endOfDay(validUntil) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(validUntil ?? ''));
+  const ms = m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
+  if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 10) !== validUntil) return null;
+  return ms / 1000 + DAY;
+}
+
+// The record's one `  valid-until:` line, as update-check.js reads it (field
+// and parseRecord), or why a browser sets the record aside.
+export function recordValidUntil(text) {
+  const found = [...String(text).replace(/\r\n/g, '\n').matchAll(/^  valid-until:[ \t]+(\S+)[ \t]*$/gm)];
+  if (found.length !== 1) return { error: found.length ? 'valid-until appears more than once' : 'it has no valid-until' };
+  const end = endOfDay(found[0][1]);
+  return end === null ? { error: 'its valid-until is not a date (YYYY-MM-DD)' } : { validUntil: found[0][1], end };
+}
+
+// The browser's checksum table: signed over the label and the file, with the
+// release key.
+export function readSums(bytes, sigText, releaseKey) {
+  if (!signatureMatches(releaseKey, Buffer.concat([SUMS_CONTEXT, bytes]), sigText)) return { error: 'its signature does not match the release key' };
+  const v = recordValidUntil(bytes.toString('utf8'));
+  return v.error ? { error: `browsers set it aside: ${v.error}` } : { sums: v };
 }
 
 export function parseEndpoint(endpoint) {
@@ -309,7 +344,7 @@ export async function fetchBytes(url, { timeoutMs, maxBytes, follow = false }) {
   try {
     if (res.status !== 200) {
       await res.body?.cancel().catch(() => {});
-      return { answered: true, error: `answers HTTP ${res.status}` };
+      return { answered: true, status: res.status, error: `answers HTTP ${res.status}` };
     }
     const chunks = [];
     let total = 0;
@@ -351,8 +386,8 @@ const isoTime = (seconds) => new Date(seconds * 1000).toISOString().replace('.00
 
 // --- one round of checks ---------------------------------------------------------
 
-// Problem keys: `list`, `manifest`, `site`, `expiry`, `issuer`,
-// `issuer-sales`, `node:<name>`. A transient problem is one a retry can
+// Problem keys: `list`, `manifest`, `sums`, `site`, `expiry`,
+// `release-expiry`, `issuer`, `issuer-sales`, `node:<name>`. A transient problem is one a retry can
 // change (anything fetched); a lasting one is in what was signed. `blocks` is
 // for --preview: whether it makes the list in this checkout unfit to publish.
 async function round(cfg) {
@@ -367,10 +402,14 @@ async function round(cfg) {
     listSig: await readOptional(join(cfg.landingDir, 'vpn', 'nodes.json.sig')),
     manifest: await readOptional(join(cfg.landingDir, 'vpn', 'release', 'manifest.json')),
     manifestSig: await readOptional(join(cfg.landingDir, 'vpn', 'release', 'manifest.json.sig')),
+    sums: await readOptional(join(cfg.landingDir, 'SHA256SUMS.txt')),
+    sumsSig: await readOptional(join(cfg.landingDir, 'SHA256SUMS.txt.sig')),
   };
-  const [siteList, siteManifest] = await Promise.all([fetchSigned(cfg, cfg.listUrl), fetchSigned(cfg, cfg.manifestUrl)]);
-  r.tried += 2;
-  r.answered += Number(siteList.answered) + Number(siteManifest.answered);
+  const [siteList, siteManifest, siteSums] = await Promise.all([
+    fetchSigned(cfg, cfg.listUrl), fetchSigned(cfg, cfg.manifestUrl), fetchSigned(cfg, cfg.sumsUrl),
+  ]);
+  r.tried += 3;
+  r.answered += Number(siteList.answered) + Number(siteManifest.answered) + Number(siteSums.answered);
 
   const fromSite = (f, url, read, key) => {
     const got = f.file.error ? { error: f.file.error }
@@ -381,10 +420,16 @@ async function round(cfg) {
   const site = {
     list: fromSite(siteList, cfg.listUrl, readList, cfg.listKey),
     manifest: fromSite(siteManifest, cfg.manifestUrl, readManifest, cfg.releaseKey),
+    // Until the first SHA256SUMS.txt.sig there is no record to watch. Once
+    // main holds one, a site without it is a fault: browsers built after the
+    // first signature, and any that has verified a record, then say they
+    // cannot confirm they are up to date.
+    sums: siteSums.sig.status === 404 && !repo.sumsSig ? null : fromSite(siteSums, cfg.sumsUrl, readSums, cfg.releaseKey),
   };
   const local = {
     list: repo.list && repo.listSig ? readList(repo.list, repo.listSig.toString('utf8'), cfg.listKey) : null,
     manifest: repo.manifest && repo.manifestSig ? readManifest(repo.manifest, repo.manifestSig.toString('utf8'), cfg.releaseKey) : null,
+    sums: repo.sums && repo.sumsSig ? readSums(repo.sums, repo.sumsSig.toString('utf8'), cfg.releaseKey) : null,
   };
   const published = site.list.list ?? null;
 
@@ -408,6 +453,8 @@ async function round(cfg) {
     }
     if (local.manifest?.error) fail('manifest', 'The release manifest in this checkout cannot be published', `landing/vpn/release/manifest.json: ${local.manifest.error}.`, { transient: false, blocks: true });
     else if (local.manifest) pass('manifest', 'the manifest in this checkout is signed');
+    if (local.sums?.error) fail('sums', "The browser's checksum record in this checkout cannot be published", `landing/SHA256SUMS.txt: ${local.sums.error}.`, { transient: false, blocks: true });
+    else if (local.sums) pass('sums', 'the checksum record in this checkout is signed');
     if (site.list.error) r.notes.push(`the published list: ${site.list.error}`);
   } else {
     if (site.list.error) {
@@ -422,6 +469,9 @@ async function round(cfg) {
     }
     if (site.manifest.error) fail('manifest', 'The release manifest on hidranet.org cannot be used', `${site.manifest.error}. Installs and updates refuse it.`);
     else pass('manifest', 'hidranet.org serves a manifest signed with the release key');
+    if (site.sums?.error) fail('sums', "The browser's checksum record on hidranet.org cannot be used", `${site.sums.error}. Browsers set it aside and say they cannot confirm they are up to date.`);
+    else if (site.sums) pass('sums', 'hidranet.org serves a checksum record signed with the release key');
+    else pass('sums', 'neither hidranet.org nor main has a SHA256SUMS.txt.sig yet, so there is no record to check');
 
     // What main holds and what the site serves, byte for byte: a merge the
     // deployment never picked up, or a site serving something else.
@@ -435,6 +485,38 @@ async function round(cfg) {
     else if (repo.list && siteList.file.bytes && siteList.sig.bytes && repo.manifest && siteManifest.file.bytes && siteManifest.sig.bytes)
       pass('site', 'hidranet.org serves what main holds');
   }
+
+  // The release's dates, lasting problems in what was signed, as the list's
+  // below. A browser refuses a manifest once now > expires, and then every
+  // Install and Update fails; it sets the checksum record aside after its
+  // valid-until day. A manifest with no expires (0.1.0's) never expires.
+  const rel = cfg.preview ? local : site;
+  const relExpiring = [];
+  let relExpired = false;
+  let relSoonest = Infinity;
+  const mexp = rel.manifest?.manifest ? parseTime(rel.manifest.manifest.expires) : null;
+  if (mexp !== null && mexp - now < WARN_DAYS * DAY) {
+    const at = rel.manifest.manifest.expires;
+    relExpiring.push(now > mexp ? `the release manifest expired on ${at}` : `the release manifest expires on ${at} (in ${days(mexp - now)})`);
+    relExpired ||= now > mexp;
+    relSoonest = Math.min(relSoonest, mexp);
+  }
+  const record = rel.sums?.sums ?? null;
+  if (record && record.end - now < WARN_DAYS * DAY) {
+    relExpiring.push(now >= record.end ? `the browser's checksum record ran out after ${record.validUntil}` : `the browser's checksum record is valid until ${record.validUntil} (in ${days(record.end - now)})`);
+    relExpired ||= now >= record.end;
+    relSoonest = Math.min(relSoonest, record.end);
+  }
+  if (relExpiring.length) {
+    fail('release-expiry', relExpired ? "The release manifest or the browser's checksum record has expired" : `Renew before ${isoDay(relSoonest)}: the release manifest or the browser's checksum record runs out`,
+      `${relExpiring.join('; ')}.`, { transient: false, blocks: relExpired });
+  } else if ((!rel.manifest || rel.manifest.manifest) && (!rel.sums || record)) {
+    pass('release-expiry', [
+      !rel.manifest ? null : mexp === null ? 'the release manifest has no expiry' : 'the release manifest is good for more than two weeks',
+      record ? "the browser's checksum record is good for more than two weeks" : 'no checksum record is signed yet',
+    ].filter(Boolean).join('; '));
+  }
+
   if (!list) return r;
   const nodes = list.nodes ?? [];
 
@@ -666,6 +748,8 @@ function advice(key, operator) {
     list: 'Clients cannot import the list. Check the last change under `landing/vpn/` and the site\'s deployment.',
     manifest: 'Installs and updates through the browser refuse the manifest. Check the last change under `landing/vpn/release/` and the site\'s deployment.',
     site: 'A merge to main did not reach hidranet.org, or the site serves something else. Check the deployment of `landing/`.',
+    sums: 'Browsers set the record aside and say they cannot confirm they are up to date. Check the last change to `landing/SHA256SUMS.txt` and its `.sig`, and the site\'s deployment.',
+    'release-expiry': 'After its expiry browsers refuse the manifest, and every Install and Update of HidraVPN through the browser fails; after its valid-until they set the checksum record aside and say they cannot confirm they are up to date. Make the manifest again with `make-release-manifest.sh`, a higher `--sequence` and a later `--expires`, sign it offline and publish both (hidravpn/docs/code-signing.md); renew the record\'s `valid-until` and sign the table again (hidra-browser/docs/code-signing.md).',
     expiry: 'After that date clients refuse the list, and get no passes once no key in it is current. Make a new pass key, load it in the issuer, `hidravpn-node pass-key add` it on every node that takes passes, and sign and publish a list that names it, with a later expiry and a higher sequence.',
     issuer: 'Clients cannot get passes, and the nodes that take passes admit no one new. Check the issuer service on its server (`systemctl status hidravpn-issuer`) and the keys it was started with, against the list.',
     'issuer-sales': 'The issuer answers, but nobody can buy passes. Look at the issuer\'s log for the HNET rate feed, and at its payment settings.',

@@ -404,6 +404,7 @@ function relayTo(sockPath, line) {
       const r = await v.connect('rapido');
       assert.strictEqual(r.ok, false);
       assert.strictEqual(r.state, 'outdated');
+      assert.strictEqual(r.older, true, 'an answer that shows the service is older says so');
       assert.ok(/Update HidraVPN/.test(r.hint), r.hint);
       await old.close();
     });
@@ -544,15 +545,20 @@ function relayTo(sockPath, line) {
     await old.close();
   });
 
-  await check('on Windows a service with no key is asked nothing: "outdated", update HidraVPN', async () => {
+  await check('on Windows a service with no key is asked nothing: not running, or older; start or update it', async () => {
     const old = await fakeService({ noKey: true });
     const vpn = managerFor(old, { platform: 'win32' });
     const s = await vpn.status();
     assert.strictEqual(s.state, 'outdated');
     assert.strictEqual(s.report, null);
-    assert.ok(/Update HidraVPN/.test(s.hint), s.hint);
+    // A service that never started since it was installed or updated wrote
+    // no key either: "older" alone would be wrong.
+    assert.ok(/not running, or is older than this browser/.test(s.error), s.error);
+    assert.ok(/^Start the HidraVPN service; if it is running, update HidraVPN\./.test(s.hint), s.hint);
     const r = await vpn.setPassToken('acct-token-000');
     assert.strictEqual(r.state, 'outdated');
+    // Nothing answered, so nothing showed the service is older.
+    assert.ok(!('older' in s) && !('older' in r), JSON.stringify([s, r]));
     assert.strictEqual(old.wire.length, 0, 'the token went to a service that cannot prove what it is');
     // With a key, the same platform seals and is answered.
     const svc = await fakeService();

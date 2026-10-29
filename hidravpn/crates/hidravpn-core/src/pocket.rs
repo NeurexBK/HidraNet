@@ -285,6 +285,27 @@ impl Pocket {
             .collect()
     }
 
+    /// The known nodes `nodes join` asks: the one named, or with no name
+    /// every joinable one but the entries that admit openly, returned apart
+    /// by name. Such an entry gives no lasting lease (it answers a join
+    /// with 403): a client asks it for a key for each connection, as it
+    /// connects. A node asked for by name is asked whatever its role, and
+    /// says itself why it refuses.
+    pub fn join_targets(&self, name: Option<&str>) -> (Vec<NodeRecord>, Vec<String>) {
+        let mut targets = Vec::new();
+        let mut skipped = Vec::new();
+        for r in self.joinable() {
+            match name {
+                Some(n) if !n.trim().eq_ignore_ascii_case(r.node_name.trim()) => {}
+                None if r.is_open() && slots_for_role(r.role.as_deref()) == [Slot::Entry] => {
+                    skipped.push(r.node_name.clone())
+                }
+                _ => targets.push(r.clone()),
+            }
+        }
+        (targets, skipped)
+    }
+
     /// Puts a fresh invite for a node in place of the one it replaces (same
     /// key), in every list the old one was in, or in the slots its role
     /// allows when it was not there: what redeeming the next pass for a node
@@ -613,6 +634,17 @@ pub fn slots_for_role(role: Option<&str>) -> Vec<Slot> {
         Some("exit") => vec![Slot::Exit],
         _ => vec![Slot::Entry, Slot::Exit],
     }
+}
+
+/// The line `nodes join` says for the entries `join_targets` left out, if any.
+pub fn skipped_entries_line(skipped: &[String]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}: skipped, an entry gives no lasting lease; a client asks it for a key for each connection, as it connects",
+        skipped.join(", ")
+    ))
 }
 
 pub fn slot_name(slot: Slot) -> &'static str {
@@ -1052,5 +1084,53 @@ mod tests {
         }
         let names: Vec<&str> = p.joinable().iter().map(|r| r.node_name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn joining_every_node_leaves_out_the_entries_that_admit_openly() {
+        let mut p = Pocket::default();
+        for (name, role, admission) in [
+            ("entry-open", Some(" Entry "), "open"),
+            ("exit-open", Some("exit"), "open"),
+            ("both-open", None, "open"),
+            ("both-said", Some("both"), "open"),
+            ("entry-pass", Some("entry"), "pass"),
+            ("entry-hand", Some("entry"), "manual"),
+        ] {
+            p.learn(NodeRecord {
+                node_name: name.into(),
+                node_public_key: ClientKey::generate().unwrap().public_base64(),
+                endpoint: format!("203.0.113.{}:51820", 40 + p.known.len()),
+                operator: None,
+                contact: None,
+                role: role.map(Into::into),
+                admission: Some(admission.into()),
+                admission_port: None,
+                country: None,
+                features: Vec::new(),
+            })
+            .unwrap();
+        }
+        let (targets, skipped) = p.join_targets(None);
+        let names: Vec<&str> = targets.iter().map(|r| r.node_name.as_str()).collect();
+        // A pass is redeemed at an entry as anywhere; only an open lease is
+        // refused there.
+        assert_eq!(
+            names,
+            vec!["exit-open", "both-open", "both-said", "entry-pass"]
+        );
+        assert_eq!(skipped, vec!["entry-open"]);
+        let line = skipped_entries_line(&skipped).unwrap();
+        assert!(
+            line.starts_with("entry-open: skipped, an entry gives no lasting lease"),
+            "{line}"
+        );
+        // Asked for by name, the entry is asked, and answers for itself.
+        let (targets, skipped) = p.join_targets(Some("ENTRY-OPEN"));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].node_name, "entry-open");
+        assert!(skipped.is_empty() && skipped_entries_line(&skipped).is_none());
+        let (targets, _) = p.join_targets(Some("nobody"));
+        assert!(targets.is_empty());
     }
 }

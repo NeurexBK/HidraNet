@@ -19,7 +19,8 @@
 # the newest from an old one served again. --sequence must go up with every
 # manifest published, a new release or the same one signed again (the date,
 # as 2026110101, does); a browser refuses one lower than it has already
-# accepted. --expires defaults to 90 days from now; after it browsers refuse
+# accepted. It is 1 or more: the 0.1.0 manifest, from before sequences,
+# counts as 0. --expires defaults to 90 days from now; after it browsers refuse
 # the manifest, so sign it again with a higher sequence before then, or a
 # server that keeps serving an old one would hold back every later release.
 #
@@ -42,6 +43,9 @@ while [ $# -gt 0 ]; do
 done
 [[ "$VERSION" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "--version X.Y.Z is required" >&2; exit 2; }
 [[ "$SEQ" =~ ^[0-9]{1,15}$ ]] || { echo "--sequence N is required: a whole number, higher than the last manifest's" >&2; exit 2; }
+# The 0.1.0 manifest, from before sequences, counts as 0: a new one at 0
+# would set no floor above it, and a browser would still take 0.1.0 back.
+[ "$((10#$SEQ))" -ge 1 ] || { echo "--sequence must be 1 or more: the 0.1.0 manifest counts as sequence 0, so one at 0 would not keep a browser from going back to it" >&2; exit 2; }
 [ -n "$EXPIRES" ] || EXPIRES="$(date -u -d '+90 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)"
 [[ "$EXPIRES" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { echo "--expires must be a date like 2027-01-01T00:00:00Z" >&2; exit 2; }
 [[ "$BASE" == https://* ]] || { echo "--base must be an https:// address" >&2; exit 2; }

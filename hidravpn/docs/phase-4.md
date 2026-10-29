@@ -372,7 +372,7 @@ the service's pocket without passing through the browser.
 sudo hidravpn nodes import nodes.json             # the maintainers' list, checked against the built-in list key
 sudo hidravpn nodes import nodes.json --pubkey K  # a key that reached you by another channel
 sudo hidravpn nodes list                          # what the pocket holds: role, admission, operator; never keys
-sudo hidravpn nodes join --all                    # ask every known open node for admission
+sudo hidravpn nodes join --all                    # ask every known open node but the entries, and every node that takes passes
 sudo hidravpn nodes join <name>                   # ask one
 sudo hidravpn nodes discover <ip>[:51821] --trust # a node you know by other means (your own)
 sudo hidravpn up --rapido --node <name>           # one hop through that node
@@ -624,12 +624,15 @@ Get-Content "$env:ProgramData\HidraVPN\service.log" -Tail 5
   connection is waited out, never fatal: the tunnel outlives the admission
   service, and the node's unit restarts it in any case. It has been read by
   three reviewers and run under the suite above, not fuzzed.
-- **A node can be filled, for a while.** With enough addresses, a script can
-  take every lease of a node in hours; it cannot keep them, because a lease
-  with no handshake lapses within fifteen minutes. A determined attacker who
-  runs four thousand real tunnels holds the node until they stop; the answer
-  to that is more nodes and Phase 5's accountable admission, not a cleverer
-  limit here.
+- **A node that admits openly can be filled, and held.** A lease with no
+  handshake lapses within fifteen minutes, but one handshake every few
+  minutes keeps a session, or a lasting lease, alive, so someone with enough
+  processor time can fill such a node and hold it for as long as they keep
+  their tunnels alive. The work a session costs rises as the node fills, so
+  the last places cost the most; an entry gives no lasting lease, and
+  elsewhere lasting leases hold at most a quarter of the places
+  (`running-nodes.md`). The answer is more nodes and nodes that admit with a
+  pass (Phase 5), not a cleverer limit here.
 - **Portless entry is not this phase.** Every node, entry or exit, still
   needs one open UDP port and, for open admission, one TCP port; a node
   behind a home router stays on the roadmap (doc 16 §7).
