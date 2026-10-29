@@ -11,6 +11,7 @@
  *   node scripts/build-mac.js          # arm64 + x64
  *   node scripts/build-mac.js arm64
  *   node scripts/build-mac.js x64
+ *   node scripts/build-mac.js all --out <folder>     # instead of the Desktop
  */
 'use strict';
 
@@ -22,6 +23,7 @@ const { launcherScript, readmeText, patchPlist } = require('./lib/mac-extras');
 const { buildJson } = require('./lib/build-stamp');
 const { electronZip } = require('./lib/electron');
 const { torDir, verifyTorDir } = require('./lib/tor');
+const { outArgs, writePackage } = require('./lib/out-dir');
 
 const APP_NAME     = 'HidraNet';
 const APP_ID       = 'net.hidra.browser';
@@ -31,8 +33,9 @@ const ROOT         = path.join(__dirname, '..');
 // old files only by its hash.
 const VERSION      = require(path.join(ROOT, 'package.json')).version;
 const DIST         = path.join(ROOT, 'dist');
-const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
-const ARCH_ARG     = process.argv[2] || 'all';
+const ARGS         = outArgs(process.argv.slice(2));
+const OUT_DIR      = ARGS.out;
+const ARCH_ARG     = ARGS.rest[0] || 'all';
 
 // HidraNet's icon for the bundle, from brand/logo/ at the top of the
 // repository. Electron's Info.plist names electron.icns, so the file keeps
@@ -179,9 +182,8 @@ async function buildArch(arch) {
   console.log('  Writing ZIP (' + outEntries.length + ' entries) ...');
   var outBuf  = writeZip(outEntries);
   var outName = 'HidraNet-Browser-' + VERSION + '-macOS-' + arch + '.zip';
-  var outPath = path.join(DESKTOP, outName);
-  fs.writeFileSync(outPath, outBuf);
-  console.log('  >>> ' + outName + ' (' + (outBuf.length / 1048576).toFixed(1) + ' MB) → Desktop');
+  var outPath = writePackage(OUT_DIR, outName, outBuf);
+  console.log('  >>> ' + outName + ' (' + (outBuf.length / 1048576).toFixed(1) + ' MB) → ' + outPath);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -200,11 +202,12 @@ async function buildArch(arch) {
   for (var i = 0; i < archs.length; i++) await buildArch(archs[i]);
 
   console.log('\n╔══════════════════════════════════════════════════════╗');
-  console.log('║  Done. The ZIPs are on your Desktop.                ║');
+  console.log('║  Done. The ZIPs are in the folder below.            ║');
   console.log('║                                                     ║');
   console.log('║  arm64 → Apple Silicon (M1/M2/M3/M4) — 2020 on      ║');
   console.log('║  x64   → Intel — before 2020                        ║');
   console.log('╚══════════════════════════════════════════════════════╝');
+  console.log('  ' + OUT_DIR);
 })().catch(function(e) {
   console.error('\nERROR:', e.message);
   process.exit(1);

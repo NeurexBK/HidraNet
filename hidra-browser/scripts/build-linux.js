@@ -11,6 +11,7 @@
  *   node scripts/build-linux.js x64
  *   node scripts/build-linux.js arm64
  *   node scripts/build-linux.js all      # x64 + arm64
+ *   node scripts/build-linux.js x64 --out <folder>   # instead of the Desktop
  */
 'use strict';
 
@@ -20,6 +21,7 @@ const { readZip, writeZip, mkFile, mkDir } = require('./lib/zip');
 const { buildJson } = require('./lib/build-stamp');
 const { electronZip } = require('./lib/electron');
 const { torDir, verifyTorDir } = require('./lib/tor');
+const { outArgs, writePackage } = require('./lib/out-dir');
 
 const APP_NAME     = 'hidranet';       // lowercase binary name
 const APP_DISPLAY  = 'HidraNet';      // human-readable
@@ -29,8 +31,9 @@ const ROOT         = path.join(__dirname, '..');
 // old files only by its hash.
 const VERSION      = require(path.join(ROOT, 'package.json')).version;
 const DIST         = path.join(ROOT, 'dist');
-const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
-const ARCH_ARG     = process.argv[2] || 'x64';
+const ARGS         = outArgs(process.argv.slice(2));
+const OUT_DIR      = ARGS.out;
+const ARCH_ARG     = ARGS.rest[0] || 'x64';
 
 // The bundled Linux Tor is dynamically linked against libevent, which most
 // distributions do not install by default. Without it Tor dies at startup and
@@ -184,9 +187,8 @@ async function buildArch(arch) {
   console.log('  Escrevendo ZIP (' + outEntries.length + ' entradas) ...');
   var outBuf  = writeZip(outEntries);
   var outName = 'HidraNet-Browser-' + VERSION + '-Linux-' + arch + '.zip';
-  var outPath = path.join(DESKTOP, outName);
-  fs.writeFileSync(outPath, outBuf);
-  console.log('  >>> ' + outName + ' (' + (outBuf.length / 1048576).toFixed(1) + ' MB) → Desktop');
+  var outPath = writePackage(OUT_DIR, outName, outBuf);
+  console.log('  >>> ' + outName + ' (' + (outBuf.length / 1048576).toFixed(1) + ' MB) → ' + outPath);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -205,10 +207,11 @@ async function buildArch(arch) {
   for (var i = 0; i < archs.length; i++) await buildArch(archs[i]);
 
   console.log('\n╔══════════════════════════════════════════════════════╗');
-  console.log('║  Done. The ZIP is on your Desktop.                  ║');
+  console.log('║  Done. The ZIP is in the folder below.              ║');
   console.log('║                                                     ║');
   console.log('║  Extract and run: chmod +x start.sh && ./start.sh   ║');
   console.log('╚══════════════════════════════════════════════════════╝');
+  console.log('  ' + OUT_DIR);
 })().catch(function(e) {
   console.error('\nERROR:', e.message);
   process.exit(1);
