@@ -167,9 +167,9 @@ $E ip addr add 10.206.0.2/24 dev e-i; $E ip link set e-i up; $E ip link set lo u
 $I ip addr add 10.206.0.1/24 dev i-e; $I ip link set i-e up
 $X ip addr add 10.205.0.2/24 dev x-i; $X ip link set x-i up; $X ip link set lo up; $X ip route add default via 10.205.0.1
 $I ip addr add 10.205.0.1/24 dev i-x; $I ip link set i-x up
-$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator others --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --forward-private-destinations --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator others --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hve0"/' "$WORK/e.toml"
-$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-x --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --forward-private-destinations --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-x --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
 $X "$BIN/hidravpn-node" --config "$WORK/x.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-e" "$WORK/run-x"
