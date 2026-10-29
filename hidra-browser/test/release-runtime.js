@@ -38,6 +38,7 @@ async function check(name, fn) {
 }
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hidra-runtime-'));
+const contentsOf = (e) => (e.method === 8 ? require('zlib').inflateRawSync(e.rawData) : e.rawData);
 const zipOf = (files) => readZip(writeZip(files.map(([n, d, m]) => (n.endsWith('/') ? mkDir(n) : mkFile(n, Buffer.from(d), m)))));
 
 // What Electron writes into its main binary, and so what the check reads.
@@ -253,7 +254,7 @@ function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, ad
   });
 
   // ── check-engine.js ─────────────────────────────────────────────────────
-  await check('check-engine.js fails a package on another Electron and passes the pinned one', async () => {
+  await check('check-engine.js fails a package on another Electron or another Tor and passes the pinned ones', async () => {
     const pkg = require('../package.json');
     const write = (name, bin) => {
       const f = path.join(tmp, name);
@@ -264,9 +265,61 @@ function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, ad
     const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-engine.js'), old], { encoding: 'utf8' });
     assert.strictEqual(r.status, 1, r.stdout);
     assert.ok(/Electron 33\.4\.11, not 44\.9\.3/.test(r.stdout), r.stdout);
-    const ok = write('HidraNet-Browser-9.9.9-Linux-x64.zip', GOOD_ENGINE);
-    const r2 = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-engine.js'), ok], { encoding: 'utf8' });
-    assert.strictEqual(r2.status, 0, r2.stdout);
+    // The pinned Electron with no Tor, or another Tor, does not pass either:
+    // the 1.0.0 packages carried Tor 15.0.22, and the launch checklist reads
+    // this check's output for the Tor version as well as Electron's.
+    const noTor = write('HidraNet-Browser-9.9.9-Linux-x64.zip', GOOD_ENGINE);
+    const r2 = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-engine.js'), noTor], { encoding: 'utf8' });
+    assert.strictEqual(r2.status, 1, r2.stdout);
+    assert.ok(/not the pinned Tor/.test(r2.stdout) && /Tor: tor is missing/.test(r2.stdout), r2.stdout);
+    // In this process the fixture's Tor is the pinned one (see TOR above), so
+    // the same package with it passes, and says which Tor it found.
+    const { checkPackage } = require('../scripts/check-engine');
+    const ok = path.join(tmp, 'HidraNet-Browser-9.9.9-Linux-x64.zip');
+    fs.writeFileSync(ok, writeZip(linuxPackage().map((e) => mkFile(e.filename, contentsOf(e), e.filename === 'hidranet' ? 0o755 : 0o644))));
+    const good = checkPackage(ok);
+    assert.deepStrictEqual(good.problems, []);
+    assert.ok(/Electron 44\.9\.3, Chromium 152\.[\d.]+, Tor /.test(good.seen) && good.seen.indexOf(tor.TOR_VERSION) !== -1, good.seen);
+    fs.writeFileSync(ok, writeZip(linuxPackage({ torFiles: Object.assign({}, TOR, { tor: 'another tor' }) })
+      .map((e) => mkFile(e.filename, contentsOf(e)))));
+    const swapped = checkPackage(ok);
+    assert.ok(swapped.problems.some((p) => /Tor: tor is not the pinned Tor/.test(p)), swapped.problems.join('; '));
+  });
+
+  // ── build-win.js ────────────────────────────────────────────────────────
+  // update-sums.js compares every Electron file of a package with the
+  // official zip, and build-win.js used to keep Electron's default_app.asar,
+  // which that comparison expects the builders to drop: every Windows
+  // package it built was refused, so the table could not be written.
+  await check('build-win.js lays Electron\'s win32 zip out the way the runtime check expects', async () => {
+    const { runtimeEntries } = require('../scripts/build-win');
+    const win = zipOf([['electron.exe', GOOD_ENGINE], ['ffmpeg.dll', 'f'], ['resources/', ''],
+      ['resources/default_app.asar', 'the default app'], ['locales/', ''], ['locales/en-US.pak', 'en']]);
+    const laid = runtimeEntries(win, 'win32 fixture');
+    assert.ok(!laid.some((e) => /default_app\.asar/.test(e.filename)), laid.map((e) => e.filename).join(', '));
+    assert.ok(laid.some((e) => e.filename === 'HidraNet.exe') && !laid.some((e) => e.filename === 'electron.exe'));
+    laid.push(mkFile('resources/app/package.json', Buffer.from('{}')));
+    assert.deepStrictEqual(rt.runtimeProblems(laid, win, 'win32'), []);
+    assert.deepStrictEqual(rt.engineProblems(laid, 'win32'), []);
+    assert.throws(() => runtimeEntries(zipOf([['ffmpeg.dll', 'f']])), /no electron\.exe/);
+  });
+
+  // ── Where the builders write ────────────────────────────────────────────
+  await check('the builders take --out <folder>, make it, and default to the Desktop', async () => {
+    const { outArgs, writePackage } = require('../scripts/lib/out-dir');
+    assert.deepStrictEqual(outArgs(['x64', '--out', 'pkgs']), { out: path.resolve('pkgs'), rest: ['x64'] });
+    assert.deepStrictEqual(outArgs(['--out', '/tmp/a', 'arm64']), { out: path.resolve('/tmp/a'), rest: ['arm64'] });
+    assert.deepStrictEqual(outArgs([]), { out: path.join(os.homedir(), 'Desktop'), rest: [] });
+    assert.throws(() => outArgs(['--out']), /--out needs a folder/);
+    assert.throws(() => outArgs(['--out', '--engine', 'x']), /--out needs a folder/);
+    const where = path.join(tmp, 'no', 'such', 'folder');
+    const file = writePackage(where, 'p.zip', Buffer.from('zip'));
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'zip');
+    for (const b of ['build-linux.js', 'build-mac.js', 'build-win.js']) {
+      const src = fs.readFileSync(path.join(ROOT, 'scripts', b), 'utf8');
+      assert.ok(/outArgs\(process\.argv\.slice\(2\)\)/.test(src) && /writePackage\(OUT_DIR, outName/.test(src) &&
+                !/homedir\(\)/.test(src), b + ' does not write through lib/out-dir.js');
+    }
   });
 
   // ── Against the real files, when they are on this machine ───────────────
@@ -291,6 +344,19 @@ function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, ad
     });
   } else {
     console.log('skip  no official ' + zipName + ' in a cache to lay a package out from');
+  }
+  const officialWin = path.join(ROOT, 'dist', 'electron-cache', electron.zipName('win32', 'x64'));
+  if (fs.existsSync(officialWin)) {
+    await check('the official Electron ' + electron.ELECTRON_VER + ' win32 zip, laid out by build-win.js, passes', async () => {
+      electron.verifyElectronZip(officialWin);
+      const entries = readZip(fs.readFileSync(officialWin));
+      const laid = require('../scripts/build-win').runtimeEntries(entries);
+      laid.push(mkFile('resources/app/package.json', Buffer.from('{}')));
+      assert.deepStrictEqual(rt.runtimeProblems(laid, entries, 'win32'), []);
+      assert.deepStrictEqual(rt.engineProblems(laid, 'win32'), []);
+    });
+  } else {
+    console.log('skip  no official ' + electron.zipName('win32', 'x64') + ' in dist/electron-cache to lay a package out from');
   }
   const published = path.join(ROOT, 'dist', 'release-in', 'HidraNet-Browser-1.0.0-Linux-x64.zip');
   if (fs.existsSync(published)) {

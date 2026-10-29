@@ -3,8 +3,9 @@
  * HidraNet Browser — Windows Package Builder (cross-platform)
  *
  * Runs on Windows/Linux/macOS. Downloads the official Electron win32 ZIP from
- * GitHub and lays the package out exactly as scripts/pack-portable.js does on
- * a Windows machine — the layout of the published package:
+ * GitHub and lays the package out as scripts/pack-portable.js does on a
+ * Windows machine — the layout of the published package — less Electron's
+ * default_app.asar, which build-linux.js and build-mac.js leave out too:
  *
  *   HidraNet.exe                    electron.exe, renamed and otherwise
  *                                   UNMODIFIED, so its hash and Electron's
@@ -26,6 +27,7 @@
  * Usage:
  *   node scripts/build-win.js
  *   node scripts/build-win.js --engine path/to/hidra-node.exe
+ *   node scripts/build-win.js --out <folder>     # instead of the Desktop
  */
 'use strict';
 
@@ -35,6 +37,7 @@ const { readZip, writeZip, mkFile, mkDir, UNIX_VER } = require('./lib/zip');
 const { buildJson } = require('./lib/build-stamp');
 const { electronZip } = require('./lib/electron');
 const { torDir, verifyTorDir } = require('./lib/tor');
+const { outArgs, writePackage } = require('./lib/out-dir');
 
 const ROOT         = path.join(__dirname, '..');
 // Every published build has a version of its own, from package.json: a
@@ -42,7 +45,6 @@ const ROOT         = path.join(__dirname, '..');
 // old files only by its hash.
 const VERSION      = require(path.join(ROOT, 'package.json')).version;
 const DIST         = path.join(ROOT, 'dist');
-const DESKTOP      = path.join(require('os').homedir(), 'Desktop');
 const NODE_ROOT    = path.join(ROOT, '..', 'hidra-node');
 
 function argValue(name) {
@@ -66,8 +68,37 @@ function scanDir(dir, base) {
   return result;
 }
 
-(async function main() {
+/**
+ * The entries of Electron's official win32 zip as the package carries them:
+ * electron.exe renamed and otherwise untouched, everything as a Unix entry
+ * (644 for files, 755 for folders, as pack-portable.js writes them, so a
+ * package unpacked on Linux or macOS is readable too), and no
+ * default_app.asar. That file is Electron's placeholder app, never run
+ * beside resources/app; build-linux.js and build-mac.js drop it, and
+ * lib/package-runtime.js, which update-sums.js runs on every package before
+ * it reaches the table, refuses a package that still has it.
+ */
+function runtimeEntries(official, zipName) {
+  const out = [];
+  let exe = false;
+  for (const e of official) {
+    let name = e.filename.replace(/\\/g, '/');
+    if (name.indexOf('default_app.asar') !== -1) continue;
+    if (name === 'electron.exe') { name = 'HidraNet.exe'; exe = true; }
+    const dir = name.endsWith('/');
+    out.push(Object.assign({}, e, {
+      filename: name,
+      versionMadeBy: UNIX_VER,
+      extAttr: (((dir ? 0o040755 : 0o100644)) << 16) >>> 0,
+    }));
+  }
+  if (!exe) throw new Error('no electron.exe in ' + (zipName || 'the Electron zip'));
+  return out;
+}
+
+async function main() {
   console.log('HidraNet Browser — Windows Package Builder\n');
+  const { out: OUT_DIR } = outArgs(process.argv.slice(2));
 
   // ── The engine first: without it there is nothing to build ───────────────
   const engine = path.resolve(argValue('--engine') ||
@@ -86,21 +117,7 @@ function scanDir(dir, base) {
   const zipCache = await electronZip('win32', 'x64', path.join(DIST, 'electron-cache'));
   const zipName = path.basename(zipCache);
 
-  const out = [];
-  let exe = false;
-  for (const e of readZip(fs.readFileSync(zipCache))) {
-    let name = e.filename.replace(/\\/g, '/');
-    if (name === 'electron.exe') { name = 'HidraNet.exe'; exe = true; }
-    // As pack-portable.js writes them: Unix entries, 644 for files and 755
-    // for folders, so a package unpacked on Linux or macOS is readable too.
-    const dir = name.endsWith('/');
-    out.push(Object.assign({}, e, {
-      filename: name,
-      versionMadeBy: UNIX_VER,
-      extAttr: (((dir ? 0o040755 : 0o100644)) << 16) >>> 0,
-    }));
-  }
-  if (!exe) throw new Error('no electron.exe in ' + zipName);
+  const out = runtimeEntries(readZip(fs.readFileSync(zipCache)), zipName);
   console.log('  electron.exe -> HidraNet.exe (unmodified)');
 
   // ── The app ───────────────────────────────────────────────────────────────
@@ -148,12 +165,17 @@ function scanDir(dir, base) {
 
   // ── Write ─────────────────────────────────────────────────────────────────
   const outName = 'HidraNet-Browser-' + VERSION + '-Windows-x64.zip';
-  const outPath = path.join(DESKTOP, outName);
   const buf = writeZip(out);
-  fs.writeFileSync(outPath, buf);
+  const outPath = writePackage(OUT_DIR, outName, buf);
   console.log('\n  >>> ' + outName + ' (' + (buf.length / 1048576).toFixed(1) + ' MB, ' +
-              out.length + ' entries) → Desktop');
-})().catch(function(e) {
-  console.error('\nERROR:', e.message);
-  process.exit(1);
-});
+              out.length + ' entries) → ' + outPath);
+}
+
+if (require.main === module) {
+  main().catch(function(e) {
+    console.error('\nERROR:', e.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { runtimeEntries };

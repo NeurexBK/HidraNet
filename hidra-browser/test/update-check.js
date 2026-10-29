@@ -402,6 +402,15 @@ const decide = (t, current, opts = {}) => {
     const run = (...args) => spawnSync(process.execPath, [wrapper, zips, ...args],
       { encoding: 'utf8', env: { ...process.env, HIDRA_SUMS_FILE: sums, HIDRA_ELECTRON_CACHE: path.join(tmp, 'no-electron-cache') } });
 
+    // A new version without the commit it was built from: refused, and the
+    // table untouched (its provenance line would name another build).
+    const before = fs.readFileSync(sums, 'utf8');
+    const noCommit = run('--minimum', pkg.version, '--valid-until', '2099-01-01');
+    assert.strictEqual(noCommit.status, 1, noCommit.stdout);
+    assert.ok(/a new version needs the commit/.test(noCommit.stderr), noCommit.stderr);
+    assert.strictEqual(fs.readFileSync(sums, 'utf8'), before);
+    assert.ok(/Published 2026-10-22/.test(before) && /What changed from the first packages/.test(before), 'the fixture lost the 1.0.0 prose');
+
     const r = run('abcdef1234', '--minimum', pkg.version, '--valid-until', '2099-01-01');
     assert.strictEqual(r.status, 0, r.stdout + r.stderr);
     assert.ok(/no longer matches/.test(r.stdout), 'does not say the old signature is void');
@@ -416,6 +425,15 @@ const decide = (t, current, opts = {}) => {
       assert.ok(text.includes(`${sha256(fs.readFileSync(zipFile(a)))}  ${name}\n`), 'no row for ' + name);
     }
     assert.ok(!/HidraNet-Browser-1\.0\.0-/.test(text.slice(0, text.indexOf('NONE OF THESE BUILDS'))), 'an old row survived');
+    // The 1.0.0 release's date and history are not signed as this one's.
+    assert.ok(text.includes(`  Built from commit abcdef1. These are the hashes and sizes of the four\n` +
+      `  files built from it, the ones the release v${pkg.version} publishes and its\n  description lists.\n\n`), text);
+    assert.ok(!/Published 2026-10-22|GitHub reports|release-base-provenance|What changed from the first packages|published in September|ADDED 9–10 OCTOBER/.test(text), 'stale 1.0.0 prose survived');
+    assert.ok(text.includes(`What changed in ${pkg.version}: the release notes on the tag v${pkg.version} list it.\n\n----`), 'no pointer to the notes');
+    // Everything from the signing notes on is as it was.
+    assert.strictEqual(text.slice(text.indexOf('NONE OF THESE BUILDS')), before.slice(before.indexOf('NONE OF THESE BUILDS')));
+    // The KNOWN PROBLEMS section is still the signer's to read; it stays.
+    assert.ok(/^KNOWN PROBLEMS WITH THE 1\.0\.0 PACKAGES$/m.test(text));
 
     // The same files again: nothing to refuse (only the date moves on).
     assert.strictEqual(run('--valid-until', '2099-01-01').status, 0);

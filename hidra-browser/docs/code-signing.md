@@ -85,9 +85,12 @@ temporary copy. The key file is only read by `hidravpn-sign`.
 
 Before signing, read the whole table, not only the record: `update-sums.js`
 rewrites the title, the record and the rows, and refuses packages that do not
-run the pinned Electron, Chromium and Tor, but it leaves the prose alone. It
-warns when a `KNOWN PROBLEMS WITH THE <version> PACKAGES` section is about
-another version than the one listed; change or remove that section first.
+run the pinned Electron, Chromium and Tor. For a new version it also needs the
+commit, rewrites the "Built from commit" paragraph for it and replaces the
+previous version's "What changed" history with a pointer to the release
+notes. The rest of the prose it leaves alone. It warns when a `KNOWN PROBLEMS
+WITH THE <version> PACKAGES` section is about another version than the one
+listed; change or remove that section first.
 
 Choose `valid-until` so it is renewed well before it passes (180 days is the
 default `update-sums.js` writes): once it passes, browsers say they cannot
