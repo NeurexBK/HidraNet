@@ -506,6 +506,16 @@ fn bind_unix(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
         // has to be able to enter it to reach the socket.
         share_with_control_group(dir, 0o750)?;
     }
+    // A socket left by a service that has ended refuses a connection and is
+    // replaced. One that takes it belongs to a service still running: taken
+    // from it, that one would hold the tunnel and the kill switch with
+    // nobody able to reach it, so this one does not start.
+    if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        anyhow::bail!(
+            "binding the control socket {}: another HidraVPN service is running and holds it",
+            path.display()
+        );
+    }
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding the control socket {}", path.display()))?;
@@ -2067,6 +2077,28 @@ mod tests {
             "{e:#}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_second_service_does_not_take_the_socket_of_one_still_running() {
+        let (sock, public) = serve_daemon(Daemon::new("tok".into())).await;
+        let e = bind_unix(&sock).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("another HidraVPN service is running"),
+            "{e:#}"
+        );
+        // The running one still has its socket, and still answers.
+        let resp = call_unix_sealed_at(&sock, "tok", Some(&public), Command::Ping)
+            .await
+            .unwrap();
+        assert!(resp.ok);
+
+        // A socket left by a service that has ended is replaced.
+        let left = sock.with_file_name(format!("ctl-{}.sock", rand_suffix()));
+        drop(std::os::unix::net::UnixListener::bind(&left).unwrap());
+        assert!(left.exists());
+        bind_unix(&left).unwrap();
+        let _ = std::fs::remove_file(&left);
     }
 }
 

@@ -117,6 +117,24 @@ BYNAME=$($C curl -s --max-time 5 http://whoami.test/ 2>/dev/null)
 $C "$BIN/hidravpn-service" status > "$WORK/st1.log" 2>&1
 grep -q "connected through test-node" "$WORK/st1.log" && grep -q "kill switch on" "$WORK/st1.log" && pass "status while connected: connected, kill switch on" || { cat "$WORK/st1.log"; fail "unexpected connected status"; }
 
+# A second service started beside the running one (by hand, as root) must not
+# take its socket: the running one would hold the tunnel and the kill switch
+# with nobody able to send it `down`. The second says why and stops, and
+# leaves the token and the key as they were.
+cp -p /run/hidravpn/control.token "$WORK/token.running"; cp -p /run/hidravpn/control.pub "$WORK/pub.running"
+$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc-second.log" 2>&1 & SECOND=$!; PIDS+=($SECOND)
+for i in $(seq 1 25); do kill -0 $SECOND 2>/dev/null || break; sleep 0.2; done
+if kill -0 $SECOND 2>/dev/null; then
+  fail "a second service runs beside the first, on its socket"; kill -INT $SECOND 2>/dev/null; wait $SECOND 2>/dev/null
+else
+  wait $SECOND; RC=$?
+  [ $RC -ne 0 ] && grep -q "another HidraVPN service is running" "$WORK/svc-second.log" && pass "a second service stops with an error and says one is running (exit $RC)" || { cat "$WORK/svc-second.log"; fail "the second service stopped, but not with the reason (exit $RC)"; }
+fi
+cmp -s "$WORK/token.running" /run/hidravpn/control.token && cmp -s "$WORK/pub.running" /run/hidravpn/control.pub \
+  && pass "the second service left the running one's token and key as they were" || fail "the second service rewrote the token or the key"
+$C "$BIN/hidravpn-service" status > "$WORK/st2.log" 2>&1
+grep -q "connected through test-node" "$WORK/st2.log" && pass "the running service still answers on its socket" || { cat "$WORK/st2.log"; fail "the running service lost its socket: $(head -1 "$WORK/st2.log")"; }
+
 # ── Down ────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn-service" down > "$WORK/down.log" 2>&1 && pass "service disconnected" || { cat "$WORK/down.log"; fail "service down"; }
 $C nft list table inet hidravpn_ks >/dev/null 2>&1 && fail "the kill switch is still armed after down" || pass "the kill switch was lifted"

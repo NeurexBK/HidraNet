@@ -105,7 +105,9 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   the same old service back). And the service never runs without its
   channel: it makes the socket or the pipe's first instance before it tells
   the system it is running, and when it cannot (on Windows: someone already
-  holds the name), or when the channel ever ends, it stops with an error.
+  holds the name; on Linux: a service already running answers on the socket,
+  which a second one started by hand would otherwise take from it), or when
+  the channel ever ends, it stops with an error.
   The SCM logs it and tries again three times, a minute apart. The data
   folder under `ProgramData` is taken and given rights inherited from nowhere
   at install, so no user can plant a `client.key` or a pocket there first.
@@ -564,9 +566,11 @@ Get-Content "$env:ProgramData\HidraVPN\service.log" -Tail 5
   instance beside the service's while it runs. Made first, it keeps the
   service from starting (the start fails, with an error in `service.log`
   and the system's event log). The SCM tries three more times, a minute
-  apart; held past those, the service stays stopped, and the page shows it
-  stopped, until someone starts it (`Start-Service HidraVPN`, or Install or
-  Update on the page) or the machine restarts.
+  apart; held past those, the service stays stopped until someone starts it
+  (`Start-Service HidraVPN`, or Install or Update on the page) or the
+  machine restarts. While the name is held the page shows "Service
+  unavailable" (whatever holds it cannot answer as the service), and once
+  it is let go, the service as stopped.
   Beside the service, it may be the instance a client reaches. Either way
   the command line and the browser seal their requests and refuse an answer
   that does not open, so that pipe learns no token and cannot show a made-up
