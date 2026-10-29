@@ -127,12 +127,16 @@ function sealRequest(servicePublic, plain, mine) {
 
 // Why the service could not be reached, in words a page can show. `code` is
 // what the page switches on; `hint` is what the person can do about it.
+// `older` is set only when the service answered and showed it is older than
+// this browser: an "outdated" from a Windows service with no key may as well
+// be one that is not running.
 class VpnUnavailable extends Error {
-  constructor(code, message, hint) {
+  constructor(code, message, hint, { older = false } = {}) {
     super(message);
     this.name = 'VpnUnavailable';
     this.code = code;
     this.hint = hint || '';
+    this.older = older;
   }
 }
 
@@ -270,7 +274,7 @@ class VpnManager {
     if (!parsed.ok && typeof parsed.error === 'string' && /unknown variant/.test(parsed.error)) {
       // A service from before this command existed: it answers, but not to this.
       throw new VpnUnavailable('outdated', 'the HidraVPN service on this machine is older than the browser',
-        'Update HidraVPN: the installed service does not know the commands this page uses.');
+        'Update HidraVPN: the installed service does not know the commands this page uses.', { older: true });
     }
     if (!parsed.ok && typeof parsed.error === 'string' && /unauthorised/.test(parsed.error)) {
       // The token on disk is not the one the service holds: it was restarted
@@ -335,7 +339,8 @@ class VpnManager {
   // service cannot be reached, `state` says why and `hint` what to do.
   //
   //   { state: 'connected' | 'connecting' | 'disconnected' | 'stopped' |
-  //            'not-installed' | 'no-permission' | 'unauthorised' | 'unavailable',
+  //            'not-installed' | 'no-permission' | 'unauthorised' | 'unavailable' |
+  //            'outdated',
   //     report: the service's StatusReport when it answered, else null,
   //     error, hint }
   async status() {
@@ -448,14 +453,14 @@ class VpnManager {
       return answer;
     } catch (e) {
       const u = unavailable(e);
-      return { ok: false, error: u.error, state: u.state, hint: u.hint };
+      return { ok: false, error: u.error, state: u.state, hint: u.hint, ...(u.older ? { older: true } : {}) };
     }
   }
 }
 
 function unavailable(e) {
   if (e instanceof VpnUnavailable) {
-    return { state: e.code, report: null, error: e.message, hint: e.hint };
+    return { state: e.code, report: null, error: e.message, hint: e.hint, ...(e.older ? { older: true } : {}) };
   }
   return { state: 'unavailable', report: null, error: String((e && e.message) || e), hint: '' };
 }

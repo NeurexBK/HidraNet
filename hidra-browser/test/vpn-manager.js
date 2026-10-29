@@ -404,6 +404,7 @@ function relayTo(sockPath, line) {
       const r = await v.connect('rapido');
       assert.strictEqual(r.ok, false);
       assert.strictEqual(r.state, 'outdated');
+      assert.strictEqual(r.older, true, 'an answer that shows the service is older says so');
       assert.ok(/Update HidraVPN/.test(r.hint), r.hint);
       await old.close();
     });
@@ -556,6 +557,8 @@ function relayTo(sockPath, line) {
     assert.ok(/^Start the HidraVPN service; if it is running, update HidraVPN\./.test(s.hint), s.hint);
     const r = await vpn.setPassToken('acct-token-000');
     assert.strictEqual(r.state, 'outdated');
+    // Nothing answered, so nothing showed the service is older.
+    assert.ok(!('older' in s) && !('older' in r), JSON.stringify([s, r]));
     assert.strictEqual(old.wire.length, 0, 'the token went to a service that cannot prove what it is');
     // With a key, the same platform seals and is answered.
     const svc = await fakeService();

@@ -509,10 +509,12 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   // before pressing a button. Reads taken during an action do not count, or
   // a refusal that left the circuit as it was would look like a change.
   var settled = null;
-  // Set by any answer that says the service is older than this browser.
-  // Every service knows status(), but on Windows it says "outdated" too when
-  // there is no key beside the token: the service is not running, or is
-  // from before sealed requests. It is not asked either way.
+  // Set by any answer that shows the service is older than this browser: a
+  // command it does not know (`older`), or a status that tops passes up
+  // through two hops. Not by "outdated" alone: on Windows every answer says
+  // that when there is no key beside the token, and the service may only be
+  // not running. That is the current status's to say, and it goes when the
+  // service starts.
   var outdated = false;
   // Whether the mode cards were set from the service's own mode since the
   // page loaded (or came back): Reconnect must not quietly change the mode.
@@ -622,7 +624,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     return Boolean(r && r.account_one_hop_only !== true);
   }
   function noteAnswer(a) {
-    if (a && a.state === 'outdated' && !outdated) { outdated = true; renderDot(); renderNextStep(); }
+    if (a && a.older === true && !outdated) { outdated = true; renderDot(); renderNextStep(); }
     return a;
   }
   function clearHeroError() {
@@ -634,7 +636,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   function renderDot() {
     var d = $('settings-dot');
     if (unseenDrawerError) { d.hidden = false; d.className = 'nav-dot warn'; }
-    else if (updateKnown || outdated) { d.hidden = false; d.className = 'nav-dot'; }
+    else if (updateKnown || outdated || (lastStatus && lastStatus.state === 'outdated')) { d.hidden = false; d.className = 'nav-dot'; }
     else { d.hidden = true; }
   }
   function openSettings(sectionId) {
@@ -884,7 +886,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var prevSettled = settled;
     lastStatus = s;
     if (!busy) settled = s;
-    if (s.state === 'outdated' || tokenThroughTwoHops(s)) outdated = true;
+    if (tokenThroughTwoHops(s)) outdated = true;
     var r = s.report;
     var tunnel = tunnelOf(r);
     if (!modeSynced && r) { followServiceMode(r); modeSynced = true; }
