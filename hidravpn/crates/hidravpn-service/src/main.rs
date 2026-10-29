@@ -9,7 +9,8 @@
 //!                                        connect through the running service
 //!   hidravpn-service new-identity        rebuild the circuit through another exit
 //!   hidravpn-service down                disconnect
-//!   hidravpn-service firewall on|off     the kill switch on its own (diagnostics)
+//!   hidravpn-service firewall on|hold|off
+//!                                        the kill switch on its own (diagnostics)
 //!
 //! `run` must be the system (root / SYSTEM); the client commands talk to it
 //! over the local control channel and need only the control token.
@@ -129,6 +130,18 @@ enum Firewall {
         /// A second tunnel interface to allow (the inner tunnel of a two-hop circuit).
         #[arg(long)]
         extra_interface: Option<String>,
+    },
+    /// Hold the line as a rotation does: the nodes' WireGuard endpoints
+    /// and the admission ports given, off-tunnel, and nothing else, no
+    /// tunnel interface.
+    Hold {
+        /// A node's WireGuard endpoint, ip:port. May be given more than once.
+        #[arg(long = "node", required = true)]
+        nodes: Vec<SocketAddr>,
+        /// A first hop's admission port, ip:port, as while a connection asks
+        /// for admission. May be given more than once.
+        #[arg(long = "admission")]
+        admission: Vec<SocketAddr>,
     },
     /// Lift the kill switch.
     Off,
@@ -316,6 +329,14 @@ fn main() -> Result<()> {
                         tunnel_ipv6: None,
                     })?;
                     println!("kill switch on");
+                }
+                Firewall::Hold { nodes, admission } => {
+                    if admission.is_empty() {
+                        killswitch::hold(&nodes)?;
+                    } else {
+                        killswitch::hold_admitting(&nodes, &admission, None)?;
+                    }
+                    println!("kill switch holding");
                 }
                 Firewall::Off => {
                     killswitch::remove()?;

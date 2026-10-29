@@ -4,7 +4,8 @@
 //! the tunnel's own packets do not try to go through the tunnel), the default
 //! route (as 0.0.0.0/1 and 128.0.0.0/1, which win over the real default route
 //! by being more specific and leave it in place for the way back), and the
-//! DNS server. IPv6 is routed into the tunnel as well, where in this phase it
+//! DNS server (on Linux with a host route of its own into the tunnel, checked
+//! once it is in place). IPv6 is routed into the tunnel as well, where in this phase it
 //! goes nowhere: better no IPv6 than IPv6 beside the tunnel.
 //!
 //! Every change is recorded in a plan file before it is made, so `down` can
@@ -44,8 +45,9 @@ pub struct RevertPlan {
     /// Windows: the interface index of the tunnel adapter.
     pub if_index: Option<u32>,
     /// Host routes added through a tunnel interface: a two-hop circuit sends
-    /// the exit node's endpoint through the entry tunnel. Absent in plans
-    /// written before phase 3.
+    /// the exit node's endpoint through the entry tunnel, and (Linux) the
+    /// node's resolver goes through the tunnel that carries the traffic.
+    /// Absent in plans written before phase 3.
     #[serde(default)]
     pub via_routes: Vec<ViaRouteAdded>,
 }
