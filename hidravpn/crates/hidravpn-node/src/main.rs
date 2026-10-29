@@ -127,6 +127,15 @@ mod node {
             #[arg(long = "admission-relay", value_name = "IP")]
             admission_relays: Vec<std::net::IpAddr>,
         },
+        /// On an exit: the entries that relay their two-hop clients'
+        /// admission requests here, each by its outside IPv4 address, in
+        /// place of those the settings list (`admission_relays`, as `init
+        /// --admission-relay` writes it). Restart the node for it to take
+        /// them.
+        SetAdmissionRelays {
+            #[arg(value_name = "IP", required = true)]
+            relays: Vec<std::net::Ipv4Addr>,
+        },
         /// Bring the tunnel up and serve until SIGTERM or Ctrl+C.
         Run,
         /// Print this node's record: what a signed node list carries about it.
@@ -320,6 +329,26 @@ mod node {
                             "removed {id}; restart the node for it to stop taking those passes"
                         );
                     }
+                }
+            }
+            Cmd::SetAdmissionRelays { relays } => {
+                require_root()?;
+                let mut cfg = NodeConfig::load(&cli.config)?;
+                if cfg.is_entry() {
+                    return Err(anyhow!(
+                        "this node is an entry: an entry relays admission requests, it is not relayed to"
+                    ));
+                }
+                let relays: Vec<std::net::IpAddr> = relays.into_iter().map(Into::into).collect();
+                if cfg.admission_relays == relays {
+                    println!("already listed: {} entry address(es)", relays.len());
+                } else {
+                    cfg.admission_relays = relays;
+                    cfg.save_over(&cli.config)?;
+                    println!(
+                        "{} entry address(es) listed in admission_relays; restart the node for it to take them",
+                        cfg.admission_relays.len()
+                    );
                 }
             }
             Cmd::Record => {

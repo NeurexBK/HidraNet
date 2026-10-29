@@ -21,7 +21,8 @@
 #   --max-clients N       how many clients may hold a lease at once (default 4000)
 #   --idle-days N         days without a handshake after which an openly admitted client is forgotten (default 30; 0 never)
 #   --admission-relay IP  on an exit: the outside IPv4 address of an entry of the signed list; repeat it
-#                         for each entry (its two-hop clients all ask this node from that address)
+#                         for each entry (its two-hop clients all ask this node from that address).
+#                         On a node already installed, the list replaces the one in node.toml.
 #   --dry-run             print every step and change nothing
 #
 # A node is meant for a rented server with a public address, not for a home
@@ -173,9 +174,16 @@ run install -m 0755 "$BIN/hidravpn-node" "$PREFIX/hidravpn-node"
 
 step "the node's key and settings in $ETC/node.toml"
 run install -d -m 0700 "$ETC"
-if [ -f "$ETC/node.toml" ] && [ "$DRY" = 0 ]; then
+RESTART=0
+if [ -f "$ETC/node.toml" ]; then
   echo "   keeping the existing $ETC/node.toml (the node keeps its key; admitted clients live in /var/lib/hidravpn/peers.json and survive reboots)"
-  [ ${#RELAYS[@]} -gt 0 ] && echo "   --admission-relay is not written into an existing node.toml: add admission_relays = [...] to it yourself, above any [[pass_keys]] section (docs/running-nodes.md)"
+  # The relays, unlike the rest, are written into it: an exit updated to
+  # take them would otherwise run with none, and a line added to the file
+  # by hand lands in its last [[pass_keys]] table.
+  if [ ${#RELAYS[@]} -gt 0 ]; then
+    run "$PREFIX/hidravpn-node" --config "$ETC/node.toml" set-admission-relays "${RELAYS[@]}"
+    RESTART=1
+  fi
 else
   INIT=("$PREFIX/hidravpn-node" --config "$ETC/node.toml" init --endpoint "$ENDPOINT" --port "$PORT" --name "$NAME" --out-interface "$OUT_IF" --role "$ROLE" --admission-port "$ADM_PORT")
   [ -n "$OPERATOR" ] && INIT+=(--operator "$OPERATOR")
@@ -201,6 +209,8 @@ install_unit() {
 run install_unit
 run systemctl daemon-reload
 run systemctl enable --now hidravpn-node
+# A node already running reads its settings only when it starts.
+[ "$RESTART" = 1 ] && run systemctl restart hidravpn-node
 
 step "the firewall: UDP $PORT (the tunnel) and TCP $ADM_PORT (admission and the node's record) must reach this node; SSH stays as it is"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then

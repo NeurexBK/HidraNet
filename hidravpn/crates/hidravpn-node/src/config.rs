@@ -95,11 +95,30 @@ pub struct NodeConfig {
     /// admission requests here (the entries of the signed list). Every
     /// two-hop client of an entry comes from that entry's address, so each
     /// of these may hold far more connections open at once than any other
-    /// address (`admission.rs`). `init --admission-relay` writes it; an
-    /// open or pass-admitting node that is not an entry warns at start
+    /// address (`admission.rs`). `init --admission-relay` writes it, and
+    /// `set-admission-relays` changes it; an open or pass-admitting node that is not an entry warns at start
     /// while it is empty.
     #[serde(default)]
     pub admission_relays: Vec<IpAddr>,
+}
+
+/// The `[[pass_keys]]` tables of `node.toml`, holding a pass key record's
+/// fields and nothing else (`NodeConfig::from_toml`).
+#[derive(Deserialize)]
+struct StoredPassKeys {
+    #[serde(default, rename = "pass_keys")]
+    _pass_keys: Vec<StoredPassKey>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredPassKey {
+    #[serde(rename = "id")]
+    _id: serde::de::IgnoredAny,
+    #[serde(rename = "key")]
+    _key: serde::de::IgnoredAny,
+    #[serde(rename = "not_after")]
+    _not_after: serde::de::IgnoredAny,
 }
 
 fn default_interface() -> String {
@@ -233,9 +252,21 @@ impl NodeConfig {
                 path.display()
             )
         })?;
-        let cfg: Self = toml::from_str(&s).context("the settings file is not valid")?;
+        let cfg = Self::from_toml(&s)?;
         Key::from_base64(&cfg.private_key)
             .map_err(|_| anyhow!("the private key in the settings is not valid"))?;
+        Ok(cfg)
+    }
+
+    /// The settings from the text of `node.toml`. A line added below a
+    /// `[[pass_keys]]` table belongs to that table, where it would be read
+    /// as nothing at all (a pass key record takes no other field), and the
+    /// node would run without it: such a file is refused instead.
+    pub fn from_toml(s: &str) -> Result<Self> {
+        let cfg: Self = toml::from_str(s).context("the settings file is not valid")?;
+        toml::from_str::<StoredPassKeys>(s).context(
+            "a [[pass_keys]] table holds a setting that is not a pass key's: every line below a [[pass_keys]] header belongs to that table, so move settings such as admission_relays above the first one",
+        )?;
         Ok(cfg)
     }
 
@@ -612,6 +643,51 @@ mod tests {
             toml::from_str(&format!("{old}\nadmission_relays = [\"203.0.113.9\"]\n")).unwrap();
         assert_eq!(
             relays.admission_relays,
+            vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn a_setting_below_a_pass_key_table_is_refused() {
+        let mut cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        cfg.pass_keys.push(hidravpn_core::pass::PassKeyRecord {
+            id: "00".repeat(16),
+            key: "AAAA".into(),
+            not_after: "2030-01-01T00:00:00Z".into(),
+        });
+        let written = toml::to_string_pretty(&cfg).unwrap();
+        // As init and pass-key add write it: every field of the record is
+        // one the table may hold, and the settings stay above it.
+        let back = NodeConfig::from_toml(&written).unwrap();
+        assert_eq!(back.pass_keys, cfg.pass_keys);
+        assert!(written
+            .trim_end()
+            .ends_with("not_after = \"2030-01-01T00:00:00Z\""));
+        // A line appended to that file lands in the last pass key's table.
+        let appended = format!("{written}admission_relays = [\"203.0.113.9\"]\n");
+        let e = NodeConfig::from_toml(&appended).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("unknown field `admission_relays`"),
+            "{e:#}"
+        );
+        assert!(format!("{e:#}").contains("above the first one"), "{e:#}");
+        // Above the table, where the file has it, it is read as the setting
+        // it is.
+        let moved = written.replace(
+            "admission_relays = []",
+            "admission_relays = [\"203.0.113.9\"]",
+        );
+        assert!(moved.find("admission_relays") < moved.find("[[pass_keys]]"));
+        assert_eq!(
+            NodeConfig::from_toml(&moved).unwrap().admission_relays,
             vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
         );
     }

@@ -99,10 +99,19 @@ $N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --forward-private-destinati
 sed -i 's/^interface = "hvpn0"/interface = "hvp0"/' "$WORK/p.toml"
 grep -q "admission pass" "$WORK/init.log" && pass "init records admission with a pass" || fail "init: $(cat "$WORK/init.log")"
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.json" > "$WORK/passkey.log" 2>&1 && grep -q "trusting passes under" "$WORK/passkey.log" && $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key list | grep -q "until" && pass "the node trusts the issuer's key (pass-key add, list)" || fail "pass-key: $(cat "$WORK/passkey.log")"
+# node.toml now ends with the [[pass_keys]] table. A setting appended to the
+# file by hand belongs to that table and would be read as nothing: the node
+# refuses such a file. set-admission-relays writes the setting where it is
+# read, as the installer does on an existing node.toml.
+cp "$WORK/p.toml" "$WORK/stray.toml"; echo 'admission_relays = ["198.51.100.20"]' >> "$WORK/stray.toml"
+OUT=$($N "$BIN/hidravpn-node" --config "$WORK/stray.toml" record 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "unknown field \`admission_relays\`" && echo "$OUT" | grep -q "above the first one" && pass "a setting below a [[pass_keys]] table is refused, with where it belongs" || fail "stray setting read: $OUT"
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" set-admission-relays 198.51.100.20 > "$WORK/relays.log" 2>&1 && grep -q "1 entry address(es) listed" "$WORK/relays.log" \
+  && [ "$(grep -n '^admission_relays = \["198.51.100.20"\]' "$WORK/p.toml" | cut -d: -f1)" -lt "$(grep -n '^\[\[pass_keys\]\]' "$WORK/p.toml" | head -1 | cut -d: -f1)" ] \
+  && pass "set-admission-relays writes the relays above the pass keys" || fail "set-admission-relays: $(cat "$WORK/relays.log"; grep -n 'admission_relays\|pass_keys' "$WORK/p.toml")"
 mkdir -p "$WORK/run"
 $N env HIDRAVPN_RUN_DIR="$WORK/run" "$BIN/hidravpn-node" --config "$WORK/p.toml" run > "$WORK/node.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node.log" && grep -q "admission service on" "$WORK/node.log" && break; sleep 0.2; done
-grep -q "admission service on TCP 51821 (with a pass" "$WORK/node.log" && grep -q "1 issuer key(s) trusted" "$WORK/node.log" && pass "the node is up, admitting with passes under one trusted key" || { tail -5 "$WORK/node.log"; fail "node did not come up"; exit 1; }
+grep -q "admission service on TCP 51821 (with a pass" "$WORK/node.log" && grep -q "1 issuer key(s) trusted" "$WORK/node.log" && grep -q "1 entry address(es) relay admission requests here" "$WORK/node.log" && pass "the node is up, admitting with passes under one trusted key, with the relay it was given" || { tail -5 "$WORK/node.log"; fail "node did not come up"; exit 1; }
 CODE=$($C curl -s -o "$WORK/admit.json" -w '%{http_code}' --max-time 5 -X POST -d "{\"public_key\":\"$($BIN/hidravpn-sign keygen --out "$WORK/junk.key" 2>/dev/null)\"}" http://10.200.0.1:51821/admit)
 [ "$CODE" = 403 ] && grep -q "admits with a pass" "$WORK/admit.json" && pass "open admission is shut on a pass node (403, says to get a pass)" || fail "admit on a pass node: $CODE $(cat "$WORK/admit.json")"
 

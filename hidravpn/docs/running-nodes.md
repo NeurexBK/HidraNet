@@ -132,19 +132,23 @@ no room for: past 4096 open at once, or past 8 from one address. A
 connection that sends nothing for two seconds, or not a whole request in
 three, is closed. An exit sees every two-hop client of an entry under that
 entry's address, so on an exit list the outside IPv4 addresses of the
-entries in the signed list in `node.toml`, and each gets a share of 3072
-connections instead of 8, then restart the node:
+entries in the signed list, and each gets a share of 3072 connections
+instead of 8, then restart the node:
 
 ```
-admission_relays = ["<entry 1's public ip>", "<entry 2's public ip>"]
+sudo hidravpn-node set-admission-relays <entry 1's public ip> <entry 2's public ip>
+sudo systemctl restart hidravpn-node
 ```
 
-Put that line above any `[[pass_keys]]` section of the file: below one, it
-would belong to that section and be ignored. The node's log then says
-`2 entry address(es) relay admission requests here`. A new exit takes them
-at install (`--admission-relay <ip>`, once per entry; `hidravpn-node init`
-has the same flag). Change the list whenever an entry is added to the
-signed list or moves to another address. An exit or a node that is both,
+That writes `admission_relays` into `node.toml`, in place of the list there.
+The node's log then says `2 entry address(es) relay admission requests
+here`. The installer does the same (`--admission-relay <ip>`, once per
+entry): on a new exit through `hidravpn-node init`, which has the same flag,
+and on one already installed through `set-admission-relays`, restarting the
+node after. Written by hand, the line goes above any `[[pass_keys]]` section
+of the file: below one it would belong to that section, and the node
+refuses to start with it there. Change the list whenever an entry is added
+to the signed list or moves to another address. An exit or a node that is both,
 admitting openly or with a pass, that lists none says so in its log at
 every start (`no entry is listed in admission_relays`): until it does, all
 of an entry's two-hop clients share 8 connections there, and a handful of
@@ -198,7 +202,8 @@ use an entry for an open exit only if its record lists `admission-relay`.
 A node updated to this release says so in `hidravpn-node record`. After
 updating the nodes, make and sign the list again from the new records:
 until then, clients cannot use them. On an exit, list the entries in
-`admission_relays` (above) when you update it.
+`admission_relays` (above) when you update it: run the installer again with
+`--admission-relay` for each entry, or `hidravpn-node set-admission-relays`.
 
 Without it, the node still describes itself on TCP 51821 (`GET /`), but
 admits only by the operator's hand: the way a friend runs a node for friends.
