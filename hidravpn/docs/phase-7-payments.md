@@ -219,9 +219,19 @@ name the node list gives as the issuer's:
 ```
 {
 	order rate_limit before reverse_proxy
+	servers {
+		timeouts {
+			read_header 5s
+			read_body 10s
+		}
+	}
 }
 
 passes.example.org {
+	# A request the issuer would refuse anyway (its body is at most 16 KiB).
+	request_body {
+		max_size 32KiB
+	}
 	rate_limit {
 		zone quote {
 			match {
@@ -257,7 +267,10 @@ passes.example.org {
 			window 1m
 		}
 	}
-	reverse_proxy 127.0.0.1:8730
+	# Each request read whole before the issuer is asked: see below.
+	reverse_proxy 127.0.0.1:8730 {
+		request_buffers 32KiB
+	}
 
 	# No access log: it would be the record of who bought and when.
 	log {
@@ -267,7 +280,20 @@ passes.example.org {
 ```
 
 A client over the limit is answered 429, and `hidravpn passes buy` or
-`claim` says so; trying again a minute later works. The addresses are
+`claim` says so; trying again a minute later works.
+
+The issuer answers at most 64 requests at a time, and gives each client
+five seconds to send its request, so a request that comes slowly holds a
+place for those five seconds. Every request comes from the proxy, and by
+default Caddy passes a request's body on as it arrives: a few requests a
+second on any path, each sending its body a byte at a time, would hold
+every place, and every quote and claim would wait behind them until the
+client gives up. `request_buffers` makes Caddy read the whole body (up to
+the size given, which with `max_size` the same is all of it) before it
+opens a connection to the issuer, so a slow client holds only its own
+connection to Caddy, and the timeouts in the global block end that. nginx
+reads the whole body first by default (`proxy_request_buffering on`):
+leave it on, and set `client_body_timeout` and `client_header_timeout`. The addresses are
 examples: put the exits' own in the `exits` zone's `remote_ip` line and in
 the `not remote_ip` lines of the other two, so each address is counted in
 one zone only. With nginx, the same is `limit_req_zone
