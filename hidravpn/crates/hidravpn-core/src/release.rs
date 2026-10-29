@@ -79,6 +79,41 @@ impl ReleaseKey {
     }
 }
 
+/// A release's version, `X.Y.Z`, compared as numbers: 0.4.10 is newer than
+/// 0.4.9. The same shape the browser's installer accepts in a release
+/// manifest. `hidravpn-service install` uses it to refuse putting an older
+/// service over a newer one unless told to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version(pub u16, pub u16, pub u16);
+
+impl Version {
+    /// Exactly three numbers of one to four digits, dot-separated; anything
+    /// else (a sign, a fourth part, `-rc1`) is not a release version.
+    pub fn parse(s: &str) -> Option<Version> {
+        let mut parts = s.split('.');
+        let mut next = || -> Option<u16> {
+            let p = parts.next()?;
+            if p.is_empty() || p.len() > 4 || !p.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            p.parse().ok()
+        };
+        let v = Version(next()?, next()?, next()?);
+        parts.next().is_none().then_some(v)
+    }
+
+    /// The version of this build.
+    pub fn this_build() -> Option<Version> {
+        Version::parse(env!("CARGO_PKG_VERSION"))
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     //! A signing key for tests only; the real one never comes near this code.
@@ -130,6 +165,38 @@ mod tests {
         assert!(key.verify(b"x", "").is_err());
         assert!(ReleaseKey::from_base64("short").is_err());
         assert!(ReleaseKey::from_base64(&B64.encode([0u8; 31])).is_err());
+    }
+
+    #[test]
+    fn versions_compare_as_numbers_and_only_x_y_z_is_a_version() {
+        let v = |s| Version::parse(s).unwrap();
+        assert!(v("0.4.10") > v("0.4.9"));
+        assert!(v("1.0.0") > v("0.99.99"));
+        assert!(v("0.1.1") > v("0.1.0"));
+        assert_eq!(v("0.5.0"), v("0.5.0"));
+        assert_eq!(v("0.10.2").to_string(), "0.10.2");
+        for bad in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.x",
+            "-1.2.3",
+            "+1.2.3",
+            "1..3",
+            "1.2.3-rc1",
+            "12345.0.0",
+            " 1.2.3",
+            "v1.2.3",
+        ] {
+            assert!(Version::parse(bad).is_none(), "{bad:?}");
+        }
+        // This build has one: without it no install could compare.
+        assert!(
+            Version::this_build().is_some(),
+            "{}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[test]

@@ -58,6 +58,8 @@ mod node {
         cmd: Cmd,
     }
 
+    // Parsed once, at start: the size of its largest variant costs nothing.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Subcommand)]
     enum Cmd {
         /// Create the settings file with a fresh key.
@@ -112,6 +114,27 @@ mod node {
             /// loses its lease (0: never).
             #[arg(long, default_value_t = 30)]
             idle_days: u32,
+            /// Forward clients' traffic to private, link-local and reserved
+            /// addresses too, which a node drops by default: for a test
+            /// network whose "internet" is a private range, never for a
+            /// public node.
+            #[arg(long)]
+            forward_private_destinations: bool,
+            /// On an exit: the outside address of an entry of the signed
+            /// list (repeat it for each), which relays its two-hop clients'
+            /// admission requests here and so gets a larger share of
+            /// connections (`admission_relays` in the settings).
+            #[arg(long = "admission-relay", value_name = "IP")]
+            admission_relays: Vec<std::net::IpAddr>,
+        },
+        /// On an exit: the entries that relay their two-hop clients'
+        /// admission requests here, each by its outside IPv4 address, in
+        /// place of those the settings list (`admission_relays`, as `init
+        /// --admission-relay` writes it). Restart the node for it to take
+        /// them.
+        SetAdmissionRelays {
+            #[arg(value_name = "IP", required = true)]
+            relays: Vec<std::net::Ipv4Addr>,
         },
         /// Bring the tunnel up and serve until SIGTERM or Ctrl+C.
         Run,
@@ -208,6 +231,8 @@ mod node {
                 admission_port,
                 max_clients,
                 idle_days,
+                forward_private_destinations,
+                admission_relays,
             } => {
                 require_root()?;
                 if cli.config.exists() {
@@ -235,6 +260,8 @@ mod node {
                 cfg.admission_port = admission_port;
                 cfg.max_clients = max_clients;
                 cfg.idle_days = idle_days;
+                cfg.forward_private_destinations = forward_private_destinations;
+                cfg.admission_relays = admission_relays;
                 cfg.save(&cli.config)?;
                 println!("node public key: {}", cfg.public_key()?);
                 println!("settings written to {}", cli.config.display());
@@ -302,6 +329,26 @@ mod node {
                             "removed {id}; restart the node for it to stop taking those passes"
                         );
                     }
+                }
+            }
+            Cmd::SetAdmissionRelays { relays } => {
+                require_root()?;
+                let mut cfg = NodeConfig::load(&cli.config)?;
+                if cfg.is_entry() {
+                    return Err(anyhow!(
+                        "this node is an entry: an entry relays admission requests, it is not relayed to"
+                    ));
+                }
+                let relays: Vec<std::net::IpAddr> = relays.into_iter().map(Into::into).collect();
+                if cfg.admission_relays == relays {
+                    println!("already listed: {} entry address(es)", relays.len());
+                } else {
+                    cfg.admission_relays = relays;
+                    cfg.save_over(&cli.config)?;
+                    println!(
+                        "{} entry address(es) listed in admission_relays; restart the node for it to take them",
+                        cfg.admission_relays.len()
+                    );
                 }
             }
             Cmd::Record => {
@@ -537,11 +584,15 @@ mod node {
             None => None,
         };
         let mut cidr6 = dev.ipv6().map(|n| n.cidr());
+        let firewall = crate::nat::Policy {
+            role: &cfg.role,
+            forward_private: cfg.forward_private_destinations,
+        };
         if let Err(e) = crate::nat::apply(
             &cfg.interface,
             &out_if,
             &net.cidr,
-            &cfg.role,
+            &firewall,
             cidr6.as_deref(),
         ) {
             // A kernel without IPv6 translation still runs the node, for
@@ -555,12 +606,17 @@ mod node {
                 let _ = crate::nat::restore_forwarding6(&f);
             }
             cidr6 = None;
-            crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &cfg.role, None)?;
+            crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &firewall, None)?;
         }
         info!(
-            "forwarding and NAT set through {out_if} (role: {}; IPv6 for clients: {})",
+            "forwarding and NAT set through {out_if} (role: {}; IPv6 for clients: {}; private destinations: {})",
             cfg.role,
-            if cidr6.is_some() { "yes" } else { "no" }
+            if cidr6.is_some() { "yes" } else { "no" },
+            if cfg.forward_private_destinations {
+                "forwarded"
+            } else {
+                "blocked"
+            }
         );
 
         let leases = Leases::load()?;
@@ -570,6 +626,9 @@ mod node {
             n += 1;
         }
         info!("{n} admitted client(s) loaded");
+        // How many leases the node holds, for the admission service: the
+        // work a session costs rises as the table fills.
+        let held = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(leases.len()));
 
         let dns_addr = SocketAddr::new(IpAddr::V4(net.node_ip), 53);
         let mut dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
@@ -588,7 +647,12 @@ mod node {
             std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             cfg.admission_port,
         );
-        let mut admission = tokio::spawn(crate::admission::serve(admission_addr, shared, admit_tx));
+        let mut admission = tokio::spawn(crate::admission::serve(
+            admission_addr,
+            shared,
+            admit_tx,
+            held.clone(),
+        ));
 
         // The reaper: openly admitted clients that never came, or stopped
         // coming, lose their lease. HIDRAVPN_IDLE_SECS shortens the window
@@ -614,8 +678,15 @@ mod node {
         } else {
             0
         };
+        // An entry gives no lasting leases; one it holds from an older
+        // version is of no use to a client, which asks an entry for a key
+        // for each connection, so it lapses as a session does.
         let windows = crate::leases::IdleWindows {
-            open: idle_secs,
+            open: if cfg.is_entry() {
+                session_secs
+            } else {
+                idle_secs
+            },
             session: session_secs,
             pass: pass_idle_secs,
         };
@@ -681,11 +752,12 @@ mod node {
                         // A 5xx answer tells the client to keep its pass; it
                         // is never given once the pass is spent and its key
                         // could still be admitted.
+                        // A lasting lease won openly has a share of the
+                        // places, so the rest stays for sessions.
+                        let lasting = (req.pass.is_none() && !req.session).then(|| cfg.lasting_open_cap());
                         let admitted = Leases::update(|leases| {
-                            if leases.find(&req.public_key).is_none()
-                                && (leases.len() as u32 >= cfg.max_clients || !leases.has_room(&net))
-                            {
-                                return (Err((503, "this node is full; try another".to_string())), false);
+                            if let Some(why) = leases.refusal_for_room(&req.public_key, &net, cfg.max_clients, lasting) {
+                                return (Err((503, why)), false);
                             }
                             let r = if req.pass.is_some() {
                                 leases.admit_pass(&req.name, &req.public_key, &net)
@@ -713,6 +785,7 @@ mod node {
                                 .and_then(|()| invite_for(&cfg, &lease, dev.ipv6()).map_err(|e| format!("{e:#}")))
                             {
                                 Ok(invite) => {
+                                    held.store(count, std::sync::atomic::Ordering::Relaxed);
                                     info!("admitted a client {} ({} leases)", if req.pass.is_some() { "with a pass" } else { "through the admission service" }, count);
                                     Ok(invite)
                                 }
@@ -758,6 +831,7 @@ mod node {
                                     ((gone, leases.len()), save)
                                 }) {
                                     Ok((gone, left)) => {
+                                        held.store(left, std::sync::atomic::Ordering::Relaxed);
                                         for l in &gone { let _ = dev.remove_peer(&l.public_key); }
                                         if !gone.is_empty() {
                                             info!("{} idle client(s) expired ({} leases left)", gone.len(), left);

@@ -31,7 +31,16 @@ must be investigated and reviewed again, never accepted automatically.
 
 These checks establish consistency with the recorded release, not independent
 publisher authentication or a reproducible build of Electron, Tor or the Rust
-engine. The legacy packages remain unsigned/not notarised. Runtime VPN,
+engine. They also say nothing about what runs inside: the Linux package was
+later found to carry Electron 33.4.11 (Chromium 130) and Tor 15.0.22, not the
+pinned 44.9.3 and 15.0.26. `refresh-release.js` now checks every Electron
+file, every Tor file and the engine version of a base package against the
+pins (`scripts/lib/package-runtime.js`) and refuses these four, so
+`verify-browser-release.yml` fails on them by design. The next packages come
+from the from-scratch builders under a new version; `update-sums.js` refuses
+to list any package whose engine or Tor is not the pinned one, and the
+`published` job of the same workflow checks the packages the table lists.
+These pins are then replaced by that release's, after the same review. The legacy packages remain unsigned/not notarised. Runtime VPN,
 installation and anonymity verification are separate from this release
 containment change.
 

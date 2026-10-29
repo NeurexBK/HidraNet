@@ -75,5 +75,20 @@ for tun in 10.80.0.1/16 8.8.8.0/24 10.0.0.0/31 10.0.0.0/4 300.0.0.0/16 010.80.0.
   OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel "$tun" 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q -- "--tunnel" && pass "a tunnel init would refuse is refused before anything runs: $tun" || fail "tunnel $tun accepted: $(echo "$OUT" | grep 'init --endpoint')"
 done
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel 100.64.0.0/10 2>&1); echo "$OUT" | grep -q -- "--tunnel 100.64.0.0/10" && pass "a shared-address-space tunnel is accepted" || fail "100.64.0.0/10: $OUT"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --role exit --pass-admission --admission-relay 198.51.100.20 --admission-relay 198.51.100.21 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --admission-relay 198.51.100.20 --admission-relay 198.51.100.21" && pass "--admission-relay, once per entry, reaches an exit's settings" || fail "admission relays: $(echo "$OUT" | grep 'init --endpoint')"
+OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --role entry --admission-relay 198.51.100.20 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "for an exit" && pass "an entry given a relay: refused" || fail "entry with a relay: $OUT"
+# On a node already installed (its node.toml kept), the relays are written
+# into the settings by the node itself, never left to a hand edit, which
+# below a [[pass_keys]] table would be read as nothing; then the node is
+# restarted to take them.
+KEPT="$(mktemp -d)"; : > "$KEPT/node.toml"
+OUT=$(HIDRAVPN_ETC="$KEPT" bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --role exit --pass-admission --admission-relay 198.51.100.20 --admission-relay 198.51.100.21 2>&1)
+echo "$OUT" | grep -qF -- "would run: /usr/local/bin/hidravpn-node --config $KEPT/node.toml set-admission-relays 198.51.100.20 198.51.100.21" && ! echo "$OUT" | grep -q -- "init --endpoint" && echo "$OUT" | grep -q "would run: systemctl restart hidravpn-node" && pass "an existing node.toml keeps its key and gets the relays from the node, which is restarted" || fail "relays on an existing node.toml: $(echo "$OUT" | grep -E 'node.toml|restart')"
+OUT=$(HIDRAVPN_ETC="$KEPT" bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x 2>&1)
+echo "$OUT" | grep -q "keeping the existing" && ! echo "$OUT" | grep -qE "set-admission-relays|systemctl restart" && pass "without --admission-relay an existing node.toml is left as it is" || fail "existing node.toml changed: $(echo "$OUT" | grep -E 'node.toml|restart')"
+rm -rf "$KEPT"
+for relay in entrada-1 300.1.2.3 010.1.2.3 203.0.113 2001:db8::20 a:b; do
+  OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --admission-relay "$relay" 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "IPv4 address" && pass "a relay that is not an IPv4 address, which init would refuse or never match, is refused before anything runs: $relay" || fail "relay $relay accepted: $(echo "$OUT" | grep 'init --endpoint')"
+done
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

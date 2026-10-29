@@ -55,6 +55,10 @@ enum Cmd {
         /// it runs can drive the service.
         #[arg(long)]
         user: Option<String>,
+        /// Replace an installed service even when it is newer than this one.
+        /// Without it, an older build refuses and changes nothing.
+        #[arg(long)]
+        allow_downgrade: bool,
     },
     /// Stop and remove the OS service.
     Uninstall {
@@ -147,9 +151,17 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Run => run_daemon(),
-        Cmd::Install { client, user } => {
+        Cmd::Install {
+            client,
+            user,
+            allow_downgrade,
+        } => {
             require_admin()?;
-            install::install(&install::InstallOptions { client, user })?;
+            install::install(&install::InstallOptions {
+                client,
+                user,
+                allow_downgrade,
+            })?;
             if answers_within(STARTUP_WAIT) {
                 println!("HidraVPN service installed and started");
                 Ok(())

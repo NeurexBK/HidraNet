@@ -127,9 +127,10 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "the client c
 # default 10.77.0.0/16 on purpose, the same as the exits, to prove the client
 # copes with both hops handing it the same subnet.
 mkdir -p "$WORK/run-entry" "$WORK/run-exit" "$WORK/run-exit2"
-$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --endpoint 10.200.0.1:51820 --name entry-node --operator op-entry --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
-$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --endpoint 10.202.0.1:51820 --name exit-node --operator op-exit-1 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
-$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --endpoint 10.202.0.3:51820 --name exit-two --operator op-exit-2 --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$E "$BIN/hidravpn-node" --config "$WORK/entry.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name entry-node --operator op-entry --dns udp://10.201.0.2 --out-interface br-x > "$WORK/init-entry.log" 2>&1 || { cat "$WORK/init-entry.log"; fail "entry init"; exit 1; }
+$X "$BIN/hidravpn-node" --config "$WORK/exit.toml" init --forward-private-destinations --endpoint 10.202.0.1:51820 --name exit-node --operator op-exit-1 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-exit.log" 2>&1 || { cat "$WORK/init-exit.log"; fail "exit init"; exit 1; }
+$X2 "$BIN/hidravpn-node" --config "$WORK/exit2.toml" init --forward-private-destinations --endpoint 10.202.0.3:51820 --name exit-two --operator op-exit-2 --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-exit2.log" 2>&1 || { cat "$WORK/init-exit2.log"; fail "exit2 init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/exit.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvx1"/' "$WORK/exit2.toml"
 grep -q '^interface = "hvx0"' "$WORK/exit.toml" && grep -q '^interface = "hvx1"' "$WORK/exit2.toml" && pass "three nodes set up: entry on hvpn0, exits on hvx0 and hvx1" || fail "could not give the exits their own interface names"

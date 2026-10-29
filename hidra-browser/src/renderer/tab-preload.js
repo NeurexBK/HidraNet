@@ -55,7 +55,8 @@ const vpnBridge = uiPage === 'hidravpn.html' ? {
   connect: (mode, options) => ipcRenderer.invoke('vpn:connect', mode, options),
   leakTest: () => ipcRenderer.invoke('vpn:leak-test'),
   checkRelease: () => ipcRenderer.invoke('vpn:check-release'),
-  install: () => ipcRenderer.invoke('vpn:install'),
+  // The release check-release answered with, { version, digest }.
+  install: (release) => ipcRenderer.invoke('vpn:install', release),
   uninstall: (purge) => ipcRenderer.invoke('vpn:uninstall', purge === true),
   disconnect: () => ipcRenderer.invoke('vpn:disconnect'),
   newIdentity: () => ipcRenderer.invoke('vpn:new-identity'),

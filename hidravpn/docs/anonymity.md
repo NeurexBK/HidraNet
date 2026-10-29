@@ -694,9 +694,13 @@ None of these is claimed as solved.
    including the moment the entry forwards an admission request and the exit
    admits a fresh key. Padding and delays are not attempted.
 2. **Admission is paid in work, not identity**, on nodes that admit openly.
-   Someone with many machines can still fill such a node for a while.
-   Nodes that admit with a pass (phase 5) are the answer; an operator
-   chooses which a node is.
+   One handshake every few minutes keeps a session alive, so someone with
+   enough processor time can fill such a node and hold it for as long as
+   they keep their sessions alive; the work asked rises as the node fills,
+   so the last places cost the most. An entry gives no lasting lease, and
+   elsewhere lasting leases hold at most a quarter of the places
+   (`running-nodes.md`). Nodes that admit with a pass (phase 5) are the
+   answer; an operator chooses which a node is.
 3. **IPv6 runs only on CI.** The machine this work is done on boots with
    IPv6 disabled (`ipv6.disable=1`), so the IPv6 checks print SKIP here.
    The CI job `netns` (`.github/workflows/hidravpn-build.yml`) runs every

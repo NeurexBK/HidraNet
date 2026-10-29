@@ -61,7 +61,8 @@ echo "── before the VPN"
 if $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1; then fail "the client could reach the internet host without the tunnel (test network is wrong)"; else pass "without the tunnel the internet host is unreachable (no route back to a private address)"; fi
 
 # ── Node ─────────────────────────────────────────────────────────────────────
-$N "$BIN/hidravpn-node" --config "$WORK/node.toml" init --endpoint 10.200.0.1:51820 --name test-node --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$N "$BIN/hidravpn-node" --config "$WORK/node.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name test-node --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 pass "node settings written ($(grep -o 'node public key: .*' "$WORK/init.log" | cut -c1-40)...)"
 $N "$BIN/hidravpn-node" --config "$WORK/node.toml" run > "$WORK/node.log" 2>&1 & NODE_PID=$!; PIDS+=($NODE_PID)
 for i in $(seq 1 50); do grep -q "DNS forwarder ready" "$WORK/node.log" && break; sleep 0.2; done
@@ -147,6 +148,36 @@ $N "$BIN/hidravpn-node" --config "$WORK/node.toml" status > "$WORK/status.log" 2
 grep -q "laptop" "$WORK/status.log" && ! grep "laptop" "$WORK/status.log" | grep -q "never" && pass "node status shows the client with a handshake: $(grep laptop "$WORK/status.log" | tr -s ' ')" || { cat "$WORK/status.log"; fail "status"; }
 grep -qE "10\.200\.0\.2|10\.77\.0\.2" "$WORK/node.log" && fail "the node log contains a client address" || pass "the node log names no client address"
 
+echo "── from outside the node, nothing reaches the client"
+# A neighbour on the node's outside link (hv-inet, as a host next to a
+# rented server could) routes the client subnet through the node and tries
+# a connection the client never started. A counter in the client's
+# namespace sees whether anything arrives through the tunnel at all.
+$C nft -f - <<'NFT'
+table inet hv_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvpn0" tcp dport 7777 counter
+    iifname "hvpn0" icmp type echo-request counter
+  }
+}
+NFT
+$C python3 -I -c 'import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("0.0.0.0", 7777)); s.listen(); s.settimeout(8)
+try:
+    c, a = s.accept(); print("accepted", flush=True)
+except OSError:
+    pass' > "$WORK/inbound.log" 2>&1 & INBOUND=$!; PIDS+=($INBOUND)
+$I ip route add 10.77.0.0/16 via 10.201.0.1
+$I python3 -I -c 'import socket; socket.create_connection(("10.77.0.2", 7777), timeout=3)' >/dev/null 2>&1; RC=$?
+$I ping -c 2 -W 1 10.77.0.2 >/dev/null 2>&1; PRC=$?
+$I ip route del 10.77.0.0/16 via 10.201.0.1
+kill $INBOUND 2>/dev/null; wait $INBOUND 2>/dev/null
+ARRIVED=$($C nft list table inet hv_probe | grep -o 'packets [0-9]*' | awk '{s+=$2} END {print s+0}')
+$C nft delete table inet hv_probe
+[ "$RC" != 0 ] && [ "$PRC" != 0 ] && ! grep -q accepted "$WORK/inbound.log" && [ "$ARRIVED" = 0 ] && pass "a neighbour of the node that routes the client subnet through it reaches nothing of the client: no connection, no ping, no packet in the tunnel" || fail "from outside to the client: connect exit $RC, ping exit $PRC, $ARRIVED packet(s) arrived, $(cat "$WORK/inbound.log")"
+EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null)
+[ "$EXIT_IP" = "10.201.0.1" ] && pass "what the client starts still comes back" || fail "after the probe: '$EXIT_IP'"
+
 echo "── the node restarts"
 # While it is away the client's datagrams draw ICMP "port unreachable", which
 # the socket reports on its next read; that must not end the tunnel.
@@ -157,6 +188,46 @@ for i in $(seq 1 50); do grep -q "DNS forwarder ready" "$WORK/node2.log" && brea
 BACK=""
 for i in $(seq 1 20); do BACK=$($C curl -s --max-time 2 http://10.201.0.2/ 2>/dev/null); [ "$BACK" = "10.201.0.1" ] && break; sleep 0.5; done
 [ "$BACK" = "10.201.0.1" ] && kill -0 $UP 2>/dev/null && pass "after the node restarted the tunnel came back by itself" || { tail -3 "$WORK/client.log"; fail "the tunnel did not survive the node restarting"; }
+
+echo "── no client reaches what is behind the node"
+# The node as it runs by default: private destinations blocked. hv-inet
+# stands for what is behind a rented server's outside interface: the
+# provider's network (10.201.0.2) and the instance metadata service
+# (169.254.169.254); 1.2.3.4 on it stands for a host of the open internet.
+$I ip addr add 169.254.169.254/32 dev lo; $I ip addr add 1.2.3.4/32 dev lo
+kill -INT $NODE_PID; for i in $(seq 1 25); do kill -0 $NODE_PID 2>/dev/null || break; sleep 0.2; done
+sed -i 's/^forward_private_destinations = true/forward_private_destinations = false/' "$WORK/node.toml"
+grep -q '^forward_private_destinations = false' "$WORK/node.toml" || fail "could not put the node back to its default"
+$N "$BIN/hidravpn-node" --config "$WORK/node.toml" run > "$WORK/node3.log" 2>&1 & NODE_PID=$!; PIDS+=($NODE_PID)
+for i in $(seq 1 50); do grep -q "DNS forwarder ready" "$WORK/node3.log" && break; sleep 0.2; done
+grep -q "private destinations: blocked" "$WORK/node3.log" && pass "by default the node blocks private destinations, and says so" || fail "node log: $(grep -o 'forwarding and NAT.*' "$WORK/node3.log")"
+PUBLIC=""
+for i in $(seq 1 20); do PUBLIC=$($C curl -s --max-time 2 http://1.2.3.4/ 2>/dev/null); [ "$PUBLIC" = "10.201.0.1" ] && break; sleep 0.5; done
+[ "$PUBLIC" = "10.201.0.1" ] && pass "the tunnel still carries the open internet (1.2.3.4 sees the node)" || fail "public address through the tunnel: '$PUBLIC'"
+# Counters on both sides: what entered the node from the tunnel, and what
+# reached the host behind it.
+$N nft -f - <<'NFT'
+table inet hv_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvpn0" ip daddr { 10.201.0.2, 169.254.169.254 } tcp dport 80 counter
+  }
+}
+NFT
+$I nft -f - <<'NFT'
+table inet hv_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    ip daddr { 10.201.0.2, 169.254.169.254 } tcp dport 80 counter
+  }
+}
+NFT
+$C curl -s --max-time 3 http://169.254.169.254/ >/dev/null 2>&1; RC1=$?
+$C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1; RC2=$?
+SENT=$($N nft list table inet hv_probe | grep -o 'packets [0-9]*' | awk '{print $2}')
+GOT=$($I nft list table inet hv_probe | grep -o 'packets [0-9]*' | awk '{print $2}')
+$N nft delete table inet hv_probe; $I nft delete table inet hv_probe
+[ "$RC1" != 0 ] && [ "$RC2" != 0 ] && [ "${SENT:-0}" -gt 0 ] && [ "${GOT:-1}" = 0 ] && pass "the metadata address and a private address behind the node are unreachable through it: $SENT packet(s) reached the node from the tunnel, none got past it" || fail "private destinations: curl exits $RC1 $RC2, $SENT packet(s) into the node, ${GOT:-?} past it"
 
 echo "── down"
 kill -INT $UP; for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
