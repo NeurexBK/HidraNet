@@ -372,7 +372,7 @@ the service's pocket without passing through the browser.
 sudo hidravpn nodes import nodes.json             # the maintainers' list, checked against the built-in list key
 sudo hidravpn nodes import nodes.json --pubkey K  # a key that reached you by another channel
 sudo hidravpn nodes list                          # what the pocket holds: role, admission, operator; never keys
-sudo hidravpn nodes join --all                    # ask every known open node for admission
+sudo hidravpn nodes join --all                    # ask every known open node but the entries, and every node that takes passes
 sudo hidravpn nodes join <name>                   # ask one
 sudo hidravpn nodes discover <ip>[:51821] --trust # a node you know by other means (your own)
 sudo hidravpn up --rapido --node <name>           # one hop through that node
