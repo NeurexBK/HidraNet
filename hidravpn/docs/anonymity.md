@@ -69,7 +69,7 @@ The other gaps are closed too:
 | Party | Learns | Does not learn |
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names (also with "Allow LAN", and when the network routes the resolver's address to itself; finding 19), anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
-| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:123-135`, test A). |
+| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:136-147`, test A). |
 | **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). What listens on your machine (finding 19). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
@@ -184,8 +184,8 @@ bound to it (deliberately or by accident) sent its packets to the entry. The
 entry could read their destinations, and its resolver would answer names.
 
 **Fixed.** With two hops the outer interface carries only UDP to the
-exit's endpoint: on Linux in `killswitch/linux.rs:123-135`, on Windows with
-a WFP filter for that one peer (`killswitch/windows.rs:464`, finding 15).
+exit's endpoint: on Linux in `killswitch/linux.rs:136-147`, on Windows with
+a WFP filter for that one peer (`killswitch/windows.rs:510-530`, finding 15).
 On Windows they have run with two hops, by hand, on one PC (finding 15).
 
 **Test:** A: a socket bound to the outer interface reaches neither the
