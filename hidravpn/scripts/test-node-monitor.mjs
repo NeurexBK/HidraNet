@@ -586,6 +586,14 @@ publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
 site.files.delete('/SHA256SUMS.txt');
 r = await check();
 expect('a .sig with no table beside it is reported', r.confirmed.get('sums')?.detail.includes('SHA256SUMS.txt: answers HTTP 404'), JSON.stringify([...r.confirmed]));
+// Once main holds a signed record, a site that stops serving its .sig is
+// one browsers cannot confirm they are up to date against.
+publish(fine, manifestFor(), { sums: table, ssig: sumsSig(table) });
+site.files.delete('/SHA256SUMS.txt.sig');
+r = await check();
+expect('a site without the .sig main holds is reported', r.confirmed.get('sums')?.detail.includes('its .sig answers HTTP 404') && r.confirmed.get('sums').transient && !r.passed.has('sums') && !r.passed.has('release-expiry'), JSON.stringify([...r.confirmed, ...r.passed]));
+await reconcile(r);
+expect('and opens an issue', openKeys().includes('sums'), openKeys().join());
 publish(good);
 await reconcile(await check());
 expect('all well again: no release issue left open', !openKeys().some((k) => ['sums', 'release-expiry'].includes(k)), openKeys().join());

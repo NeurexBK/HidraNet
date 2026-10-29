@@ -420,8 +420,11 @@ async function round(cfg) {
   const site = {
     list: fromSite(siteList, cfg.listUrl, readList, cfg.listKey),
     manifest: fromSite(siteManifest, cfg.manifestUrl, readManifest, cfg.releaseKey),
-    // Until the first SHA256SUMS.txt.sig there is no record to watch.
-    sums: siteSums.sig.status === 404 ? null : fromSite(siteSums, cfg.sumsUrl, readSums, cfg.releaseKey),
+    // Until the first SHA256SUMS.txt.sig there is no record to watch. Once
+    // main holds one, a site without it is a fault: browsers built after the
+    // first signature, and any that has verified a record, then say they
+    // cannot confirm they are up to date.
+    sums: siteSums.sig.status === 404 && !repo.sumsSig ? null : fromSite(siteSums, cfg.sumsUrl, readSums, cfg.releaseKey),
   };
   const local = {
     list: repo.list && repo.listSig ? readList(repo.list, repo.listSig.toString('utf8'), cfg.listKey) : null,
@@ -468,7 +471,7 @@ async function round(cfg) {
     else pass('manifest', 'hidranet.org serves a manifest signed with the release key');
     if (site.sums?.error) fail('sums', "The browser's checksum record on hidranet.org cannot be used", `${site.sums.error}. Browsers set it aside and say they cannot confirm they are up to date.`);
     else if (site.sums) pass('sums', 'hidranet.org serves a checksum record signed with the release key');
-    else pass('sums', 'hidranet.org has no SHA256SUMS.txt.sig yet, so there is no record to check');
+    else pass('sums', 'neither hidranet.org nor main has a SHA256SUMS.txt.sig yet, so there is no record to check');
 
     // What main holds and what the site serves, byte for byte: a merge the
     // deployment never picked up, or a site serving something else.

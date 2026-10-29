@@ -12,7 +12,7 @@ and costs nothing.
 |---|---|---|
 | The node list on hidranet.org | it does not load, its signature does not hold under the list key the client embeds, or a client would refuse it for any other reason (a bad node record, an operator name over 64 characters, an expiry that is not a date) | `list` |
 | The release manifest on hidranet.org | the same, under the release key, or its `expires` is not a date | `manifest` |
-| The browser's checksum record on hidranet.org | once `SHA256SUMS.txt.sig` is published: the table or the `.sig` does not load, the signature does not hold under the release key (with the browser's label), or the record has no single `valid-until` day | `sums` |
+| The browser's checksum record on hidranet.org | once `SHA256SUMS.txt.sig` is on hidranet.org or in `landing/` on main: the table or the `.sig` does not load (a site without the `.sig` main holds included), the signature does not hold under the release key (with the browser's label), or the record has no single `valid-until` day | `sums` |
 | hidranet.org against main | the site serves different bytes from `landing/vpn/` on main: a merge the deployment never picked up | `site` |
 | Every node in the list | it does not answer `GET /` on its admission port (TCP 51821 unless the list says otherwise), or answers with a key other than the one the list names | `node:<name>` |
 | The pass issuer the list names | `/keys` does not answer, or does not hold as current the key clients ask passes under (the newest current key in the list); or the list names no issuer while nodes in it take passes | `issuer` |
