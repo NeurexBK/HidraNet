@@ -3,8 +3,10 @@
 # page), the storage and vault tests, who may call each handler, the VPN
 # control-channel module against a stand-in service, the VPN page lint (which
 # reads the service's ipc.rs), the privacy policy lint (which reads the site's
-# CSP, the review page's brokers and the node's default resolvers in
-# hidravpn-node's config.rs), the release-signature verifier, and the
+# CSP, the review page's brokers, the node's default resolvers in
+# hidravpn-node's config.rs, and what the issuer keeps and for how long, in
+# hidravpn-issuer's main.rs and hidravpn-core's payment.rs), the
+# release-signature verifier, and the
 # Electron-only tests under Xvfb — among them the preload boundary, which
 # proves a downloaded .html or a website gets no bridge to Tor, the vault or
 # the VPN, and apps-e2e, which runs the chat, mail and forum between people
@@ -27,6 +29,8 @@ on:
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
       - "hidravpn/crates/hidravpn-node/src/config.rs"
+      - "hidravpn/crates/hidravpn-issuer/src/main.rs"
+      - "hidravpn/crates/hidravpn-core/src/payment.rs"
       - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
   pull_request:
@@ -37,6 +41,8 @@ on:
       - "landing/**"
       - "hidravpn/crates/hidravpn-service/src/ipc.rs"
       - "hidravpn/crates/hidravpn-node/src/config.rs"
+      - "hidravpn/crates/hidravpn-issuer/src/main.rs"
+      - "hidravpn/crates/hidravpn-core/src/payment.rs"
       - "hidravpn/crates/hidravpn-core/src/release.rs"
       - ".github/workflows/browser-tests.yml"
 

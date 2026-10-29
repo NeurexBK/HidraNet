@@ -368,19 +368,45 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
 
 ## Upgrading an issuer that already sells
 
-Replace the binary and restart it; the files carry over, and the lapsed
-file appears with the first order that lapses. Orders open at the upgrade
-were promised 24 hours and keep them: they count as held, so for up to a
-day the room for held orders, and the cap on open orders, may be fuller
-than the bound above says; both settle as those orders lapse. Clients from
-before this version say "an order fixes the amount for 24 hours" when they
-list the packs; what holds is the time the order itself states (printed as
-"by … (UTC)"), two hours unless a claim keeps it longer. An orders file that
-cannot be read, when the issuer starts or later, no longer stops it: it logs
-that selling is stopped, goes on signing for accounts, and answers quotes
-and claims 503 until the file is mended. Nothing writes the file meanwhile,
-so the record of the orders paid stays in it as it was. No orders file at
-all is no orders yet, as before.
+The issuer's buckets are for the whole issuer, so this version counts on
+the limit per client at the proxy (above): without it one machine can take
+every quote, and stop the sales. In this order:
+
+1. Publish the privacy policy that describes what this version keeps
+   (`landing/privacy`, version 1.2, section 4.10: the lapsed file, for 7
+   days), with its date, before the new binary is in service: it keeps more
+   than version 1.1 says.
+2. Put the limit in front, before the new binary. Stock Caddy has no rate
+   limit: build it with the plug-in,
+   `xcaddy build --with github.com/mholt/caddy-ratelimit`, and put that
+   `caddy` in place of the packaged one. Deploy the Caddyfile above with the
+   exits' real addresses in the `exits` zone and in both `not remote_ip`
+   lines, and with no access log, then reload Caddy. Check it from a machine
+   that is not an exit: the 21st `POST /quote` within a minute is answered
+   429 by the proxy (`for i in $(seq 21); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' https://<issuer host>/quote; done`
+   ends with 429).
+3. Replace the issuer's binary and restart it
+   (`systemctl restart hidravpn-issuer`). The files carry over, and the
+   lapsed file appears with the first order that lapses.
+4. Read the journal (`journalctl -u hidravpn-issuer -n 50`): the issuer
+   says `pass issuer on TCP 8730`, and no line says `selling is stopped`.
+   One that does names the orders file it could not read.
+
+Whenever an exit is added to the signed list or changes address, change the
+`exits` zone and the `not remote_ip` lines with it and reload Caddy: until
+then the clients behind that exit share one client's limit.
+
+Orders open at the upgrade were promised 24 hours and keep them: they count
+as held, so for up to a day the room for held orders, and the cap on open
+orders, may be fuller than the bound above says; both settle as those
+orders lapse. Clients from before this version say "an order fixes the
+amount for 24 hours" when they list the packs; what holds is the time the
+order itself states (printed as "by … (UTC)"), two hours unless a claim
+keeps it longer. An orders file that cannot be read, when the issuer starts
+or later, no longer stops it: it logs that selling is stopped, goes on
+signing for accounts, and answers quotes and claims 503 until the file is
+mended. Nothing writes the file meanwhile, so the record of the orders paid
+stays in it as it was. No orders file at all is no orders yet, as before.
 
 ## Command lines
 
