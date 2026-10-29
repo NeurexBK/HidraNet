@@ -87,8 +87,10 @@ OUT=$(/usr/local/bin/hidravpn-service uninstall 2>&1); RC=$?
   && pass "without --purge the key, the nodes and the programs stay" || fail "plain uninstall removed too much"
 
 "$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" >/dev/null 2>&1
-# Passes, the account token and the lock: a purge takes them too.
+# Passes, the account token, the ones it replaced and the lock: a purge
+# takes them too.
 echo '{"passes":[]}' > /etc/hidravpn/passes.json; echo token > /etc/hidravpn/pass.token; : > /etc/hidravpn/hidravpn.lock
+echo old-token > /etc/hidravpn/pass.token.previous; echo older-token > /etc/hidravpn/pass.token.previous.1
 OUT=$(/usr/local/bin/hidravpn-service uninstall --purge 2>&1); RC=$?
 [ $RC = 0 ] && pass "uninstall --purge succeeds ($(echo "$OUT" | tail -1))" || fail "purge: $OUT"
 [ ! -e $KEY ] && [ ! -e /etc/hidravpn/circuit.json ] && [ ! -e /usr/local/bin/hidravpn ] && [ ! -e /usr/local/bin/hidravpn-service ] && [ ! -e /etc/systemd/system/hidravpn.service ] \

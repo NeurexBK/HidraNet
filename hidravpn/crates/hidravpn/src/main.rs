@@ -227,7 +227,8 @@ enum Nodes {
 enum Passes {
     /// Keep the account token passes are asked for with, root only. From a
     /// file, or `-` for standard input. The token it replaces is kept beside
-    /// it, as pass.token.previous.
+    /// it, as pass.token.previous (then .previous.1 and on: none is written
+    /// over).
     Token { file: PathBuf },
     /// Ask the issuer for passes: COUNT for each node that admits with a
     /// pass, or for the one named. The issuer never learns which node a pass
@@ -497,7 +498,7 @@ async fn main() -> Result<()> {
                     node,
                     token_file,
                 } => {
-                    not_through_two_hops(cli.direct).await?;
+                    not_through_two_hops().await?;
                     let pocket = load_pocket(&pocket_path)?;
                     let token = hidravpn_service::passes::read_token(
                         &token_file.unwrap_or_else(|| token_beside(&pocket_path)),
@@ -569,7 +570,7 @@ async fn main() -> Result<()> {
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());
                     };
-                    not_through_two_hops(cli.direct).await?;
+                    not_through_two_hops().await?;
                     if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
                         if !replace {
                             return Err(anyhow!(
@@ -595,7 +596,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 Passes::Claim { signature } => {
-                    not_through_two_hops(cli.direct).await?;
+                    not_through_two_hops().await?;
                     let order =
                         hidravpn_service::passes::load_order(&pocket_path)?.ok_or_else(|| {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
@@ -1127,19 +1128,26 @@ fn print_detail(s: &StatusReport) {
 }
 
 /// Refuses a request that carries the pass account token (passes, an order,
-/// a claim) while the service has two hops up or is building them: it would
-/// leave through their exit (`passes::NOT_THROUGH_TWO_HOPS`). With no
-/// service to ask, nothing is refused.
-async fn not_through_two_hops(direct: bool) -> Result<()> {
-    if let Some(Ok(r)) = service_call(direct, Command::Status).await {
-        if r.status.is_some_and(|s| s.hops == 2) {
-            return Err(anyhow!(
-                "{}",
-                hidravpn_service::passes::NOT_THROUGH_TWO_HOPS
-            ));
-        }
-    }
-    Ok(())
+/// a claim) while two hops are up or being built: it would leave through
+/// their exit (`passes::NOT_THROUGH_TWO_HOPS`). The service is asked even
+/// under `--direct`, since its circuit carries this process's requests
+/// either way, and the network plan tells of a circuit this command line
+/// holds in another terminal. When either cannot say, it is refused
+/// (`passes::not_through_two_hops`).
+async fn not_through_two_hops() -> Result<()> {
+    let service = service_call(false, Command::Status).await.map(|r| {
+        r.and_then(|r| {
+            if r.ok {
+                Ok(r.status.map(|s| s.hops))
+            } else {
+                Err(anyhow!(
+                    "{}",
+                    r.error.unwrap_or_else(|| "no reason given".into())
+                ))
+            }
+        })
+    });
+    hidravpn_service::passes::not_through_two_hops(service, netcfg::load_plan())
 }
 
 /// Tries the background service. Returns None when it is not reachable (or when

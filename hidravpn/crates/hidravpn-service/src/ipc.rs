@@ -1591,6 +1591,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pocket = dir.join("circuit.json");
         let sock = start_with_pocket("tok", Some(pocket)).await;
+        // The service takes the caller from the socket: only root may keep
+        // a token, so what this test sees depends on who runs it (root in
+        // the namespace suites, an ordinary account in CI's unit tests).
+        // The root path is also driven straight through `Daemon::handle`.
+        // SAFETY: geteuid has no preconditions.
+        let root = unsafe { libc::geteuid() } == 0;
         let token = "Zm9vYmFyLXRva2VuLTEyMw";
         let resp = call_unix_at(
             &sock,
@@ -1601,15 +1607,26 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(resp.ok, "{:?}", resp.error);
         assert!(!serde_json::to_string(&resp).unwrap().contains(token));
         let kept = dir.join("pass.token");
-        assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        if root {
+            assert!(resp.ok, "{:?}", resp.error);
+            assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        } else {
+            assert!(!resp.ok);
+            assert!(
+                resp.error.as_deref().unwrap().contains("needs root"),
+                "{:?}",
+                resp.error
+            );
+            assert!(!kept.exists(), "a refused token is not kept");
+            std::fs::write(&kept, token).unwrap();
+        }
         let resp = call_unix_at(
             &sock,
             "tok",

@@ -211,23 +211,63 @@ pub fn read_token(path: &Path) -> Result<String> {
     parse_token(&t).with_context(|| format!("{}", path.display()))
 }
 
-/// Where the account token a new one replaced is kept: beside it, with
-/// `.previous` after its name.
-pub fn previous_token_path(token_path: &Path) -> std::path::PathBuf {
+/// Where the account tokens new ones replaced are kept: beside it, with
+/// `.previous` after its name, then `.previous.1`, `.previous.2` and on, so
+/// that none is ever written over. This is the `n`th of those names.
+pub fn previous_token_path(token_path: &Path, n: u32) -> std::path::PathBuf {
     let mut name = token_path
         .file_name()
         .map(|n| n.to_os_string())
         .unwrap_or_else(|| "pass.token".into());
     name.push(".previous");
+    if n > 0 {
+        name.push(format!(".{n}"));
+    }
     token_path.with_file_name(name)
+}
+
+/// The tokens kept beside the one at `token_path` (`previous_token_path`)
+/// that are there, oldest first.
+pub fn kept_tokens(token_path: &Path) -> Vec<std::path::PathBuf> {
+    let base = previous_token_path(token_path, 0);
+    let (Some(dir), Some(stem)) = (base.parent(), base.file_name().and_then(|n| n.to_str())) else {
+        return Vec::new();
+    };
+    let Ok(read) = std::fs::read_dir(if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u32, std::path::PathBuf)> = read
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let rest = name.to_str()?.strip_prefix(stem)?;
+            let n = match rest {
+                "" => 0,
+                r => r
+                    .strip_prefix('.')?
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&n| n > 0)?,
+            };
+            Some((n, previous_token_path(token_path, n)))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Keeps `token` (as `parse_token` gives it) as the account token at
 /// `token_path`, root only. The token it replaces, when it is another one,
-/// is kept first beside it (`previous_token_path`, root only too): it may be
-/// the only copy of an account's paid balance, since the issuer keeps only
-/// its hash. A token there that cannot be read is not replaced. Returns
-/// where the one replaced was kept, if one was.
+/// is kept first beside it, root only too, under a name no kept token holds
+/// yet (`previous_token_path`): any of them may be the only copy of an
+/// account's paid balance, since the issuer keeps only its hash, so none is
+/// ever written over. One kept already is not kept twice. A token there
+/// that cannot be read is not replaced. Returns where the one replaced is
+/// kept, if one was.
 pub fn keep_token(token_path: &Path, token: &str) -> Result<Option<std::path::PathBuf>> {
     let before = match std::fs::read(token_path) {
         Ok(b) => Some(b),
@@ -244,10 +284,25 @@ pub fn keep_token(token_path: &Path, token: &str) -> Result<Option<std::path::Pa
     let mut kept = None;
     if let Some(old) = before {
         let text = String::from_utf8_lossy(&old);
-        if !text.trim().is_empty() && text.trim() != token {
-            let previous = previous_token_path(token_path);
-            crate::daemon::write_private_atomic(&previous, &old)?;
-            kept = Some(previous);
+        let old_token = text.trim();
+        if !old_token.is_empty() && old_token != token {
+            let already = kept_tokens(token_path).into_iter().find(|p| {
+                std::fs::read(p).is_ok_and(|b| String::from_utf8_lossy(&b).trim() == old_token)
+            });
+            kept = Some(match already {
+                Some(p) => p,
+                None => {
+                    let free = (0..)
+                        .map(|n| previous_token_path(token_path, n))
+                        .find(|p| {
+                            std::fs::symlink_metadata(p)
+                                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                        })
+                        .expect("a free name");
+                    crate::daemon::write_private_atomic(&free, &old)?;
+                    free
+                }
+            });
         }
     }
     crate::daemon::write_private_atomic(token_path, token.as_bytes())?;
@@ -283,6 +338,50 @@ pub fn refills_through(mode: hidravpn_core::circuit::Mode) -> bool {
 /// Why a request that carries the account token is not sent while two hops
 /// are up (`refills_through`).
 pub const NOT_THROUGH_TWO_HOPS: &str = "not while two hops (privado) are up: the request carries the pass account token and would leave through the exit, and the issuer, run by the same maintainers as the exits, could then tie this two-hop session to the account and to how it was paid for. Get passes while disconnected or connected in rapido, then connect in privado";
+
+/// Whether the command line may send a request that carries the account
+/// token now (`NOT_THROUGH_TWO_HOPS`), from what tells whether two hops are
+/// up: the service's answer to `status` (None with no service; the hops it
+/// reports, or None when it gave no status), and the network plan in place
+/// (`netcfg::load_plan`), which a circuit held by the command line itself
+/// writes too. Anything that cannot say for sure refuses: a service that
+/// does not answer, a plan that cannot be read, or one from an older
+/// version that does not say how many hops it routes through.
+pub fn not_through_two_hops(
+    service: Option<Result<Option<u8>>>,
+    plan: Result<Option<hidravpn_core::netcfg::RevertPlan>>,
+) -> Result<()> {
+    match service {
+        None => {}
+        Some(Ok(Some(hops))) if hops < 2 => {}
+        Some(Ok(Some(_))) => return Err(anyhow!("{NOT_THROUGH_TWO_HOPS}")),
+        Some(Ok(None)) => {
+            return Err(anyhow!(
+                "the service did not say whether two hops are up, and a request with the pass account token is not sent while they may be"
+            ))
+        }
+        Some(Err(e)) => {
+            return Err(anyhow!(
+                "the service did not say whether two hops are up ({e:#}), and a request with the pass account token is not sent while they may be"
+            ))
+        }
+    }
+    match plan {
+        Ok(None) => Ok(()),
+        Ok(Some(p)) => match p.two_hops() {
+            Some(false) => Ok(()),
+            Some(true) => Err(anyhow!(
+                "{NOT_THROUGH_TWO_HOPS} (a connection through two hops holds the network; if none is up, `hidravpn down` undoes what it left)"
+            )),
+            None => Err(anyhow!(
+                "a connection's network changes are in place and do not say whether they go through two hops, so a request with the pass account token is not sent; `hidravpn down` first"
+            )),
+        },
+        Err(e) => Err(anyhow!(
+            "could not tell whether two hops are up ({e:#}), so a request with the pass account token is not sent"
+        )),
+    }
+}
 
 /// Topping the wallet up by itself: when a pass node has fewer than `low`
 /// passes left, the service asks for enough to bring it back to `count` —
@@ -788,13 +887,17 @@ mod tests {
     }
 
     #[test]
-    fn a_new_account_token_keeps_the_one_it_replaces() {
+    fn a_new_account_token_keeps_every_one_it_replaces() {
         let dir =
             std::env::temp_dir().join(format!("hidravpn-token-{}-{}", std::process::id(), now()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("pass.token");
-        let previous = previous_token_path(&path);
+        let previous = previous_token_path(&path, 0);
         assert_eq!(previous, dir.join("pass.token.previous"));
+        assert_eq!(
+            previous_token_path(&path, 2),
+            dir.join("pass.token.previous.2")
+        );
         assert_eq!(
             keep_token(&path, "first").unwrap(),
             None,
@@ -809,10 +912,31 @@ mod tests {
         assert_eq!(keep_token(&path, "second").unwrap(), Some(previous.clone()));
         assert_eq!(read_token(&path).unwrap(), "second");
         assert_eq!(std::fs::read_to_string(&previous).unwrap(), "first");
+        // A second replacement right after (a wrong token corrected, say):
+        // the first one kept stays as it is, the second goes beside it.
+        let next = dir.join("pass.token.previous.1");
+        assert_eq!(keep_token(&path, "third").unwrap(), Some(next.clone()));
+        assert_eq!(read_token(&path).unwrap(), "third");
+        assert_eq!(std::fs::read_to_string(&previous).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&next).unwrap(), "second");
+        // Back to a token kept already: the one it replaces goes beside the
+        // others, and one replaced that is kept already is not kept twice.
+        let last = dir.join("pass.token.previous.2");
+        assert_eq!(keep_token(&path, "second").unwrap(), Some(last.clone()));
+        assert_eq!(std::fs::read_to_string(&last).unwrap(), "third");
+        assert_eq!(keep_token(&path, "third").unwrap(), Some(next.clone()));
+        assert_eq!(std::fs::read_to_string(&next).unwrap(), "second");
+        // Leftovers of a write cut short are not kept tokens.
+        std::fs::write(dir.join("pass.token.previous.1.tmp"), "x").unwrap();
+        std::fs::write(dir.join("pass.token.previously"), "x").unwrap();
+        assert_eq!(
+            kept_tokens(&path),
+            vec![previous.clone(), next.clone(), last.clone()]
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for f in [&path, &previous] {
+            for f in [&path, &previous, &next, &last] {
                 assert_eq!(
                     std::fs::metadata(f).unwrap().permissions().mode() & 0o777,
                     0o600
@@ -820,6 +944,60 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_command_line_sends_the_account_token_only_when_two_hops_are_surely_down() {
+        use hidravpn_core::netcfg::RevertPlan;
+        let plan = |hops: Option<u8>| {
+            Ok(Some(RevertPlan {
+                interface: "hvpn0".into(),
+                hops,
+                ..Default::default()
+            }))
+        };
+        let refused = |r: Result<()>, why: &str| {
+            let e = format!("{:#}", r.expect_err(why));
+            assert!(
+                e.contains("not sent") || e.contains("not while two hops"),
+                "{why}: {e}"
+            );
+        };
+        // Nothing up, or one hop: allowed.
+        assert!(not_through_two_hops(None, Ok(None)).is_ok());
+        assert!(not_through_two_hops(Some(Ok(Some(0))), Ok(None)).is_ok());
+        assert!(not_through_two_hops(Some(Ok(Some(1))), plan(Some(1))).is_ok());
+        assert!(not_through_two_hops(None, plan(Some(1))).is_ok());
+        // Two hops held by the service, or by the command line itself.
+        refused(
+            not_through_two_hops(Some(Ok(Some(2))), Ok(None)),
+            "the service has two hops",
+        );
+        refused(
+            not_through_two_hops(None, plan(Some(2))),
+            "a foreground circuit of two hops",
+        );
+        refused(
+            not_through_two_hops(Some(Ok(Some(0))), plan(Some(2))),
+            "the service has none, but the command line holds two",
+        );
+        // What cannot say for sure refuses.
+        refused(
+            not_through_two_hops(Some(Err(anyhow!("timed out"))), Ok(None)),
+            "a service that did not answer",
+        );
+        refused(
+            not_through_two_hops(Some(Ok(None)), Ok(None)),
+            "a service with no status",
+        );
+        refused(
+            not_through_two_hops(None, plan(None)),
+            "an older plan that does not say",
+        );
+        refused(
+            not_through_two_hops(None, Err(anyhow!("permission denied"))),
+            "a plan that cannot be read",
+        );
     }
 
     fn blank_pass(node: &str) -> hidravpn_core::pass::Pass {

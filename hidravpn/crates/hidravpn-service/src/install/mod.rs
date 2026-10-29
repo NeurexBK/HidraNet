@@ -208,7 +208,8 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
 
 /// Removes the service. With `purge`, also the installed programs and the
 /// data: the pocket of nodes, the machine's key, which nodes know this
-/// machine by, the passes and the account token. Without it, a later install finds both where they were.
+/// machine by, the passes, the account token and the tokens it replaced.
+/// Without it, a later install finds both where they were.
 pub fn uninstall(purge: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -223,6 +224,9 @@ pub fn uninstall(purge: bool) -> Result<()> {
             let _ = std::fs::remove_file(crate::paths::circuit_pocket());
             let _ = std::fs::remove_file(crate::paths::client_key());
             let _ = std::fs::remove_file(crate::paths::pass_wallet());
+            for kept in crate::passes::kept_tokens(&crate::paths::pass_token()) {
+                let _ = std::fs::remove_file(kept);
+            }
             let _ = std::fs::remove_file(crate::paths::pass_token());
             let pocket = crate::paths::circuit_pocket();
             for name in ["hidravpn.lock", "resolv.conf.saved"] {

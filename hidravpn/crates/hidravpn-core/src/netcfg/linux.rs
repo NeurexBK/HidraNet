@@ -84,6 +84,7 @@ pub fn apply(w: &Wanted) -> Result<RevertPlan> {
     let mut plan = RevertPlan {
         interface: w.interface.clone(),
         node_ip: Some(w.node_ip),
+        hops: Some(if w.via_tunnel.is_empty() { 1 } else { 2 }),
         ..Default::default()
     };
     // Saved before anything changes: if we die mid-way, `down` still knows.

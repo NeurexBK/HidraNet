@@ -646,11 +646,17 @@ Fixed: automatic passes run only while one hop (rapido) is up, and never
 while two hops are (`passes::refills_through`, `daemon.rs`, `refill_once`).
 Passes fetched by hand, a purchase and its claim are refused while two hops
 are up, by the service (the browser's VPN page) and by the command line,
-which says to fetch them before connecting in privado. `hidravpn passes
-list`, `passes auto` and the VPN page say so. Proved by
+which says to fetch them before connecting in privado. The command line
+asks the service even under `--direct`, and reads the network plan, which
+says how many hops it routes through, so a two-hop circuit it holds itself
+in another terminal counts too; a service that does not answer, or a plan
+that cannot be read or does not say, refuses (`passes::not_through_two_hops`).
+`hidravpn passes list`, `passes auto` and the VPN page say so. Proved by
 `scripts/test-refill-netns.sh`: with two hops up and a pass node low,
-nothing is fetched, and asking by hand is refused, while the issuer could be
-reached through the exit; back in one hop, it is topped up.
+nothing is fetched, and asking by hand is refused, with or without
+`--direct`, while the issuer could be reached through the exit; the same
+with two hops held by `hidravpn up --privado` and no service, for
+`passes get`, `buy` and `claim`; back in one hop, it is topped up.
 
 Not done: a list field for the issuer's operator, which would let an exit
 run by someone else carry a top-up; and fetching through Tor, which the

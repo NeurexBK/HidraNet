@@ -18,8 +18,9 @@
 # count, and the issuer could only have been reached through the tunnel;
 # with auto off nothing is fetched; while disconnected nothing is fetched
 # even when low; with two hops up nothing is fetched either, by itself or by
-# hand, since it would leave through the exit; and no log names the client's
-# address or the token.
+# hand, since it would leave through the exit, whether the service or the
+# command line holds them; and no log names the client's address or the
+# token.
 #
 # Run as root:  hidravpn/scripts/test-refill-netns.sh
 set -u
@@ -101,8 +102,11 @@ OUT=$("$BIN/hidravpn" passes auto on --low 3 --count 6 2>&1); echo "$OUT" | grep
 OUT=$("$BIN/hidravpn" passes auto --low 7 --count 6 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "below --count" && pass "a low that is not below the count is refused" || fail "bad auto: $OUT"
 
 # ── The service, checking every 2 seconds ───────────────────────────────────
-$C env RUST_LOG=hidravpn_service=info HIDRAVPN_REFILL_SECS=2 "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & PIDS+=($!)
-for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+start_service() {
+  $C env RUST_LOG=hidravpn_service=info HIDRAVPN_REFILL_SECS=2 "$BIN/hidravpn-service" run >> "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
+  for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+}
+start_service
 svc() { python3 -I - "$1" <<'PY'
 import socket, sys, json
 tok = open('/run/hidravpn/control.token').read().strip()
@@ -200,8 +204,28 @@ BEFORE=$(count_of node-x); sleep 6
 R=$(svc '{"cmd":"get_passes","count":1}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes asked of the service by hand are refused while two hops are up, and say why" || fail "get_passes in privado: $R"
 OUT=$($C "$BIN/hidravpn" passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and so are they from the command line" || fail "passes get in privado: $OUT"
+OUT=$($C "$BIN/hidravpn" --direct passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and with --direct too: the service is still asked whether two hops are up" || fail "--direct passes get in privado: $OUT"
 OUT=$("$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "never in privado" && pass "passes list says automatic passes never go through two hops" || fail "list: $OUT"
 svc '{"cmd":"down"}' >/dev/null
+
+# ── Two hops held by the command line, with no service ─────────────────────
+# `hidravpn up --privado` in another terminal holds the circuit itself: no
+# service can tell, but the network plan it wrote says two hops. Passes,
+# an order and a claim are all refused, with or without --direct.
+kill "$SVC"; wait "$SVC" 2>/dev/null
+for i in $(seq 1 25); do [ -S /run/hidravpn/control.sock ] || break; sleep 0.2; done
+$C "$BIN/hidravpn" up --privado > "$WORK/fg.log" 2>&1 & FG=$!; PIDS+=($FG)
+for i in $(seq 1 50); do grep -q "routes and DNS set" "$WORK/fg.log" && break; sleep 0.2; done
+grep -qi "everything now goes through the privado (2 hops)" "$WORK/fg.log" && grep -q '"hops": 2' /run/hidravpn/netcfg.json && pass "two hops held by the command line, no service; its network plan says two hops" || fail "foreground privado: $(cat "$WORK/fg.log")"
+EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] || fail "foreground privado exit IP '$EXIT_IP'"
+for args in "passes get --count 1" "--direct passes get --count 1" "passes buy 5" "passes claim 5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo"; do
+  OUT=$($C "$BIN/hidravpn" $args 2>&1); RC=$?
+  [ $RC -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" || fail "$args with two hops held by the command line: $OUT"
+done
+[ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes get (with or without --direct), passes buy and passes claim are refused while it holds them, and nothing reached the issuer" || fail "issued while the command line held two hops"
+kill -INT "$FG"; wait "$FG" 2>/dev/null
+[ ! -e /run/hidravpn/netcfg.json ] || fail "the foreground circuit left its plan behind"
+start_service
 # Back to one hop through node-p alone: topped up again.
 cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
 "$BIN/hidravpn" nodes remove node-x > /dev/null 2>&1

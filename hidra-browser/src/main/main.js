@@ -1183,8 +1183,9 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     const r = await vpnManager.importNodesFromTexts(list, signature);
     return { ...r, url: VPN_LIST_URL };
   });
-  // Passes: the service asks the issuer with the token it keeps; the page
-  // hands the token over once and never gets it back.
+  // Passes: the service asks the issuer with the token it keeps. It takes
+  // a token only from an administrator (`sudo hidravpn passes token`), so
+  // the VPN page has no field for one; one handed over is never sent back.
   ipcMain.handle('vpn:get-passes', (event, count) => {
     vpnOnlyOurs(event);
     return vpnManager.getPasses(Number.isInteger(count) ? count : 10);
