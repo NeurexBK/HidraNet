@@ -8,11 +8,12 @@
 # behind a TLS proxy on the same machine (Caddy, nginx) that serves
 # https://<issuer host>/ to the clients. The issuer sees only the proxy's
 # address, so the proxy must limit POST /quote and POST /claim per client
-# (phase-7-payments.md, "The TLS proxy in front", has a Caddyfile). An
-# order that lapses unpaid is kept on record for 7 days; `hidravpn-issuer
-# order lapsed` and `order credit` credit one paid in time by hand, as the
-# hidravpn-issuer user (sudo -u hidravpn-issuer, with --accounts and
-# --orders as below).
+# (phase-7-payments.md, "The TLS proxy in front", has a Caddyfile; give
+# the exits' addresses a higher limit, never none). An order that lapses
+# unpaid is kept on record for 7 days (orders.lapsed.jsonl, beside the
+# orders); `hidravpn-issuer order lapsed` and `order credit` credit one paid
+# in time by hand, as the hidravpn-issuer user (sudo -u hidravpn-issuer,
+# with --accounts and --orders as below).
 #
 # Install: copy this file to /etc/systemd/system/, the binary to
 # /usr/local/bin/hidravpn-issuer, make the user and the key:

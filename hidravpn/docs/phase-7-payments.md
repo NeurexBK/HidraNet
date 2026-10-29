@@ -21,8 +21,9 @@ real purchases on the main network by the maintainers. The legal review
    tag in the last five decimals that no other open order has, so the amount
    names the order (50 HNET becomes, say, 50.042399). It also names the
    wallet, the mint and when the order lapses: two hours after it is made,
-   unless a claim reaches it first, which keeps it open for 24 hours from
-   when it was made (see "Flooding is slowed" below). The client checks the
+   unless a claim from its token comes first, which keeps it open for 24
+   hours from when it was made while the issuer has room for that (see
+   "Orders for nobody's payment" below). The client checks the
    answer adds up, keeps it root-only at `/etc/hidravpn/order.json`, and
    prints what to send where, and to claim by then.
 3. The person sends exactly that amount, from any Solana wallet. Nothing but
@@ -122,18 +123,24 @@ operator's risk, as is the rate moving while an order is open.
   function with its own unit test.
 - **The issuer holds no key to the wallet.** It only reads the chain. There
   is nothing on it that could move the money.
-- **Flooding is slowed, and crowds no buyer out.** Quotes and claims each
-  pass a token bucket for the whole issuer (30 and 20 at once, then 2 a
-  second each). A share is spent only by a request that can do something:
-  a quote that could open an order, a claim for a token that has one. A
-  claim for a token with no order, or a quote for a token that already has
-  its 5 orders open (or with the issuer full), is answered from an index of
-  the orders file the issuer keeps in memory, without the file, the lock
-  or the bucket, so any number of them leaves the buckets to buyers. At
-  most 20 000 orders are open at once; 30 tries at claiming one token's
-  orders before a new order is needed (each try is one lookup on the
-  chain); 4 lookups at a time. The orders file is written only when
-  something changed.
+- **Flooding is slowed.** Quotes and claims each pass a token bucket for
+  the whole issuer (30 and 20 at once, then 2 a second each). A share is
+  spent only by a request that can do something: a quote that could open
+  an order, a claim for a token that has one. A claim for a token with no
+  order, or whose orders were tried 30 times (each try is one lookup on
+  the chain; a new order is needed then), or a quote for a token that
+  already has its 5 orders open (or with the issuer full), is answered from
+  an index of the orders file the issuer keeps in memory, by the token's
+  hash, without the file, the lock or the bucket: any number of those
+  leaves the buckets to buyers. A claim on an order of one's own does
+  compete for the claim bucket, with any signature, as a buyer's claim
+  must: one token's claims are let on to the bucket 10 at once, then one
+  every 6 seconds, so a flood of claims on one order takes a few shares, and
+  one token's orders get 30 tries between them, no more. What bounds many orders' claims is the quote
+  bucket they were opened through and, above all, the proxy's limit per
+  client (next section). At most 20 000 orders are open at once; 4 lookups
+  on the chain at a time. The orders file is written only when something
+  changed.
 - **Orders for nobody's payment cannot fill the issuer.** A token is any
   32 random bytes, so a quote cannot be asked to prove anything about it:
   proof of the token, sent at the quote, would cost a flood nothing, since
@@ -144,12 +151,18 @@ operator's risk, as is the rate moving while an order is open.
   20 000; the issuer checks the sum when it is built. Filling the issuer
   then takes outrunning its bucket, which the proxy in front limits per
   client (next section), where it took one quote every four seconds
-  before. A claim that reaches an order — even one made too soon, before
-  the chain finalized the payment — holds it open for its 24 hours, so a
-  claim can be tried again; the order is still bound to the token's hash
-  alone, and a watcher of the chain has nothing more to claim it with. The
-  issuer learns nothing it did not: the token's hash, at the quote, and the
-  token, at the claim.
+  before. A claim from the order's token — even one made too soon, before
+  the chain finalized the payment, or one turned away because the claim
+  bucket was empty — holds the order open for its 24 hours, so a claim can
+  be tried again; the order is still bound to the token's hash alone, and
+  a watcher of the chain has nothing more to claim it with. The room for
+  held orders is 4 000 at once, and anyone can fill it with orders of
+  their own; when it is full, an order keeps its two hours. That is a
+  convenience, not what keeps a payment: a payment made before its order
+  lapsed stays creditable for 7 days from the record of the order (see "A
+  lapsed order, credited by hand"), however many orders lapse meanwhile.
+  The issuer learns nothing it did not: the token's hash, at the quote,
+  and the token, at the claim.
 - **Only JSON is read.** `/issue`, `/quote` and `/claim` are read only when
   sent with `Content-Type: application/json`, as every client always has;
   anything else is refused (415). A web page can make its visitors'
@@ -158,7 +171,9 @@ operator's risk, as is the rate moving while an order is open.
   such question. So no page can spend the buckets with other people's
   browsers.
 - **Comparisons of hashes take the same time whatever the input**, as the
-  accounts' do; the index in memory compares the same way.
+  accounts' do. The index in memory finds a token by its hash under std's
+  hasher, keyed at random each run, so the time a lookup takes says
+  nothing of the hashes kept.
 
 ## The TLS proxy in front: a limit per client
 
@@ -172,11 +187,17 @@ Limit `POST /quote` and `POST /claim` per client address, well under the
 issuer's own rate of 2 a second: 20 a minute each, say, is many times what
 a buyer needs (one quote, a few claims) and a sixth of the issuer's rate.
 Leave `POST /issue` alone or generous: it spends no shared budget and needs
-a real token. Remember that a client connected to HidraVPN reaches the
-issuer through its exit node, so every connected client of an exit shares
-that exit's address: give the exits' addresses a higher limit, or none.
-And keep the proxy from logging addresses: the limit is counted in memory,
-for its window, and nowhere else.
+a real token. And keep the proxy from logging addresses: the limit is
+counted in memory, for its window, and nowhere else.
+
+A client connected to HidraVPN reaches the issuer through its exit node, so
+every connected client of an exit shares that exit's address. Give the
+exits' addresses a higher limit, in a zone of their own, but never none: an
+address without a limit is a way around it for anyone who can connect
+through that exit, which takes a pass, or nothing at all on a node that
+admits openly. Traffic through an exit is the case the issuer's own
+buckets have to absorb alone: they keep the issuer up and its orders
+bounded, but share its quotes and claims with whoever comes that way.
 
 Caddy has no rate limit of its own; the `rate_limit` handler is a plug-in
 (`github.com/mholt/caddy-ratelimit`), built in with
@@ -208,6 +229,19 @@ passes.example.org {
 			events 20
 			window 1m
 		}
+		# The exits' addresses: many clients behind each, so more, but a
+		# limit all the same. List each exit's address in both zones
+		# above as `not remote_ip <addresses>` and here as `remote_ip`.
+		zone exits {
+			match {
+				method POST
+				path /quote /claim
+				remote_ip 203.0.113.10 198.51.100.20
+			}
+			key {remote_host}
+			events 60
+			window 1m
+		}
 	}
 	reverse_proxy 127.0.0.1:8730
 
@@ -219,44 +253,56 @@ passes.example.org {
 ```
 
 A client over the limit is answered 429, and `hidravpn passes buy` or
-`claim` says so; trying again a minute later works. To exempt the exits,
-add `not remote_ip <their addresses>` to each `match`. With nginx, the same
-is `limit_req_zone $binary_remote_addr zone=pay:1m rate=20r/m;` and a
-`limit_req zone=pay burst=5;` in `location = /quote` and `location =
-/claim`. The issuer reads no `X-Forwarded-For` or other header naming the
-client, whatever the proxy sends.
+`claim` says so; trying again a minute later works. The addresses in the
+`exits` zone are examples: put the exits' own there, and in a `not
+remote_ip` line in the other two zones' `match`, so each address is counted
+in one zone only. With nginx, the same is `limit_req_zone
+$binary_remote_addr zone=pay:1m rate=20r/m;` and a `limit_req zone=pay
+burst=5;` in `location = /quote` and `location = /claim`, with a `geo` map
+sending the exits' addresses to a second zone at a higher rate. The issuer
+reads no `X-Forwarded-For` or other header naming the client, whatever the
+proxy sends.
 
 ## A lapsed order, credited by hand
 
 An order that lapses unpaid leaves the open ones, and its amount is free for
-another order; a record of it stays in the orders file for 7 days: the
+another order; a record of it is kept for 7 days in a file of its own
+beside the orders file (`orders.lapsed.jsonl`, one line a record): the
 token's hash, the pack, the amount, when it was made and when it lapsed, and
 whether a claim had reached it. That is all it takes to credit a payment
 that was made in time but never claimed — the person paid and came back
-after two hours, or the issuer could not be reached for a day. At most
-10 000 such records are kept; past that, the oldest go first, and the
-records of orders no claim reached go before any a claim reached, so a flood
-of orders for nobody never pushes out the record of one its owner tried to
-claim.
+after two hours, their claims were turned away by a flood, or the issuer
+could not be reached for a day. Every record is kept its 7 days, however
+many orders lapse meanwhile: the file is added to as orders lapse, and
+rewritten only once a day, to let go of the records past their week, so a
+flood of orders for nobody pushes no record out. It is bounded by the quote
+bucket: at most some 1.4 million records, a couple of hundred megabytes,
+and that only under a flood that lasts the whole week.
 
-A claim for such an order is told so (404, "this token's order lapsed
-unpaid … give them the transaction's signature"), and the client keeps
-`order.json`. The person sends the operator the transaction's signature;
-nothing else, and never the token. The operator:
+A claim for such an order is told there is no open order for its token, and
+that a payment made before the order lapsed can still be credited by the
+operator for 7 days (404); the client keeps `order.json`. The person sends
+the operator the transaction's signature; nothing else, and never the
+token. The operator:
 
 1. looks the transaction up on a Solana explorer: finalized, succeeded,
    exactly the amount, of the mint, to the receiving wallet; and notes its
    amount and block time (UTC);
 2. `hidravpn-issuer order lapsed --amount 50.042399` shows the record of
-   that amount, if one is kept, and the window it could be paid in: from
-   five minutes before it was made to when it lapsed;
+   that amount, if one is kept, the window it could be paid in (from five
+   minutes before it was made to when it lapsed), and the full hash of the
+   account token it was for;
 3. `hidravpn-issuer order credit --amount 50.042399 --signature <sig>
    --paid-at 2026-10-13T09:41:07Z` credits the pack to the account the
    order's token names (made on the spot, prepaid, if there is none) and
    records the transaction as used, so it pays nothing else. It refuses a
    transaction already used, a time outside every record's window, or an
    amount no record has; if two records could match (an amount reused, a
-   window overlapping by the clock slack), it asks for `--token-sha256`.
+   window overlapping by the clock slack), it asks for `--token-sha256`,
+   which is the hash step 2 printed for each. Two can match only if the
+   same amount came up again within those five minutes; the window says
+   whose, and if the person can tell which order of theirs it was (its
+   time, in `order.json`), that settles it.
 
 The command does not look the transaction up itself: step 1 is the
 operator's. What it guards is whose account is credited: always the one
@@ -269,10 +315,12 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
 ## What stays off the record
 
 - The issuer's `orders.json` keeps the token's hash, the amount and the
-  hash of the signature that paid, and for 7 days the token's hash, the
-  amount and the times of an order that lapsed unpaid; `accounts.json` the
-  token's hash and the balance. Neither holds a token, a signature, a wallet or a name of anyone.
-  Both are root-only, written beside and renamed over.
+  hash of the signature that paid; `orders.lapsed.jsonl`, for 7 days, the
+  token's hash, the amount and the times of an order that lapsed unpaid;
+  `accounts.json` the token's hash and the balance. None holds a token, a
+  signature, a wallet or a name of anyone. All are the issuer's only
+  (mode 600); the first two are written beside and renamed over, the
+  lapsed file added to and, once a day, rewritten the same way.
 - No log names the wallet, a transaction, an amount or a token: an order is
   logged as "order opened for 10 pass(es)", a credit as "order claimed: 10
   pass(es) credited", a refusal by its kind only ("claim refused:
@@ -312,6 +360,19 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
   lying or broken RPC is outvoted. With one RPC the issuer still trusts
   that one — run three or more you control, over HTTPS, for real money.
 
+## Upgrading an issuer that already sells
+
+Replace the binary and restart it; the files carry over, and the lapsed
+file appears with the first order that lapses. Orders open at the upgrade
+were promised 24 hours and keep them: they count as held, so for up to a
+day the room for held orders, and the cap on open orders, may be fuller
+than the bound above says; both settle as those orders lapse. Clients from
+before this version say "an order fixes the amount for 24 hours" when they
+list the packs; what holds is the time the order itself states (printed as
+"by … (UTC)"), two hours unless a claim keeps it longer. An orders file that
+cannot be read no longer stops the issuer: it goes on signing for accounts,
+and answers quotes and claims 503 until the file is mended.
+
 ## Command lines
 
 ```
@@ -338,7 +399,7 @@ sudo hidravpn passes buy 10 --replace        # a new order, leaving the open one
 ## How to check it
 
 ```
-hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 73 checks
+hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 75 checks
 cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer
 ```
 
@@ -363,8 +424,11 @@ chain cannot claim a payment without the token, nor with an order of their
 own; a stray second payment is credited to nobody; the same claim again is
 idempotent; an order is open two hours until a claim reaches it; sixty
 claims for tokens with no order and sixty quotes for a token with its five
-orders open are each answered without slowing anyone, and right after them
-the owner's claim and a new buyer's quote go through; forty quotes for
+orders open are each answered without slowing anyone, and sixty claims on
+that token's own orders reach the chain only until its tries run out;
+right after them the owner's claim and a new buyer's quote go through;
+of twenty claims of one token at once, ten reach the chain and ten are
+told to wait; forty quotes for
 throwaway tokens at once are slowed; a quote, a claim or an issuance sent
 as text or a form is refused (415) and opens nothing; a lapsed order is
 listed by `order lapsed`, and `order credit` credits it to the order's own
@@ -383,11 +447,17 @@ closed account netted out, shapes that are not an answer); orders taking
 amounts of their own, lapsing, paying once, undoing a mark; an order no
 claim reached lapsing in two hours, one a claim reached keeping its day, an
 order written before the shorter life keeping its day, at most 4 000 held
-at once; the record of a lapsed order, credited by hand only for its amount
-in its window, once, to its own token, kept 7 days and, past 10 000
-records, the ones no claim reached dropped first; the index answering what
-needs no file; floods of claims without orders and of quotes past a
-token's limit leaving the buckets to a buyer; a request not declared JSON
-refused before anything is spent; a prepaid account's balance and a
+at once; a buyer's claim turned away by an empty bucket still holding the
+order; the record of a lapsed order, credited by hand only for its amount
+in its window, once, to its own token; the record of a buyer whose order
+lapsed while the held room was full, kept through hours of every
+throwaway order the bucket lets through and credited by hand days later,
+records let go only after 7 days, a line a crash cut short passed over;
+the index answering what needs no file, a token's tries included; floods
+of claims without orders and of quotes past a token's limit leaving the
+buckets to a buyer, and a flood of claims on an order of one's own taking
+only that token's few; an orders file that cannot be read stopping the
+sales but not the issuer; a request not declared JSON refused before
+anything is spent; a prepaid account's balance and a
 purchase topping it up; and the issuer end to end against a stub RPC,
 including what `run` refuses.
