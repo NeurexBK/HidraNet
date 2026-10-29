@@ -54,6 +54,11 @@ pub const UNCLAIMED_LIFETIME: i64 = 2 * 3600;
 /// chain finalized the payment, or that the issuer could not answer, can
 /// be made again.
 pub const ORDER_LIFETIME: i64 = 24 * 3600;
+/// What the issuer answers a claim it turns away only for now (429), after
+/// the claim has reached the token's orders: the client knows these, to say
+/// the order is still open.
+pub const CLAIM_PACED: &str = "this token made many claims just now; try again in a few seconds";
+pub const CLAIMS_BUSY: &str = "too many claims at once; try again in a moment";
 /// A transaction may carry a block time this much before the order was made
 /// (clocks differ) and still pay it.
 pub const CLOCK_SLACK: i64 = 300;

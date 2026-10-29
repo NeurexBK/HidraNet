@@ -155,7 +155,11 @@ operator's risk, as is the rate moving while an order is open.
   the chain finalized the payment, or one turned away because the claim
   bucket was empty — holds the order open for its 24 hours, so a claim can
   be tried again; the order is still bound to the token's hash alone, and
-  a watcher of the chain has nothing more to claim it with. The room for
+  a watcher of the chain has nothing more to claim it with. The issuer's
+  answer does not carry the new time, so the client goes on showing the
+  quote's; when a claim is turned away only for now (not final on chain
+  yet, or too many claims just then), `hidravpn passes claim` says the order
+  normally stays open up to 24 hours from when it was made. The room for
   held orders is 4 000 at once, and anyone can fill it with orders of
   their own; when it is full, an order keeps its two hours. That is a
   convenience, not what keeps a payment: a payment made before its order
@@ -215,6 +219,7 @@ passes.example.org {
 			match {
 				method POST
 				path /quote
+				not remote_ip 203.0.113.10 198.51.100.20
 			}
 			key {remote_host}
 			events 20
@@ -224,14 +229,15 @@ passes.example.org {
 			match {
 				method POST
 				path /claim
+				not remote_ip 203.0.113.10 198.51.100.20
 			}
 			key {remote_host}
 			events 20
 			window 1m
 		}
 		# The exits' addresses: many clients behind each, so more, but a
-		# limit all the same. List each exit's address in both zones
-		# above as `not remote_ip <addresses>` and here as `remote_ip`.
+		# limit all the same. The same addresses as in the `not
+		# remote_ip` lines above, so each is counted here only.
 		zone exits {
 			match {
 				method POST
@@ -253,10 +259,10 @@ passes.example.org {
 ```
 
 A client over the limit is answered 429, and `hidravpn passes buy` or
-`claim` says so; trying again a minute later works. The addresses in the
-`exits` zone are examples: put the exits' own there, and in a `not
-remote_ip` line in the other two zones' `match`, so each address is counted
-in one zone only. With nginx, the same is `limit_req_zone
+`claim` says so; trying again a minute later works. The addresses are
+examples: put the exits' own in the `exits` zone's `remote_ip` line and in
+the `not remote_ip` lines of the other two, so each address is counted in
+one zone only. With nginx, the same is `limit_req_zone
 $binary_remote_addr zone=pay:1m rate=20r/m;` and a `limit_req zone=pay
 burst=5;` in `location = /quote` and `location = /claim`, with a `geo` map
 sending the exits' addresses to a second zone at a higher rate. The issuer
@@ -370,8 +376,11 @@ than the bound above says; both settle as those orders lapse. Clients from
 before this version say "an order fixes the amount for 24 hours" when they
 list the packs; what holds is the time the order itself states (printed as
 "by … (UTC)"), two hours unless a claim keeps it longer. An orders file that
-cannot be read no longer stops the issuer: it goes on signing for accounts,
-and answers quotes and claims 503 until the file is mended.
+cannot be read, when the issuer starts or later, no longer stops it: it logs
+that selling is stopped, goes on signing for accounts, and answers quotes
+and claims 503 until the file is mended. Nothing writes the file meanwhile,
+so the record of the orders paid stays in it as it was. No orders file at
+all is no orders yet, as before.
 
 ## Command lines
 
@@ -456,8 +465,8 @@ records let go only after 7 days, a line a crash cut short passed over;
 the index answering what needs no file, a token's tries included; floods
 of claims without orders and of quotes past a token's limit leaving the
 buckets to a buyer, and a flood of claims on an order of one's own taking
-only that token's few; an orders file that cannot be read stopping the
-sales but not the issuer; a request not declared JSON refused before
-anything is spent; a prepaid account's balance and a
-purchase topping it up; and the issuer end to end against a stub RPC,
-including what `run` refuses.
+only that token's few; an orders file that cannot be read, from the
+start or later, stopping the sales but not the issuer, and left as it was;
+a request not declared JSON refused before anything is spent; a prepaid
+account's balance and a purchase topping it up; and the issuer end to end
+against a stub RPC, including what `run` refuses.

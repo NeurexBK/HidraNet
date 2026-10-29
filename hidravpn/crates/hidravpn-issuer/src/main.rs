@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const CONNECTIONS: usize = 64;
 const PER_CONNECTION: Duration = Duration::from_secs(5);
@@ -842,16 +842,10 @@ impl Issuer {
         // flood of claims on one order of one's own takes a few shares of
         // the bucket, not all of it.
         if !p.pace(&hash) {
-            return (
-                429,
-                refusal("this token made many claims just now; try again in a few seconds"),
-            );
+            return (429, refusal(payment::CLAIM_PACED));
         }
         if !p.claims.take().await {
-            return (
-                429,
-                refusal("too many claims at once; try again in a moment"),
-            );
+            return (429, refusal(payment::CLAIMS_BUSY));
         }
         // Before the chain is asked: is there an order to pay, was this
         // transaction already used, has this order been tried too often?
@@ -1244,13 +1238,16 @@ impl Payments {
                 ))
             }
         };
-        // An orders file that cannot be read stops the sales only: until it
-        // can be, every quote and claim goes on to the file, which says so
-        // (503), and issuance goes on.
+        // An orders file that cannot be read stops the sales only, at the
+        // start as later: until it can be, every quote and claim goes on to
+        // the file, which says so (503), and issuance goes on. Nothing writes
+        // it meanwhile (a change reads it first), so the record of the paid
+        // orders in it stays as it was for the operator to mend. No file at
+        // all is no orders yet.
         let index = match Orders::load(&orders_path) {
             Ok(o) => Index::of(&o),
             Err(e) => {
-                warn!("orders: {e:#}; no quote or claim can be answered until the file is mended");
+                error!("orders: {e:#}; selling is stopped: no quote or claim can be answered until the file is mended (issuance goes on)");
                 Index::unread()
             }
         };
@@ -2650,7 +2647,6 @@ async fn main() -> Result<()> {
                         Some(feed),
                         cli.orders.clone(),
                     )?;
-                    Orders::load(&cli.orders)?;
                     Some(p)
                 }
             };
