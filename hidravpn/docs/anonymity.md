@@ -27,7 +27,7 @@ drops it six hours after its last handshake. Used as the node of one hop, an
 exit with no pass left is reconnected with its last pass's key, and a note
 says so, but only with a key it was shown from your own address before;
 a key redeemed through the entry is never shown from your address (finding
-19). As the exit of two hops it is refused instead (finding 16).
+20). As the exit of two hops it is refused instead (finding 16).
 Otherwise no node can tell, by key, that two connections are the same
 person. This holds for:
 
@@ -69,9 +69,9 @@ The other gaps are closed too:
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names, anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
 | **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5), unless it shares its logs with the issuer while passes are fetched through it, which the client no longer does (finding 20). |
-| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection, or for a node that admits with a pass and none is left, the last pass's key it saw from your address. | Your two-hop sessions through it, by key: a pass key redeemed through the entry is never shown to it from your address (finding 19, the passes test). Your other one-hop sessions, by key, while a pass is left for it (test B). |
-| **The pass issuer** | Your account (its token's hash), how many passes it asks for and when, the payment of a pack, and the address a request comes from: yours when you fetch or buy while disconnected, the node's when automatic passes fetch them in one hop. | Which node a pass is for, and so which node you use (blind signatures). A two-hop session: nothing that carries the account goes through two hops (finding 20). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5), unless it shares its logs with the issuer while passes are fetched through it, which the client no longer does (finding 21). |
+| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection, or for a node that admits with a pass and none is left, the last pass's key it saw from your address. | Your two-hop sessions through it, by key: a pass key redeemed through the entry is never shown to it from your address (finding 20, the passes test). Your other one-hop sessions, by key, while a pass is left for it (test B). |
+| **The pass issuer** | Your account (its token's hash), how many passes it asks for and when, the payment of a pack, and the address a request comes from: yours when you fetch or buy while disconnected, the node's when automatic passes fetch them in one hop. | Which node a pass is for, and so which node you use (blind signatures). A two-hop session: nothing that carries the account goes through two hops (finding 21). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
 | **A site you visit** | The exit's address. | Your address, unless you tell it (cookies, logins: that is the browser's job, and the browser's own tabs go through Tor regardless). |
@@ -139,7 +139,7 @@ maintainers' list admit with a pass):
   (`hidravpn-node/src/leases.rs:61`, `:241`).
 - An exit that admits with a pass is shown each key with a new pass (one
   hop with no pass left reuses the last pass's key, with a note, only when
-  that key was redeemed from the client's address; finding 19), and drops
+  that key was redeemed from the client's address; finding 20), and drops
   the lease six hours after its last handshake (`phase-5.md`).
 
 **Not fixed for exits admitted by hand:** they see one stable key behind
@@ -470,7 +470,7 @@ Fixed in the merge:
   left for it, the connection is refused and says so (`circuit.rs:729`). A
   first hop with no pass left may reuse its last key, with a note, since it
   sees the address anyway, but only a key it was shown from that address
-  before (finding 19).
+  before (finding 20).
 - A pick or a rotation prefers nodes it can build with: no pass exit without
   a pass (`passes.rs:69`, `daemon.rs:1259`).
 - A new identity redeems the next pass even for the node it leaves and
@@ -586,7 +586,7 @@ out no IPv6 address and the client's IPv6 is then blocked, with nothing
 leaking either way. The leak test passes IPv6 that reaches a website when
 the service says the exit carries it, and fails it when the exit does not.
 
-### 19. High — a pass key redeemed through the entry could later be shown from your address (fifth round)
+### 20. High — a pass key redeemed through the entry could later be shown from your address (fifth round)
 
 The invite a pass wins remembered the pass's key, but not whether it was
 redeemed through the entry or from the client's address, and the pocket
@@ -628,7 +628,7 @@ the two-hop key from the client's address. With that key as the only one the
 pocket holds for it, one hop is refused and says why; with a pass, the exit
 is shown a fresh key.
 
-### 20. High — automatic passes went out through the exit of two hops (fifth round)
+### 21. High — automatic passes went out through the exit of two hops (fifth round)
 
 Automatic passes ask the issuer only while connected, so the account token
 never leaves from the client's own address. With two hops, though, that

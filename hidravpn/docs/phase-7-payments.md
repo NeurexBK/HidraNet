@@ -41,7 +41,7 @@ real purchases on the main network by the maintainers. The legal review
 Neither the order nor the claim is sent while two hops are up, held by the
 service or by the command line itself:
 both carry the account, and would leave through the exit, which with the
-issuer could tie the session to the account (`anonymity.md`, finding 20).
+issuer could tie the session to the account (`anonymity.md`, finding 21).
 The token is replaced only by root, and the one replaced is kept beside it
 as `pass.token.previous` (then `.previous.1` and on, none written over):
 each may hold a paid balance that exists nowhere else.

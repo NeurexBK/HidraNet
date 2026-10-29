@@ -18,7 +18,7 @@ service keeps it filled.
   hops up nothing is fetched either, and passes asked for by hand are
   refused: the request would leave through the exit, and the exit and the
   issuer together could tie the two-hop session to the account
-  (`anonymity.md`, finding 20).
+  (`anonymity.md`, finding 21).
 - **`hidravpn passes auto [on|off] [--low N] [--count N]`** sets it, root
   only, in `/etc/hidravpn/refill.json`; with no argument it says how it is
   set, and so does `hidravpn passes list`. `low` must be below `count`, and

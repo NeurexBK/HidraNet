@@ -119,7 +119,7 @@ of; the nonce, so each pass is spent once.
   control channel once, is written root-only, and is never sent back; the
   token it replaces is kept beside it as `pass.token.previous`, then
   `.previous.1` and on, root-only too: none is ever written over) and `get_passes` (it asks the issuer with the token it keeps, and not
-  while two hops are up: `anonymity.md`, finding 20); `nodes` reports each
+  while two hops are up: `anonymity.md`, finding 21); `nodes` reports each
   pass node's count. The VPN page has a *Passes* card: *Get 10 passes per
   node*, and how an administrator keeps the token (`sudo hidravpn passes
   token FILE`): the browser runs as the person, never as root, so it has no
