@@ -619,7 +619,13 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
   });
 
   await check('this browser installs nothing older than 0.1.2, the first release with the service\'s fixes', async () => {
-    assert.ok(compareVersions(MIN_VERSION, '0.1.2') >= 0, MIN_VERSION);
+    // MIN_VERSION is raised on main, in the commit that signs the table and
+    // sets SUMS_SIGNED, once the 0.1.2 manifest is on the site; the browser
+    // packages are built from that commit (scripts/launch-check.js says why).
+    // The launch branch goes on top of it, so this fails on that branch
+    // until it is rebased there.
+    assert.ok(compareVersions(MIN_VERSION, '0.1.2') >= 0,
+      'MIN_VERSION is ' + MIN_VERSION + ': rebase this branch onto the commit that raises it');
     // 0.1.0 and 0.1.1 stay validly signed forever, and 0.1.0's manifest has
     // no sequence, so a profile that has never accepted one would take it:
     // only the floor turns them away.

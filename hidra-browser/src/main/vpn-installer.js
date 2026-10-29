@@ -62,12 +62,7 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 // The oldest release this browser installs, whatever is signed: raised when
 // a release fixes a security problem, so nothing older can be offered again.
-// 0.1.2 is the first with the service's fixes (the kill switch's DNS and
-// inbound rules, passes that do not link a two-hop session, the sealed
-// control channel on Windows, the service's own downgrade check). Raise it
-// only once that release's manifest is on the site: a browser whose floor is
-// above the published release has nothing it can install.
-const MIN_VERSION = '0.1.2';
+const MIN_VERSION = '0.1.0';
 // The only date shape a manifest's expiry takes (make-release-manifest.sh),
 // the same as the node list's.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
