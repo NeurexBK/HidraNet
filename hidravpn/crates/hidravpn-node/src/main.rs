@@ -58,6 +58,8 @@ mod node {
         cmd: Cmd,
     }
 
+    // Parsed once, at start: the size of its largest variant costs nothing.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Subcommand)]
     enum Cmd {
         /// Create the settings file with a fresh key.
@@ -118,6 +120,12 @@ mod node {
             /// public node.
             #[arg(long)]
             forward_private_destinations: bool,
+            /// On an exit: the outside address of an entry of the signed
+            /// list (repeat it for each), which relays its two-hop clients'
+            /// admission requests here and so gets a larger share of
+            /// connections (`admission_relays` in the settings).
+            #[arg(long = "admission-relay", value_name = "IP")]
+            admission_relays: Vec<std::net::IpAddr>,
         },
         /// Bring the tunnel up and serve until SIGTERM or Ctrl+C.
         Run,
@@ -215,6 +223,7 @@ mod node {
                 max_clients,
                 idle_days,
                 forward_private_destinations,
+                admission_relays,
             } => {
                 require_root()?;
                 if cli.config.exists() {
@@ -243,6 +252,7 @@ mod node {
                 cfg.max_clients = max_clients;
                 cfg.idle_days = idle_days;
                 cfg.forward_private_destinations = forward_private_destinations;
+                cfg.admission_relays = admission_relays;
                 cfg.save(&cli.config)?;
                 println!("node public key: {}", cfg.public_key()?);
                 println!("settings written to {}", cli.config.display());

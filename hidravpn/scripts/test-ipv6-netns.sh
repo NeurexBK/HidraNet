@@ -20,6 +20,10 @@
 #     tunnel or out on its link; status says so.
 #   - two hops: IPv6 goes through the exit, never through the entry, which
 #     carries none (it is given no address, and its tunnel sees no IPv6).
+#   - nothing from outside reaches a client's IPv6 address unless the client
+#     started it, and with the exit's default destination filter no client
+#     reaches a unique local or reserved IPv6 address behind it, while the
+#     open internet stays reachable.
 #   - an exit with ipv6 = "off", and one whose host has no IPv6 route: the
 #     invite carries no IPv6 address, IPv6 is blocked, nothing leaks.
 #
@@ -172,6 +176,27 @@ probe6 one hvpn0
 $C dd if=/dev/urandom of="$WORK/blob" bs=1M count=1 status=none 2>/dev/null; cp "$WORK/blob" "$WORK/blobsrv"
 $I python3 -I -m http.server 8080 --bind :: --directory "$WORK" > /dev/null 2>&1 & PIDS+=($!); sleep 1
 [ "$(sha256sum < "$WORK/blob")" = "$($C curl -6 -s --max-time 20 'http://[2001:db8:221::2]:8080/blobsrv' | sha256sum)" ] && pass "1 MB over IPv6 through the tunnel, intact" || fail "the IPv6 transfer was corrupted or failed"
+# From outside the exit nothing reaches the client: a neighbour on the
+# exit's outside link routes the clients' unique local subnet through it and
+# tries a connection and a ping the client never started. A counter in the
+# client's namespace, ahead of everything else, sees whether anything
+# arrives through the tunnel at all.
+$C nft -f - <<'NFT'
+table inet h6_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvpn0" tcp dport 7777 counter
+    iifname "hvpn0" icmpv6 type echo-request counter
+  }
+}
+NFT
+$I ip -6 route add "$ULA::/64" via $EXIT6
+$I python3 -I -c 'import socket, sys; socket.create_connection((sys.argv[1], 7777), timeout=3)' "$ULA::a4d:2" >/dev/null 2>&1; RC=$?
+$I ping -6 -c 2 -W 1 "$ULA::a4d:2" >/dev/null 2>&1; PRC=$?
+$I ip -6 route del "$ULA::/64" via $EXIT6
+ARRIVED=$($C nft list table inet h6_probe | grep -o 'packets [0-9]*' | awk '{s+=$2} END {print s+0}')
+$C nft delete table inet h6_probe
+[ "$RC" != 0 ] && [ "$PRC" != 0 ] && [ "$ARRIVED" = 0 ] && pass "a neighbour of the exit that routes the clients' IPv6 subnet through it reaches nothing of the client: no connection, no ping, no packet in the tunnel" || fail "from outside to the client's IPv6 address: connect exit $RC, ping exit $PRC, $ARRIVED packet(s) arrived"
 $C "$BIN/hidravpn" down > /dev/null 2>&1
 N=$(link_count one); [ "$N" = 0 ] && pass "no IPv6 packet with the client's own address left on its link while connected" || fail "$N IPv6 packet(s) left on the link: $(link_show one)"
 $C ip -6 route | grep -q hvpn0 && fail "IPv6 routes to the tunnel remain" || pass "down: the IPv6 routes are gone"
@@ -191,6 +216,49 @@ EN=$(tcpdump -n -r "$WORK/entry-tun.pcap" 2>/dev/null | grep -vc "fe80::")
 [ "$EN" = 0 ] && pass "the entry's tunnel carried no IPv6 at all" || fail "the entry's tunnel carried $EN IPv6 packet(s)"
 $C "$BIN/hidravpn" down > /dev/null 2>&1
 N=$(link_count two); [ "$N" = 0 ] && pass "no IPv6 packet with the client's own address left on its link" || fail "$N IPv6 packet(s) left on the link: $(link_show two)"
+
+echo "── no client reaches what is behind the exit, over IPv6 either"
+# The exit as a public node runs it: private destinations blocked. On
+# h6-inet, fd00:221::2 stands for a unique local network behind the exit's
+# outside interface, 2001:db8:221::2 (documentation space) for the other
+# reserved ranges, and 2a00:1:2:3::4 for a host of the open internet.
+$I ip -6 addr add fd00:221::2/128 dev lo nodad; $I ip -6 addr add 2a00:1:2:3::4/128 dev lo nodad
+stop_exit
+sed -i 's/^forward_private_destinations = true$/forward_private_destinations = false/' "$WORK/exit.toml"
+grep -q '^forward_private_destinations = false$' "$WORK/exit.toml" || fail "could not put the exit back to its default"
+start_exit || { fail "the exit did not come back"; exit 1; }
+grep -q "private destinations: blocked" "$WORK/exit.log" && pass "by default the exit blocks private destinations, and says so" || fail "exit: $(grep -o 'forwarding and NAT.*' "$WORK/exit.log")"
+$C "$BIN/hidravpn" up "$WORK/exit.json" > "$WORK/up-private.log" 2>&1 && wait_connected && pass "connected, one hop" || { cat "$WORK/up-private.log" "$WORK/svc.log"; fail "up, private destinations blocked"; }
+PUBLIC6=""
+for _ in $(seq 1 10); do PUBLIC6=$($C curl -6 -s --max-time 3 'http://[2a00:1:2:3::4]/' 2>/dev/null); [ "$PUBLIC6" = $EXIT6 ] && break; sleep 0.5; done
+[ "$PUBLIC6" = $EXIT6 ] && pass "IPv6 to the open internet still goes through (2a00:1:2:3::4 sees the exit)" || fail "public IPv6 address through the tunnel: '$PUBLIC6'"
+# Counters on both sides: what entered the exit from the tunnel, and what
+# reached the host behind it.
+$X nft -f - <<'NFT'
+table inet h6_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "hvx0" ip6 daddr { fd00:221::2, 2001:db8:221::2 } tcp dport 80 counter
+  }
+}
+NFT
+$I nft -f - <<'NFT'
+table inet h6_probe {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    ip6 daddr { fd00:221::2, 2001:db8:221::2 } tcp dport 80 counter
+  }
+}
+NFT
+$C curl -6 -s --max-time 3 'http://[fd00:221::2]/' >/dev/null 2>&1; RC1=$?
+$C curl -6 -s --max-time 3 'http://[2001:db8:221::2]/' >/dev/null 2>&1; RC2=$?
+SENT=$($X nft list table inet h6_probe | grep -o 'packets [0-9]*' | awk '{print $2}')
+GOT=$($I nft list table inet h6_probe | grep -o 'packets [0-9]*' | awk '{print $2}')
+$X nft delete table inet h6_probe; $I nft delete table inet h6_probe
+[ "$RC1" != 0 ] && [ "$RC2" != 0 ] && [ "${SENT:-0}" -gt 0 ] && [ "${GOT:-1}" = 0 ] && pass "a unique local and a reserved IPv6 address behind the exit are unreachable through it: $SENT packet(s) reached the exit from the tunnel, none got past it" || fail "private IPv6 destinations: curl exits $RC1 $RC2, ${SENT:-?} packet(s) into the exit, ${GOT:-?} past it"
+$C "$BIN/hidravpn" down > /dev/null 2>&1
+# The rounds below reach the test's "internet", a reserved range, again.
+sed -i 's/^forward_private_destinations = false$/forward_private_destinations = true/' "$WORK/exit.toml"
 
 blocked_round() {  # $1 round, $2 invite file
   start_link_capture "$1"

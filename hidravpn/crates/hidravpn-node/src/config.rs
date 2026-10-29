@@ -95,7 +95,9 @@ pub struct NodeConfig {
     /// admission requests here (the entries of the signed list). Every
     /// two-hop client of an entry comes from that entry's address, so each
     /// of these may hold far more connections open at once than any other
-    /// address (`admission.rs`).
+    /// address (`admission.rs`). `init --admission-relay` writes it; an
+    /// open or pass-admitting node that is not an entry warns at start
+    /// while it is empty.
     #[serde(default)]
     pub admission_relays: Vec<IpAddr>,
 }

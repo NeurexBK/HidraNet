@@ -92,11 +92,15 @@ struct Limits {
 /// An idle connection costs a task and a small buffer, and the node's unit
 /// allows 65536 descriptors, so the overall cap is generous: one address's
 /// share is a small fraction of it, and a connection that sends nothing
-/// holds its place for two seconds.
+/// holds its place for two seconds. A relay gets most of it: an entry lets
+/// each of its clients hold two requests open (`nat.rs`), so filling a
+/// relay's share takes some 1500 sessions held at the entry at once, and two
+/// exits' shares twice as many: most of the 4000 places an entry has by
+/// default, which cost more work the fuller it is.
 const LIMITS: Limits = Limits {
     connections: 4096,
     per_ip: 8,
-    per_relay: 1024,
+    per_relay: 3072,
     first_byte: Duration::from_secs(2),
     request: Duration::from_secs(3),
     per_connection: Duration::from_secs(5),
@@ -271,7 +275,27 @@ pub async fn serve(
             cfg.admission_relays.len()
         );
     }
+    if let Some(w) = unlisted_relays(&cfg, listen.port(), LIMITS) {
+        warn!("{w}");
+    }
     serve_on(listener, cfg, tx, held, LIMITS).await
+}
+
+/// What a node that may be the exit of two hops says when it lists no
+/// entry in `admission_relays`: every two-hop client of an entry asks it
+/// from that entry's address, so all of them would share one address's few
+/// connections, and a couple of them could hold those.
+fn unlisted_relays(cfg: &NodeConfig, port: u16, limits: Limits) -> Option<String> {
+    (port == hidravpn_core::admission::DEFAULT_ADMISSION_PORT
+        && !cfg.is_entry()
+        && (cfg.admission_is_open() || cfg.admits_with_passes())
+        && cfg.admission_relays.is_empty())
+    .then(|| {
+        format!(
+            "no entry is listed in admission_relays: every two-hop client of an entry asks this node from the entry's address, and all of them share the {} connections one address may hold at once; on an exit of a signed list, list its entries' addresses there",
+            limits.per_ip
+        )
+    })
 }
 
 async fn serve_on(
@@ -983,6 +1007,39 @@ mod tests {
         }
         let mut past = connect_from("127.0.0.2", addr).await;
         assert!(closed_within(&mut past, Duration::from_millis(500)).await);
+    }
+
+    #[test]
+    fn an_exit_that_lists_no_relay_says_so() {
+        let port = hidravpn_core::admission::DEFAULT_ADMISSION_PORT;
+        for role in ["exit", "both"] {
+            let w = unlisted_relays(&node(role), port, LIMITS).expect(role);
+            assert!(
+                w.contains("admission_relays") && w.contains("8 connections"),
+                "{w}"
+            );
+            let mut pass = node(role);
+            pass.admission = "pass".into();
+            assert!(
+                unlisted_relays(&pass, port, LIMITS).is_some(),
+                "{role} by pass"
+            );
+            let mut listed = node(role);
+            listed.admission_relays = vec!["203.0.113.9".parse().unwrap()];
+            assert!(
+                unlisted_relays(&listed, port, LIMITS).is_none(),
+                "{role} listed"
+            );
+            let mut by_hand = node(role);
+            by_hand.admission = "manual".into();
+            assert!(
+                unlisted_relays(&by_hand, port, LIMITS).is_none(),
+                "{role} by hand"
+            );
+            // On another port an entry never relays to it: nothing to list.
+            assert!(unlisted_relays(&node(role), port + 1, LIMITS).is_none());
+        }
+        assert!(unlisted_relays(&node("entry"), port, LIMITS).is_none());
     }
 
     #[test]

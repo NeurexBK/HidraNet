@@ -149,10 +149,42 @@ const PRIVATE6: &str = "::/127, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100
 
 /// Admission requests one client may have open at once through a node that
 /// relays them (an entry, or a node that is both): a client makes one at a
-/// time. Without it, one client of an entry could hold every connection an
-/// exit grants that entry's address, and with it every two-hop client's
-/// way in.
-const RELAYED_PER_CLIENT: u32 = 4;
+/// time, and asks again only after an answer. Without it, a few clients of
+/// an entry could hold every connection an exit grants that entry's
+/// address, and with it every two-hop client's way in.
+const RELAYED_PER_CLIENT: u32 = 2;
+
+/// And how fast one client may open them: one a second, after a few at
+/// once. Counting open connections alone lets a client open and drop them
+/// as fast as it likes; an exit holds each that sends nothing for two
+/// seconds whatever the entry thinks of it.
+const RELAYED_RATE: &str = "1/second burst 3 packets";
+
+/// The table the relay limits are tried in, alone, when the node's table
+/// does not load: no packet ever passes through it.
+const PROBE: &str = "inet hidravpn_probe";
+
+/// The sets and the rules that hold each client of a relaying node to a
+/// few admission requests at once, and to a slow pace.
+fn relay_limits(tun_if: &str, out_if: &str) -> (String, String) {
+    let adm = hidravpn_core::admission::DEFAULT_ADMISSION_PORT;
+    (
+        "  set relayed {\n    type ipv4_addr; size 65535; flags dynamic;\n  }\n  set relayed_rate {\n    type ipv4_addr; size 65535; flags dynamic; timeout 1m;\n  }\n".to_string(),
+        format!(
+            r#"    iifname "{tun_if}" oifname "{out_if}" tcp dport {adm} ct state new add @relayed_rate {{ ip saddr limit rate over {RELAYED_RATE} }} reject with tcp reset comment "admission requests at a client's pace, not a script's"
+    iifname "{tun_if}" oifname "{out_if}" tcp dport {adm} ct state new add @relayed {{ ip saddr ct count over {RELAYED_PER_CLIENT} }} reject with tcp reset comment "a few admission requests open at once per client"
+"#
+        ),
+    )
+}
+
+/// The relay limits alone, in a table of their own with a chain no packet
+/// passes through: the kernel loads their modules all the same, so this
+/// says whether it can count and rate connections at all.
+fn probe_ruleset() -> String {
+    let (sets, rules) = relay_limits("hvpn0", "eth0");
+    format!("table {PROBE} {{\n{sets}  chain limits {{\n{rules}  }}\n}}\n")
+}
 
 fn ruleset(
     tun_if: &str,
@@ -184,15 +216,8 @@ fn ruleset(
 "#
         )
     };
-    let relays = !role.eq_ignore_ascii_case("exit");
-    let (relayed_set, relayed) = if relays && limit_relayed {
-        (
-            "  set relayed {\n    type ipv4_addr; size 65535; flags dynamic;\n  }\n".to_string(),
-            format!(
-                r#"    iifname "{tun_if}" oifname "{out_if}" tcp dport {adm} ct state new add @relayed {{ ip saddr ct count over {RELAYED_PER_CLIENT} }} reject with tcp reset comment "a few admission requests open at once per client"
-"#
-            ),
-        )
+    let (relayed_set, relayed) = if relays(role) && limit_relayed {
+        relay_limits(tun_if, out_if)
     } else {
         (String::new(), String::new())
     };
@@ -271,17 +296,34 @@ pub fn apply(
     let _ = remove();
     match nft(&ruleset(tun_if, out_if, cidr, policy, cidr6, true)) {
         Ok(()) => Ok(()),
-        // Counting connections needs the kernel's connection-count module;
-        // a node whose kernel lacks it still relays, without that limit,
-        // rather than not start at all.
-        Err(e) if !policy.role.eq_ignore_ascii_case("exit") => {
-            let _ = remove();
-            nft(&ruleset(tun_if, out_if, cidr, policy, cidr6, false)).map_err(|_| e)?;
-            tracing::warn!("this kernel cannot count connections in nftables: relayed admission requests are not limited per client");
-            Ok(())
-        }
+        // Counting and rating connections needs the kernel's
+        // connection-count and limit modules; a node whose kernel lacks
+        // them still relays, without those limits, rather than not start at
+        // all. Only then: any other failure stays a failure.
+        Err(e) if relays(policy.role) => match probe() {
+            Ok(()) => Err(e),
+            Err(why) => {
+                let _ = remove();
+                nft(&ruleset(tun_if, out_if, cidr, policy, cidr6, false)).map_err(|_| e)?;
+                tracing::warn!("this kernel cannot count or rate connections in nftables ({why:#}): relayed admission requests are not limited per client");
+                Ok(())
+            }
+        },
         Err(e) => Err(e),
     }
+}
+
+/// Whether a node of this role relays admission requests to exits.
+fn relays(role: &str) -> bool {
+    !role.eq_ignore_ascii_case("exit")
+}
+
+/// Loads the relay limits alone (`probe_ruleset`), and removes them again.
+fn probe() -> Result<()> {
+    let _ = nft(&format!("delete table {PROBE}\n"));
+    let r = nft(&probe_ruleset());
+    let _ = nft(&format!("delete table {PROBE}\n"));
+    r
 }
 
 pub fn remove() -> Result<()> {
@@ -452,15 +494,26 @@ mod tests {
         for role in ["entry", "both"] {
             let r = rules(role, None);
             assert!(r.contains("set relayed {"));
+            assert!(r.contains("set relayed_rate {"));
             let f = forward(&r);
-            let limit = position(&f, "add @relayed { ip saddr ct count over 4 }");
-            assert!(f[limit]
-                .starts_with(r#"iifname "hvpn0" oifname "eth0" tcp dport 51821 ct state new"#));
+            let rate = position(
+                &f,
+                "add @relayed_rate { ip saddr limit rate over 1/second burst 3 packets }",
+            );
+            let limit = position(&f, "add @relayed { ip saddr ct count over 2 }");
+            for l in [rate, limit] {
+                assert!(f[l]
+                    .starts_with(r#"iifname "hvpn0" oifname "eth0" tcp dport 51821 ct state new"#));
+                assert!(f[l].contains("reject with tcp reset"));
+            }
             let first_accept = f
                 .iter()
                 .position(|l| l.starts_with(r#"iifname "hvpn0""#) && l.contains(" accept"))
                 .unwrap();
-            assert!(limit < first_accept, "{role}: before the accepts");
+            assert!(
+                rate < first_accept && limit < first_accept,
+                "{role}: before the accepts"
+            );
         }
         let exit = rules("exit", None);
         assert!(!exit.contains("relayed"), "an exit relays nothing");
@@ -472,5 +525,18 @@ mod tests {
         let plain = ruleset("hvpn0", "eth0", "10.77.0.0/16", &p, None, false);
         assert!(!plain.contains("relayed"));
         assert!(plain.contains("ip daddr {"));
+    }
+
+    #[test]
+    fn the_probe_holds_the_relay_limits_and_nothing_a_packet_passes() {
+        let probe = probe_ruleset();
+        let entry = rules("entry", None);
+        assert!(probe.starts_with("table inet hidravpn_probe {"));
+        assert!(!probe.contains("hook"), "a chain no packet passes: {probe}");
+        for line in probe.lines().filter(|l| l.contains("add @relayed")) {
+            assert!(entry.contains(line), "the same rule as the node's: {line}");
+        }
+        assert_eq!(probe.matches("add @relayed").count(), 2);
+        assert!(probe.contains("set relayed {") && probe.contains("set relayed_rate {"));
     }
 }

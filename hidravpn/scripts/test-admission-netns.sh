@@ -16,9 +16,9 @@
 # through the exit, and the internet sees the exit's address; two hops use
 # the entry then the exit, and status says both are one operator's; an entry
 # gives no lasting lease, and used as an exit forwards nothing but WireGuard,
-# and lets a client hold only a few admission requests open through it; an
-# exit takes many requests at once from an entry it lists as a relay, and a
-# few from any other address; the admission service rate-limits a source,
+# and lets a client hold only a few admission requests open through it, and
+# open them only at a client's pace; an exit takes many requests at once
+# from an entry it lists as a relay, and a few from any other address; the admission service rate-limits a source,
 # fills up with sessions, and refuses when admission is by hand; idle open
 # admissions expire; the uptime prober reports the exit up; `discover` reads a
 # node by address; and no log names a client.
@@ -71,7 +71,9 @@ sleep 1
 
 # ── Two nodes, two roles, both admitting openly ─────────────────────────────
 # The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
-$N "$BIN/hidravpn-node" --config "$WORK/a.toml" init --forward-private-destinations --endpoint 10.202.0.1:51820 --name node-a --role exit --operator maintainers --contact nodes@example.org --open-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-a.log" 2>&1 || { cat "$WORK/init-a.log"; fail "node-a init"; exit 1; }
+# node-b's outside address is what node-a sees every two-hop client of
+# node-b come from: node-a's operator lists it as a relay.
+$N "$BIN/hidravpn-node" --config "$WORK/a.toml" init --forward-private-destinations --endpoint 10.202.0.1:51820 --name node-a --role exit --operator maintainers --contact nodes@example.org --open-admission --admission-relay 10.202.0.2 --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-a.log" 2>&1 || { cat "$WORK/init-a.log"; fail "node-a init"; exit 1; }
 $E "$BIN/hidravpn-node" --config "$WORK/b.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --tunnel 10.78.0.0/16 --name node-b --role entry --operator maintainers --open-admission --max-clients 4 --dns udp://10.201.0.2 --out-interface e-x > "$WORK/init-b.log" 2>&1 || { cat "$WORK/init-b.log"; fail "node-b init"; exit 1; }
 # Two userspace WireGuard nodes on one host need two interface names: the
 # control socket lives at /var/run/wireguard/<interface>.sock, outside the
@@ -79,19 +81,17 @@ $E "$BIN/hidravpn-node" --config "$WORK/b.toml" init --forward-private-destinati
 sed -i 's/^interface = "hvpn0"/interface = "hva0"/' "$WORK/a.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvb0"/' "$WORK/b.toml"
 grep -q '^interface = "hva0"' "$WORK/a.toml" && grep -q '^interface = "hvb0"' "$WORK/b.toml" || { fail "could not give the nodes their own interface names"; exit 1; }
-# node-b's outside address is what node-a sees every two-hop client of
-# node-b come from: node-a's operator lists it as a relay.
-sed -i 's/^admission_relays = \[\]/admission_relays = ["10.202.0.2"]/' "$WORK/a.toml"
 # Less work per session on node-b, so this script's own proof of work (in
 # Python) stays quick; the client does 20 bits anyway.
 sed -i 's/^admission_work_bits = .*/admission_work_bits = 12/' "$WORK/b.toml"
-grep -q '^admission_relays = \["10.202.0.2"\]' "$WORK/a.toml" && grep -q '^admission_work_bits = 12' "$WORK/b.toml" || { fail "could not set node-a's relay or node-b's work"; exit 1; }
+grep -q '^admission_relays = \["10.202.0.2"\]' "$WORK/a.toml" && grep -q '^admission_work_bits = 12' "$WORK/b.toml" || { fail "init did not write node-a's relay, or node-b's work could not be lowered"; exit 1; }
 grep -q 'role exit; admission open' "$WORK/init-a.log" && grep -q 'role entry; admission open' "$WORK/init-b.log" && pass "init records the role and the admission mode" || fail "init output: $(cat "$WORK/init-a.log" "$WORK/init-b.log")"
 mkdir -p "$WORK/run-a" "$WORK/run-b"
 $N env HIDRAVPN_RUN_DIR="$WORK/run-a" "$BIN/hidravpn-node" --config "$WORK/a.toml" run > "$WORK/a.log" 2>&1 & NODE_A=$!; PIDS+=($NODE_A)
 $E env HIDRAVPN_RUN_DIR="$WORK/run-b" "$BIN/hidravpn-node" --config "$WORK/b.toml" run > "$WORK/b.log" 2>&1 & NODE_B=$!; PIDS+=($NODE_B)
 for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/a.log" && grep -q "DNS forwarder ready" "$WORK/b.log" && grep -q "admission service" "$WORK/a.log" && grep -q "admission service" "$WORK/b.log" && break; sleep 0.2; done
 grep -q "admission service on TCP 51821 (open" "$WORK/a.log" && grep -q "admission service on TCP 51821 (open" "$WORK/b.log" && pass "both nodes up, each with its admission service" || { tail -n 5 "$WORK/a.log" "$WORK/b.log"; fail "nodes did not come up"; exit 1; }
+grep -q "1 entry address(es) relay admission requests here" "$WORK/a.log" && ! grep -q "no entry is listed in admission_relays" "$WORK/a.log" && pass "node-a says it has one relay, and does not warn of none" || fail "node-a's relays: $(grep -i relay "$WORK/a.log")"
 
 # ── The maintainers' side: records, a list, a signature ─────────────────────
 $N "$BIN/hidravpn-node" --config "$WORK/a.toml" record > "$WORK/rec-a.json" 2>/dev/null
@@ -164,10 +164,15 @@ $C "$BIN/hidravpn-service" up "$WORK/b-invite.json" > "$WORK/up-b.log" 2>&1 && p
 for i in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
 $C curl -s --max-time 4 http://10.201.0.2/ >/dev/null 2>&1; RC=$?
 [ "$RC" != 0 ] && pass "an entry-role node does not forward HTTP (curl exit $RC): entry policy holds" || fail "HTTP went through an entry-role node"
-# One client of an entry could otherwise hold every connection an exit
+# A few clients of an entry could otherwise hold every connection an exit
 # grants that entry's address, and with it every two-hop client's way in.
-R=$($C $LOAD hold 10.202.0.1:51821 "" 6)
-[ "$(jget "$R" 'd["connected"]')" = 4 ] && [ "$(jget "$R" 'd["refused"]')" = 2 ] && pass "through the entry a client holds at most 4 admission requests open at once; the rest are refused ($R)" || fail "relayed connections per client: $R"
+R=$($C $LOAD hold 10.202.0.1:51821 "" 3)
+[ "$(jget "$R" 'd["connected"]')" = 2 ] && [ "$(jget "$R" 'd["refused"]')" = 1 ] && pass "through the entry a client holds at most 2 admission requests open at once; the rest are refused ($R)" || fail "relayed connections per client: $R"
+# Nor may it open and drop them as fast as it likes: past a few at once,
+# one a second.
+sleep 4
+R=$($C $LOAD churn 10.202.0.1:51821 "" 10 0.05)
+[ "$(jget "$R" 'int(3 <= d["connected"] <= 4)')" = 1 ] && pass "through the entry a client opening and dropping admission requests gets a few through, then one a second ($R)" || fail "relayed connections per second: $R"
 $C "$BIN/hidravpn-service" down >/dev/null 2>&1
 
 # ── The admission service's limits ──────────────────────────────────────────

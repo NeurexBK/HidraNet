@@ -20,6 +20,8 @@
 #   --admission-port P    TCP port of the admission service (default 51821)
 #   --max-clients N       how many clients may hold a lease at once (default 4000)
 #   --idle-days N         days without a handshake after which an openly admitted client is forgotten (default 30; 0 never)
+#   --admission-relay IP  on an exit: the outside IPv4 address of an entry of the signed list; repeat it
+#                         for each entry (its two-hop clients all ask this node from that address)
 #   --dry-run             print every step and change nothing
 #
 # A node is meant for a rented server with a public address, not for a home
@@ -42,11 +44,11 @@ PREFIX="${HIDRAVPN_PREFIX:-/usr/local/bin}"
 ETC="${HIDRAVPN_ETC:-/etc/hidravpn}"
 UNIT="${HIDRAVPN_UNIT:-/etc/systemd/system/hidravpn-node.service}"
 
-ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; COUNTRY=""; TUNNEL=""; OPEN=0; PASS=0; ADM_PORT=51821
+ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; COUNTRY=""; TUNNEL=""; OPEN=0; PASS=0; ADM_PORT=51821; RELAYS=()
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --endpoint|--name|--out-interface|--role|--operator|--contact|--country|--tunnel|--admission-port|--max-clients|--idle-days)
+    --endpoint|--name|--out-interface|--role|--operator|--contact|--country|--tunnel|--admission-port|--max-clients|--idle-days|--admission-relay)
       [ $# -ge 2 ] || { echo "$1 needs a value" >&2; usage >&2; exit 2; }
       case "$1" in
         --endpoint) ENDPOINT="$2" ;;
@@ -60,6 +62,7 @@ while [ $# -gt 0 ]; do
         --admission-port) ADM_PORT="$2" ;;
         --max-clients) MAX_CLIENTS="$2" ;;
         --idle-days) IDLE_DAYS="$2" ;;
+        --admission-relay) RELAYS+=("$2") ;;
       esac
       shift 2 ;;
     --open-admission) OPEN=1; shift ;;
@@ -100,6 +103,10 @@ fi
 case "$ADM_PORT" in ''|*[!0-9]*) echo "--admission-port must be a number" >&2; exit 2 ;; esac
 case "${MAX_CLIENTS:-}" in *[!0-9]*) echo "--max-clients must be a number" >&2; exit 2 ;; esac
 case "${IDLE_DAYS:-}" in *[!0-9]*) echo "--idle-days must be a number" >&2; exit 2 ;; esac
+for r in ${RELAYS[@]+"${RELAYS[@]}"}; do
+  [[ "$r" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$|: ]] || { echo "--admission-relay must be an IP address, for instance 203.0.113.20" >&2; exit 2; }
+done
+[ ${#RELAYS[@]} -gt 0 ] && [ "$ROLE" = entry ] && { echo "--admission-relay is for an exit (or a node that is both): an entry relays, it is not relayed to" >&2; exit 2; }
 # Not the hostname: the name goes into every client's screen and into any
 # published list, and a hostname is one more thing about the server.
 [ -n "$NAME" ] || NAME="node-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -164,6 +171,7 @@ step "the node's key and settings in $ETC/node.toml"
 run install -d -m 0700 "$ETC"
 if [ -f "$ETC/node.toml" ] && [ "$DRY" = 0 ]; then
   echo "   keeping the existing $ETC/node.toml (the node keeps its key; admitted clients live in /var/lib/hidravpn/peers.json and survive reboots)"
+  [ ${#RELAYS[@]} -gt 0 ] && echo "   --admission-relay is not written into an existing node.toml: add admission_relays = [...] to it yourself, above any [[pass_keys]] section (docs/running-nodes.md)"
 else
   INIT=("$PREFIX/hidravpn-node" --config "$ETC/node.toml" init --endpoint "$ENDPOINT" --port "$PORT" --name "$NAME" --out-interface "$OUT_IF" --role "$ROLE" --admission-port "$ADM_PORT")
   [ -n "$OPERATOR" ] && INIT+=(--operator "$OPERATOR")
@@ -174,6 +182,7 @@ else
   [ "$PASS" = 1 ] && INIT+=(--pass-admission)
   [ -n "${MAX_CLIENTS:-}" ] && INIT+=(--max-clients "$MAX_CLIENTS")
   [ -n "${IDLE_DAYS:-}" ] && INIT+=(--idle-days "$IDLE_DAYS")
+  for r in ${RELAYS[@]+"${RELAYS[@]}"}; do INIT+=(--admission-relay "$r"); done
   [ ${#DNS[@]} -gt 0 ] && INIT+=(--dns "${DNS[@]}")
   run "${INIT[@]}"
 fi

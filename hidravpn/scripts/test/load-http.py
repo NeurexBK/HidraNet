@@ -12,6 +12,10 @@ line of what came back.
   load-http.py hold   H:P SOURCE COUNT
                       (COUNT connections that send nothing: how many the node
                       took, refused or closed at once, and when it closed the rest)
+  load-http.py churn  H:P SOURCE COUNT PAUSE
+                      (COUNT connections one after another, PAUSE seconds apart,
+                      each dropped with a reset as soon as it is made: how many
+                      got through)
   load-http.py burst  H:P SOURCE COUNT
                       (COUNT connections opened first, then a GET / on each)
   load-http.py session H:P NODE_KEY SOURCES PER_SOURCE
@@ -24,6 +28,7 @@ import hashlib
 import json
 import os
 import socket
+import struct
 import sys
 import threading
 import time
@@ -204,6 +209,24 @@ def cmd_hold(addr, source, count):
     }))
 
 
+def cmd_churn(addr, source, count, pause):
+    connected, refused = 0, 0
+    for i in range(count):
+        if i:
+            time.sleep(pause)
+        try:
+            s = connect(addr, source or None, timeout=3)
+        except OSError:
+            refused += 1
+            continue
+        connected += 1
+        # A reset, not a close: the connection is gone at once, on both
+        # ends and in every connection table on the way.
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        s.close()
+    print(json.dumps({"sent": count, "connected": connected, "refused": refused}))
+
+
 def cmd_burst(addr, source, count):
     socks = []
     for _ in range(count):
@@ -305,6 +328,8 @@ def main():
         cmd_idle(hp(sys.argv[2]), sys.argv[3].split(","), int(sys.argv[4]), sys.argv[5])
     elif c == "hold":
         cmd_hold(hp(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
+    elif c == "churn":
+        cmd_churn(hp(sys.argv[2]), sys.argv[3], int(sys.argv[4]), float(sys.argv[5]))
     elif c == "burst":
         cmd_burst(hp(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
     elif c == "session":

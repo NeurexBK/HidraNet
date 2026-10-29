@@ -45,7 +45,8 @@ see most two-hop clients' addresses, for a while.
 - **From the tunnel it forwards only two ports:** UDP 51820 (WireGuard) and
   TCP 51821 (the one admission request a client makes to an exit, so that the
   exit is asked from the entry's address and never from the client's), and a
-  client may hold at most 4 such requests open through it at once. The node
+  client may hold at most 2 such requests open through it at once, opened at
+  one a second after the first few. The node
   has no list of nodes, so it forwards those two ports to **any public**
   address, not only to nodes; private, link-local and reserved addresses
   (your provider's network, its metadata service) are never reached through

@@ -99,7 +99,11 @@ raise it if scripts fill the node). The node asks for more as it fills, four
 times the work from half full, sixteen times from three quarters and
 sixty-four times from seven eighths, counting both the sessions of the last
 ten minutes and the leases it holds now, so the last places cost the most
-however slowly they were taken. Sessions are not counted per address,
+however slowly they were taken. That cost falls on real users too: on a
+node seven eighths full of them, every new connection carries sixty-four
+times the work, about a minute of one core (a client works on one), so
+give a busy node more places (`max_clients`, which its subnet allows up to
+its size) well before it gets there. Sessions are not counted per address,
 because an exit sees every client of an entry under the entry's address;
 the node takes at most 600 every ten minutes. A lasting lease (`hidravpn
 nodes join`) costs no work: it is counted the old way, at most three times
@@ -127,9 +131,9 @@ The admission port accepts every connection and closes at once one it has
 no room for: past 4096 open at once, or past 8 from one address. A
 connection that sends nothing for two seconds, or not a whole request in
 three, is closed. An exit sees every two-hop client of an entry under that
-entry's address, so on an exit list the outside addresses of the entries in
-the signed list in `node.toml`, and each gets a share of 1024 connections
-instead of 8, then restart the node:
+entry's address, so on an exit list the outside IPv4 addresses of the
+entries in the signed list in `node.toml`, and each gets a share of 3072
+connections instead of 8, then restart the node:
 
 ```
 admission_relays = ["<entry 1's public ip>", "<entry 2's public ip>"]
@@ -137,11 +141,23 @@ admission_relays = ["<entry 1's public ip>", "<entry 2's public ip>"]
 
 Put that line above any `[[pass_keys]]` section of the file: below one, it
 would belong to that section and be ignored. The node's log then says
-`2 entry address(es) relay admission requests here`.
+`2 entry address(es) relay admission requests here`. A new exit takes them
+at install (`--admission-relay <ip>`, once per entry; `hidravpn-node init`
+has the same flag). Change the list whenever an entry is added to the
+signed list or moves to another address. An exit or a node that is both,
+admitting openly or with a pass, that lists none says so in its log at
+every start (`no entry is listed in admission_relays`): until it does, all
+of an entry's two-hop clients share 8 connections there, and a handful of
+them could hold those.
 
-The entry in turn lets each of its clients hold at most 4 admission
-requests open through it at once, so one client of an entry cannot use up
-that share.
+The entry in turn lets each of its clients hold at most 2 admission
+requests open through it at once, and open them at one a second after the
+first few, so one client of an entry cannot use up that share. What is
+left, said plainly: someone who holds some 1500 sessions on an entry at
+once, each with its proof of work and more work the fuller the entry gets,
+can still fill one exit's share for as long as they keep at it, and with
+twice as many both exits' shares. The node's log does not say who; an entry
+at its limit of places is the sign.
 
 An entry forwards only to UDP 51820, the default tunnel port, and to TCP
 51821, the default admission port, so a client can ask an exit for admission
@@ -185,6 +201,14 @@ until then, clients cannot use them. On an exit, list the entries in
 
 Without it, the node still describes itself on TCP 51821 (`GET /`), but
 admits only by the operator's hand: the way a friend runs a node for friends.
+
+An open exit, or open node that is both, that already holds more lasting
+leases than a quarter of `max_clients` when it is updated keeps them until
+they go `--idle-days` without a handshake; until then it has fewer places
+for sessions. To free them at once, revoke some: the leases with
+`"source": "open"` in `/var/lib/hidravpn/peers.json` are those, and
+`hidravpn-node revoke --pubkey <key>` removes one. An entry needs nothing:
+the lasting leases it holds lapse ten minutes after their last packet.
 
 An exit with open admission is a public VPN exit. Complaints will come;
 `docs/operators/abuse-response.md` is what to answer.
