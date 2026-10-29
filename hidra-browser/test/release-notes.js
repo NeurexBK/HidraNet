@@ -37,12 +37,33 @@ try {
   assert.equal(original.status, 0, original.stderr);
   assert.match(original.stdout, /Published \d{4}-\d{2}-\d{2} from commit `1234567`/);
 
+  // The notes name the packages' own version, wherever they say {version}.
+  assert.match(preview.stdout, /^# HidraNet Browser 1\.0\.0$/m);
+  assert.doesNotMatch(preview.stdout, /\{version\}/);
+  assert.match(preview.stdout, /never replaced/);
+  const next = fs.mkdtempSync(path.join(os.tmpdir(), 'hidra-release-notes-next-'));
+  try {
+    for (const name of names) fs.writeFileSync(path.join(next, name.replace('1.0.0', '1.1.0')), `fixture for ${name}`);
+    const newer = run(next, '--preview');
+    assert.equal(newer.status, 0, newer.stderr);
+    assert.match(newer.stdout, /^# HidraNet Browser 1\.1\.0$/m);
+    assert.match(newer.stdout, /HidraNet-Browser-1\.1\.0-Windows-x64\.zip/);
+    assert.doesNotMatch(newer.stdout, /HidraNet-Browser-1\.0\.0-/);
+    // Packages of two versions in one folder are not one release.
+    fs.writeFileSync(path.join(next, names[0]), 'an older package');
+    const mixed = run(next, '--preview');
+    assert.equal(mixed.status, 1);
+    assert.match(mixed.stderr, /more than one version/);
+  } finally {
+    fs.rmSync(next, { recursive: true, force: true });
+  }
+
   fs.unlinkSync(path.join(dir, names[0]));
   const missing = run(dir, '--preview');
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /missing:/);
   assert.equal(missing.stdout, '');
-  console.log('ok: preview, checksums, legacy CLI and missing-package rejection');
+  console.log('ok: preview, checksums, versions, legacy CLI and missing-package rejection');
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

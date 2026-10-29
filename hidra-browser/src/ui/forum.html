@@ -348,14 +348,35 @@ function hue(tag){ var n=0; for(var i=0;i<tag.length;i++) n=(n*31+tag.charCodeAt
 function avColor(tag){ return 'linear-gradient(135deg,hsl('+hue(tag)+',55%,52%),hsl('+((hue(tag)+40)%360)+',55%,42%))'; }
 function catColor(c){ return Object.prototype.hasOwnProperty.call(CAT_COLOR,c)?CAT_COLOR[c]:'#8891ad'; }
 function fmtDate(t){ var d=new Date(t),n=Date.now(),diff=(n-t)/1000; if(diff<60)return 'now'; if(diff<3600)return Math.floor(diff/60)+' min'; if(diff<86400)return Math.floor(diff/3600)+' h'; if(diff<604800)return Math.floor(diff/86400)+' d'; return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear(); }
-function md(s){ s=esc(s);
-  s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
+// A post's markdown. Code, images and links are cut out of the raw text first
+// and held aside as finished markup, so no later pass ever runs over markup or
+// attribute values md() made itself (a bare URL inside an image's alt text was
+// once linked again there, and its quotes ended the attribute). What is left
+// is escaped once, then gets **bold**, *italic* and line breaks. Links and
+// images go through webUrl(): http and https only, and escaped.
+function webUrl(s){
+  try{ var u=new URL(s); return (u.protocol==='https:'||u.protocol==='http:')?esc(u.href):''; }catch(e){ return ''; }
+}
+function mdInline(s){
   s=s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
   s=s.replace(/(^|[^*])\*([^*]+)\*/g,'$1<i>$2</i>');
-  s=s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g,'<img src="$2" alt="$1">');
-  s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s=s.replace(/(^|[^"=>(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-  s=s.replace(/\n/g,'<br>'); return s; }
+  return s.replace(/\n/g,'<br>');
+}
+function md(s){
+  // NUL marks held markup below; in a post it is nothing a reader can see.
+  s=String(s==null?'':s).replace(/\u0000/g,'');
+  var held=[];
+  function hold(h){ held.push(h); return '\u0000'+(held.length-1)+'\u0000'; }
+  function unhold(t){ return t.replace(/\u0000(\d+)\u0000/g,function(_,i){ return unhold(held[+i]); }); }
+  s=s.replace(/`([^`]+)`/g,function(_,c){ return hold('<code>'+esc(c).replace(/\n/g,'<br>')+'</code>'); });
+  s=s.replace(/!\[([^\]\u0000]*)\]\((https?:\/\/[^\s)\u0000]+)\)/g,function(m,alt,url){
+    var u=webUrl(url); return u?hold('<img src="'+u+'" alt="'+esc(alt)+'">'):m; });
+  s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)\u0000]+)\)/g,function(m,text,url){
+    var u=webUrl(url); return u?hold('<a href="'+u+'" target="_blank" rel="noopener">'+mdInline(esc(text))+'</a>'):m; });
+  s=s.replace(/https?:\/\/[^\s)<>"`*\u0000]+/g,function(m){
+    var u=webUrl(m); return u?hold('<a href="'+u+'" target="_blank" rel="noopener">'+esc(m)+'</a>'):m; });
+  return unhold(mdInline(esc(s)));
+}
 function toast(s){ var t=$('toast'); t.textContent=s; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(function(){t.classList.remove('show');},2600); }
 function str(v,max){ return typeof v==='string'?v.slice(0,max||MAX_TEXT):''; }
 function num(v){ return typeof v==='number'&&isFinite(v)?v:0; }
