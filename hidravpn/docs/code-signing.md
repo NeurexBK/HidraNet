@@ -150,9 +150,9 @@ such a browser from being served an old release is `MIN_VERSION` in
 `hidra-browser/src/main/vpn-installer.js`, the oldest release it installs
 whatever is signed. Raise it in a browser release:
 
-- once 0.1.1 (the first release whose service carries its version mark) is
-  published with a manifest of sequence above 0: set `MIN_VERSION` to
-  `0.1.1`;
+- once 0.1.2 (the first published release whose service carries its
+  version mark; 0.1.1 was never published) is live with a manifest of
+  sequence above 0: set `MIN_VERSION` to `0.1.2`;
 - with every HidraVPN release that fixes a security problem in the service:
   set it to that release.
 
