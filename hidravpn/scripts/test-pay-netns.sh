@@ -21,9 +21,14 @@
 # right one credits the pack, once, and the token then gets passes, prepaid;
 # a second purchase tops the account up; someone who saw the payment on
 # chain cannot claim it without the token, nor with an order of their own;
-# a flood of quotes is slowed; the node admits with a pass bought this way;
-# the issuer's files keep hashes only; and no log names the wallet, a
-# transaction, an amount, a token or the client.
+# a flood of quotes is slowed, while a flood of claims for tokens with no
+# order, of quotes past a token's orders open and of claims on that token's
+# own orders crowds no buyer out, one token's claims at once are bounded; a
+# request not sent as JSON is refused; an order no claim reached lapses in
+# two hours, and a lapsed order paid in time is credited by hand; the node
+# admits with a pass bought this way; the issuer's files keep hashes only;
+# and no log names the wallet, a transaction, an amount, a token or the
+# client.
 #
 # Run as root:  hidravpn/scripts/test-pay-netns.sh
 set -u
@@ -108,7 +113,7 @@ echo down > "$PRICE"; sleep 1.5
 OUT=$($C curl -s --max-time 5 http://10.200.0.1:8730/packs); echo "$OUT" | grep -q "\"passes\":150" && grep -q "the price feed did not answer" "$WORK/issuer.log" && pass "the feed is down: the last rate still serves" || fail "feed down: $OUT"
 sleep 4
 OUT=$($C curl -s --max-time 5 http://10.200.0.1:8730/packs); ! echo "$OUT" | grep -q "\"passes\":150" && echo "$OUT" | grep -q "\"passes\":10" && pass "the rate went stale: the dollar pack is off the list, the HNET packs stay" || fail "stale: $OUT"
-CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -d "{\"token_sha256\":\"$(printf stale | sha256sum | cut -d' ' -f1)\",\"passes\":150}" http://10.200.0.1:8730/quote)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$(printf stale | sha256sum | cut -d' ' -f1)\",\"passes\":150}" http://10.200.0.1:8730/quote)
 [ "$CODE" = 503 ] && grep -q "not known right now" "$WORK/q.json" && pass "and an order for it is refused: the rate is not known" || fail "stale quote: $CODE $(cat "$WORK/q.json")"
 echo 0.00012686 > "$PRICE"; sleep 2.5
 OUT=$($C curl -s --max-time 5 http://10.200.0.1:8730/packs); echo "$OUT" | grep -q "\"passes\":150,\"price_raw\":47217000000" && pass "the feed is back: the pack is for sale again at the rate it says" || fail "feed back: $OUT"
@@ -139,6 +144,9 @@ AMOUNT=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.j
 RAW=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])" 2>/dev/null)
 [ $RC = 0 ] && ! echo "$OUT" | grep -q "token was made" && echo "$OUT" | grep -q "Send exactly $AMOUNT HNET to" && echo "$OUT" | grep -q "$WALLET" \
   && pass "passes buy 10: an order open on the kept token, the amount and the wallet told ($AMOUNT HNET)" || fail "buy: $OUT"
+EXPIRES=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['expires'])" 2>/dev/null)
+LEFT=$(( $(date -u -d "$EXPIRES" +%s) - $(date +%s) ))
+[ "$LEFT" -gt 7000 ] && [ "$LEFT" -le 7200 ] && pass "the order is open two hours, until a claim reaches it ($EXPIRES)" || fail "expires: $EXPIRES ($LEFT s)"
 [ "$RAW" -gt 50000000 ] && [ "$RAW" -lt 50100000 ] && [ "$(stat -c %a /etc/hidravpn/order.json)" = 600 ] && [ "$(stat -c %a /etc/hidravpn/pass.token)" = 600 ] \
   && pass "the amount is the price plus a tag under 0.1 HNET; the order and the token are root's only" || fail "order file: raw=$RAW $(ls -l /etc/hidravpn)"
 TOKEN=$(cat /etc/hidravpn/pass.token)
@@ -190,7 +198,12 @@ OUT=$($C "$BIN/hidravpn" passes buy 30 2>&1); echo "$OUT" | grep -q "order open 
 RAW2=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])")
 [ "$RAW2" -gt 140000000 ] && [ "$RAW2" -lt 140100000 ] && [ "$RAW2" != "$RAW" ] || fail "second amount $RAW2"
 OUT=$($C "$BIN/hidravpn" passes claim "$(sig 7)" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "had already paid an earlier order of 10 pass(es), not the open one" && [ -e /etc/hidravpn/order.json ] && pass "the first payment again: it paid the earlier order, the open one stays open" || fail "reuse: $OUT"
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"other-token\",\"signature\":\"$(sig 7)\"}" http://10.200.0.1:8730/claim)
+# Someone else, with an order of their own (a fresh token, an order of
+# the same pack as the owner's open one).
+OTHER_HASH=$(printf other-token | sha256sum | cut -d' ' -f1)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$OTHER_HASH\",\"passes\":30}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 200 ] || fail "other quote: $CODE $(cat "$WORK/q.json")"
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"other-token\",\"signature\":\"$(sig 7)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 409 ] && grep -q "already paid an order" "$WORK/c.json" && pass "the first payment with another token's open order: it already paid, used up" || fail "reuse by another: $CODE $(cat "$WORK/c.json")"
 python3 -I - "$LEDGER" "$RAW2" "$NOW" "$(sig 8)" "$(sig 9)" <<'PY'
 import json, sys
@@ -199,27 +212,45 @@ d = json.load(open(p)); d[s8] = {"amount": raw, "time": now + 1, "ok": True}; d[
 json.dump(d, open(p, "w"))
 PY
 # Someone who saw the payment on chain: without the token there is no
-# order of theirs (404); with an order of their own, the amount is not
-# theirs (402). Their token is a fresh one, its order of the same pack.
-OTHER_HASH=$(printf other-token | sha256sum | cut -d' ' -f1)
-CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -d "{\"token_sha256\":\"$OTHER_HASH\",\"passes\":30}" http://10.200.0.1:8730/quote)
-[ "$CODE" = 200 ] || fail "other quote: $CODE $(cat "$WORK/q.json")"
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"other-token\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
+# order of theirs (404); with the order of their own, the amount is not
+# theirs (402).
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"other-token\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 402 ] && grep -q "another amount" "$WORK/c.json" && pass "a watcher of the chain with an order of their own cannot claim the payment: not their amount" || fail "watcher with order: $CODE $(cat "$WORK/c.json")"
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"nobody\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"nobody\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 404 ] && pass "a watcher without an order: no order for that token" || fail "watcher: $CODE $(cat "$WORK/c.json")"
+# ── Floods that crowd no buyer out ─────────────────────────────────────────
+# Claims for tokens that have no order, and quotes for a token that has as
+# many orders open as it may, are answered without a share of the buckets:
+# right after sixty of each, the owner's claim and a new quote go through.
+S8=$(sig 8)
+CODES=$(for i in $(seq 1 60); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"nobody-$i\",\"signature\":\"$S8\"}" http://10.200.0.1:8730/claim; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+[ "$CODES" = " 60 404;" ] && pass "sixty claims for tokens with no order: each told so, none slowed ($CODES)" || fail "orderless claims: $CODES"
+FLOOD_HASH=$(printf one-hash-for-nobody | sha256sum | cut -d' ' -f1)
+CODES=$(for i in $(seq 1 60); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$FLOOD_HASH\",\"passes\":10}" http://10.200.0.1:8730/quote; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+[ "$CODES" = " 5 200; 55 429;" ] && pass "sixty quotes for one token: five orders, then told it has five open ($CODES)" || fail "one-token quotes: $CODES"
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$FLOOD_HASH\",\"passes\":10}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 429 ] && grep -q "already has 5 orders open" "$WORK/q.json" && pass "the token's limit, not the issuer's bucket, said no" || fail "one-token quote: $CODE $(cat "$WORK/q.json")"
+# Claims on those orders of its own, with a signature that pays none of
+# them: each counts a try on all five, so six reach the chain and the rest
+# are answered, without the bucket, that the tries are spent.
+CODES=$(for i in $(seq 1 60); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"one-hash-for-nobody\",\"signature\":\"$S8\"}" http://10.200.0.1:8730/claim; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+[ "$CODES" = " 6 402; 54 429;" ] && pass "sixty claims on that token's own orders: six reach the chain, then its tries are spent ($CODES)" || fail "own-order claims: $CODES"
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$(printf after-the-flood | sha256sum | cut -d' ' -f1)\",\"passes\":10}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 200 ] && pass "a buyer right after both floods: the order opens" || fail "quote after the flood: $CODE $(cat "$WORK/q.json")"
 OUT=$($C "$BIN/hidravpn" passes claim "$(sig 8)" 2>&1); echo "$OUT" | grep -q "paid: 30 pass(es) credited; the account has 37 in all" && pass "the owner claims it: 30 more, 37 in all" || fail "claim 30: $OUT"
 # A second transaction of the same amount, after the order was paid: no
 # order of this token is open for it.
 OUT=$($C "$BIN/hidravpn" passes claim "$(sig 9)" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no order is open" && pass "paid twice by mistake: there is no order to claim at home" || fail "second payment: $OUT"
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"$TOKEN\",\"signature\":\"$(sig 9)\"}" http://10.200.0.1:8730/claim)
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"signature\":\"$(sig 9)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 404 ] && pass "nor at the issuer: no open order (an operator can credit it by hand)" || fail "second payment at the issuer: $CODE $(cat "$WORK/c.json")"
 # A watcher who opened an order of their own for the same pack and sends
 # the second payment's signature: the amount is the victim's, not theirs.
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"other-token\",\"signature\":\"$(sig 9)\"}" http://10.200.0.1:8730/claim)
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"other-token\",\"signature\":\"$(sig 9)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 402 ] && pass "a watcher with an order of the same pack cannot take a stray payment either" || fail "watcher stray: $CODE $(cat "$WORK/c.json")"
-# The same claim once more: idempotent, nothing credited twice.
-CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -d "{\"token\":\"$TOKEN\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
+# The same claim once more: idempotent, nothing credited twice. (A few
+# seconds on: the token has made many claims, and one token's are paced.)
+sleep 6.5
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
 [ "$CODE" = 200 ] && grep -q '"balance":37,"amount_raw":'"$RAW2"',"already_claimed":true' "$WORK/c.json" && pass "the same claim again: already claimed, the balance as it was" || fail "idempotent: $CODE $(cat "$WORK/c.json")"
 
 # ── An order in dollars ─────────────────────────────────────────────────────
@@ -227,12 +258,54 @@ OUT=$($C "$BIN/hidravpn" passes buy 150 2>&1); echo "$OUT" | grep -q "Send exact
 grep -q '"usd": "5.99"' /etc/hidravpn/order.json && grep -q '"rate": "0.00012686"' /etc/hidravpn/order.json && pass "the order file keeps the dollars and the rate" || fail "order file: $(cat /etc/hidravpn/order.json)"
 
 # ── A flood of quotes is slowed ─────────────────────────────────────────────
-CODES=$(for i in $(seq 1 40); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 -X POST -d "{\"token_sha256\":\"$(printf "flood-%s" "$i" | sha256sum | cut -d' ' -f1)\",\"passes\":10}" http://10.200.0.1:8730/quote; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+CODES=$(for i in $(seq 1 40); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$(printf "flood-%s" "$i" | sha256sum | cut -d' ' -f1)\",\"passes\":10}" http://10.200.0.1:8730/quote; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
 echo "$CODES" | grep -q " 429;" && echo "$CODES" | grep -q " 200;" && pass "forty quotes at once: some answered, the rest told to wait ($CODES)" || fail "flood: $CODES"
-CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -d '{"token_sha256":"zz","passes":10}' http://10.200.0.1:8730/quote)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"token_sha256":"zz","passes":10}' http://10.200.0.1:8730/quote)
 [ "$CODE" = 400 ] && pass "a quote without a proper hash: refused" || fail "bad hash: $CODE"
-CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -d 'not json' http://10.200.0.1:8730/claim)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d 'not json' http://10.200.0.1:8730/claim)
 [ "$CODE" = 400 ] && pass "a claim that is not one: refused" || fail "bad claim: $CODE"
+# One token's claims at once are paced: on an order of its own, twenty
+# claims in a moment, ten reach the chain and ten are told to wait. (A
+# second first, for the quote bucket the flood above emptied.) The
+# signature is of no transaction: each claim that gets through is a lookup.
+sleep 1
+S11=$(sig 11)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$(printf one-order | sha256sum | cut -d' ' -f1)\",\"passes\":10}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 200 ] || fail "one-order quote: $CODE $(cat "$WORK/q.json")"
+CODES=$(for i in $(seq 1 20); do $C curl -s -o "$WORK/c-$i.json" -w '%{http_code}\n' --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"token\":\"one-order\",\"signature\":\"$S11\"}" http://10.200.0.1:8730/claim; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+[ "$CODES" = " 10 404; 10 429;" ] && [ "$(grep -l "many claims just now" "$WORK"/c-*.json | wc -l)" = 10 ] && pass "twenty claims of one token at once: ten reach the chain, ten told to wait ($CODES)" || fail "token pace: $CODES"
+
+# ── Only JSON is read ───────────────────────────────────────────────────────
+# A web page can make its visitors' browsers send text or a form here
+# without asking; neither is read, so no page can spend the buckets.
+TEXT_HASH=$(printf sent-as-text | sha256sum | cut -d' ' -f1)
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: text/plain' -d "{\"token_sha256\":\"$TEXT_HASH\",\"passes\":10}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 415 ] && grep -q "application/json" "$WORK/q.json" && ! grep -q "$TEXT_HASH" "$WORK/orders.json" && pass "a quote sent as text/plain: refused (415), no order opened" || fail "text/plain quote: $CODE $(cat "$WORK/q.json")"
+CODE=$($C curl -s -o "$WORK/q.json" -w '%{http_code}' --max-time 5 -X POST -d "{\"token_sha256\":\"$TEXT_HASH\",\"passes\":10}" http://10.200.0.1:8730/quote)
+[ "$CODE" = 415 ] && pass "a quote sent as a form: refused (415)" || fail "form quote: $CODE"
+CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: text/plain;charset=UTF-8' -d "{\"token\":\"$TOKEN\",\"signature\":\"$(sig 8)\"}" http://10.200.0.1:8730/claim)
+[ "$CODE" = 415 ] && pass "a claim sent as text/plain: refused (415)" || fail "text/plain claim: $CODE $(cat "$WORK/c.json")"
+CODE=$($C curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: text/plain' -d '{}' http://10.200.0.1:8730/issue)
+[ "$CODE" = 415 ] && pass "an issuance sent as text/plain: refused (415)" || fail "text/plain issue: $CODE"
+
+# ── A lapsed order, credited by hand ────────────────────────────────────────
+# An order no claim reached, lapsed two hours after it was made; its record
+# is kept. The operator, having checked the payment on chain, credits it to
+# the account that made the order, and the transaction pays nothing else.
+LATE="$BIN/hidravpn-issuer --accounts $WORK/late-accounts.json --orders $WORK/late-orders.json"
+LATE_HASH=$(printf late-token | sha256sum | cut -d' ' -f1)
+python3 -I - "$WORK/late-orders.json" "$LATE_HASH" "$NOW" <<'PY'
+import json, sys
+p, h, now = sys.argv[1], sys.argv[2], int(sys.argv[3])
+json.dump({"orders": [{"token_sha256": h, "passes": 10, "amount_raw": 50012345, "created": now - 10000, "tries": 0, "unclaimed": True}], "used": []}, open(p, "w"))
+PY
+utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+OUT=$($LATE order lapsed 2>&1); echo "$OUT" | grep -q "^50.012345 for 10 pass(es)  made $(utc $((NOW - 10000)))  lapsed $(utc $((NOW - 10000 + 7200)))  never claimed  account $LATE_HASH$" && pass "order lapsed: the unpaid order, two hours after it was made, with the amount and whose it was" || fail "order lapsed: $OUT"
+OUT=$($LATE order credit --amount 50.012345 --signature "$(sig 10)" --paid-at "$(utc $((NOW - 100)))" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no lapsed order of that amount could have been paid at that time" && pass "a payment after the order lapsed: not credited" || fail "late credit: $OUT"
+OUT=$($LATE order credit --amount 50.012346 --signature "$(sig 10)" --paid-at "$(utc $((NOW - 9000)))" 2>&1); [ $? -ne 0 ] && pass "another amount: not credited" || fail "wrong amount credit: $OUT"
+OUT=$($LATE order credit --amount 50.012345 --signature "$(sig 10)" --paid-at "$(utc $((NOW - 9000)))" 2>&1); echo "$OUT" | grep -q "credited 10 pass(es) to the account that made the order; it has 10 in all" && pass "paid while it was open: credited by hand" || fail "credit: $OUT"
+$LATE account list 2>/dev/null | grep -q "^paid-[0-9a-f]\{8\} .* 10 left (prepaid)" && python3 -I -c "import json,sys; a=json.load(open(sys.argv[1]))['accounts']; sys.exit(0 if a[0]['token_sha256']==sys.argv[2] else 1)" "$WORK/late-accounts.json" "$LATE_HASH" && pass "on the account of the order's own token" || fail "late account: $($LATE account list 2>&1)"
+OUT=$($LATE order credit --amount 50.012345 --signature "$(sig 10)" --paid-at "$(utc $((NOW - 9000)))" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "already paid an order" && pass "the same credit again: refused, the transaction is used" || fail "credit twice: $OUT"
 
 # ── Nothing identifying kept or logged ──────────────────────────────────────
 [ "$(stat -c %a "$WORK/orders.json")" = 600 ] && pass "the orders file is the issuer's only" || fail "orders mode $(stat -c %a "$WORK/orders.json")"

@@ -1214,6 +1214,39 @@ mod tests {
         assert!(read_token(&tok).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_claim_turned_away_for_now_says_the_order_is_still_open() {
+        use hidravpn_core::admission::refusal;
+        use hidravpn_core::payment::{Rejected, CLAIMS_BUSY, CLAIM_PACED};
+        let open = "up to 24 hours from when it was made";
+        // The payment not yet final, or the issuer busy just then: the
+        // claim reached the order.
+        for (status, e) in [
+            (404, Rejected::NotFound.to_string()),
+            (429, CLAIM_PACED.to_string()),
+            (429, CLAIMS_BUSY.to_string()),
+        ] {
+            let why = claim_refused(status, &refusal(e.clone()));
+            assert!(why.contains(&e) && why.contains(open), "{why}");
+        }
+        // No order, tried too often, a proxy's limit (no answer of the
+        // issuer's), a failed payment: nothing says it is still open.
+        for (status, body) in [
+            (
+                404,
+                refusal("no open order for this token (none made, or it lapsed)"),
+            ),
+            (
+                429,
+                refusal("this order was tried too many times; make a new one"),
+            ),
+            (429, String::new()),
+            (402, refusal(Rejected::Failed.to_string())),
+        ] {
+            assert!(!claim_refused(status, &body).contains(open), "{body}");
+        }
+    }
 }
 
 // ---- buying passes with HNET (phase 7) ---------------------------------------------
@@ -1270,7 +1303,7 @@ pub fn describe_order(o: &Order) -> String {
     format!(
         "Send exactly {amount} {token}{in_dollars} to\n  {wallet}\nfrom any Solana wallet, by {expires} (UTC).\n\
          The amount must match to the last digit: it is what tells your payment apart.\n\
-         Then: hidravpn passes claim <transaction signature>\n\
+         Then, by the same time: hidravpn passes claim <transaction signature>\n\
          (the signature is in the wallet's transaction details, or on a Solana explorer).\n\
          Payments on Solana are public. To keep this one apart from the rest of what you do,\n\
          pay from a wallet you use for nothing else.",
@@ -1404,7 +1437,7 @@ pub async fn claim(
     })?;
     let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
     if status != 200 {
-        return Err(anyhow!(refused("did not take the claim", status, &answer)));
+        return Err(anyhow!(claim_refused(status, &answer)));
     }
     let c: hidravpn_core::payment::ClaimResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
@@ -1432,6 +1465,33 @@ pub async fn claim(
             balance: c.balance,
         }
     })
+}
+
+/// Why the issuer did not take a claim. A claim it turned away only for now
+/// (the payment not yet final on chain, or too many claims just then) has
+/// reached the order, and a claim from the order's own token keeps it open
+/// longer than the quote said: the person is told so, so they try again
+/// rather than give up on a payment. The issuer's answer does not carry the
+/// new time, so this says what holds as a rule.
+fn claim_refused(status: u16, answer: &str) -> String {
+    use hidravpn_core::payment::{Rejected, CLAIMS_BUSY, CLAIM_PACED, ORDER_LIFETIME};
+    let error = serde_json::from_str::<hidravpn_core::admission::Refusal>(answer)
+        .map(|r| r.error)
+        .unwrap_or_default();
+    let for_now = match status {
+        404 => error == Rejected::NotFound.to_string(),
+        429 => error == CLAIM_PACED || error == CLAIMS_BUSY,
+        _ => false,
+    };
+    let why = refused("did not take the claim", status, answer);
+    if !for_now {
+        return why;
+    }
+    format!(
+        "{why}\nThe order stays open past the time it shows: a claim that reaches the issuer \
+         normally keeps it open up to {} hours from when it was made, so try the claim again later.",
+        ORDER_LIFETIME / 3600
+    )
 }
 
 fn refused(what: &str, status: u16, answer: &str) -> String {

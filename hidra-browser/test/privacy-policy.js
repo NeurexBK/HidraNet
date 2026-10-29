@@ -147,8 +147,10 @@ if (!vpn) {
   else ok('HidraVPN issuer records: accounts, orders, the ledger, and fetching outside the tunnel');
 
   // When the issuer forgets an order: only as often as it prunes. While
-  // prune runs only inside the handlers for a new order and a claim, a
-  // stated deadline is not a bound, and the policy must say so.
+  // prune runs only inside the handlers for a new order and a claim (open,
+  // and hold and before_claim for a claim), and in the maintainers' own
+  // order commands (take_lapsed for a credit by hand, and main, which only
+  // reads), a stated deadline is not a bound, and the policy must say so.
   const issuerSrc = read(ROOT, 'hidravpn', 'crates', 'hidravpn-issuer', 'src', 'main.rs');
   const testsAt = issuerSrc.search(/\nmod tests\b/);
   const live = testsAt < 0 ? issuerSrc : issuerSrc.slice(0, testsAt);
@@ -156,11 +158,37 @@ if (!vpn) {
     const fns = [...live.slice(0, m.index).matchAll(/\bfn (\w+)/g)];
     return fns.length ? fns[fns.length - 1][1] : '?';
   }))];
-  const onDemand = pruners.length > 0 && pruners.every((f) => f === 'open' || f === 'before_claim');
+  const onDemand = pruners.length > 0 && pruners.every((f) => ['open', 'hold', 'before_claim', 'take_lapsed', 'main'].includes(f));
   if (!pruners.length) bad('HidraVPN order retention', 'could not find where the issuer prunes its orders');
   else if (onDemand && (/orders? (?:are|is) deleted after/i.test(vpn) || !/next time anyone opens or claims an order/.test(vpn))) {
     bad('HidraVPN order retention', `the issuer prunes orders only in ${pruners.join(' and ')}; the section must say old orders go when the next order is opened or claimed`);
   } else ok('HidraVPN order retention: as the issuer prunes (' + pruners.join(', ') + ')');
+
+  // What the issuer keeps of an order that lapses unpaid: a file of its
+  // own beside the orders, with the amount and the times the ledger can be
+  // matched against, kept for its days whatever the orders file says.
+  const ordersDefault = issuerSrc.match(/default_value = "[^"]*\/([^"/]+)\.json"\s*\)\]\s*orders: PathBuf/);
+  const lapsedExt = live.match(/fn lapsed_path\(orders: &Path\) -> PathBuf \{\s*orders\.with_extension\("([^"]+)"\)/);
+  const lapsedKept = live.match(/const LAPSED_KEPT: i64 = (\d+) \* 86_400;/);
+  if (!ordersDefault || !lapsedExt || !lapsedKept) {
+    bad('HidraVPN lapsed orders', 'could not read the orders file, lapsed_path or LAPSED_KEPT from hidravpn-issuer/src/main.rs');
+  } else {
+    const file = `${ordersDefault[1]}.${lapsedExt[1]}`;
+    const days = `${lapsedKept[1]} days`;
+    if (!vpn.includes(file) || !vpn.includes(days) || !/three files/.test(vpn) || /two files/.test(vpn)) {
+      bad('HidraVPN lapsed orders', `the issuer keeps the record of an order that lapses unpaid in a third file, ${file}, for ${days}; the section must say three files, name it and say how long`);
+    } else ok(`HidraVPN lapsed orders: ${file}, kept ${days}`);
+  }
+
+  // How long an order stays open: less when no claim has reached it.
+  const paymentSrc = read(ROOT, 'hidravpn', 'crates', 'hidravpn-core', 'src', 'payment.rs');
+  const unclaimed = paymentSrc.match(/pub const UNCLAIMED_LIFETIME: i64 = (\d+) \* 3600;/);
+  const life = paymentSrc.match(/pub const ORDER_LIFETIME: i64 = (\d+) \* 3600;/);
+  if (!unclaimed || !life) {
+    bad('HidraVPN order life', 'could not read UNCLAIMED_LIFETIME or ORDER_LIFETIME from hidravpn-core/src/payment.rs');
+  } else if (!vpn.includes(`${unclaimed[1]} hours after it was made`) || !vpn.includes(`a claim has reached after ${life[1]} hours`)) {
+    bad('HidraVPN order life', `an order no claim has reached lapses ${unclaimed[1]} hours after it was made, one a claim has reached after ${life[1]} hours, and the section does not say so`);
+  } else ok(`HidraVPN order life: ${unclaimed[1]} hours unclaimed, ${life[1]} once claimed`);
 
   // Account names: random only for one a purchase made.
   if (/fn add\(&mut self, name: &str/.test(issuerSrc) && !/chosen by the maintainers/.test(vpn)) {
