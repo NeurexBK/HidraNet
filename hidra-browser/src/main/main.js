@@ -1,6 +1,7 @@
 const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog, nativeImage, shell } = require('electron');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
 const appOrigins = require('./app-origins');
@@ -12,12 +13,10 @@ const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
-const { TorManager } = require('./tor-manager');
-const { NetworkLock } = require('./network-lock');
+const { TorManager, SOCKS_PORT, proxyRulesFor } = require('./tor-manager');
+const { NetworkLock, HOST_RESOLVER_RULES } = require('./network-lock');
 const { FingerprintEngine } = require('../fingerprint/engine');
 
-const PROXY_ADDR = '127.0.0.1';
-const PROXY_PORT = 9050;
 const CHAT_PORT = 8090;
 const SEVENNINE_PORT = 8084;
 
@@ -137,27 +136,31 @@ function vpnReleaseState() {
 }
 
 // The leak test has to see what every other program on this machine sees,
-// not what the browser's own Tor route sees, so it asks from a session with
-// no proxy at all. Used only when the person presses the button, and only
-// once runLeakTest has seen the kill switch armed and the tunnel alive, so
-// what the address service learns is the exit's address. It is told nothing
-// else: a generic user agent, no cookies, an in-memory session.
+// not what the browser's own Tor route sees, so it asks through Node's own
+// https, which knows nothing of the browser's sessions: the system resolver
+// and no proxy, like any other program. It used to ask from a Chromium
+// session set to 'direct', but no Chromium session is ever direct now, and
+// Chromium resolves no names itself (HOST_RESOLVER_RULES). Used only when the
+// person presses the button, and only once runLeakTest has seen the kill
+// switch armed and the tunnel alive, so what the address service learns is
+// the exit's address. It is told nothing else: a generic user agent, no
+// cookies, no connection kept for later.
 function directProbe(url) {
   return new Promise((resolve, reject) => {
-    const probe = session.fromPartition('hidravpn-leak-test');
-    probe.setUserAgent(VPN_FETCH_UA);
-    probe.setProxy({ mode: 'direct' }).then(() => {
-      const request = net.request({ url, session: probe, useSessionCookies: false, credentials: 'omit' });
-      request.setHeader('User-Agent', VPN_FETCH_UA);
+    // `timeout` below only notices a silent socket; this bounds the whole
+    // exchange, so a server that sends a byte at a time cannot hold it open.
+    let deadline = null;
+    const done = (fn) => (v) => { clearTimeout(deadline); fn(v); };
+    const request = https.get(url, { headers: { 'User-Agent': VPN_FETCH_UA }, agent: false, timeout: 10000 }, (res) => {
       let body = '';
-      const timer = setTimeout(() => { try { request.abort(); } catch (e) {} reject(new Error('timeout')); }, 10000);
-      request.on('response', (res) => {
-        res.on('data', (c) => { if (body.length < 4096) body += c; });
-        res.on('end', () => { clearTimeout(timer); resolve(body); });
-      });
-      request.on('error', (e) => { clearTimeout(timer); reject(e); });
-      request.end();
-    }).catch(reject);
+      res.setEncoding('utf8');
+      res.on('data', (c) => { if (body.length < 4096) body += c; });
+      res.on('end', () => done(resolve)(body));
+      res.on('error', done(reject));
+    });
+    deadline = setTimeout(() => request.destroy(new Error('timeout')), 10000);
+    request.on('timeout', () => request.destroy(new Error('timeout')));
+    request.on('error', done(reject));
   });
 }
 
@@ -190,8 +193,9 @@ let tabManager = null;
 let proxyManager = null;
 let torManager = null;
 let chatServer = null;
-// Closed until Tor confirms it is carrying the traffic. See network-lock.js.
-let networkLock = new NetworkLock();
+// Closed until Tor confirms it is carrying the traffic, and the one place
+// every session gets its route: Tor's SOCKS port, always. See network-lock.js.
+const networkLock = new NetworkLock(proxyRulesFor(SOCKS_PORT));
 // Whether the apps server actually got its port. A silent failure here
 // costs chat, mail, forum and search with no sign in the interface.
 let appsServer = { listening: false, error: null };
@@ -199,25 +203,6 @@ let appsServer = { listening: false, error: null };
 // Where the apps keep what identifies you, under the system keychain. See
 // vault.js. Created once the app is ready, because safeStorage is not before.
 let vault = null;
-
-// Applies (or clears) the network proxy on every session the browser owns —
-// the default one plus each tab's isolated partition. New tabs pick the same
-// rules up through TabManager.setProxyRules.
-async function applyProxyEverywhere(proxyRules) {
-  const config = proxyRules
-    ? { proxyRules, proxyBypassRules: LOOPBACK_ONLY }
-    : { mode: 'direct' };
-
-  if (tabManager) tabManager.setProxyRules(proxyRules);
-
-  networkLock.protect(session.defaultSession);
-  await session.defaultSession.setProxy(config);
-  if (tabManager) {
-    for (const s of tabManager.getAllSessions()) {
-      await s.setProxy(config);
-    }
-  }
-}
 
 // Shared by the Connect button and the automatic connect at startup, so both
 // paths route traffic and verify the exit the same way. Connect pressed while
@@ -230,6 +215,9 @@ function connectTor() {
 }
 
 async function connectTorOnce() {
+  // Taken before anything is awaited: a Disconnect or a Tor crash from here
+  // on engages the lock again, and then this connect may no longer open it.
+  const generation = networkLock.generation;
   const started = await torManager.start(app.getPath('userData'));
   if (!started.ok) {
     // Stays closed: a Tor that did not start must not let traffic out.
@@ -237,14 +225,28 @@ async function connectTorOnce() {
     return { ok: false, msg: started.error || 'could not start Tor' };
   }
 
+  // Every session has been on Tor's SOCKS port since it was made; nothing
+  // needs switching now. What is checked is that Chromium agrees, session by
+  // session, and that the Tor that came up is the one on that port.
   const rules = torManager.getStatus().proxyRules;
-  await applyProxyEverywhere(rules);
+  const unrouted = rules === networkLock.proxyRules ? await networkLock.unrouted() : ['all'];
+  if (unrouted.length) {
+    networkLock.engage('a session is not routed through Tor');
+    // Not left running as "connected" behind a lock that stays shut.
+    await torManager.stop();
+    return { ok: false, msg: `Tor is up, but ${unrouted.length} session(s) would not take its route; the network stays blocked` };
+  }
 
-  // Tor reached 100% and the rules are applied to every session: the
-  // traffic physically goes through its SOCKS port. This is the moment to open —
-  // not the IP check, which depends on an external site being up. If that check
-  // fails we tell the user, but we do not leave them without a network.
-  networkLock.release();
+  // Tor reached 100% and Chromium confirms every session goes through its
+  // SOCKS port. This is the moment to open — not the IP check, which depends
+  // on an external site being up. If that check fails we tell the user, but
+  // we do not leave them without a network. Only if this connect is still
+  // the current one: the checks above are awaited, and Tor may have died or
+  // the user pressed Disconnect while they ran.
+  // What closed the lock meanwhile left it closed, with its own reason.
+  if (torManager.getStatus().state !== 'ready' || !networkLock.release(generation)) {
+    return { ok: false, msg: 'Tor stopped before the connection was confirmed; the network stays blocked' };
+  }
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
@@ -327,7 +329,7 @@ function savePrefs() {
 // knows nothing about Electron sessions, so every query used to leave with the
 // user's real IP even while connected — and a search history is the most
 // revealing thing this browser handles. net.request rides the default session,
-// which applyProxyEverywhere points at Tor.
+// which the network lock points at Tor.
 function netRequest(options) {
   return new Promise((resolve, reject) => {
     let request;
@@ -812,6 +814,9 @@ function startChatServer(attempt) {
 //
 // This one does exist, and hides local IPs behind mDNS names.
 app.commandLine.appendSwitch('enable-features', 'WebRtcHideLocalIpsWithMdns');
+// Chromium resolves no name itself, except this machine's own (see
+// HOST_RESOLVER_RULES in network-lock.js): every other name goes to Tor.
+app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 app.commandLine.appendSwitch('disable-reading-from-canvas');
 app.commandLine.appendSwitch('disable-gl-extensions');
 app.commandLine.appendSwitch('disable-accelerated-2d-canvas');
@@ -844,28 +849,21 @@ app.whenReady().then(async () => {
   loadPrefs();
   vault = new VaultStore(path.join(app.getPath('userData'), 'vault'), safeStorage);
   startChatServer();
-  proxyManager = new ProxyManager(PROXY_ADDR, PROXY_PORT);
+  proxyManager = new ProxyManager();
   torManager = new TorManager();
 
-  // Before any request can leave.
-  networkLock.protect(session.defaultSession);
+  // Before any request can leave: the filter, and Tor's route.
+  await networkLock.protect(session.defaultSession);
 
   // A Tor that dies mid-session used to leave the proxy falling back to
-  // direct, and browsing carried on with no warning. Now it closes again.
+  // direct, and browsing carried on with no warning. Now the lock closes
+  // again, and the sessions stay on Tor's port, which is closed now too.
   torManager.onUnexpectedExit = (reason) => {
     networkLock.engage('Tor exited unexpectedly' + (reason ? ' — ' + reason : ''));
-    applyProxyEverywhere(null).catch(() => {});
   };
 
-  const proxyReady = await proxyManager.configure(session.defaultSession);
-  if (proxyReady) {
-    console.log('SOCKS5 proxy detected — connected');
-  } else {
-    console.log('Waiting for user to click Connect');
-  }
-
   mainWindow = createMainWindow();
-  tabManager = new TabManager(mainWindow, proxyManager, networkLock);
+  tabManager = new TabManager(mainWindow, networkLock);
 
   setupIPC(tabManager, proxyManager);
 
@@ -1004,12 +1002,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
 
   ipcMain.handle('proxy:status', (event) => {
     fromChromeOr(event, ['newtab.html'], 'proxy:status');
-    const base = proxy.getStatus();
     const tor = torManager.getStatus();
     const connected = tor.state === 'ready';
 
     return {
-      ...base,
+      // The one route every session has, whatever the state.
+      proxy: `127.0.0.1:${tor.socksPort}`,
       connected,
       mode: connected ? 'tor' : (tor.state === 'starting' ? 'connecting' : 'disconnected'),
       tor,
@@ -1088,10 +1086,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
 
   ipcMain.handle('proxy:disconnect', async (event) => {
     fromPages(event, ['newtab.html'], 'proxy:disconnect');
-    await torManager.stop();
+    // Closed before Tor is stopped, not after: Tor's port is free before its
+    // process is seen to exit, and nothing may carry on meanwhile. Not
+    // 'direct': the sessions keep Tor's route, to a port nothing listens on
+    // any more, and the lock blocks what reaches the filter.
     networkLock.engage('disconnected by the user');
-    await applyProxyEverywhere(null);
-    await proxy.shutdown(null);
+    await torManager.stop();
     return { ok: true, msg: 'disconnected' };
   });
 
