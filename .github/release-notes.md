@@ -4,7 +4,7 @@ A browser for private browsing, with Tor built in and HidraNet's own apps alongs
 
 Every build is published under a version and a tag of its own, and a file on a release page is never replaced. The table at the bottom is generated from the files that were actually uploaded. If a hash does not match your download, do not run it.
 
-From 1.1.0 the browser tells you, on the new tab page, when a newer version is out or when yours has known security problems. It reads that from `SHA256SUMS.txt` on hidranet.org, fetched through Tor, and believes it only when the release key's signature over it checks out; it never downloads or installs anything itself. That request reaches the host of hidranet.org from the Tor exit address, once per connection; the privacy policy (version 1.1) lists it.
+From 1.1.0 the browser tells you, on the new tab page, when a newer version is out or when yours has known security problems. It reads that from `SHA256SUMS.txt` on hidranet.org, fetched through Tor, and believes it only when the release key's signature over it checks out; it never downloads or installs anything itself. That request reaches the host of hidranet.org from the Tor exit address, once per connection; the privacy policy (version 1.2) lists it.
 
 ## What is in this build
 
