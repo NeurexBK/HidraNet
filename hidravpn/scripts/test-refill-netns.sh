@@ -241,11 +241,13 @@ cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "rapido after privado: $R"
 for _ in $(seq 1 20); do [ "$(count_of node-p)" = 10 ] && break; sleep 1; done
 [ "$(count_of node-p)" = 10 ] && pass "back in one hop, node-p is topped up to 10" || fail "top-up after privado: $(count_of node-p)"
-# In one hop a join goes ahead; node-p's pass is redeemed from this machine,
-# not behind an entry, so it may be shown from here again.
-R=$(svc '{"cmd":"join","name":"node-p"}')
-BEHIND=$(python3 -I -c "import json; print([x for x in json.load(open('/etc/hidravpn/circuit.json'))['exits'] if x['node_name']=='node-p'][0]['pass'].get('behind'))")
-echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q "node-p: admitted with a pass" && [ "$BEHIND" = False ] && pass "in rapido node-p is joined with a pass, written down as redeemed from here" || fail "join in rapido: $R (behind $BEHIND)"
+# In one hop a join goes ahead: node-x, known again from the list, is
+# joined with a pass redeemed from this machine (through node-p, not behind
+# an entry), and written down so, to be shown from here again.
+"$BIN/hidravpn" nodes import "$WORK/nodes2.json" --pubkey "$LISTPUB" > /dev/null 2>&1
+R=$(svc '{"cmd":"join","name":"node-x"}')
+BEHIND=$(python3 -I -c "import json; print([x.get('pass', {}).get('behind') for x in json.load(open('/etc/hidravpn/circuit.json'))['exits'] if x['node_name']=='node-x'])")
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q "node-x: admitted with a pass" && [ "$BEHIND" = "[False]" ] && pass "in rapido node-x is joined with a pass, written down as redeemed from here" || fail "join in rapido: $R (behind $BEHIND)"
 svc '{"cmd":"down"}' >/dev/null
 
 # ── Nothing in the logs ─────────────────────────────────────────────────────
