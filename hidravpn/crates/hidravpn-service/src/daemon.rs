@@ -491,7 +491,8 @@ impl Daemon {
     }
 
     /// Asks admission from the known nodes that admit openly (one by name,
-    /// or all), with the key derived for each; a node that admits goes into
+    /// or all but the entries that admit openly, which give no lasting
+    /// lease), with the key derived for each; a node that admits goes into
     /// the pocket under the role it declares. One node's refusal does not
     /// stop the others. Returns the pocket and a line per node. Not while
     /// two hops are up: the request would leave through their exit, and the
@@ -504,16 +505,8 @@ impl Daemon {
             return Err(anyhow!("{}", crate::passes::JOIN_NOT_THROUGH_TWO_HOPS));
         }
         let mut pocket = load_pocket(&self.pocket_path)?;
-        let targets: Vec<hidravpn_core::NodeRecord> = pocket
-            .joinable()
-            .into_iter()
-            .filter(|r| {
-                name.map(|n| n.trim().eq_ignore_ascii_case(r.node_name.trim()))
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        if targets.is_empty() {
+        let (targets, skipped) = pocket.join_targets(name);
+        if targets.is_empty() && skipped.is_empty() {
             return Err(anyhow!(match name {
                 Some(n) => format!("no known node named \"{n}\" admits openly or with a pass; `nodes list` says whom to ask"),
                 None => "no known node admits openly or with a pass; import a node list, or ask an operator for an invite".to_string(),
@@ -525,7 +518,9 @@ impl Daemon {
         // The name a node files the lease under is a label for its operator,
         // not this machine's name: nothing identifying leaves here.
         let host = "client".to_string();
-        let mut lines = Vec::new();
+        let mut lines: Vec<String> = hidravpn_core::pocket::skipped_entries_line(&skipped)
+            .into_iter()
+            .collect();
         let mut joined = 0;
         for rec in targets {
             if rec.takes_passes() {

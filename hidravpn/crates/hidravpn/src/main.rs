@@ -302,9 +302,10 @@ fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
 }
 
 /// Asks admission from the known nodes that admit openly — one by name, or
-/// every one with `all` — and puts each invite into the pocket under the
-/// slots its role allows. Prints a line per node; returns how many admitted.
-/// The lease name sent is "client": nothing identifying leaves this machine.
+/// every one with `all`, but the entries that admit openly, which give no
+/// lasting lease — and puts each invite into the pocket under the slots its
+/// role allows. Prints a line per node; returns how many admitted. The
+/// lease name sent is "client": nothing identifying leaves this machine.
 async fn join_known(
     pocket: &mut hidravpn_core::Pocket,
     pocket_path: &Path,
@@ -312,17 +313,15 @@ async fn join_known(
     name: Option<&str>,
     all: bool,
 ) -> Result<usize> {
-    let targets: Vec<hidravpn_core::NodeRecord> = pocket
-        .joinable()
-        .into_iter()
-        .filter(|r| {
-            all || name
-                .map(|n| n.trim().eq_ignore_ascii_case(r.node_name.trim()))
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    if targets.is_empty() {
+    let (targets, skipped) = match (all, name) {
+        (true, _) => pocket.join_targets(None),
+        (false, Some(n)) => pocket.join_targets(Some(n)),
+        (false, None) => (Vec::new(), Vec::new()),
+    };
+    if let Some(line) = hidravpn_core::pocket::skipped_entries_line(&skipped) {
+        println!("  - {line}");
+    }
+    if targets.is_empty() && skipped.is_empty() {
         return Err(anyhow!(
             "no known node {} admits openly or with a pass; `hidravpn nodes list` says whom to ask",
             name.map(|n| format!("named \"{n}\"")).unwrap_or_default()
