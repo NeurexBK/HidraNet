@@ -25,7 +25,9 @@ minutes after the connection ends. The exits admit with a pass: every
 connection spends a new pass with a new key while one is left, and the exit
 drops it six hours after its last handshake. Used as the node of one hop, an
 exit with no pass left is reconnected with its last pass's key, and a note
-says so; as the exit of two hops it is refused instead (finding 16).
+says so, but only with a key it was shown from your own address before;
+a key redeemed through the entry is never shown from your address (finding
+20). As the exit of two hops it is refused instead (finding 16).
 Otherwise no node can tell, by key, that two connections are the same
 person. This holds for:
 
@@ -70,8 +72,9 @@ The other gaps are closed too:
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names (also with "Allow LAN", and when the network routes the resolver's address to itself; finding 19), anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
 | **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:136-147`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
-| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). What listens on your machine (finding 19). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5), unless it shares its logs with the issuer while passes are fetched through it, which the client no longer does (finding 21). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
+| **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection, or for a node that admits with a pass and none is left, the last pass's key it saw from your address. | Your two-hop sessions through it, by key: a pass key redeemed through the entry is never shown to it from your address (finding 20, the passes test). Your other one-hop sessions, by key, while a pass is left for it (test B). What listens on your machine (finding 19). |
+| **The pass issuer** | Your account (its token's hash), how many passes it asks for and when, the payment of a pack, and the address a request comes from: yours when you fetch or buy while disconnected, the node's when automatic passes fetch them in one hop. | Which node a pass is for, and so which node you use (blind signatures). A two-hop session: nothing that carries the account goes through two hops (finding 21). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
 | **Two operators who compare notes** | No key in common (`keys.rs`). They can still match the entry's records ("this address sent this much at 10:02") against the exit's ("this key received this much at 10:02"). This includes the admission request the entry forwarded a moment before the exit admitted a fresh key. That is the timing residue of any two-hop design; see "Open". | Anything a key can link. |
 | **A site you visit** | The exit's address. | Your address, unless you tell it (cookies, logins: that is the browser's job, and the browser's own tabs go through Tor regardless). |
@@ -138,7 +141,8 @@ maintainers' list admit with a pass):
   minutes after the last packet it received under that key
   (`hidravpn-node/src/leases.rs:61`, `:241`).
 - An exit that admits with a pass is shown each key with a new pass (one
-  hop with no pass left reuses the last pass's key, with a note), and drops
+  hop with no pass left reuses the last pass's key, with a note, only when
+  that key was redeemed from the client's address; finding 20), and drops
   the lease six hours after its last handshake (`phase-5.md`).
 
 **Not fixed for exits admitted by hand:** they see one stable key behind
@@ -469,7 +473,8 @@ Fixed in the merge:
 - The exit of two hops never falls back to a key it saw before: with no pass
   left for it, the connection is refused and says so (`circuit.rs:729`). A
   first hop with no pass left may reuse its last key, with a note, since it
-  sees the address anyway.
+  sees the address anyway, but only a key it was shown from that address
+  before (finding 20).
 - A pick or a rotation prefers nodes it can build with: no pass exit without
   a pass (`passes.rs:69`, `daemon.rs:1259`).
 - A new identity redeems the next pass even for the node it leaves and
@@ -685,6 +690,94 @@ LAN", one tunnel and two, ICMP errors through the tunnels included;
 tunnel to a port Windows Firewall lets in, with
 the kill switch lifted (it arrives) and armed (it does not), not yet run on
 a PC.
+
+### 20. High — a pass key redeemed through the entry could later be shown from your address (fifth round)
+
+The invite a pass wins remembered the pass's key, but not whether it was
+redeemed through the entry or from the client's address, and the pocket
+kept one such invite per node for both modes. So when a pass exit had just
+been the exit of two hops, and was then used as the node of one hop,
+`first_hop_pass` took the invite as it was in two cases: its key was
+redeemed under ten minutes ago and never used (a two-hop build that failed
+after the exit's pass was redeemed), or no pass was left for that node
+("connecting with the last one's key"). The service's pick counted it as
+usable while its lease was likely standing (five hours). The exit then got
+the key that had carried the two-hop session from the client's own address,
+and could tie that session to it after the fact.
+
+Fixed:
+
+- An invite won with a pass now says how the pass was redeemed: `behind` is
+  true for one redeemed through the entry (`admit_behind`), false for one
+  redeemed from this machine's address (`config.rs`, `PassBinding`).
+- A pass key is shown only the way it was admitted (`ClientConfig::node_key`):
+  one redeemed through the entry never from the client's address, one
+  redeemed from there never behind an entry. `first_hop_pass` treats a key
+  redeemed through the entry as absent, neither fresh nor the last key: with
+  no pass left, the connection is refused and says why (`circuit.rs`). The
+  service's pick and rotation do not count it either (`passes::usable`).
+- The pocket never lets a key redeemed through the entry take the place of
+  one redeemed from the client's address (`Pocket::replace`): the latter is
+  the one a later one-hop connection may still show. Only the key a circuit
+  used is marked used (`passes::mark_used_in`).
+- An invite from an older pocket, which does not say how its pass was
+  redeemed, is treated as redeemed through the entry: it cannot be told
+  apart, and every pass node on the maintainers' list is an exit that may
+  have been one of two hops. Such a node is shown a fresh pass's key the
+  next time, or, with no pass left, the connection is refused until passes
+  are fetched. That costs one pass per node at most, once.
+- No node is joined while two hops are up (`passes::JOIN_NOT_THROUGH_TWO_HOPS`),
+  by the service (`Daemon::join`) or the command line (`nodes join`, through
+  `passes::not_through_two_hops`), as with passes fetched by hand (finding
+  21). A join redeems a pass from this machine, so it is written down as
+  redeemed from here; with two hops up the request left through their exit,
+  and the node saw it come from the exit's address while the exit saw the
+  session's flow to it. One hop later showed the node that key from the
+  client's address. A node that admits openly would likewise be shown, from
+  the exit, the key derived for it.
+
+Proved by `scripts/test-passes-netns.sh`: two hops through a pass exit, its
+passes gone, then one hop and a new identity through it: the exit never gets
+the two-hop key from the client's address. With that key as the only one the
+pocket holds for it, one hop is refused and says why; with a pass, the exit
+is shown a fresh key. `scripts/test-refill-netns.sh`: with two hops up, a
+join of the pass exit is refused by the service and the command line, and
+spends no pass, as it is with two hops held by the command line; in one hop
+a join goes ahead and is written down as redeemed from here.
+
+### 21. High — automatic passes went out through the exit of two hops (fifth round)
+
+Automatic passes ask the issuer only while connected, so the account token
+never leaves from the client's own address. With two hops, though, that
+request leaves through the exit that carries the session: the exit sees a
+flow to the issuer leave from the inner address it leased to the session,
+and at that moment the issuer gets this account's request from the exit's
+address. Together they tie the two-hop session, its destinations and names,
+to the account, and through the account to the payment for its passes and
+the address it was bought or first fetched from. That is an exact join, not
+a timing guess, and it needs only the exit's operator and the issuer's to be
+the same or to share logs. The maintainers run the exits and the issuer, and
+the signed list does not name the issuer's operator.
+
+Fixed: automatic passes run only while one hop (rapido) is up, and never
+while two hops are (`passes::refills_through`, `daemon.rs`, `refill_once`).
+Passes fetched by hand, a purchase and its claim are refused while two hops
+are up, by the service (the browser's VPN page) and by the command line,
+which says to fetch them before connecting in privado. The command line
+asks the service even under `--direct`, and reads the network plan, which
+says how many hops it routes through, so a two-hop circuit it holds itself
+in another terminal counts too; a service that does not answer, or a plan
+that cannot be read or does not say, refuses (`passes::not_through_two_hops`).
+`hidravpn passes list`, `passes auto` and the VPN page say so. Proved by
+`scripts/test-refill-netns.sh`: with two hops up and a pass node low,
+nothing is fetched, and asking by hand is refused, with or without
+`--direct`, while the issuer could be reached through the exit; the same
+with two hops held by `hidravpn up --privado` and no service, for
+`passes get`, `buy` and `claim`; back in one hop, it is topped up.
+
+Not done: a list field for the issuer's operator, which would let an exit
+run by someone else carry a top-up; and fetching through Tor, which the
+service does not have.
 
 ## Open
 

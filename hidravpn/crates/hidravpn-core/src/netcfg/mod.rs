@@ -50,6 +50,25 @@ pub struct RevertPlan {
     /// Absent in plans written before phase 3.
     #[serde(default)]
     pub via_routes: Vec<ViaRouteAdded>,
+    /// The hops of the circuit these changes send the machine through: 2
+    /// when the default route goes to an exit reached through an entry.
+    /// Written with the first save, before anything changes. Absent in
+    /// plans written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hops: Option<u8>,
+}
+
+impl RevertPlan {
+    /// Whether these changes send the machine through two hops. None when
+    /// the plan does not say: one written before `hops`, for a single hop or
+    /// for two whose exit has no IPv4 route through the entry.
+    pub fn two_hops(&self) -> Option<bool> {
+        match self.hops {
+            Some(h) => Some(h >= 2),
+            None if !self.via_routes.is_empty() => Some(true),
+            None => None,
+        }
+    }
 }
 
 /// A host route that was added through a tunnel interface.
@@ -266,4 +285,36 @@ pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plan_says_how_many_hops_it_routes_through_and_older_ones_still_read() {
+        let old: RevertPlan = serde_json::from_str(
+            r#"{"interface":"hvpn0","node_ip":"203.0.113.1","gateway":null,"gateway_if":null,"routes_added":[],"dns_changed":false,"resolv_conf_backup":null,"if_index":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.two_hops(), None, "an older plan does not say");
+        let old_two = RevertPlan {
+            via_routes: vec![ViaRouteAdded {
+                prefix: "203.0.113.2/32".into(),
+                interface: "hvpn0".into(),
+                if_index: None,
+            }],
+            ..old.clone()
+        };
+        assert_eq!(old_two.two_hops(), Some(true), "a route through the entry");
+        for (hops, two) in [(1, false), (2, true)] {
+            let p = RevertPlan {
+                hops: Some(hops),
+                ..old.clone()
+            };
+            let back: RevertPlan =
+                serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+            assert_eq!(back.two_hops(), Some(two));
+        }
+    }
 }

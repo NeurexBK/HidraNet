@@ -66,17 +66,18 @@
         <thead><tr><th>Mode</th><th>What the nodes see</th></tr></thead>
         <tbody>
           <tr><td><b>Fast, one hop</b> (<code>rapido</code>)</td><td>The node sees your address and your traffic. It hides them from your own network, not from the node.</td></tr>
-          <tr><td><b>Private, two hops</b> (<code>privado</code>)</td><td>The entry sees your address; the exit sees your traffic. No node sees both who you are and where you go.</td></tr>
+          <tr><td><b>Private, two hops</b> (<code>privado</code>)</td><td>The entry sees your address; the exit sees your traffic. No node sees both who you are and where you go, and nothing that carries your pass account goes through the two hops (see Passes).</td></tr>
         </tbody>
       </table></div>
       <p>Two hops are refused when one operator runs both the entry and the exit, because that operator could see both ends. You can allow it, and the VPN page says so plainly.</p>
-      <p>Each connection shows a node a key made for that connection only, and the exit of two hops is asked for admission through the entry, never from your address. No node can tell, by key, that two connections are the same person.</p>
+      <p>Each connection shows a node a key made for that connection only, and the exit of two hops is asked for admission through the entry, never from your address; a key it was shown that way is never shown to it from your address later. A node of one hop that takes passes, with none left for it, is reconnected with the last key it saw from your address, and the VPN page says so. Apart from that, no node can tell, by key, that two connections are the same person.</p>
     </section>
 
     <section id="passes">
       <h2>3. Passes</h2>
       <p>The exits admit with a <b>pass</b>: one pass is one connection through a node that takes passes. Passes are signed blind by the pass issuer. The issuer never sees what it signs, so it does not learn which node a pass is for, and the node that takes a pass does not learn which account it came from.</p>
       <p>Passes are bought with <b>HNET</b>, on Solana: today from the <code>hidravpn</code> command line, soon from the VPN page. They are kept on an anonymous prepaid account: a random token on your machine, with no name, e-mail or sign-up. When you buy, the issuer sees the payment and, today, the address you buy from; buying through Tor is planned.</p>
+      <p>The maintainers run both the exits and the issuer. So passes are never fetched, bought or claimed while two hops are up: the request would leave through the exit, and the exit and the issuer together could tie your two-hop session to your account. Automatic top-ups happen only in one hop; get passes before you connect with two.</p>
     </section>
 
     <section id="limits">

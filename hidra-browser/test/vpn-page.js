@@ -100,7 +100,27 @@ expect('the fetched list is sent to the service unverified by the browser, with 
 expect('the page says when one operator runs both hops', /One operator runs both hops/.test(page) && /same_operator === true/.test(page), 'no one-operator warning driven from status.same_operator');
 expect('the page fetches the list and never joins a node: open nodes are asked for a fresh key on every connection', /id="btn-fetch"/.test(page) && /api\.fetchList\(\)/.test(page) && !/api\.join\(/.test(page) && !/btn-join/.test(page), 'the fetch button is missing, or the page still joins nodes (a lasting lease a node could recognise)');
 expect('the page shows automatic passes as the service has them and switches them with one box', /id="auto-passes"/.test(page) && /api\.refill\(want\)/.test(page) && /api\.refill\(\)/.test(page) && /refill: \(enabled\) => ipcRenderer\.invoke\('vpn:refill', enabled\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'tab-preload.js'), 'utf8')), 'the box, its calls, or the bridge are missing');
-expect('the page asks for passes and hands the token to the service, emptying its field at once', /id="btn-passes"/.test(page) && /api\.getPasses\(/.test(page) && /api\.setPassToken\(token\)/.test(page) && /field\.value = '';[\s\S]{0,200}api\.setPassToken/.test(page) && /<input id="pass-token" type="password"/.test(page), 'the passes card, its calls, or the emptied (masked) field are missing');
+expect('the page asks for passes, and leaves the token to an administrator: it has no token field, which the service would refuse from the person', /id="btn-passes"/.test(page) && /api\.getPasses\(/.test(page) && !/api\.setPassToken\(/.test(page) && !/id="pass-token"|id="btn-token"/.test(page) && /<code>sudo hidravpn passes token FILE<\/code>/.test(page), 'the passes card or its call is missing, or the page still offers a token field that cannot succeed, or does not say how an administrator keeps the token');
+expect('the page asks for no passes while two hops are up or being built, whatever the service would do',
+  /return Boolean\(r && r\.hops >= 2\);/.test(page)
+    && /\$\('btn-passes'\)\.disabled = busy \|\| !reachable \|\| !hasPassNode \|\| twoHops\(s\);/.test(page)
+    && /\$\('btn-passes'\)\.disabled = busy \|\| !hasPassNode \|\| twoHops\(lastStatus\);/.test(page)
+    && /if \(!api \|\| busy \|\| twoHops\(lastStatus\)\) return;/.test(page),
+  'Get passes stays on offer in privado, leaving the account token to the service alone');
+{
+  // A service older than this page tops passes up through two hops: the
+  // page may say "never in privado" only of one whose status says so.
+  const daemonRs = read(ROOT, '..', 'hidravpn', 'crates', 'hidravpn-service', 'src', 'daemon.rs');
+  const old = (page.match(/var REFILL_ON_OLD = '((?:[^'\\]|\\.)+)';/) || [])[1] || '';
+  expect('"never in privado" is said only of a service whose status says it keeps the token off two hops; an older one is said to top up through the exit, and to need updating',
+    /pub account_one_hop_only: bool,/.test(ipcRs)
+      && (daemonRs.match(/account_one_hop_only: true,/g) || []).length === 2
+      && /return Boolean\(r && r\.account_one_hop_only !== true\);/.test(page)
+      && /tokenThroughTwoHops\(lastStatus\) \? REFILL_ON_OLD : REFILL_ON/.test(page)
+      && /if \(s\.state === 'outdated' \|\| tokenThroughTwoHops\(s\)\) outdated = true;/.test(page)
+      && /privado too/.test(old) && /through the exit/.test(old) && /Update HidraVPN/.test(old),
+    'the status field, the service setting it, or the page\'s use of it is missing');
+}
 expect('the token never comes back to the page: the module sends it and the service never echoes it', /cmd: 'set_pass_token', pass_token: t/.test(manager) && !/localStorage|sessionStorage/.test(page), 'the token is sent another way, or stored by the page');
 expect('the page never names a file path: the person chooses in a dialog', /dialog\.showOpenDialog/.test(main) && !/filePaths?\s*[:=]/.test(page), 'a path travels from the page');
 expect('the browser does not verify the list itself; the service that writes the pocket does', !/releaseVerify\.verify(File|Bytes)\([^)]*list/.test(main), 'the browser verifies the node list, which would let a convinced browser feed an unconvinced service');
