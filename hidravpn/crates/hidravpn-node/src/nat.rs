@@ -143,9 +143,11 @@ const PRIVATE4: &str = "0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.2
 
 /// The same for IPv6: unspecified and loopback, IPv4-mapped, the NAT64
 /// prefixes (which lead to IPv4 addresses, private ones too), discard,
-/// documentation, unique local (the node's own client subnet among them),
-/// link-local, the old site-local, and multicast.
-const PRIVATE6: &str = "::/127, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001:db8::/32, fc00::/7, fe80::/10, fec0::/10, ff00::/8";
+/// benchmarking, both documentation ranges (the old one and 3fff::/20),
+/// the segment routing range a provider uses inside its own network,
+/// unique local (the node's own client subnet among them), link-local, the
+/// old site-local, and multicast.
+const PRIVATE6: &str = "::/127, ::ffff:0:0/96, 64:ff9b::/96, 64:ff9b:1::/48, 100::/64, 2001:2::/48, 2001:db8::/32, 3fff::/20, 5f00::/16, fc00::/7, fe80::/10, fec0::/10, ff00::/8";
 
 /// Admission requests one client may have open at once through a node that
 /// relays them (an entry, or a node that is both): a client makes one at a
@@ -487,6 +489,90 @@ mod tests {
             true,
         );
         assert!(!open.contains("daddr"), "{open}");
+    }
+
+    /// Whether `addr` is in one of the prefixes of `set` ("a/n, b/m, ...").
+    fn in_set(set: &str, addr: std::net::IpAddr) -> bool {
+        let bits = |a: std::net::IpAddr| match a {
+            std::net::IpAddr::V4(a) => (u128::from(u32::from(a)) << 96, 32),
+            std::net::IpAddr::V6(a) => (u128::from(a), 128),
+        };
+        let (want, len) = bits(addr);
+        set.split(", ").any(|p| {
+            let (net, n) = p.split_once('/').unwrap();
+            let (net, l) = bits(net.parse().unwrap());
+            let n: u32 = n.parse().unwrap();
+            let mask = if n == 0 { 0 } else { u128::MAX << (128 - n) };
+            l == len && (want & mask) == (net & mask)
+        })
+    }
+
+    #[test]
+    fn the_filter_takes_in_every_range_that_is_not_the_internet_and_no_more() {
+        // An address from each block IANA's special-purpose registries say
+        // is not globally reachable, the newer ones too.
+        for a in [
+            "0.1.2.3",
+            "10.1.2.3",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.31.0.1",
+            "192.0.0.8",
+            "192.0.2.1",
+            "192.88.99.1",
+            "192.168.1.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.251",
+            "240.0.0.1",
+            "255.255.255.255",
+        ] {
+            assert!(in_set(PRIVATE4, a.parse().unwrap()), "{a}");
+        }
+        for a in [
+            "::",
+            "::1",
+            "::ffff:169.254.169.254",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::1",
+            "100::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "3fff::1",
+            "3fff:fff::1",
+            "5f00::1",
+            "fc00::1",
+            "fd68:6964:7261:7670::a4d:2",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            assert!(in_set(PRIVATE6, a.parse().unwrap()), "{a}");
+        }
+        // And the open internet passes, the blocks next to these too.
+        for a in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "100.128.0.1",
+            "192.0.1.1",
+            "198.20.0.1",
+            "223.255.255.255",
+        ] {
+            assert!(!in_set(PRIVATE4, a.parse().unwrap()), "{a}");
+        }
+        for a in [
+            "2001:3::1",
+            "2001:4860:4860::8888",
+            "2606:4700:4700::1111",
+            "2a00:1:2:3::4",
+            "3fff:1000::1",
+            "5e00::1",
+        ] {
+            assert!(!in_set(PRIVATE6, a.parse().unwrap()), "{a}");
+        }
     }
 
     #[test]

@@ -175,10 +175,11 @@ internet only: the node drops what clients send to private, loopback,
 link-local (`169.254.169.254`, where clouds serve instance metadata, among
 them), shared (`100.64.0.0/10`), multicast, reserved and documentation
 addresses, and to their IPv6 equivalents (unique local `fc00::/7`,
-link-local `fe80::/10`, multicast `ff00::/8`, loopback, IPv4-mapped and the
-NAT64 prefixes). So a client cannot reach the provider's network or the
-metadata service behind the node's outside interface, even where they are
-routed through it. And nothing from outside reaches a client unless the
+link-local `fe80::/10`, multicast `ff00::/8`, loopback, IPv4-mapped, the
+NAT64 prefixes, documentation `2001:db8::/32` and `3fff::/20`, benchmarking
+`2001:2::/48` and segment routing `5f00::/16`). So a client cannot reach the
+provider's network or the metadata service behind the node's outside
+interface, even where they are routed through it. And nothing from outside reaches a client unless the
 client started it: the node forwards to the tunnel only the replies to
 clients' own connections. The node's log says `private destinations:
 blocked`.

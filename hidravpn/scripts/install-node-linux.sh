@@ -103,8 +103,12 @@ fi
 case "$ADM_PORT" in ''|*[!0-9]*) echo "--admission-port must be a number" >&2; exit 2 ;; esac
 case "${MAX_CLIENTS:-}" in *[!0-9]*) echo "--max-clients must be a number" >&2; exit 2 ;; esac
 case "${IDLE_DAYS:-}" in *[!0-9]*) echo "--idle-days must be a number" >&2; exit 2 ;; esac
+# An exit's admission service listens on IPv4 only, so an entry is listed by
+# its IPv4 address, written as init reads it.
 for r in ${RELAYS[@]+"${RELAYS[@]}"}; do
-  [[ "$r" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$|: ]] || { echo "--admission-relay must be an IP address, for instance 203.0.113.20" >&2; exit 2; }
+  [[ "$r" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]] \
+    && (( BASH_REMATCH[1] <= 255 && BASH_REMATCH[2] <= 255 && BASH_REMATCH[3] <= 255 && BASH_REMATCH[4] <= 255 )) \
+    || { echo "--admission-relay must be an entry's IPv4 address, for instance 203.0.113.20: $r" >&2; exit 2; }
 done
 [ ${#RELAYS[@]} -gt 0 ] && [ "$ROLE" = entry ] && { echo "--admission-relay is for an exit (or a node that is both): an entry relays, it is not relayed to" >&2; exit 2; }
 # Not the hostname: the name goes into every client's screen and into any

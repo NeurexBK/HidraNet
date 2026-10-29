@@ -77,6 +77,8 @@ done
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --tunnel 100.64.0.0/10 2>&1); echo "$OUT" | grep -q -- "--tunnel 100.64.0.0/10" && pass "a shared-address-space tunnel is accepted" || fail "100.64.0.0/10: $OUT"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x --role exit --pass-admission --admission-relay 198.51.100.20 --admission-relay 198.51.100.21 2>&1); echo "$OUT" | grep -q -- "init --endpoint .* --admission-relay 198.51.100.20 --admission-relay 198.51.100.21" && pass "--admission-relay, once per entry, reaches an exit's settings" || fail "admission relays: $(echo "$OUT" | grep 'init --endpoint')"
 OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --role entry --admission-relay 198.51.100.20 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "for an exit" && pass "an entry given a relay: refused" || fail "entry with a relay: $OUT"
-OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --admission-relay entrada-1 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "an IP address" && pass "a relay that is not an address: refused" || fail "relay by name: $OUT"
+for relay in entrada-1 300.1.2.3 010.1.2.3 203.0.113 2001:db8::20 a:b; do
+  OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --admission-relay "$relay" 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "IPv4 address" && pass "a relay that is not an IPv4 address, which init would refuse or never match, is refused before anything runs: $relay" || fail "relay $relay accepted: $(echo "$OUT" | grep 'init --endpoint')"
+done
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]
