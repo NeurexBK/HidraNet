@@ -339,30 +339,63 @@ pub fn refills_through(mode: hidravpn_core::circuit::Mode) -> bool {
 /// are up (`refills_through`).
 pub const NOT_THROUGH_TWO_HOPS: &str = "not while two hops (privado) are up: the request carries the pass account token and would leave through the exit, and the issuer, run by the same maintainers as the exits, could then tie this two-hop session to the account and to how it was paid for. Get passes while disconnected or connected in rapido, then connect in privado";
 
-/// Whether the command line may send a request that carries the account
-/// token now (`NOT_THROUGH_TWO_HOPS`), from what tells whether two hops are
-/// up: the service's answer to `status` (None with no service; the hops it
-/// reports, or None when it gave no status), and the network plan in place
-/// (`netcfg::load_plan`), which a circuit held by the command line itself
-/// writes too. Anything that cannot say for sure refuses: a service that
-/// does not answer, a plan that cannot be read, or one from an older
-/// version that does not say how many hops it routes through.
+/// Why no node is joined while two hops are up: the request for admission
+/// would leave through the exit, and the key it admits would later be shown
+/// to that node from this machine's own address.
+pub const JOIN_NOT_THROUGH_TWO_HOPS: &str = "not while two hops (privado) are up: the node would be asked for admission through the exit, and the key it admitted this machine with would later be shown to it from this machine's own address, which ties the two-hop session to this machine. Join nodes while disconnected or connected in rapido, then connect in privado";
+
+/// What is not sent while two hops are up (`not_through_two_hops`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwoHopsRefuse {
+    /// A request that carries the pass account token (`NOT_THROUGH_TWO_HOPS`).
+    AccountToken,
+    /// A request for admission to a node, open or with a pass
+    /// (`JOIN_NOT_THROUGH_TWO_HOPS`).
+    Join,
+}
+
+impl TwoHopsRefuse {
+    pub fn why(self) -> &'static str {
+        match self {
+            Self::AccountToken => NOT_THROUGH_TWO_HOPS,
+            Self::Join => JOIN_NOT_THROUGH_TWO_HOPS,
+        }
+    }
+
+    fn not_sent(self) -> &'static str {
+        match self {
+            Self::AccountToken => "a request with the pass account token is not sent",
+            Self::Join => "no node is joined",
+        }
+    }
+}
+
+/// Whether the command line may send such a request now (`TwoHopsRefuse`),
+/// from what tells whether two hops are up: the service's answer to
+/// `status` (None with no service; the hops it reports, or None when it
+/// gave no status), and the network plan in place (`netcfg::load_plan`),
+/// which a circuit held by the command line itself writes too. Anything
+/// that cannot say for sure refuses: a service that does not answer, a plan
+/// that cannot be read, or one from an older version that does not say how
+/// many hops it routes through.
 pub fn not_through_two_hops(
     service: Option<Result<Option<u8>>>,
     plan: Result<Option<hidravpn_core::netcfg::RevertPlan>>,
+    what: TwoHopsRefuse,
 ) -> Result<()> {
+    let (why, not_sent) = (what.why(), what.not_sent());
     match service {
         None => {}
         Some(Ok(Some(hops))) if hops < 2 => {}
-        Some(Ok(Some(_))) => return Err(anyhow!("{NOT_THROUGH_TWO_HOPS}")),
+        Some(Ok(Some(_))) => return Err(anyhow!("{why}")),
         Some(Ok(None)) => {
             return Err(anyhow!(
-                "the service did not say whether two hops are up, and a request with the pass account token is not sent while they may be"
+                "the service did not say whether two hops are up, and {not_sent} while they may be"
             ))
         }
         Some(Err(e)) => {
             return Err(anyhow!(
-                "the service did not say whether two hops are up ({e:#}), and a request with the pass account token is not sent while they may be"
+                "the service did not say whether two hops are up ({e:#}), and {not_sent} while they may be"
             ))
         }
     }
@@ -371,14 +404,14 @@ pub fn not_through_two_hops(
         Ok(Some(p)) => match p.two_hops() {
             Some(false) => Ok(()),
             Some(true) => Err(anyhow!(
-                "{NOT_THROUGH_TWO_HOPS} (a connection through two hops holds the network; if none is up, `hidravpn down` undoes what it left)"
+                "{why} (a connection through two hops holds the network; if none is up, `hidravpn down` undoes what it left)"
             )),
             None => Err(anyhow!(
-                "a connection's network changes are in place and do not say whether they go through two hops, so a request with the pass account token is not sent; `hidravpn down` first"
+                "a connection's network changes are in place and do not say whether they go through two hops, so {not_sent}; `hidravpn down` first"
             )),
         },
         Err(e) => Err(anyhow!(
-            "could not tell whether two hops are up ({e:#}), so a request with the pass account token is not sent"
+            "could not tell whether two hops are up ({e:#}), so {not_sent}"
         )),
     }
 }
@@ -947,8 +980,9 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_sends_the_account_token_only_when_two_hops_are_surely_down() {
+    fn the_command_line_sends_the_account_token_or_joins_only_when_two_hops_are_surely_down() {
         use hidravpn_core::netcfg::RevertPlan;
+        const TOKEN: TwoHopsRefuse = TwoHopsRefuse::AccountToken;
         let plan = |hops: Option<u8>| {
             Ok(Some(RevertPlan {
                 interface: "hvpn0".into(),
@@ -964,40 +998,69 @@ mod tests {
             );
         };
         // Nothing up, or one hop: allowed.
-        assert!(not_through_two_hops(None, Ok(None)).is_ok());
-        assert!(not_through_two_hops(Some(Ok(Some(0))), Ok(None)).is_ok());
-        assert!(not_through_two_hops(Some(Ok(Some(1))), plan(Some(1))).is_ok());
-        assert!(not_through_two_hops(None, plan(Some(1))).is_ok());
+        assert!(not_through_two_hops(None, Ok(None), TOKEN).is_ok());
+        assert!(not_through_two_hops(Some(Ok(Some(0))), Ok(None), TOKEN).is_ok());
+        assert!(not_through_two_hops(Some(Ok(Some(1))), plan(Some(1)), TOKEN).is_ok());
+        assert!(not_through_two_hops(None, plan(Some(1)), TOKEN).is_ok());
         // Two hops held by the service, or by the command line itself.
         refused(
-            not_through_two_hops(Some(Ok(Some(2))), Ok(None)),
+            not_through_two_hops(Some(Ok(Some(2))), Ok(None), TOKEN),
             "the service has two hops",
         );
         refused(
-            not_through_two_hops(None, plan(Some(2))),
+            not_through_two_hops(None, plan(Some(2)), TOKEN),
             "a foreground circuit of two hops",
         );
         refused(
-            not_through_two_hops(Some(Ok(Some(0))), plan(Some(2))),
+            not_through_two_hops(Some(Ok(Some(0))), plan(Some(2)), TOKEN),
             "the service has none, but the command line holds two",
         );
         // What cannot say for sure refuses.
         refused(
-            not_through_two_hops(Some(Err(anyhow!("timed out"))), Ok(None)),
+            not_through_two_hops(Some(Err(anyhow!("timed out"))), Ok(None), TOKEN),
             "a service that did not answer",
         );
         refused(
-            not_through_two_hops(Some(Ok(None)), Ok(None)),
+            not_through_two_hops(Some(Ok(None)), Ok(None), TOKEN),
             "a service with no status",
         );
         refused(
-            not_through_two_hops(None, plan(None)),
+            not_through_two_hops(None, plan(None), TOKEN),
             "an older plan that does not say",
         );
         refused(
-            not_through_two_hops(None, Err(anyhow!("permission denied"))),
+            not_through_two_hops(None, Err(anyhow!("permission denied")), TOKEN),
             "a plan that cannot be read",
         );
+        // Joining a node is refused the same way, and says why.
+        let join = |service: Option<Result<Option<u8>>>, plan| {
+            not_through_two_hops(service, plan, TwoHopsRefuse::Join)
+        };
+        assert!(join(None, Ok(None)).is_ok());
+        assert!(join(Some(Ok(Some(1))), plan(Some(1))).is_ok());
+        for (r, why) in [
+            (
+                join(Some(Ok(Some(2))), Ok(None)),
+                "the service has two hops",
+            ),
+            (
+                join(None, plan(Some(2))),
+                "a foreground circuit of two hops",
+            ),
+        ] {
+            let e = format!("{:#}", r.expect_err(why));
+            assert!(e.contains(JOIN_NOT_THROUGH_TWO_HOPS), "{why}: {e}");
+        }
+        for (r, why) in [
+            (
+                join(Some(Err(anyhow!("timed out"))), Ok(None)),
+                "a service that did not answer",
+            ),
+            (join(None, plan(None)), "an older plan that does not say"),
+        ] {
+            let e = format!("{:#}", r.expect_err(why));
+            assert!(e.contains("no node is joined"), "{why}: {e}");
+        }
     }
 
     fn blank_pass(node: &str) -> hidravpn_core::pass::Pass {

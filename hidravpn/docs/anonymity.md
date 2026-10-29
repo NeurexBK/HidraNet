@@ -621,12 +621,24 @@ Fixed:
   have been one of two hops. Such a node is shown a fresh pass's key the
   next time, or, with no pass left, the connection is refused until passes
   are fetched. That costs one pass per node at most, once.
+- No node is joined while two hops are up (`passes::JOIN_NOT_THROUGH_TWO_HOPS`),
+  by the service (`Daemon::join`) or the command line (`nodes join`, through
+  `passes::not_through_two_hops`), as with passes fetched by hand (finding
+  21). A join redeems a pass from this machine, so it is written down as
+  redeemed from here; with two hops up the request left through their exit,
+  and the node saw it come from the exit's address while the exit saw the
+  session's flow to it. One hop later showed the node that key from the
+  client's address. A node that admits openly would likewise be shown, from
+  the exit, the key derived for it.
 
 Proved by `scripts/test-passes-netns.sh`: two hops through a pass exit, its
 passes gone, then one hop and a new identity through it: the exit never gets
 the two-hop key from the client's address. With that key as the only one the
 pocket holds for it, one hop is refused and says why; with a pass, the exit
-is shown a fresh key.
+is shown a fresh key. `scripts/test-refill-netns.sh`: with two hops up, a
+join of the pass exit is refused by the service and the command line, and
+spends no pass, as it is with two hops held by the command line; in one hop
+a join goes ahead and is written down as redeemed from here.
 
 ### 21. High — automatic passes went out through the exit of two hops (fifth round)
 

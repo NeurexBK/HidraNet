@@ -493,10 +493,16 @@ impl Daemon {
     /// Asks admission from the known nodes that admit openly (one by name,
     /// or all), with the key derived for each; a node that admits goes into
     /// the pocket under the role it declares. One node's refusal does not
-    /// stop the others. Returns the pocket and a line per node.
+    /// stop the others. Returns the pocket and a line per node. Not while
+    /// two hops are up: the request would leave through their exit, and the
+    /// key it admits be shown to the node from this machine's own address
+    /// later (`passes::JOIN_NOT_THROUGH_TWO_HOPS`).
     async fn join(&self, name: Option<&str>) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
         let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        if self.two_hops_up().await {
+            return Err(anyhow!("{}", crate::passes::JOIN_NOT_THROUGH_TWO_HOPS));
+        }
         let mut pocket = load_pocket(&self.pocket_path)?;
         let targets: Vec<hidravpn_core::NodeRecord> = pocket
             .joinable()
@@ -620,16 +626,7 @@ impl Daemon {
     async fn get_passes(&self, name: Option<&str>, count: usize) -> Result<(Pocket, String)> {
         let _one_at_a_time = self.pocket_lock.lock().await;
         let _file = crate::passes::lock_beside(&self.pocket_path).await?;
-        // Under the pocket's locks no circuit is being built: what is up is
-        // what the request would leave through. In the same order as every
-        // other path: the pocket's locks, then the circuit's.
-        let two_hops = self
-            .state
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|a| a.circuit.spec().hops() == 2);
-        if two_hops {
+        if self.two_hops_up().await {
             return Err(anyhow!("{}", crate::passes::NOT_THROUGH_TWO_HOPS));
         }
         let pocket = load_pocket(&self.pocket_path)?;
@@ -639,6 +636,18 @@ impl Daemon {
         crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         tracing::info!("passes fetched from the issuer");
         Ok((pocket, line))
+    }
+
+    /// Whether two hops are up. Asked under the pocket's locks, where no
+    /// circuit is being built: what is up is what a request would leave
+    /// through. In the same order as every other path: the pocket's locks,
+    /// then the circuit's.
+    async fn two_hops_up(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|a| a.circuit.spec().hops() == 2)
     }
 
     /// Every so often (`HIDRAVPN_REFILL_SECS`, ten minutes by default, and
@@ -1077,6 +1086,7 @@ impl Daemon {
             same_operator: None,
             version: env!("CARGO_PKG_VERSION").to_string(),
             ipv6: false,
+            account_one_hop_only: true,
         })
     }
 
@@ -1148,6 +1158,7 @@ impl Daemon {
                     same_operator,
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     ipv6: s.ipv6,
+                    account_one_hop_only: true,
                 })
             }
         }

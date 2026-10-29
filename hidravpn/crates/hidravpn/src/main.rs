@@ -44,6 +44,7 @@ use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
 use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, ReleaseKey, Slot};
 use hidravpn_service::ipc::{self, Command, StatusReport};
+use hidravpn_service::passes::TwoHopsRefuse;
 use hidravpn_service::paths;
 // The pocket is read and written as the service does: root only, and
 // atomically, so neither ever reads half a file the other wrote.
@@ -187,7 +188,8 @@ enum Nodes {
     Remove { name: String },
     /// Ask admission from known nodes whose operators admit openly: by name,
     /// or every one with --all. Each node is shown the key derived for it
-    /// and its invite is checked against the list's record of it.
+    /// and its invite is checked against the list's record of it. Not while
+    /// two hops (privado) are up: the request would leave through the exit.
     Join {
         /// The node to ask; absent with --all.
         #[arg(required_unless_present = "all")]
@@ -498,7 +500,7 @@ async fn main() -> Result<()> {
                     node,
                     token_file,
                 } => {
-                    not_through_two_hops().await?;
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     let pocket = load_pocket(&pocket_path)?;
                     let token = hidravpn_service::passes::read_token(
                         &token_file.unwrap_or_else(|| token_beside(&pocket_path)),
@@ -570,7 +572,7 @@ async fn main() -> Result<()> {
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());
                     };
-                    not_through_two_hops().await?;
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
                         if !replace {
                             return Err(anyhow!(
@@ -596,7 +598,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 Passes::Claim { signature } => {
-                    not_through_two_hops().await?;
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     let order =
                         hidravpn_service::passes::load_order(&pocket_path)?.ok_or_else(|| {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
@@ -735,6 +737,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 Nodes::Join { name, all } => {
+                    not_through_two_hops(TwoHopsRefuse::Join).await?;
                     let joined =
                         join_known(&mut pocket, &pocket_path, &key_path, name.as_deref(), all)
                             .await?;
@@ -1128,13 +1131,14 @@ fn print_detail(s: &StatusReport) {
 }
 
 /// Refuses a request that carries the pass account token (passes, an order,
-/// a claim) while two hops are up or being built: it would leave through
-/// their exit (`passes::NOT_THROUGH_TWO_HOPS`). The service is asked even
-/// under `--direct`, since its circuit carries this process's requests
-/// either way, and the network plan tells of a circuit this command line
-/// holds in another terminal. When either cannot say, it is refused
-/// (`passes::not_through_two_hops`).
-async fn not_through_two_hops() -> Result<()> {
+/// a claim), or one for admission (`nodes join`), while two hops are up or
+/// being built: it would leave through their exit
+/// (`passes::NOT_THROUGH_TWO_HOPS`, `passes::JOIN_NOT_THROUGH_TWO_HOPS`).
+/// The service is asked even under `--direct`, since its circuit carries
+/// this process's requests either way, and the network plan tells of a
+/// circuit this command line holds in another terminal. When either cannot
+/// say, it is refused (`passes::not_through_two_hops`).
+async fn not_through_two_hops(what: TwoHopsRefuse) -> Result<()> {
     let service = service_call(false, Command::Status).await.map(|r| {
         r.and_then(|r| {
             if r.ok {
@@ -1147,7 +1151,7 @@ async fn not_through_two_hops() -> Result<()> {
             }
         })
     });
-    hidravpn_service::passes::not_through_two_hops(service, netcfg::load_plan())
+    hidravpn_service::passes::not_through_two_hops(service, netcfg::load_plan(), what)
 }
 
 /// Tries the background service. Returns None when it is not reachable (or when

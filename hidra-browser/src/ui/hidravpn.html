@@ -485,6 +485,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   };
   var REFILL_ON = 'When a node runs low, the service asks for more, only while connected in rapido: the issuer then sees the node you use at that moment, not this machine. Never in privado: the request would leave through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Get passes before you connect in privado. It spends the account\'s quota.';
   var REFILL_OFF = 'Off: passes come only when you ask for them (Get 10 passes per node), and not while connected in privado.';
+  // A service older than this page tops passes up through two hops as well:
+  // REFILL_ON would not be true of it.
+  var REFILL_ON_OLD = 'The installed HidraVPN service is older than this page, and tops passes up while connected in privado too: the request leaves through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Update HidraVPN from Settings, or turn this off and get passes before you connect in privado.';
   var PURGE_QUESTION = 'Remove HidraVPN, its programs, its nodes and this machine\'s key? Every node will then see this as a new machine.';
   var KEEP_QUESTION = 'Remove HidraVPN? The network goes back to normal; the key and nodes are kept for a later install.';
   var STALE_SECS = 180;
@@ -602,6 +605,18 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   function withHint(e, h) {
     e = String(e || '');
     return h ? e + (/[.!?:]$/.test(e) ? ' ' : '. ') + h : e;
+  }
+  // Two hops up or being built: a request for passes would leave through
+  // the exit, so the page asks for none, whatever the service would do.
+  function twoHops(st) {
+    var r = st && st.report;
+    return Boolean(r && r.hops >= 2);
+  }
+  // A service from before it kept the account token off two hops says
+  // nothing of it in its status.
+  function tokenThroughTwoHops(st) {
+    var r = st && st.report;
+    return Boolean(r && r.account_one_hop_only !== true);
   }
   function noteAnswer(a) {
     if (a && a.state === 'outdated' && !outdated) { outdated = true; renderDot(); renderNextStep(); }
@@ -865,7 +880,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var prevSettled = settled;
     lastStatus = s;
     if (!busy) settled = s;
-    if (s.state === 'outdated') outdated = true;
+    if (s.state === 'outdated' || tokenThroughTwoHops(s)) outdated = true;
     var r = s.report;
     var tunnel = tunnelOf(r);
     if (!modeSynced && r) { followServiceMode(r); modeSynced = true; }
@@ -1007,13 +1022,15 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     $('btn-leaks').disabled = busy || !connected;
     $('btn-import').disabled = busy || !reachable;
     $('btn-fetch').disabled = busy || !reachable;
-    $('btn-passes').disabled = busy || !reachable || !hasPassNode;
+    $('btn-passes').disabled = busy || !reachable || !hasPassNode || twoHops(s);
+    $('btn-passes').title = twoHops(s) ? 'Not while connected in privado: get passes while disconnected or in rapido' : '';
     $('btn-uninstall').disabled = busy || notInstalled;
     $('btn-check-update').disabled = busy;
     $('btn-update').disabled = busy;
     $('btn-install').disabled = busy || noInstaller;
     $('btn-next').disabled = busy;
     $('auto-passes').disabled = busy || !refillOk;
+    renderRefillLine();
     renderDot();
     renderNextStep();
     // The sidebar's empty line depends on whether the service is there.
@@ -1129,7 +1146,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     }
     var list = groupNodes(answer.nodes || []);
     hasPassNode = list.some(function (n) { return admissionOf(n) === 'pass'; });
-    $('btn-passes').disabled = busy || !hasPassNode;
+    $('btn-passes').disabled = busy || !hasPassNode || twoHops(lastStatus);
     count.hidden = false;
     count.textContent = String(list.length);
     var passNodes = list.filter(function (n) { return admissionOf(n) === 'pass'; });
@@ -1187,11 +1204,15 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var box = $('auto-passes');
     refillOk = Boolean(r && r.ok && r.refill);
     if (refillOk) lastRefill = r.refill;
-    if (lastRefill) {
-      box.checked = !!lastRefill.enabled;
-      $('auto-passes-line').textContent = lastRefill.enabled ? REFILL_ON : REFILL_OFF;
-    }
+    if (lastRefill) box.checked = !!lastRefill.enabled;
+    renderRefillLine();
     box.disabled = busy || !refillOk;
+  }
+  // What automatic passes do, as far as the service has said: on until it
+  // says off, and through two hops too when it is older than this page.
+  function renderRefillLine() {
+    var on = !lastRefill || lastRefill.enabled;
+    $('auto-passes-line').textContent = !on ? REFILL_OFF : tokenThroughTwoHops(lastStatus) ? REFILL_ON_OLD : REFILL_ON;
   }
   async function refreshRefill() {
     if (!api || !api.refill) return;
@@ -1453,7 +1474,7 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   });
 
   $('btn-passes').addEventListener('click', async function () {
-    if (!api || busy) return;
+    if (!api || busy || twoHops(lastStatus)) return;
     setBusy(true);
     message('note', 'Asking the issuer for passes.', 'passes-msg');
     var r;

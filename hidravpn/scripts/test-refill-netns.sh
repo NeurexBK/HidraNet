@@ -195,6 +195,7 @@ R=$(svc '{"cmd":"connect","mode":"privado"}')
 for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"status":{"connected":true' && break; sleep 0.4; done
 ST=$(svc '{"cmd":"status"}')
 echo "$ST" | grep -q '"status":{"connected":true' && echo "$ST" | grep -q '"entry_name":"node-e"' && echo "$ST" | grep -q '"node_name":"node-x"' && pass "two hops: node-e, then node-x as the exit (a pass redeemed through node-e)" || fail "privado: $R $ST"
+echo "$ST" | grep -q '"account_one_hop_only":true' && pass "the status says the service keeps the account token off two hops, which the VPN page tells an older service by" || fail "status lacks account_one_hop_only: $ST"
 EXIT_IP=""
 for _ in $(seq 1 10); do EXIT_IP=$($C curl -s --max-time 3 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] && break; sleep 0.5; done
 [ "$EXIT_IP" = "10.205.0.2" ] && $C curl -s --max-time 3 -o /dev/null http://10.201.0.2:8730/keys && pass "through the two hops the issuer can be reached, through the exit" || fail "two hops do not reach the issuer: '$EXIT_IP'"
@@ -206,6 +207,14 @@ echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (pri
 OUT=$($C "$BIN/hidravpn" passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and so are they from the command line" || fail "passes get in privado: $OUT"
 OUT=$($C "$BIN/hidravpn" --direct passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and with --direct too: the service is still asked whether two hops are up" || fail "--direct passes get in privado: $OUT"
 OUT=$("$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "never in privado" && pass "passes list says automatic passes never go through two hops" || fail "list: $OUT"
+# Joining node-x now would redeem a pass through node-x itself, the exit,
+# and the key it admitted would later be shown to it from this machine's
+# own address in one hop: no join while two hops are up, of a pass node or
+# an open one, asked of the service or of the command line.
+LEFT=$(count_of node-x)
+R=$(svc '{"cmd":"join","name":"node-x"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up: the node would be asked for admission through the exit" && [ "$(count_of node-x)" = "$LEFT" ] && pass "joining a pass node through the service is refused while two hops are up, and no pass is spent" || fail "join in privado: $R (node-x $LEFT -> $(count_of node-x))"
+OUT=$($C "$BIN/hidravpn" nodes join --all 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up: the node would be asked for admission" && [ "$(count_of node-x)" = "$LEFT" ] && pass "and from the command line" || fail "nodes join in privado: $OUT"
 svc '{"cmd":"down"}' >/dev/null
 
 # ── Two hops held by the command line, with no service ─────────────────────
@@ -218,11 +227,11 @@ $C "$BIN/hidravpn" up --privado > "$WORK/fg.log" 2>&1 & FG=$!; PIDS+=($FG)
 for i in $(seq 1 50); do grep -q "routes and DNS set" "$WORK/fg.log" && break; sleep 0.2; done
 grep -qi "everything now goes through the privado (2 hops)" "$WORK/fg.log" && grep -q '"hops": 2' /run/hidravpn/netcfg.json && pass "two hops held by the command line, no service; its network plan says two hops" || fail "foreground privado: $(cat "$WORK/fg.log")"
 EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] || fail "foreground privado exit IP '$EXIT_IP'"
-for args in "passes get --count 1" "--direct passes get --count 1" "passes buy 5" "passes claim 5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo"; do
+for args in "passes get --count 1" "--direct passes get --count 1" "passes buy 5" "passes claim 5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo" "nodes join --all"; do
   OUT=$($C "$BIN/hidravpn" $args 2>&1); RC=$?
   [ $RC -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" || fail "$args with two hops held by the command line: $OUT"
 done
-[ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes get (with or without --direct), passes buy and passes claim are refused while it holds them, and nothing reached the issuer" || fail "issued while the command line held two hops"
+[ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes get (with or without --direct), passes buy, passes claim and nodes join are refused while it holds them, and nothing reached the issuer" || fail "issued while the command line held two hops"
 kill -INT "$FG"; wait "$FG" 2>/dev/null
 [ ! -e /run/hidravpn/netcfg.json ] || fail "the foreground circuit left its plan behind"
 start_service
@@ -232,6 +241,11 @@ cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "rapido after privado: $R"
 for _ in $(seq 1 20); do [ "$(count_of node-p)" = 10 ] && break; sleep 1; done
 [ "$(count_of node-p)" = 10 ] && pass "back in one hop, node-p is topped up to 10" || fail "top-up after privado: $(count_of node-p)"
+# In one hop a join goes ahead; node-p's pass is redeemed from this machine,
+# not behind an entry, so it may be shown from here again.
+R=$(svc '{"cmd":"join","name":"node-p"}')
+BEHIND=$(python3 -I -c "import json; print([x for x in json.load(open('/etc/hidravpn/circuit.json'))['exits'] if x['node_name']=='node-p'][0]['pass'].get('behind'))")
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q "node-p: admitted with a pass" && [ "$BEHIND" = False ] && pass "in rapido node-p is joined with a pass, written down as redeemed from here" || fail "join in rapido: $R (behind $BEHIND)"
 svc '{"cmd":"down"}' >/dev/null
 
 # ── Nothing in the logs ─────────────────────────────────────────────────────
