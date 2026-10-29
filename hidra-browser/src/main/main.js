@@ -125,7 +125,23 @@ async function fetchBuffer(url, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+// The installer asks the service which version is installed (and, when it
+// does not answer, reads it from the installed copy), so it never puts an
+// older one over it without asking the person first.
+const vpnInstaller = new VpnInstaller({
+  manifestUrl: VPN_RELEASE_URL,
+  fetchText,
+  fetchBuffer,
+  installedVersion: async () => {
+    const st = await vpnManager.status();
+    return (st && st.report && st.report.version) || null;
+  },
+});
+// Where the installer keeps the highest release manifest sequence it has
+// accepted, so an older signed manifest is refused in later runs too.
+function vpnReleaseState() {
+  return path.join(app.getPath('userData'), 'vpn-release.json');
+}
 
 // Whether a newer build is out (update-check.js): the signed checksum table,
 // fetched the same way as the node list, through Tor with the same bare
@@ -1155,17 +1171,40 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   // key did not sign.
   ipcMain.handle('vpn:check-release', (event) => {
     vpnOnlyOurs(event);
+    vpnInstaller.stateFile = vpnReleaseState();
     return vpnInstaller.checkRelease();
   });
-  ipcMain.handle('vpn:install', async (event) => {
+  // `approved` is the { version, digest } check-release answered with: only
+  // that manifest is installed, never whatever the server answers next.
+  ipcMain.handle('vpn:install', async (event, approved) => {
     vpnOnlyOurs(event);
+    const named = approved && typeof approved === 'object'
+      ? { version: String(approved.version || ''), digest: String(approved.digest || '') }
+      : null;
     // Downloads go under the browser's own data folder, not /tmp: /tmp is
     // mounted noexec on many Linux systems, and the checked service has to
     // run from where it was checked.
     const root = path.join(app.getPath('userData'), 'vpn-install');
     await fs.promises.mkdir(root, { recursive: true, mode: 0o700 });
     vpnInstaller.tmpRoot = root;
-    return vpnInstaller.install();
+    vpnInstaller.stateFile = vpnReleaseState();
+    // Going back to an older version is asked here, by the browser itself,
+    // never taken from the page.
+    vpnInstaller.confirmDowngrade = async ({ installed, offered }) => {
+      const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+      const r = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        title: 'Install an older HidraVPN?',
+        message: `HidraVPN ${installed} is installed. The release offered is ${offered}, which is older.`,
+        detail: 'An older version may have problems the installed one fixed. Install it only if you meant to go back.',
+        buttons: ['Keep ' + installed, 'Install ' + offered],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return r.response === 1;
+    };
+    return vpnInstaller.install(named);
   });
   ipcMain.handle('vpn:uninstall', async (event, purge) => {
     vpnOnlyOurs(event);

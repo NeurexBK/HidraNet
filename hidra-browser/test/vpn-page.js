@@ -120,7 +120,7 @@ expect('where there is no installer (macOS) the page says so and offers no Insta
     && /\$\('btn-install'\)\.disabled = busy \|\| noInstaller;/.test(page)
     && /installable: installable\(vpnInstaller\.platform\)/.test(main),
   'the status does not carry installable, or the page still offers Install where the installer refuses');
-expect('installing goes through the bridge, never a link the page follows', /api\.install\(\)/.test(page) && !/href=["'][^"']*\.(exe|zip|msi)/.test(page), 'no api.install(), or a download link in the page');
+expect('installing goes through the bridge, never a link the page follows', /api\.install\(\{ version: release\.version, digest: release\.digest \}\)/.test(page) && !/href=["'][^"']*\.(exe|zip|msi)/.test(page), 'no api.install(), or a download link in the page');
 expect('the bridge offers install, uninstall, leak test and release check', ['leakTest:', 'checkRelease:', 'install:', 'uninstall:'].every((k) => preload.includes(k)), 'tab-preload.js lacks one of them');
 for (const ch of ["'vpn:leak-test'", "'vpn:install'", "'vpn:uninstall'", "'vpn:check-release'"]) {
   const block = main.slice(main.indexOf(ch), main.indexOf(ch) + 400);

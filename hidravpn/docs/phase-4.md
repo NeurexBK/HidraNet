@@ -235,7 +235,8 @@ page that were still missing.
   half-installed.
 - **Update and remove, from the same page.** "Check for an update" reads the
   signed manifest and compares its version with the one the service now
-  reports in `status` (`version`); "Install the update" runs the same path, and
+  reports in `status` (`version`); "Install the update" runs the same path for
+  that manifest, and
   the installer stops the running service before replacing it (a running
   binary cannot be overwritten), keeps the machine's key, and starts it again.
   "Uninstall HidraVPN" disconnects, then runs the installed service's own
@@ -253,6 +254,25 @@ page that were still missing.
   the release folders; the maintainers sign it offline with `hidravpn-sign
   sign` and publish both. Nothing is served there yet: until it is, the button
   says it could not fetch the release, exactly like the node list.
+- **Only forward, unless the person says otherwise.** Every past manifest
+  stays validly signed, so, as with the node list, the manifest carries a
+  `sequence` that goes up with every manifest published and an `expires`
+  (90 days by default), both under the signature. The browser refuses an
+  expired manifest, one with a lower sequence than the highest it has accepted
+  (kept in `vpn-release.json` in its data folder), and a release below the
+  oldest it installs (`MIN_VERSION`). It installs exactly the manifest the
+  page was shown: the page passes the version and digest "Check for an
+  update" returned, and a manifest fetched again that differs stops the
+  install before anything is downloaded. A release older than the service
+  the machine has (as the service says, or, when it is stopped or this
+  account cannot ask it, as the version written in the installed copy says)
+  is installed only after the browser's own dialog asks the person,
+  separately; the service then has to be told too: `install` reads
+  the version written in the installed copy and refuses to replace a newer one
+  without `--allow-downgrade`. The 0.1.0 manifest, from before `sequence` and
+  `expires`, counts as sequence 0 with no expiry, so it still installs until
+  a later one has been seen, or until `MIN_VERSION` is raised past it
+  (code-signing.md says when).
 - **A one-click leak test** (`src/main/vpn-leaktest.js`). While connected, it
   asks api.ipify.org and api6.ipify.org which address they see — from a
   session with no proxy, as any other program on the machine would, because
