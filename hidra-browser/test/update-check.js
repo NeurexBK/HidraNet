@@ -268,7 +268,7 @@ const decide = (t, current, opts = {}) => {
   // ── Wired in where the audit trail says ─────────────────────────────────
   await check('main.js runs the check once the lock opens, through the Tor-only fetch, and hands the page the notice', async () => {
     const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'main.js'), 'utf8');
-    assert.ok(/!networkLock\.release\(generation\)\) \{[^}]*\}\s*checkForUpdate\(\);/.test(main), 'checkForUpdate() does not follow a successful networkLock.release()');
+    assert.ok(/!networkLock\.release\(generation\)\) \{[\s\S]*?\n {2}\}\s*checkForUpdate\(\);/.test(main), 'checkForUpdate() does not follow a successful networkLock.release()');
     assert.ok(/new UpdateCheck\(\{\s*fetchBytes: fetchSmall,\s*currentVersion: app\.getVersion\(\)/.test(main), 'the check does not use fetchSmall and the app version');
     assert.ok(/stateFile: path\.join\(app\.getPath\('userData'\), UPDATE_STATE_FILE\)/.test(main), 'what was verified is not kept');
     assert.ok(/async function fetchSmall\(url, maxBytes\) \{\s*vpnFetchAllowed\(url\);/.test(main), 'fetchSmall does not refuse while the lock is closed');
