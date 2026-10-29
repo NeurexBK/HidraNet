@@ -634,15 +634,27 @@ tunnel's rules end in a drop, ahead of the rules that let in the node's
 endpoint, DHCP answers and the local network by their addresses, since the
 far end chooses the addresses of what it puts inside: a datagram in the
 tunnel from the node's own endpoint address and port, which the kill switch
-lets in off the tunnel, finds nothing open either (`ruleset`). The client's
+lets in off the tunnel, finds nothing open either (`ruleset`). The holds
+a rotation and an admission request install name no tunnel, since none is
+trusted then, yet tunnels run under them: the old circuit's until it is
+down, the new one's from before its own rules replace the hold. So from a
+node's endpoint, and from a first hop's admission port, every table lets
+in only the answers to what the machine sent there (`node_rules`,
+`admitting_ruleset`): the machine always sends first, and its keepalives
+keep the flow alive, so the same datagram put in a tunnel starts a flow of
+its own and is dropped, held or connected. The client's
 tunnel also drops a decrypted packet not addressed to the address the node
 gave that end (`tunnel.rs`, `addressed_to`), kill switch or not. On Windows
 the kill switch no longer permits inbound connections on the tunnel at the
 receive-accept layers, and each tunnel interface has a block there of its
 own, above the DHCP and "Allow LAN" permits (which match by address, and
 the node's tunnel address is inside the private ranges) and below loopback
-(`killswitch/windows.rs`, `inbound`). What these block, Windows Firewall
-rules cannot let in, whatever network profile Windows gave the adapter.
+(`killswitch/windows.rs`, `inbound`). Above each tunnel's block, only the
+ICMP errors path MTU discovery needs come in (destination unreachable, and
+IPv6's packet too big), as Linux lets in related ICMP. What these block,
+Windows Firewall rules cannot let in, whatever network profile Windows gave
+the adapter. Windows has no inbound permit by a node's address to close
+during a hold: the node and admission permits are at the connect layers.
 Replies to the machine's own connections belong to the flow its connect
 opened and pass without them.
 
@@ -651,7 +663,11 @@ its far end, a TCP listener at the tunnel address and at the
 local-network address, a closed port, a UDP listener and an echo all
 answer without the kill switch and give nothing with it, "Allow LAN" or not,
 and so do a datagram with the node's endpoint as its source and one shaped
-as a DHCP answer, while the client's own connections through it work; with
+as a DHCP answer, while the client's own connections through it work; in
+the hold, and in the hold for an admission request, the datagram with the
+node's endpoint as its source, and a connection with the admission port as
+its source, reach nothing while the node and its admission port answer the
+client; with
 "Allow LAN", a
 route pushed for the resolver through the local network and a local network
 on the tunnel's range both make the query fail with EPERM, the local
@@ -664,8 +680,9 @@ inner tunnel and goes no further; and in `test-netns.sh` a route pushed for
 the resolver's address before connecting does not take the lookups. On the
 code before the fix these checks fail. Windows: unit tests decide the
 receive-accept filters as WFP arbitrates them, with and without "Allow
-LAN", one tunnel and two; `scripts/windows/phase4-test.ps1` has the node
-send a datagram through the tunnel to a port Windows Firewall lets in, with
+LAN", one tunnel and two, ICMP errors through the tunnels included;
+`scripts/windows/phase4-test.ps1` has the node send a datagram through the
+tunnel to a port Windows Firewall lets in, with
 the kill switch lifted (it arrives) and armed (it does not), not yet run on
 a PC.
 

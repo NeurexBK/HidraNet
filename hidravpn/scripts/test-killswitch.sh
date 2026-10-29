@@ -17,7 +17,9 @@
 # That holds whatever source the far end puts on what it sends: the node's
 # own endpoint, a DHCP server's port. With "Allow LAN" the local network is
 # reached, but no DNS query goes to it, even when a route sends the node's
-# resolver address there.
+# resolver address there. It holds in the hold a rotation installs too,
+# which names no tunnel while tunnels still run under it: from the node's
+# endpoint, and from a first hop's admission port, only answers come in.
 #
 # Run as root:  hidravpn/scripts/test-killswitch.sh
 # Needs: the release binary built, python3, curl, nft, ip netns.
@@ -106,6 +108,23 @@ arrives() {
   sleep 1
   [ -s "$SINK" ]
 }
+# The same for a TCP connection from the far end to the client's listener
+# on 9901, whose answer would go to the source given. A counter in a chain
+# after the kill switch's sees only what the kill switch let through.
+cq nft -f - <<'NFT'
+table inet hv_probe {
+  counter syn9901 {}
+  chain input {
+    type filter hook input priority 10; policy accept;
+    tcp dport 9901 tcp flags & (syn | ack) == syn counter name "syn9901"
+  }
+}
+NFT
+connects() {
+  cq nft reset counter inet hv_probe syn9901 >/dev/null
+  ip netns exec kt python3 "$PY/probe.py" connect "$1" "$2" 10.77.0.2 9901 >/dev/null
+  ! cq nft list counter inet hv_probe syn9901 | grep -q "packets 0 "
+}
 
 echo "── before the kill switch (the leak path must work)"
 code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
@@ -116,6 +135,7 @@ cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "the node endpoint answers" |
 # something: without a kill switch the far end reaches the client's programs.
 [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.77.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.90.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" udp 10.77.0.2 9902)" = answered ] && ok "the tunnel's far end reaches the client's listeners (the exposure the kill switch must close)" || no "the probes from the tunnel's far end did not work before the kill switch"
 arrives 10.90.0.1 51820 9904 && arrives 10.77.0.1 67 68 && ok "so do its datagrams with the node's endpoint, or a DHCP server's port, as their source" || no "the forged-source datagrams from the tunnel's far end did not arrive before the kill switch"
+connects 10.90.0.1 8080 && ok "and its connections with a node's admission port as their source" || no "the forged-source connection from the tunnel's far end did not arrive before the kill switch"
 # A connection to the internet that is open before the kill switch, and kept
 # open across it: an established flow, the kind a blanket "established
 # connections pass" rule would let carry on in the clear. A desktop firewall
@@ -202,6 +222,25 @@ got=$(cq python3 "$PY/probe.py" udp 10.77.0.1 53)
 [ "$got" = blocked ] && ok "a local network on the tunnel's own range: the query is refused (EPERM)" || no "a local network on the tunnel's own range: the query was $got"
 ip -n ks addr del 10.77.0.5/24 dev ks-eth
 ip -n gw addr del 10.77.0.1/24 dev gw-eth
+
+echo "── held, as while a circuit is replaced"
+# The hold names no tunnel interface, because none is trusted, yet the old
+# circuit's tunnels run under it until that circuit is down, and the new
+# one's from before its own rules replace the hold. What the hold lets in
+# by the node's address and port must be only the node's answers.
+cq "$SVC" firewall hold --node 10.90.0.1:51820 >/dev/null 2>&1 && ok "the hold replaces the kill switch" || no "could not install the hold"
+code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
+[ "$code" = 000 ] && ok "held: HTTP to the internet is blocked" || no "held: HTTP leaked (code $code)"
+cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "held: the node endpoint answers" || no "held: the node endpoint should answer"
+arrives 10.90.0.1 51820 9904 && no "held: from the tunnel's far end, with the node's endpoint as source: it arrived" || ok "held: from the tunnel's far end, with the node's endpoint as source: dropped"
+# While a first hop is asked for admission: its admission port answers what
+# the client asks, and its address and port open nothing else.
+cq "$SVC" firewall hold --node 10.90.0.1:51820 --admission 10.90.0.1:8080 >/dev/null 2>&1 && ok "the hold for an admission request replaces it" || no "could not install the hold for an admission request"
+code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
+[ "$code" = 200 ] && ok "asking for admission: the first hop's admission port answers" || no "asking for admission: the admission port should answer (got $code)"
+cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "asking for admission: the node endpoint answers" || no "asking for admission: the node endpoint should answer"
+arrives 10.90.0.1 51820 9904 && no "asking for admission: from the tunnel's far end, with the node's endpoint as source: it arrived" || ok "asking for admission: from the tunnel's far end, with the node's endpoint as source: dropped"
+connects 10.90.0.1 8080 && no "asking for admission: from the tunnel's far end, a connection with the admission port as source: it arrived" || ok "asking for admission: from the tunnel's far end, a connection with the admission port as source: dropped"
 
 echo "── lifting the kill switch"
 cq "$SVC" firewall off >/dev/null 2>&1 && ok "kill switch lifted" || no "could not lift the kill switch"

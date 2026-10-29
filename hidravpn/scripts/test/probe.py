@@ -7,6 +7,8 @@
   probe.py send FROM_HOST FROM_PORT HOST PORT   sent | blocked
                            (one UDP datagram from that source, whose answer
                            would go to that source; the receiver tells)
+  probe.py connect FROM_HOST FROM_PORT HOST PORT   sent | blocked
+                           (a TCP connection from that source, the same way)
 
 "refused" is a TCP reset: nothing listens, but the address answered.
 "blocked" is this machine's own firewall refusing to send (EPERM).
@@ -93,6 +95,20 @@ def send(src_host, src_port, host, port):
     return "sent"
 
 
+def connect(src_host, src_port, host, port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((src_host, src_port))
+    s.settimeout(TIMEOUT)
+    try:
+        s.connect((host, port))
+    except PermissionError:
+        return "blocked"
+    except OSError:
+        pass
+    return "sent"
+
+
 kind = sys.argv[1]
 if kind == "tcp":
     print(tcp(sys.argv[2], int(sys.argv[3])))
@@ -102,5 +118,7 @@ elif kind == "icmp":
     print(icmp(sys.argv[2]))
 elif kind == "send":
     print(send(sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5])))
+elif kind == "connect":
+    print(connect(sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5])))
 else:
-    sys.exit("probe.py tcp|udp|icmp HOST [PORT] | send FROM_HOST FROM_PORT HOST PORT")
+    sys.exit("probe.py tcp|udp|icmp HOST [PORT] | send|connect FROM_HOST FROM_PORT HOST PORT")
