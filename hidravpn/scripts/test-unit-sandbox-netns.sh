@@ -151,7 +151,7 @@ for MODE in link file readonly; do
   $C "$BIN/hidravpn-service" up "$WORK/invite.json" > "$WORK/up2.log" 2>&1 || { cat "$WORK/up2.log"; fail "$MODE: second up"; }
   kill -9 "$SP" 2>/dev/null; wait "$SVC" 2>/dev/null; sleep 0.5
   # What a reboot clears: /run, the firewall, the interfaces, the routes.
-  rm -f /run/hidravpn/netcfg.json /run/hidravpn/control.sock /run/hidravpn/control.token
+  rm -f /run/hidravpn/netcfg.json /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/control.pub
   $C nft delete table inet hidravpn_ks 2>/dev/null; $C ip link del hvpn0 2>/dev/null
   $C ip -4 route del 10.200.0.1/32 2>/dev/null
   grep -q "nameserver 10.77.0.1" "$ETC/resolv.conf" && pass "$MODE: after the power cut resolv.conf is still the tunnel's" || fail "$MODE: the cut did not leave the tunnel's resolv.conf: $(cat "$ETC/resolv.conf")"

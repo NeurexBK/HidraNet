@@ -6,6 +6,7 @@ pub mod install;
 pub mod ipc;
 pub mod passes;
 pub mod paths;
+pub mod seal;
 
 use anyhow::Result;
 

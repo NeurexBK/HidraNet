@@ -19,7 +19,8 @@ use anyhow::{Context, Result};
 use tokio::sync::Notify;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{
-    ERROR_CALL_NOT_IMPLEMENTED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, NO_ERROR,
+    ERROR_CALL_NOT_IMPLEMENTED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT,
+    ERROR_SERVICE_SPECIFIC_ERROR, NO_ERROR,
 };
 use windows::Win32::System::Services::{
     RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW,
@@ -119,22 +120,26 @@ fn service_main() {
     crate::init_logging();
     tracing::info!("HidraVPN service starting under the SCM");
 
-    // Running: the SCM may now ask us to stop or tell us the machine is
-    // shutting down. The daemon serves until the handler signals STOP.
-    report(
-        SERVICE_RUNNING,
-        SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
-        0,
-        0,
-        0,
-    );
+    // Running, once the control pipe exists: the SCM may then ask us to stop
+    // or tell us the machine is shutting down. A pipe that cannot be made
+    // (another program holds its name) never gets here: the daemon returns
+    // the error and the SCM is told the service stopped on it. The daemon
+    // serves until the handler signals STOP.
     let stop = stop_signal();
-    let result = crate::run_daemon_until(async move { stop.notified().await });
+    let result = crate::run_daemon_until(async move { stop.notified().await }, || {
+        report(
+            SERVICE_RUNNING,
+            SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
+            0,
+            0,
+            0,
+        )
+    });
 
     // Stopped. The handler already reported STOP_PENDING when the control
     // came; by here the daemon has put the network back. An error starting
-    // or running it is reported as the service's exit code, which drives the
-    // SCM's restart-on-failure.
+    // or running it is reported as a service-specific exit code, which the
+    // SCM logs and which drives its restart-on-failure (`sc failureflag`).
     let exit = match &result {
         Ok(()) => 0,
         Err(e) => {
@@ -170,7 +175,8 @@ unsafe extern "system" fn ffi_handler(
 
 /// Tells the SCM the service's state. `checkpoint`/`wait_hint` only matter
 /// while a change is pending (they say "still working, ask again in this
-/// many ms"); `exit_code` only on STOPPED.
+/// many ms"); `exit_code` only on STOPPED, where any but 0 is the
+/// service's own error code.
 fn report(
     state: SERVICE_STATUS_CURRENT_STATE,
     controls: u32,
@@ -185,8 +191,12 @@ fn report(
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
         dwCurrentState: state,
         dwControlsAccepted: controls,
-        dwWin32ExitCode: exit_code,
-        dwServiceSpecificExitCode: 0,
+        dwWin32ExitCode: if exit_code == 0 {
+            NO_ERROR.0
+        } else {
+            ERROR_SERVICE_SPECIFIC_ERROR.0
+        },
+        dwServiceSpecificExitCode: exit_code,
         dwCheckPoint: checkpoint,
         dwWaitHint: wait_hint,
     };

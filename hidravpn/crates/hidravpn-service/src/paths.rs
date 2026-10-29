@@ -78,6 +78,21 @@ pub fn control_token() -> PathBuf {
     }
 }
 
+/// The public half of the key the service seals its answers with
+/// (`seal.rs`), made afresh at every start beside the control token and
+/// readable by the same people. Only the service may write it: it is how a
+/// client tells the service from anything else answering on its channel.
+pub fn control_public_key() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/run/hidravpn/control.pub")
+    }
+    #[cfg(windows)]
+    {
+        program_data().join("control.pub")
+    }
+}
+
 /// The pocket: the entry and exit nodes this machine holds invites for,
 /// managed by `hidravpn nodes`. Next to the key; written by the administrator.
 pub fn circuit_pocket() -> PathBuf {

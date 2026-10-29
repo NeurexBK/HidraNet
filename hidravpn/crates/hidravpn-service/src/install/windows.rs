@@ -77,11 +77,16 @@ pub fn install(bin: &Path) -> Result<()> {
         run("icacls", &[&inside, "/reset", "/T", "/C", "/Q"])
             .context("giving the files in the HidraVPN data folder the folder's rights")?;
     }
-    // The control token, if the service already wrote one, keeps the one
-    // extra right it has: interactive users may read it.
-    let token = crate::paths::control_token();
-    if token.exists() {
-        crate::ipc::protect_token(&token)?;
+    // The control token and the service's public key, if the service
+    // already wrote them, keep the one extra right they have: interactive
+    // users may read them.
+    for shared in [
+        crate::paths::control_token(),
+        crate::paths::control_public_key(),
+    ] {
+        if shared.exists() {
+            crate::ipc::protect_shared(&shared)?;
+        }
     }
 
     // An older build may have left a Scheduled Task by this name; remove it
@@ -142,6 +147,10 @@ pub fn install(bin: &Path) -> Result<()> {
             "restart/60000/restart/60000/restart/60000",
         ],
     );
+    // And when it stops on its own with an error, not only when it
+    // crashes: a service that cannot make its control pipe (another program
+    // holds the name) stops with an error and is tried again.
+    let _ = run("sc.exe", &["failureflag", SERVICE_NAME, "1"]);
     // Start it now as well, so the user need not reboot.
     let _ = run("sc.exe", &["start", SERVICE_NAME]);
     Ok(())

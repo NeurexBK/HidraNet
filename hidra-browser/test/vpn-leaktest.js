@@ -56,6 +56,8 @@ const by = (r, id) => r.checks.find((c) => c.id === id);
     assert.strictEqual(r.verdict, 'pass');
     assert.deepStrictEqual(r.checks.map((c) => c.verdict), ['pass', 'pass', 'pass', 'pass']);
     assert.ok(/203\.0\.113\.20/.test(by(r, 'ipv4').detail));
+    // No lookup is made: the row says it repeats the service's report.
+    assert.ok(/^Not measured: the service reports/.test(by(r, 'dns').detail), by(r, 'dns').detail);
   });
 
   await check('the exit address is the exit hop\'s, not the entry\'s', async () => {

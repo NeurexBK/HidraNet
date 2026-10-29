@@ -69,13 +69,37 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   pipe (the client process's elevation). The client key stays root-only; no
   request returns a key.
 - **The control channel holds its ground.** Sixteen connections at once on
-  the socket, five seconds for a request and five for the answer, one
-  mebibyte per request: a member of the group can be a nuisance, not a
-  memory leak. On Windows the service holds all eight instances of its pipe
-  for as long as it runs, and the pipe is made with eight as its limit, so no
-  other user can ever add an instance of `\\.\pipe\hidravpn` and answer a
-  client in the service's place; the command line also refuses to speak to a
-  pipe whose server is not in session 0 (where services live). The data
+  the socket, five seconds for a request and five for the answer, two
+  mebibytes per request: a member of the group can be a nuisance, not a
+  memory leak. On Windows the pipe's name proves nothing: any interactive
+  user can make `\\.\pipe\hidravpn` while the service is stopped, and add an
+  instance of it while the service runs (the pipe is made with eight as its
+  limit, but an idle service holds one, and on a pipe the write right every
+  client needs includes the right to add an instance; Node, behind the
+  browser, opens a pipe for write that way or for read only, so it cannot be
+  withheld). So the clients do not trust the name. The service makes a fresh
+  X25519 key at every start, keeps its private half in memory, and writes the
+  public half beside the token, with the token's rights (`control.pub`; on
+  Linux in `/run/hidravpn`). The command line and the browser seal every
+  request to it, a key of their own for each request (`seal.rs`: X25519,
+  HKDF-SHA256, AES-256-GCM), and believe an answer only when it opens under
+  the key the service derived for that request (each answer sealed under a
+  random nonce of its own, so a request passed on twice gives nothing away).
+  Both files are written beside their place and moved into it, so a client
+  never finds the token without the key while the service starts. Whatever else answers sees
+  neither the control token nor an account token, cannot answer in the
+  service's place, and cannot change an answer it passes on: the browser
+  shows "Service unavailable", the command line refuses. The command line
+  also refuses a pipe whose server is not in session 0 (where services
+  live). A plain request is still answered, so an older browser or command
+  line keeps working with a newer service (without that protection); a newer
+  browser asks a Windows service that has no key nothing and says "Update
+  HidraVPN", and asks an older Linux service in the clear, as before (only
+  root can make its socket). And the service never runs without its
+  channel: it makes the socket or the pipe's first instance before it tells
+  the system it is running, and when it cannot (on Windows: someone already
+  holds the name), or when the channel ever ends, it stops with an error.
+  The SCM logs it and tries again three times, a minute apart. The data
   folder under `ProgramData` is taken and given rights inherited from nowhere
   at install, so no user can plant a `client.key` or a pocket there first.
 - **A signed node list** (`hidravpn-core/src/directory.rs`). A JSON file —
@@ -459,17 +483,31 @@ $p.GetAccessControl().GetSecurityDescriptorSddlForm('Access'); $p.Dispose()
 hidravpn status
 
 # 4. The folder and the files carry the rights the installer set: no Users
-#    entry on the folder, the key or the pocket; Interactive read on the token.
+#    entry on the folder, the key or the pocket; Interactive read on the
+#    token and the service's public key.
 icacls "$env:ProgramData\HidraVPN"; icacls "$env:ProgramData\HidraVPN\control.token"
-icacls "$env:ProgramData\HidraVPN\client.key"
+icacls "$env:ProgramData\HidraVPN\control.pub"; icacls "$env:ProgramData\HidraVPN\client.key"
 
-# 5. A plain user can neither plant a file in the folder nor add a pipe
-#    instance; both must be refused (Access denied / All pipe instances are busy).
+# 5. A plain user cannot plant a file in the folder (Access denied). A plain
+#    user can add a pipe instance; while it is open, `hidravpn status` from
+#    another window either answers as the service or refuses ("something
+#    other than the HidraVPN service"), and the browser's VPN page shows the
+#    real state or "Service unavailable", never anything else.
 New-Item "$env:ProgramData\HidraVPN\probe.txt" -ItemType File
-[IO.Pipes.NamedPipeServerStream]::new('hidravpn',[IO.Pipes.PipeDirection]::InOut,-1)
+$s=[IO.Pipes.NamedPipeServerStream]::new('hidravpn',[IO.Pipes.PipeDirection]::InOut,-1); $s.WaitForConnection()
 
 # 6. (administrator) `hidravpn up invite.json` still works elevated, and
 #    phase3-test.ps1 still passes.
+
+# 7. (administrator: Stop-Service HidraVPN first; then the pipe as a plain
+#    user, in its own window, kept open) With the name taken, the service
+#    does not start: Start-Service fails, `sc.exe query HidraVPN` shows
+#    STOPPED with a service-specific exit code of 1, and service.log says
+#    "another program may already hold that name". Close the plain user's
+#    pipe and Start-Service works again.
+$s=[IO.Pipes.NamedPipeServerStream]::new('hidravpn',[IO.Pipes.PipeDirection]::InOut,-1)
+Start-Service HidraVPN; sc.exe query HidraVPN
+Get-Content "$env:ProgramData\HidraVPN\service.log" -Tail 5
 ```
 
 ## What is honest about this phase
@@ -514,13 +552,19 @@ New-Item "$env:ProgramData\HidraVPN\probe.txt" -ItemType File
   is the maintainers', and until an independent entry is listed every entry
   is too, so Privado's sentence — no node sees both — is then true of the
   nodes and not of their operator, and the page says so.
-- **A pipe can be squatted while the service is down.** With the service
-  running, every instance is the service's. With it stopped there is no pipe,
-  and a user could make one: the command line notices (the server is not in
-  session 0) and refuses; the browser cannot see the server's session and
-  would show whatever that pipe answered. Low value to an attacker on a
-  single-person machine; real on a shared one; said here so nobody is
-  surprised.
+- **A pipe can be squatted, and it costs only the channel.** Any signed-in
+  user may make `\\.\pipe\hidravpn` while the service is stopped, or add an
+  instance beside the service's while it runs. Made first, it keeps the
+  service from starting (the start fails, with an error in `service.log`
+  and the system's event log) until it is closed or the machine restarts.
+  Beside the service, it may be the instance a client reaches. Either way
+  the command line and the browser seal their requests and refuse an answer
+  that does not open, so that pipe learns no token and cannot show a made-up
+  state of the VPN; it can only keep a client from being answered, and the
+  page then says "Service unavailable". An older browser, which does not
+  seal, would still believe it: update both. The leak test measures the
+  address websites see and IPv6; the kill switch and DNS rows repeat the
+  service's own report, which can no longer come from anything else.
 - **Any signed-in user may drive the service on Windows, and any member of
   the group on Linux — and so may any program they run.** Connect,
   disconnect one's own circuit, a new identity, a join, an import of a

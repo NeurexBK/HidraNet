@@ -14,18 +14,32 @@
 // this runs in the main process, and the renderer only gets the handful of
 // calls in tab-preload.js, on our own pages.
 //
+// And every request is sealed to the service's key, whose public half the
+// service writes beside the token at every start (hidravpn-service/src/
+// seal.rs): X25519 with a key made for this one request, HKDF-SHA256, and
+// AES-256-GCM, all in Node's own crypto. Only the service can open the
+// request, and an answer is believed only when it opens under the key the
+// service derived for it. That is what tells the service apart from anything
+// else answering on its address: on Windows a pipe's name is no proof, since
+// a signed-in user may make \\.\pipe\hidravpn while the service is stopped,
+// or add an instance beside the service's. Such a pipe sees nothing it can
+// read, not the token and not an account token, and whatever it answers is
+// shown as "unavailable", never as the state of the VPN.
+//
 // Failures are reported as states a page can show, not as exceptions a page
 // has to guess at: the service is not installed, it is installed but not
 // running, this user may not open it, or it answered something unreadable.
 
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
 
 const LINUX_SOCKET = '/run/hidravpn/control.sock';
 const LINUX_TOKEN = '/run/hidravpn/control.token';
+const LINUX_KEY = '/run/hidravpn/control.pub';
 const WINDOWS_PIPE = '\\\\.\\pipe\\hidravpn';
 
 // An answer is one line of JSON; a status report is a few hundred bytes and a
@@ -40,9 +54,73 @@ const MODES = new Set(['rapido', 'privado']);
 function defaultPaths(platform = process.platform, env = process.env) {
   if (platform === 'win32') {
     const base = env.ProgramData || 'C:\\ProgramData';
-    return { endpoint: WINDOWS_PIPE, tokenPath: path.join(base, 'HidraVPN', 'control.token') };
+    return {
+      endpoint: WINDOWS_PIPE,
+      tokenPath: path.join(base, 'HidraVPN', 'control.token'),
+      keyPath: path.join(base, 'HidraVPN', 'control.pub'),
+    };
   }
-  return { endpoint: LINUX_SOCKET, tokenPath: LINUX_TOKEN };
+  return { endpoint: LINUX_SOCKET, tokenPath: LINUX_TOKEN, keyPath: LINUX_KEY };
+}
+
+// ── Sealed requests (the same scheme as hidravpn-service/src/seal.rs) ──────
+
+const SEAL = 'x25519-aes256gcm';
+const SEAL_INFO = Buffer.from('hidravpn control channel v1');
+const GCM_TAG = 16;
+const GCM_NONCE = 12;
+
+function x25519Public(raw) {
+  return crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: raw.toString('base64url') }, format: 'jwk' });
+}
+
+function rawPublic(keyObject) {
+  return Buffer.from(keyObject.export({ format: 'jwk' }).x, 'base64url');
+}
+
+// The request key seals this one request, so its nonce is fixed; the
+// service seals its answer under a random nonce it sends with it.
+function aesSeal(key, plain) {
+  const c = crypto.createCipheriv('aes-256-gcm', key, Buffer.alloc(GCM_NONCE), { authTagLength: GCM_TAG });
+  return Buffer.concat([c.update(plain), c.final(), c.getAuthTag()]);
+}
+
+function aesOpen(key, nonce, data) {
+  if (nonce.length !== GCM_NONCE || data.length < GCM_TAG) throw new Error('too short');
+  const d = crypto.createDecipheriv('aes-256-gcm', key, nonce, { authTagLength: GCM_TAG });
+  d.setAuthTag(data.subarray(data.length - GCM_TAG));
+  return Buffer.concat([d.update(data.subarray(0, data.length - GCM_TAG)), d.final()]);
+}
+
+// Seals a request line (without its newline) to the service's public key,
+// 32 bytes. Returns the line to send and `open(answer)`, which gives the
+// answer's plain line, or null when the answer is not one the service
+// sealed for this request. `mine` (a private X25519 KeyObject) is for
+// tests: otherwise every request has a key of its own.
+function sealRequest(servicePublic, plain, mine) {
+  const priv = mine || crypto.generateKeyPairSync('x25519').privateKey;
+  const from = rawPublic(crypto.createPublicKey(priv));
+  const shared = crypto.diffieHellman({ privateKey: priv, publicKey: x25519Public(servicePublic) });
+  if (shared.every((b) => b === 0)) throw new Error('the service\'s key is not a usable key');
+  const okm = Buffer.from(crypto.hkdfSync('sha256', shared, Buffer.concat([from, servicePublic]), SEAL_INFO, 64));
+  const requestKey = okm.subarray(0, 32);
+  const answerKey = okm.subarray(32);
+  const line = JSON.stringify({ seal: SEAL, from: from.toString('base64'), data: aesSeal(requestKey, Buffer.from(plain, 'utf8')).toString('base64') });
+  const open = (answer) => {
+    let sealed;
+    try {
+      sealed = JSON.parse(answer);
+    } catch {
+      return null;
+    }
+    if (!sealed || sealed.seal !== SEAL || typeof sealed.nonce !== 'string' || typeof sealed.data !== 'string') return null;
+    try {
+      return aesOpen(answerKey, Buffer.from(sealed.nonce, 'base64'), Buffer.from(sealed.data, 'base64')).toString('utf8');
+    } catch {
+      return null;
+    }
+  };
+  return { line, open };
 }
 
 // Why the service could not be reached, in words a page can show. `code` is
@@ -60,6 +138,13 @@ const GROUP_HINT =
   'On Linux the browser must run as a member of the hidravpn group: the installer adds ' +
   'the user who ran it; log out and in once, or run `sudo usermod -aG hidravpn $USER`.';
 
+// What a page is told when the answer did not open: whatever answered, it
+// was not the service, and it was shown nothing it could read.
+const NOT_THE_SERVICE = 'something other than the HidraVPN service answered on its control channel, so the answer was not believed';
+const NOT_THE_SERVICE_HINT =
+  'Nothing readable was sent to it. Restart the HidraVPN service, or this computer; if this comes back, ' +
+  'another program on this computer is holding the service\'s channel.';
+
 const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes']);
 
 class VpnManager {
@@ -67,6 +152,10 @@ class VpnManager {
     const defaults = defaultPaths();
     this.endpoint = options.endpoint || defaults.endpoint;
     this.tokenPath = options.tokenPath || defaults.tokenPath;
+    this.keyPath = options.keyPath || defaults.keyPath;
+    // Where a service with no key may still be asked in the clear: not on
+    // Windows, where the pipe's name proves nothing. Tests set it.
+    this.platform = options.platform || process.platform;
     this.timeoutMs = options.timeoutMs || 8000;
     // Commands that wait on the network (an admission, a pass redeemed, the
     // issuer, a circuit built): eight seconds would give up while the
@@ -108,6 +197,26 @@ class VpnManager {
     return token;
   }
 
+  // The service's public key, 32 bytes, or null from a service older than
+  // sealed requests, which writes none.
+  async _readServiceKey() {
+    let text;
+    try {
+      text = await this._fs.promises.readFile(this.keyPath, 'utf8');
+    } catch (e) {
+      if (e && e.code === 'ENOENT') return null;
+      if (e && (e.code === 'EACCES' || e.code === 'EPERM')) {
+        throw new VpnUnavailable('no-permission', 'this user may not open the HidraVPN control channel', GROUP_HINT);
+      }
+      throw new VpnUnavailable('unavailable', `could not read the service's key (${e && e.code ? e.code : e})`);
+    }
+    const raw = Buffer.from(String(text).trim(), 'base64');
+    // Never a reason to ask in the clear: a key file only the service may
+    // write is there, so it is the service that must answer.
+    if (raw.length !== 32) throw new VpnUnavailable('unavailable', 'the service\'s key file is not a key', 'Restart the HidraVPN service so it writes a fresh one.');
+    return raw;
+  }
+
   async _exists(p) {
     try {
       await this._fs.promises.access(p);
@@ -122,8 +231,24 @@ class VpnManager {
   // or does not answer in the protocol.
   async request(cmd) {
     const token = await this._readToken();
-    const line = JSON.stringify({ token, ...cmd }) + '\n';
-    const answer = await this._roundTrip(line, SLOW_COMMANDS.has(cmd.cmd) ? this.slowTimeoutMs : this.timeoutMs);
+    const key = await this._readServiceKey();
+    const plain = JSON.stringify({ token, ...cmd });
+    let sealed = null;
+    if (key) {
+      sealed = sealRequest(key, plain);
+    } else if (this.platform === 'win32') {
+      // An older service writes no key, so nothing it answers could be told
+      // from what any signed-in user's pipe might answer: it is not asked.
+      throw new VpnUnavailable('outdated', 'the HidraVPN service on this machine is older than the browser',
+        'Update HidraVPN: this browser talks only to a service that can prove it is HidraVPN, and the installed one cannot.');
+    }
+    // A service older than sealed requests on Linux is asked in the clear,
+    // as before: only root can make the socket where it lives.
+    let answer = await this._roundTrip((sealed ? sealed.line : plain) + '\n', SLOW_COMMANDS.has(cmd.cmd) ? this.slowTimeoutMs : this.timeoutMs);
+    if (sealed) {
+      answer = sealed.open(answer);
+      if (answer === null) throw new VpnUnavailable('unavailable', NOT_THE_SERVICE, NOT_THE_SERVICE_HINT);
+    }
     let parsed;
     try {
       parsed = JSON.parse(answer);
@@ -326,4 +451,4 @@ function unavailable(e) {
   return { state: 'unavailable', report: null, error: String((e && e.message) || e), hint: '' };
 }
 
-module.exports = { VpnManager, VpnUnavailable, defaultPaths, MODES, MAX_ANSWER_BYTES, MAX_LIST_BYTES };
+module.exports = { VpnManager, VpnUnavailable, defaultPaths, sealRequest, MODES, MAX_ANSWER_BYTES, MAX_LIST_BYTES };

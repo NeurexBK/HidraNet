@@ -27,7 +27,7 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
-  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token \
+  rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/control.pub \
          /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
@@ -87,6 +87,23 @@ grep -q "not connected" "$WORK/st0.log" && grep -q "kill switch off" "$WORK/st0.
 printf '{"token":"wrong","cmd":"status"}\n' | $C python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect("/run/hidravpn/control.sock"); s.sendall(sys.stdin.buffer.read()); print(s.recv(4096).decode())' > "$WORK/noauth.log" 2>&1
 grep -q "unauthorised" "$WORK/noauth.log" && pass "a request without the control token is refused" || { cat "$WORK/noauth.log"; fail "the service answered without a token"; }
 
+# ── Only the service's own answers are believed ─────────────────────────────
+# The command line seals its requests to the key whose public half the
+# service wrote beside the token; a request in the clear, as an older client
+# sends, is still answered.
+[ -s /run/hidravpn/control.pub ] && [ "$(stat -c '%U' /run/hidravpn/control.pub)" = root ] && [ $(( 0$(stat -c '%a' /run/hidravpn/control.pub) & 022 )) -eq 0 ] \
+  && pass "the service wrote its public key beside the token, root's and writable by root alone ($(stat -c '%a' /run/hidravpn/control.pub))" || fail "public key: $(ls -l /run/hidravpn/control.pub 2>&1)"
+python3 -I -c 'import json,socket; t=open("/run/hidravpn/control.token").read().strip(); s=socket.socket(socket.AF_UNIX); s.connect("/run/hidravpn/control.sock"); s.sendall((json.dumps({"token":t,"cmd":"ping"})+"\n").encode()); print(s.recv(4096).decode())' > "$WORK/plain.log" 2>&1
+grep -q '"ok":true' "$WORK/plain.log" && pass "a request in the clear, as an older client sends it, is still answered" || { cat "$WORK/plain.log"; fail "a plain request was not answered"; }
+# Another key where the service's should be: the command line can open no
+# answer, so it believes none and says so.
+cp -p /run/hidravpn/control.pub "$WORK/control.pub"
+python3 -I -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())' > /run/hidravpn/control.pub
+$C "$BIN/hidravpn-service" status > "$WORK/st-key.log" 2>&1; RC=$?
+[ $RC -ne 0 ] && grep -q "something other than the HidraVPN service" "$WORK/st-key.log" && ! grep -q "not connected" "$WORK/st-key.log" \
+  && pass "an answer that does not open under the service's key is not believed" || { cat "$WORK/st-key.log"; fail "the command line believed an answer it could not open"; }
+cp -p "$WORK/control.pub" /run/hidravpn/control.pub
+
 # ── Up ──────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn-service" up "$WORK/invite.json" > "$WORK/up.log" 2>&1 && pass "service connected" || { cat "$WORK/up.log" "$WORK/svc.log"; fail "service up"; }
 
@@ -111,5 +128,20 @@ $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "still reachi
 # ── Clean shutdown of the daemon ────────────────────────────────────────────
 kill -INT $SVC; for i in $(seq 1 25); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done
 kill -0 $SVC 2>/dev/null && fail "the service did not stop on SIGINT" || pass "the service stopped cleanly"
+
+# ── No service without its control channel ──────────────────────────────────
+# Something in the way of the socket: the service must not run deaf (nobody
+# could send it `down`, and on Windows whatever held the pipe's name would
+# answer in its place). It says why and exits with an error.
+rm -rf /run/hidravpn/control.sock; mkdir -p /run/hidravpn/control.sock/in-the-way
+$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc-deaf.log" 2>&1 & DEAF=$!; PIDS+=($DEAF)
+for i in $(seq 1 25); do kill -0 $DEAF 2>/dev/null || break; sleep 0.2; done
+if kill -0 $DEAF 2>/dev/null; then
+  fail "the service runs without its control channel"; kill -INT $DEAF 2>/dev/null
+else
+  wait $DEAF; RC=$?
+  [ $RC -ne 0 ] && grep -q "binding the control socket" "$WORK/svc-deaf.log" && pass "with no control channel the service stops with an error and says why (exit $RC)" || { cat "$WORK/svc-deaf.log"; fail "the service stopped, but not with the reason (exit $RC)"; }
+fi
+rm -rf /run/hidravpn/control.sock
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]
