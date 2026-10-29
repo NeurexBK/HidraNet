@@ -226,6 +226,13 @@ pub struct StatusReport {
     /// when it is blocked while connected, or from an older service.
     #[serde(default)]
     pub ipv6: bool,
+    /// The service sends nothing that carries the pass account token, and
+    /// joins no node, while two hops are up (`passes::refills_through`,
+    /// `passes::NOT_THROUGH_TWO_HOPS`). False from an older service, which
+    /// tops passes up and fetches them through any circuit, two hops too:
+    /// a page must not say otherwise of it.
+    #[serde(default)]
+    pub account_one_hop_only: bool,
 }
 
 impl StatusReport {
@@ -1104,6 +1111,7 @@ mod tests {
             same_operator: None,
             version: String::new(),
             ipv6: false,
+            account_one_hop_only: true,
         };
         let r = Response::with_status(s).noting("rotated");
         let line = serde_json::to_string(&r).unwrap();
@@ -1121,6 +1129,10 @@ mod tests {
         .unwrap();
         assert_eq!(old.hops, 0);
         assert!(old.hops_detail.is_empty());
+        assert!(
+            !old.account_one_hop_only,
+            "an older service is not taken to keep the token off two hops"
+        );
         assert!(old.explanation().is_none());
         assert!(old.hop_lines().is_empty());
     }
@@ -1159,6 +1171,7 @@ mod tests {
             same_operator: None,
             version: String::new(),
             ipv6: false,
+            account_one_hop_only: true,
         };
         let p = s.explanation().unwrap();
         assert!(p.contains("no node sees both"));
@@ -1591,6 +1604,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pocket = dir.join("circuit.json");
         let sock = start_with_pocket("tok", Some(pocket)).await;
+        // The service takes the caller from the socket: only root may keep
+        // a token, so what this test sees depends on who runs it (root in
+        // the namespace suites, an ordinary account in CI's unit tests).
+        // The root path is also driven straight through `Daemon::handle`.
+        // SAFETY: geteuid has no preconditions.
+        let root = unsafe { libc::geteuid() } == 0;
         let token = "Zm9vYmFyLXRva2VuLTEyMw";
         let resp = call_unix_at(
             &sock,
@@ -1601,15 +1620,26 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(resp.ok, "{:?}", resp.error);
         assert!(!serde_json::to_string(&resp).unwrap().contains(token));
         let kept = dir.join("pass.token");
-        assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        if root {
+            assert!(resp.ok, "{:?}", resp.error);
+            assert_eq!(std::fs::read_to_string(&kept).unwrap(), token);
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        } else {
+            assert!(!resp.ok);
+            assert!(
+                resp.error.as_deref().unwrap().contains("needs root"),
+                "{:?}",
+                resp.error
+            );
+            assert!(!kept.exists(), "a refused token is not kept");
+            std::fs::write(&kept, token).unwrap();
+        }
         let resp = call_unix_at(
             &sock,
             "tok",

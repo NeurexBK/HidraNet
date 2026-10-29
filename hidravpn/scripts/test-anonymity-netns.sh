@@ -121,9 +121,10 @@ sleep 1
 
 # ── Three nodes, all admitting openly ───────────────────────────────────────
 mkdir -p "$WORK/run-e" "$WORK/run-x" "$WORK/run-x2"
-$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --endpoint $ENTRY:51820 --tunnel 10.78.0.0/16 --name entry-a --role entry --operator op-a --open-admission --dns udp://10.201.0.2 --out-interface en-p > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; exit 1; }
-$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --endpoint $EXIT:51820 --name exit-b --role exit --operator op-b --open-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; exit 1; }
-$X2 "$BIN/hidravpn-node" --config "$WORK/x2.toml" init --endpoint $EXIT2:51820 --tunnel 10.79.0.0/16 --name exit-a2 --role exit --operator op-a --open-admission --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-x2.log" 2>&1 || { cat "$WORK/init-x2.log"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --forward-private-destinations --endpoint $ENTRY:51820 --tunnel 10.78.0.0/16 --name entry-a --role entry --operator op-a --open-admission --dns udp://10.201.0.2 --out-interface en-p > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; exit 1; }
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --forward-private-destinations --endpoint $EXIT:51820 --name exit-b --role exit --operator op-b --open-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; exit 1; }
+$X2 "$BIN/hidravpn-node" --config "$WORK/x2.toml" init --forward-private-destinations --endpoint $EXIT2:51820 --tunnel 10.79.0.0/16 --name exit-a2 --role exit --operator op-a --open-admission --dns udp://10.204.0.2 --out-interface x2-i > "$WORK/init-x2.log" 2>&1 || { cat "$WORK/init-x2.log"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hve0"/' "$WORK/e.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
 sed -i 's/^interface = "hvpn0"/interface = "hvx1"/' "$WORK/x2.toml"

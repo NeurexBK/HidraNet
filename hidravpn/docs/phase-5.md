@@ -118,11 +118,16 @@ of; the nonce, so each pass is spent once.
   for sixteen at a time; if a later request fails, the passes from the
   earlier ones — already counted against the account — are kept, and the
   line says where it stopped.
-- **The browser gets passes.** The service has `set_pass_token` (the token
-  goes over the control channel once, is written root-only, and is never sent
-  back) and `get_passes` (it asks the issuer with the token it keeps); `nodes`
-  reports each pass node's count. The VPN page has a *Passes* card: a token
-  field emptied the moment it is handed over, and *Get 10 passes per node*.
+- **The browser gets passes.** The service has `set_pass_token` (root or an
+  administrator only, as `up` with an invite; the token goes over the
+  control channel once, is written root-only, and is never sent back; the
+  token it replaces is kept beside it as `pass.token.previous`, then
+  `.previous.1` and on, root-only too: none is ever written over) and `get_passes` (it asks the issuer with the token it keeps, and not
+  while two hops are up: `anonymity.md`, finding 21); `nodes` reports each
+  pass node's count. The VPN page has a *Passes* card: *Get 10 passes per
+  node*, and how an administrator keeps the token (`sudo hidravpn passes
+  token FILE`): the browser runs as the person, never as root, so it has no
+  token field.
 - **An HTTPS client of its own** (`hidravpn-core/src/http.rs`): rustls with
   the Mozilla roots built in, one request, strict limits, chunked answers
   read (a TLS proxy may send them). The token goes over `https://`, or plain
@@ -320,8 +325,15 @@ protects a full node from being hammered).
   even a rotation to it leaves by the physical link and the kill switch stops
   the request; the service then keeps its last key. On the open network nodes
   are not on one's link.
-- **Any account on this computer can spend the account's passes**, and can
-  replace the token, through the service. It cannot read the token.
+- **Any account on this computer can spend the account's passes** through
+  the service. It cannot read the token, and it cannot replace it: since
+  phase 7 the token can hold passes bought with HNET, it exists only on this
+  machine (the issuer keeps its hash), and the next purchase goes on
+  whatever token is kept, so replacing it would wipe a paid balance and send
+  the next purchase to someone else's account. Only root (an administrator
+  on Windows) replaces it, and the token replaced is kept beside it as
+  `pass.token.previous` (then `.previous.1` and on; none is written over).
+  `uninstall --purge` removes them all.
 - **Nothing of this phase has run on Windows.** It compiles for the Windows
   target; the client side there is the same code, untested at run time.
 - **The blind-signature crate sits on a release candidate of `rsa` (0.10).**

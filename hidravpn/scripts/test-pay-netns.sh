@@ -119,7 +119,8 @@ echo 0.00012686 > "$PRICE"; sleep 2.5
 OUT=$($C curl -s --max-time 5 http://10.200.0.1:8730/packs); echo "$OUT" | grep -q "\"passes\":150,\"price_raw\":47217000000" && pass "the feed is back: the pack is for sale again at the rate it says" || fail "feed back: $OUT"
 
 # ── The node admits with a pass; the list names the issuer ──────────────────
-$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvp0"/' "$WORK/p.toml"
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run"

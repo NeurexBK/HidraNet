@@ -95,24 +95,105 @@ connection, which the node forgets about ten minutes after the last packet
 it received under it. A session request must carry a proof of work bound to
 this node, that key and the current minute: about a second of one core at
 the default of 20 bits (`admission_work_bits` in `/etc/hidravpn/node.toml`;
-raise it if scripts fill the node). Sessions are not counted per address,
+raise it if scripts fill the node). The node asks for more as it fills, four
+times the work from half full, sixteen times from three quarters and
+sixty-four times from seven eighths, counting both the sessions of the last
+ten minutes and the leases it holds now, so the last places cost the most
+however slowly they were taken. That cost falls on real users too: on a
+node seven eighths full of them, every new connection carries sixty-four
+times the work, about a minute of one core (a client works on one), so
+give a busy node more places (`max_clients`, which its subnet allows up to
+its size) well before it gets there. Sessions are not counted per address,
 because an exit sees every client of an entry under the entry's address;
 the node takes at most 600 every ten minutes. A lasting lease (`hidravpn
-nodes join`) is still counted the old way, at most three times per address
-every ten minutes and 120 per node. Everything together stays under
-`--max-clients` (4000). A client that never completes a
-handshake loses its lease within about fifteen minutes, so a script that
-only asks cannot keep a node full; one that stops coming loses it after
-`--idle-days` (30; the node writes each client's last handshake down, so a
-restart is not idleness). A manually admitted client (`hidravpn-node admit`) is never
-expired. Both numbers are installer flags too (`--max-clients`,
-`--idle-days`) and settings in `/etc/hidravpn/node.toml`.
+nodes join`) costs no work: it is counted the old way, at most three times
+per address every ten minutes and 120 per node, and lasting leases hold at
+most a quarter of `--max-clients` together, so the other places stay for
+sessions. **An entry gives no lasting lease at all** (it answers `join` with
+403): a client asks an entry only for a key for each connection, and a
+lasting lease there would hold a place for weeks after one handshake.
+Everything together stays under `--max-clients` (4000). A client that never
+completes a handshake loses its lease within about fifteen minutes; one that
+stops coming loses it after `--idle-days` (30; the node writes each client's
+last handshake down, so a restart is not idleness), or, on an entry, ten
+minutes after its last packet, as a session does. A manually admitted client
+(`hidravpn-node admit`) is never expired. Both numbers are installer flags
+too (`--max-clients`, `--idle-days`) and settings in
+`/etc/hidravpn/node.toml`.
+
+What that does not stop, said plainly: one handshake every few minutes
+keeps a session, or a lasting lease, alive. Someone with enough processor
+time can still fill an open node with sessions and hold it while they keep
+them alive, and someone with hundreds of addresses can keep its admission
+port busy. Nodes that admit with a pass are the answer to that.
+
+The admission port accepts every connection and closes at once one it has
+no room for: past 4096 open at once, or past 8 from one address. A
+connection that sends nothing for two seconds, or not a whole request in
+three, is closed. An exit sees every two-hop client of an entry under that
+entry's address, so on an exit list the outside IPv4 addresses of the
+entries in the signed list, and each gets a share of 3072 connections
+instead of 8, then restart the node:
+
+```
+sudo hidravpn-node set-admission-relays <entry 1's public ip> <entry 2's public ip>
+sudo systemctl restart hidravpn-node
+```
+
+That writes `admission_relays` into `node.toml`, in place of the list there.
+The node's log then says `2 entry address(es) relay admission requests
+here`. The installer does the same (`--admission-relay <ip>`, once per
+entry): on a new exit through `hidravpn-node init`, which has the same flag,
+and on one already installed through `set-admission-relays`, restarting the
+node after. Written by hand, the line goes above any `[[pass_keys]]` section
+of the file: below one it would belong to that section, and the node
+refuses to start with it there. Change the list whenever an entry is added
+to the signed list or moves to another address. An exit or a node that is both,
+admitting openly or with a pass, that lists none says so in its log at
+every start (`no entry is listed in admission_relays`): until it does, all
+of an entry's two-hop clients share 8 connections there, and a handful of
+them could hold those.
+
+The entry in turn lets each of its clients hold at most 2 admission
+requests open through it at once, and open them at one a second after the
+first few, so one client of an entry cannot use up that share. What is
+left, said plainly: someone who holds some 1500 sessions on an entry at
+once, each with its proof of work and more work the fuller the entry gets,
+can still fill one exit's share for as long as they keep at it, and with
+twice as many both exits' shares. The node's log does not say who; an entry
+at its limit of places is the sign.
 
 An entry forwards only to UDP 51820, the default tunnel port, and to TCP
 51821, the default admission port, so a client can ask an exit for admission
 through the entry: keep exits on those ports, or an entry cannot reach them.
-It forwards those ports to any address, not only to listed nodes: the node
-has no list.
+It forwards those ports to any public address, not only to listed nodes:
+the node has no list.
+
+## What a client can reach through a node
+
+Whatever the role, traffic from the tunnel reaches the node's outside
+interface and nothing else of the host — not a private network interface,
+not a service on the node itself other than its DNS forwarder — and no
+client reaches another. Through the outside interface it reaches the open
+internet only: the node drops what clients send to private, loopback,
+link-local (`169.254.169.254`, where clouds serve instance metadata, among
+them), shared (`100.64.0.0/10`), multicast, reserved and documentation
+addresses, and to their IPv6 equivalents (unique local `fc00::/7`,
+link-local `fe80::/10`, multicast `ff00::/8`, loopback, IPv4-mapped, the
+NAT64 prefixes, documentation `2001:db8::/32` and `3fff::/20`, benchmarking
+`2001:2::/48` and segment routing `5f00::/16`). So a client cannot reach the
+provider's network or the metadata service behind the node's outside
+interface, even where they are routed through it. And nothing from outside reaches a client unless the
+client started it: the node forwards to the tunnel only the replies to
+clients' own connections. The node's log says `private destinations:
+blocked`.
+
+`forward_private_destinations = true` in `node.toml` lifts the destination
+filter. It is for a test network, or a private deployment whose "internet"
+is a private range (the namespace suites in `scripts/` use it); never set it
+on a public node. Even with the filter, keep secrets out of a server's
+cloud-init user data, and where the provider offers it, let its metadata
+service answer only requests that carry a token.
 
 ## Updating a node
 
@@ -120,13 +201,20 @@ Clients pass over an open node whose record does not list `sessions`, and
 use an entry for an open exit only if its record lists `admission-relay`.
 A node updated to this release says so in `hidravpn-node record`. After
 updating the nodes, make and sign the list again from the new records:
-until then, clients cannot use them. Whatever the role,
-traffic from the tunnel reaches the node's outside interface and nothing
-else of the host — not a private network interface, not a service on the
-node itself other than its DNS forwarder.
+until then, clients cannot use them. On an exit, list the entries in
+`admission_relays` (above) when you update it: run the installer again with
+`--admission-relay` for each entry, or `hidravpn-node set-admission-relays`.
 
 Without it, the node still describes itself on TCP 51821 (`GET /`), but
 admits only by the operator's hand: the way a friend runs a node for friends.
+
+An open exit, or open node that is both, that already holds more lasting
+leases than a quarter of `max_clients` when it is updated keeps them until
+they go `--idle-days` without a handshake; until then it has fewer places
+for sessions. To free them at once, revoke some: the leases with
+`"source": "open"` in `/var/lib/hidravpn/peers.json` are those, and
+`hidravpn-node revoke --pubkey <key>` removes one. An entry needs nothing:
+the lasting leases it holds lapse ten minutes after their last packet.
 
 An exit with open admission is a public VPN exit. Complaints will come;
 `docs/operators/abuse-response.md` is what to answer.

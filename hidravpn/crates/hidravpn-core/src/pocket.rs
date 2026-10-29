@@ -289,9 +289,16 @@ impl Pocket {
     /// key), in every list the old one was in, or in the slots its role
     /// allows when it was not there: what redeeming the next pass for a node
     /// does. The record goes from `known`, as with `add`.
+    ///
+    /// An invite whose pass was redeemed through an entry never takes the
+    /// place of one whose pass was redeemed from this machine's address: the
+    /// one kept is the key a later one-hop connection may still show, and
+    /// the other is never shown from here (nor, being spent, behind an entry
+    /// again). One redeemed from here takes the place of either.
     pub fn replace(&mut self, invite: Invite) -> Result<()> {
         invite.validate()?;
         let key = invite.node_public_key.trim().to_string();
+        let keeps_direct = invite.pass.is_some() && invite.direct_pass().is_none();
         let mut placed = false;
         for inv in self
             .entries
@@ -299,7 +306,9 @@ impl Pocket {
             .chain(self.exits.iter_mut())
             .filter(|i| i.node_public_key.trim() == key)
         {
-            *inv = invite.clone();
+            if !(keeps_direct && inv.direct_pass().is_some()) {
+                *inv = invite.clone();
+            }
             placed = true;
         }
         if !placed {
@@ -640,6 +649,59 @@ mod tests {
             features: Vec::new(),
         }
         .open()
+    }
+
+    fn with_pass(mut inv: Invite, behind: Option<bool>) -> Invite {
+        inv.admission = Some("pass".into());
+        inv.features = Vec::new();
+        inv.pass = Some(crate::config::PassBinding {
+            client_secret: ClientKey::generate().unwrap().secret_base64(),
+            admission_port: None,
+            redeemed_at: 1,
+            used_at: 0,
+            behind,
+        });
+        inv
+    }
+
+    #[test]
+    fn a_pass_key_redeemed_through_an_entry_never_takes_the_place_of_one_redeemed_from_here() {
+        let base = invite("q", "203.0.113.10:51820");
+        let direct = with_pass(base.clone(), Some(false));
+        let behind = with_pass(base.clone(), Some(true));
+        let secret = |p: &Pocket| p.exits[0].pass.as_ref().unwrap().client_secret.clone();
+        let mut p = Pocket::default();
+        p.add(Slot::Exit, direct.clone()).unwrap();
+        p.replace(behind.clone()).unwrap();
+        assert_eq!(p.exits.len(), 1);
+        assert_eq!(
+            secret(&p),
+            direct.pass.as_ref().unwrap().client_secret,
+            "the key a later one-hop connection may show stays"
+        );
+        // A key redeemed from here takes the place of either.
+        let direct2 = with_pass(base.clone(), Some(false));
+        p.replace(direct2.clone()).unwrap();
+        assert_eq!(secret(&p), direct2.pass.as_ref().unwrap().client_secret);
+        let mut q = Pocket::default();
+        q.add(Slot::Exit, behind.clone()).unwrap();
+        q.replace(direct.clone()).unwrap();
+        assert_eq!(secret(&q), direct.pass.as_ref().unwrap().client_secret);
+        // Through an entry, in place of one redeemed through an entry or of
+        // unknown origin (an older pocket): neither is shown from here.
+        let behind2 = with_pass(base.clone(), Some(true));
+        let mut b = Pocket::default();
+        b.add(Slot::Exit, behind.clone()).unwrap();
+        b.replace(behind2.clone()).unwrap();
+        assert_eq!(secret(&b), behind2.pass.as_ref().unwrap().client_secret);
+        let mut r = Pocket::default();
+        r.add(Slot::Exit, with_pass(base.clone(), None)).unwrap();
+        r.replace(behind.clone()).unwrap();
+        assert_eq!(secret(&r), behind.pass.as_ref().unwrap().client_secret);
+        // A node not in the pocket yet goes in, whatever its key.
+        let mut e = Pocket::default();
+        e.replace(behind.clone()).unwrap();
+        assert_eq!(e.exits.len() + e.entries.len(), 2, "no role: both slots");
     }
 
     impl Invite {

@@ -7,15 +7,21 @@
 //! Two leaks the ordinary routing of phase 1 could still allow are closed here:
 //! IPv6 (off the tunnel blocked outright; into the tunnel only from the
 //! tunnel's own IPv6 address, so a packet never carries the machine's real
-//! IPv6 address to a node, which decrypts it) and DNS (never off the tunnel: on Linux allowed only to the node's own
-//! resolver; on Windows any resolver, but only through the tunnel, which
-//! carries it to the exit).
+//! IPv6 address to a node, which decrypts it) and DNS (never off the tunnel,
+//! "Allow LAN" or not: on Linux allowed only to the node's own resolver and
+//! only out of the tunnel, so a route that sends that address to the local
+//! network carries nothing; on Windows any resolver, but only through the
+//! tunnel, which carries it to the exit).
 //!
-//! On Windows the rules apply to connections this machine opens
-//! (`ALE_AUTH_CONNECT`) and to those it receives (`ALE_AUTH_RECV_ACCEPT`): a
-//! program listening on this machine is reached only through the tunnel,
-//! from loopback, by a DHCP answer, or from the local network with "Allow
-//! LAN", as on Linux.
+//! Nothing comes in through a tunnel unasked: only what answers this
+//! machine's own packets. The node at the other end chooses what comes out
+//! of it; if it could open connections here it would reach every program
+//! listening on this machine and could tell the machine again, by what
+//! answers, after a new key or a new identity. On Windows the rules apply to
+//! connections this machine opens (`ALE_AUTH_CONNECT`) and to those it
+//! receives (`ALE_AUTH_RECV_ACCEPT`): a program listening on this machine is
+//! reached only from loopback, by a DHCP answer, or from the local network
+//! with "Allow LAN", as on Linux.
 //!
 //! Like the rest of the client's network changes, this touches only a table of
 //! our own, so removing it removes everything and nothing else on the machine
@@ -33,7 +39,8 @@ mod windows;
 /// What the kill switch must let through while it is on.
 #[derive(Debug, Clone)]
 pub struct KillConfig {
-    /// The tunnel interface; all traffic on it is allowed (that is the point).
+    /// The tunnel interface; all traffic out on it is allowed (that is the
+    /// point), and back in what answers it.
     pub interface: String,
     /// The node's WireGuard endpoint: the one address reachable off-tunnel.
     pub node_endpoint: SocketAddr,
