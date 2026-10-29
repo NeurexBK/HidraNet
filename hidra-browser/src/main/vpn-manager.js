@@ -239,10 +239,11 @@ class VpnManager {
     if (key) {
       sealed = sealRequest(key, plain);
     } else if (this.platform === 'win32') {
-      // An older service writes no key, so nothing it answers could be told
-      // from what any signed-in user's pipe might answer: it is not asked.
-      throw new VpnUnavailable('outdated', 'the HidraVPN service on this machine is older than the browser',
-        'Update HidraVPN: this browser talks only to a service that can prove it is HidraVPN, and the installed one cannot.');
+      // No key: the service has not started since it was installed or
+      // updated (the token left by an older one), or it writes none. What
+      // answers could be any user's pipe: it is not asked.
+      throw new VpnUnavailable('outdated', 'the HidraVPN service on this machine is not running, or is older than this browser',
+        'Start the HidraVPN service; if it is running, update HidraVPN. This browser talks only to a service that can prove it is HidraVPN, and none here has.');
     }
     // A service older than sealed requests on Linux is asked in the clear,
     // as before: only root can make the socket where it lives.

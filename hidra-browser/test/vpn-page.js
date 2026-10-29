@@ -137,6 +137,12 @@ expect('every request is sealed when the service has a key, and an answer that d
 expect('on Windows a service without a key is never asked in the clear',
   /\} else if \(this\.platform === 'win32'\) \{[\s\S]{0,300}throw new VpnUnavailable\('outdated'/.test(manager),
   'a keyless Windows service would be sent the token');
+// A service that has not started since it was installed or updated wrote no
+// key either, so the page does not call it older, and offers to start it.
+expect('a Windows service with no key is shown as not running, or older, with starting it as the first step',
+  page.includes("'outdated': 'Service not running, or older than this browser'")
+    && /if \(s\.state === 'outdated'\) \{ text = 'Start the HidraVPN service, or, if it is running, update HidraVPN from Settings\.'/.test(page),
+  'the page says only that the service is older');
 
 // ── Phase 4 completion: install, leak test, local network, route ──────────
 expect('the install card is hidden until the service says it is not installed', /id="install-card" style="display:none"/.test(page) && /notInstalled \? '' : 'none'/.test(page), 'the install card is not tied to the not-installed state');
