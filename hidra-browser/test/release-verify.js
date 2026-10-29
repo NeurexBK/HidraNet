@@ -87,6 +87,52 @@ const rawPublic = (pub) => pub.export({ format: 'der', type: 'spki' }).slice(-32
     assert.strictEqual(m[1], rv.RELEASE_PUBLIC_KEY);
   });
 
+  // ── The browser's checksum table: the same key, its own label ───────────
+  const sums = Buffer.from('HidraNet Browser 1.1.0 — SHA-256 checksums\n  latest-version:        1.1.0\n');
+  const sumsSig = crypto.sign(null, rv.browserSumsMessage(sums), privateKey).toString('base64');
+
+  await check('the table\'s signature covers the label, a zero byte, then the file', async () => {
+    assert.strictEqual(rv.BROWSER_SUMS_CONTEXT.toString('latin1'), 'hidranet-browser-sums-v1\0');
+    assert.strictEqual(rv.verifyBrowserSums(sums, sumsSig, pubB64), true);
+    const tampered = Buffer.from(sums); tampered[30] ^= 1;
+    assert.strictEqual(rv.verifyBrowserSums(tampered, sumsSig, pubB64), false);
+  });
+
+  await check('a signature of the bare bytes (a manifest\'s, a VPN SHA256SUMS\'s) is not one of the table', async () => {
+    const bare = crypto.sign(null, sums, privateKey).toString('base64');
+    assert.strictEqual(rv.verifyBytes(sums, bare, pubB64), true);
+    assert.strictEqual(rv.verifyBrowserSums(sums, bare, pubB64), false);
+  });
+
+  await check('and the table\'s signature passes for nothing signed over its bare bytes', async () => {
+    assert.strictEqual(rv.verifyBytes(sums, sumsSig, pubB64), false);
+    const r = await (async () => {
+      const f = path.join(tmp, 'SHA256SUMS.txt');
+      fs.writeFileSync(f, sums);
+      fs.writeFileSync(f + '.sig', sumsSig);
+      return rv.verifyFile(f, { publicKey: pubB64 });
+    })();
+    assert.strictEqual(r.reason, 'bad-signature');
+  });
+
+  await check('another key, an empty key or garbage verifies no table', async () => {
+    const other = rawPublic(crypto.generateKeyPairSync('ed25519').publicKey).toString('base64');
+    assert.strictEqual(rv.verifyBrowserSums(sums, sumsSig, other), false);
+    assert.strictEqual(rv.verifyBrowserSums(sums, sumsSig, ''), false);
+    assert.strictEqual(rv.verifyBrowserSums(sums, 'garbage', pubB64), false);
+    assert.strictEqual(rv.verifyBrowserSums(sums, sumsSig), false, 'a test signature passed as the release key\'s');
+  });
+
+  await check('the signing script, the published table and the browser use the same label and key', async () => {
+    const ps = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'sign-sums.ps1'), 'utf8');
+    assert.ok(ps.includes('GetBytes("hidranet-browser-sums-v1")') && /\$message\[\$label\.Length\] = 0/.test(ps),
+      'sign-sums.ps1 does not build label + zero byte + file');
+    const table = fs.readFileSync(path.join(__dirname, '..', '..', 'landing', 'SHA256SUMS.txt'), 'utf8');
+    assert.ok(table.includes('"hidranet-browser-sums-v1", a zero byte'), 'SHA256SUMS.txt does not describe the label');
+    assert.ok(table.includes("printf 'hidranet-browser-sums-v1\\0'"), 'SHA256SUMS.txt does not show how to check it');
+    assert.ok(table.includes('  ' + rv.RELEASE_PUBLIC_KEY + '\n'), 'SHA256SUMS.txt names another release key');
+  });
+
   // ── The same format as hidravpn-sign, both ways ──────────────────────────
   const signBin = path.join(__dirname, '..', '..', 'hidravpn', 'target', 'release', 'hidravpn-sign');
   if (fs.existsSync(signBin)) {
@@ -100,6 +146,28 @@ const rawPublic = (pub) => pub.export({ format: 'der', type: 'spki' }).slice(-32
       fs.writeFileSync(f, '{"version":2}');
       const r2 = await rv.verifyFile(f, { publicKey: printed });
       assert.strictEqual(r2.reason, 'bad-signature');
+    });
+    await check('the table signed the way sign-sums.ps1 does it (label + 0 + file, by hidravpn-sign) verifies here', async () => {
+      const keyFile = path.join(tmp, 'sums.key');
+      const printed = execFileSync(signBin, ['keygen', '--out', keyFile], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      const msg = path.join(tmp, 'SHA256SUMS.msg');
+      fs.writeFileSync(msg, rv.browserSumsMessage(sums));
+      execFileSync(signBin, ['sign', '--key', keyFile, msg], { stdio: 'ignore' });
+      const sig = fs.readFileSync(msg + '.sig', 'utf8');
+      assert.strictEqual(rv.verifyBrowserSums(sums, sig, printed), true);
+      // Signed bare, as `hidravpn-sign sign SHA256SUMS.txt` would, it is refused.
+      const bare = path.join(tmp, 'bare.txt');
+      fs.writeFileSync(bare, sums);
+      execFileSync(signBin, ['sign', '--key', keyFile, bare], { stdio: 'ignore' });
+      assert.strictEqual(rv.verifyBrowserSums(sums, fs.readFileSync(bare + '.sig', 'utf8'), printed), false);
+      // And the check SHA256SUMS.txt tells a reader to run accepts it.
+      const dir = fs.mkdtempSync(path.join(tmp, 'by-hand-'));
+      fs.writeFileSync(path.join(dir, 'SHA256SUMS.txt'), sums);
+      fs.writeFileSync(path.join(dir, 'SHA256SUMS.txt.sig'), sig);
+      const out = execFileSync('bash', ['-c',
+        "{ printf 'hidranet-browser-sums-v1\\0'; cat SHA256SUMS.txt; } > sums.msg && cp SHA256SUMS.txt.sig sums.msg.sig && " +
+        '"$0" verify --pubkey "$1" sums.msg', signBin, printed], { cwd: dir }).toString();
+      assert.ok(/^OK /m.test(out), out);
     });
     await check('a signature made here is accepted by hidravpn-sign verify', async () => {
       let out;

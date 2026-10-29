@@ -121,7 +121,7 @@ function disposed(persistent) {
   let closed = false;
   let flushed = false;
   TabManager.prototype._dispose.call(
-    { window: { removeBrowserView() {} }, _flushApps() { flushed = true; } },
+    { window: { removeBrowserView() {} }, _flushApps() { flushed = true; }, _drop: TabManager.prototype._drop },
     {
       view: { webContents: { close() { closed = true; } } },
       session: { clearStorageData() { cleared = true; } },
