@@ -6,10 +6,17 @@
 // session does not produce on demand: a setProxy that fails, a session that
 // reports another route, and one that will not take Tor's at all.
 //
+// It also loads main.js against a stand-in Electron and checks that it gives
+// Chromium HOST_RESOLVER_RULES before the app is ready: a switch appended
+// later does nothing. dns-prefetch-electron.js applies the switch itself, so
+// it would stay green if main.js stopped.
+//
 //   node hidra-browser/test/network-lock.js
 
 'use strict';
 
+const { execFileSync } = require('child_process');
+const path = require('path');
 const { NetworkLock, HOST_RESOLVER_RULES } = require('../src/main/network-lock');
 
 let passed = 0;
@@ -104,6 +111,40 @@ function fakeSession({ failFirst = 0, stuck = null } = {}) {
 
   // What Chromium may resolve by itself.
   check('Chromium resolves nothing but this machine\'s names', HOST_RESOLVER_RULES === 'MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE *.localhost, EXCLUDE 127.0.0.1, EXCLUDE ::1', HOST_RESOLVER_RULES);
+
+  // main.js, loaded in a process of its own with a stand-in Electron whose app
+  // never becomes ready: every switch it records was appended before ready.
+  // Anything else main.js touches at load answers with another stand-in.
+  const loader = `
+    const Module = require('module');
+    const switches = [];
+    const stand = (name) => new Proxy(function () {}, {
+      get: (t, k) => {
+        if (k === 'then') return undefined;
+        if (name === 'app.commandLine' && k === 'appendSwitch') return (...a) => { switches.push(a); };
+        if (name === 'app' && k === 'whenReady') return () => new Promise(() => {});
+        if (name === 'app' && k === 'requestSingleInstanceLock') return () => false;
+        return stand(name + '.' + String(k));
+      },
+      apply: () => stand(name + '()'),
+      construct: () => stand(name),
+    });
+    const electron = new Proxy({}, { get: (t, k) => stand(String(k)) });
+    const load = Module._load;
+    Module._load = function (request) { return request === 'electron' ? electron : load.apply(this, arguments); };
+    require(process.argv[1]);
+    process.stdout.write('\\nswitches ' + JSON.stringify(switches) + '\\n');
+    process.exit(0);`;
+  let switches = null;
+  let loadError = '';
+  try {
+    const out = execFileSync(process.execPath, ['-e', loader, path.join(__dirname, '..', 'src', 'main', 'main.js')], { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
+    switches = JSON.parse(/^switches (.*)$/m.exec(out)[1]);
+  } catch (e) {
+    loadError = String(e.stderr || e.message).slice(0, 400);
+  }
+  const rules = (switches || []).filter((a) => a[0] === 'host-resolver-rules');
+  check('main.js gives Chromium these rules before the app is ready', rules.length === 1 && rules[0][1] === HOST_RESOLVER_RULES, loadError || JSON.stringify(switches));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
