@@ -21,6 +21,11 @@
  * it there; HIDRA_ELECTRON_CACHE names another folder), every Electron file
  * in the package is compared with it as well.
  *
+ * The paragraph that says which commit the files were built from is
+ * rewritten for the commit given, and on a new version the commit is
+ * required and the previous version's "What changed" history goes: neither
+ * is true of the new files, and both would be signed with them.
+ *
  * The packages are the version package.json says, and a version already in
  * the table is never given other files: a rebuild gets a new version. The
  * signed record near the top (what the browser's update notice reads, see
@@ -32,6 +37,7 @@
  * Usage:
  *   node scripts/update-sums.js <dir-with-the-four-zips> [commit-sha]
  *        [--minimum X.Y.Z] [--valid-until YYYY-MM-DD]
+ *   (the commit is required when package.json's version is not the table's)
  */
 'use strict';
 
@@ -204,9 +210,30 @@ for (const f of facts) {
   changed++;
 }
 
+// What the table says about where the files came from, and what changed in
+// them, is about the version it listed. A new version gets the commit it was
+// built from and nothing of the old prose: whoever signs the table would
+// otherwise sign another release's date and history as this one's.
+const listedVersion = (/^HidraNet Browser (\d+\.\d+\.\d+) — SHA-256 checksums$/m.exec(head) || [])[1];
+const newVersion = listedVersion !== VERSION;
+if (newVersion && !commit) fail('a new version needs the commit its packages were built from (the second argument)');
+if (commit && !/^[0-9a-f]{7}$/.test(commit)) fail('the commit must be hexadecimal, as git prints it');
 if (commit) {
-  const commitLine = /Built from commit [0-9a-f]{7,40}\./;
-  if (commitLine.test(head)) head = head.replace(commitLine, `Built from commit ${commit}.`);
+  // The whole paragraph, up to the blank line after it.
+  const provenance = /^  Built from commit [0-9a-f]{7,40}\.[^\n]*(?:\n(?!\n)[^\n]*)*/m;
+  if (!provenance.test(head)) fail('cannot find the "Built from commit" line');
+  head = head.replace(provenance, () => [
+    `  Built from commit ${commit}. These are the hashes and sizes of the four`,
+    `  files built from it, the ones the release v${VERSION} publishes and its`,
+    '  description lists.',
+  ].join('\n'));
+}
+if (newVersion) {
+  // From "What changed ..." to the rule before the signing notes.
+  const history = /^What changed [^\n]*\n[\s\S]*?(?=^-{20,}$)/m;
+  if (history.test(head)) {
+    head = head.replace(history, () => `What changed in ${VERSION}: the release notes on the tag v${VERSION} list it.\n\n`);
+  }
 }
 
 // The title, and the record the browser reads.
