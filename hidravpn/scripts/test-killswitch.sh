@@ -14,8 +14,10 @@
 # is reachable; HTTP and the public DNS are blocked, loopback still works, and
 # turning it off restores everything. Through the tunnel the client reaches
 # what it asks for, and the far end reaches nothing on the client unasked.
-# With "Allow LAN" the local network is reached, but no DNS query goes to
-# it, even when a route sends the node's resolver address there.
+# That holds whatever source the far end puts on what it sends: the node's
+# own endpoint, a DHCP server's port. With "Allow LAN" the local network is
+# reached, but no DNS query goes to it, even when a route sends the node's
+# resolver address there.
 #
 # Run as root:  hidravpn/scripts/test-killswitch.sh
 # Needs: the release binary built, python3, curl, nft, ip netns.
@@ -30,14 +32,17 @@ fail=0
 ok() { echo "ok    $1"; pass=$((pass + 1)); }
 no() { echo "FAIL  $1"; fail=$((fail + 1)); }
 
+SINK=""
 cleanup() {
   for ns in ks gw kt; do
     ip netns pids "$ns" 2>/dev/null | xargs -r kill 2>/dev/null
     ip netns del "$ns" 2>/dev/null
   done
+  [ -n "$SINK" ] && rm -f "$SINK"
 }
 trap cleanup EXIT
 cleanup
+SINK="$(mktemp /tmp/hidravpn-ks-sink.XXXXXX)"
 
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 [ -x "$SVC" ] || { echo "build first: cargo build --release --manifest-path hidravpn/Cargo.toml -p hidravpn-service"; exit 1; }
@@ -66,6 +71,12 @@ ip -n ks link set hvpn0 up
 ip -n kt link set kt-tun up
 ip -n kt link set lo up
 ip -n kt route add 10.90.0.0/24 dev kt-tun
+# The node's endpoint address in kt as well: the far end of a tunnel puts
+# any source it likes on what it sends in, the node's own endpoint included.
+# The client's reverse-path filter is loose, as Ubuntu and Fedora ship it:
+# a packet comes in on any interface if its source has a route back at all.
+ip -n kt addr add 10.90.0.1/32 dev lo
+ip netns exec ks sysctl -qw net.ipv4.conf.all.rp_filter=2
 
 # A loopback service in the client, to prove loopback keeps working with the
 # kill switch on (ICMP ping is restricted in some sandboxes; TCP is reliable).
@@ -83,7 +94,18 @@ ip netns exec kt python3 -m http.server 8080 --bind 10.77.0.1 >/dev/null 2>&1 &
 # far end of the tunnel must not reach.
 ip netns exec ks python3 -m http.server 9901 --bind 0.0.0.0 >/dev/null 2>&1 &
 ip netns exec ks python3 "$PY/udp-echo.py" 0.0.0.0 9902 >/dev/null 2>&1 &
+# And two that answer nothing, only note what they get: an answer to a
+# forged source would go elsewhere, so the client side tells.
+ip netns exec ks python3 "$PY/udp-sink.py" "$SINK" 9904 68 >/dev/null 2>&1 &
 sleep 1
+# Whether a datagram from the tunnel's far end, from the source given, gets
+# to the client's sink on the port given.
+arrives() {
+  : > "$SINK"
+  ip netns exec kt python3 "$PY/probe.py" send "$1" "$2" 10.77.0.2 "$3" >/dev/null
+  sleep 1
+  [ -s "$SINK" ]
+}
 
 echo "── before the kill switch (the leak path must work)"
 code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
@@ -93,6 +115,7 @@ cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "the node endpoint answers" |
 # The probes from the tunnel's far end work, so their silence later means
 # something: without a kill switch the far end reaches the client's programs.
 [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.77.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.90.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" udp 10.77.0.2 9902)" = answered ] && ok "the tunnel's far end reaches the client's listeners (the exposure the kill switch must close)" || no "the probes from the tunnel's far end did not work before the kill switch"
+arrives 10.90.0.1 51820 9904 && arrives 10.77.0.1 67 68 && ok "so do its datagrams with the node's endpoint, or a DHCP server's port, as their source" || no "the forged-source datagrams from the tunnel's far end did not arrive before the kill switch"
 # A connection to the internet that is open before the kill switch, and kept
 # open across it: an established flow, the kind a blanket "established
 # connections pass" rule would let carry on in the clear. A desktop firewall
@@ -137,6 +160,10 @@ inbound() {
     got=$(ip netns exec kt python3 "$PY/probe.py" ${t%%:*})
     if [ "$got" = silent ]; then ok "$1: from the tunnel's far end, ${t#*:}: no answer"; else no "$1: from the tunnel's far end, ${t#*:}: $got"; fi
   done
+  # The node's endpoint is let in off the tunnel, by address; the same
+  # address on a packet inside the tunnel must not be.
+  arrives 10.90.0.1 51820 9904 && no "$1: from the tunnel's far end, with the node's endpoint as source: it arrived" || ok "$1: from the tunnel's far end, with the node's endpoint as source: dropped"
+  arrives 10.77.0.1 67 68 && no "$1: from the tunnel's far end, as a DHCP answer: it arrived" || ok "$1: from the tunnel's far end, as a DHCP answer: dropped"
 }
 
 echo "── through the tunnel, with the kill switch on"

@@ -243,6 +243,29 @@ for t in "tcp 10.77.0.2 9901:a TCP listener" "tcp 10.77.0.2 9903:a closed TCP po
   got=$($I python3 -I "$HERE/test/probe.py" ${t%%:*})
   [ "$got" = silent ] && pass "from behind the exit, ${t#*:} at the client's inner address: no answer" || fail "from behind the exit, ${t#*:} at the client's inner address: $got"
 done
+# The exit can put any source on what it sends in, the entry's endpoint
+# included, which the kill switch lets in off the tunnel: inside the inner
+# tunnel that source must find nothing open either. A counter ahead of the
+# kill switch shows the datagram did reach the inner tunnel; a listener that
+# answers nothing shows whether it got further.
+$C python3 -I "$HERE/test/udp-sink.py" "$WORK/sink.log" 9904 >/dev/null 2>&1 & PIDS+=($!)
+$C nft -f - <<'EOF'
+table inet hv_probe {
+  chain pre {
+    type filter hook prerouting priority -300; policy accept;
+    iifname "hvpn1" ip saddr 10.200.0.1 udp sport 51820 udp dport 9904 counter comment "forged"
+  }
+}
+EOF
+$I ip addr add 10.200.0.1/32 dev lo
+sleep 1
+: > "$WORK/sink.log"
+$I python3 -I "$HERE/test/probe.py" send 10.200.0.1 51820 10.77.0.2 9904 >/dev/null
+sleep 1
+SEEN=$($C nft list table inet hv_probe | grep 'comment "forged"' | sed -E 's/.*packets ([0-9]+).*/\1/')
+[ "${SEEN:-0}" -gt 0 ] && [ ! -s "$WORK/sink.log" ] && pass "from behind the exit, a datagram with the entry's endpoint as source reaches the inner tunnel and goes no further" || fail "the datagram with the entry's endpoint as source: seen on hvpn1 ${SEEN:-0} times, the listener got: $(cat "$WORK/sink.log")"
+$I ip addr del 10.200.0.1/32 dev lo
+$C nft delete table inet hv_probe
 $I ip route del 10.77.0.0/16 via 10.201.0.1
 [ "$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null)" = "10.201.0.1" ] && pass "what the client asks for through both hops is still answered" || fail "a request through both hops failed after the probes"
 

@@ -14,7 +14,9 @@
 //! the default is to BLOCK; a handful of higher-weight PERMIT filters open
 //! just what must stay open: loopback, the tunnel interface (outbound only:
 //! nothing comes in through it unasked, so the node cannot reach a program
-//! listening here), the encrypted packets to the node, and DHCP. IPv6 has the
+//! listening here; a block on each tunnel interface, above the inbound
+//! permits that match by address, keeps it so), the encrypted packets to
+//! the node, and DHCP. IPv6 has the
 //! loopback exception and, when the exit gave the tunnel an IPv6 address,
 //! the tunnel that carries the traffic (the only one of one hop, the inner
 //! one of two), so it never leaves the machine off the tunnel. Windows sends
@@ -109,18 +111,24 @@ const F_LAN_DNS_V4: [GUID; 4] = [
 /// blocks and fewer openings (loopback, DHCP, "Allow LAN"), so a program
 /// listening on this machine is reached by nobody else, the node at the
 /// other end of a tunnel included. Replies to what this machine sent belong
-/// to the flow its connect opened, and pass without these.
+/// to the flow its connect opened, and pass without these. See `inbound`.
 const F_IN_BLOCK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0001);
 const F_IN_BLOCK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0002);
 const F_IN_LOOPBACK_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0003);
 const F_IN_LOOPBACK_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0004);
-/// Retired: inbound permits on the tunnel interfaces, which let the node
-/// open connections to this machine. Never added any more; still deleted
-/// with the rest, so a kill switch an older version armed is replaced whole.
+/// Inbound blocks on the tunnel interfaces, above DHCP and "Allow LAN",
+/// whose permits match by address: the node at the other end of a tunnel
+/// chooses the addresses of what it puts inside. Older versions put inbound
+/// permits under these keys, which let the node open connections here;
+/// every key is deleted before any is added, so those go.
 const F_IN_TUNNEL_V4: [GUID; 2] = [
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0005),
     GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0006),
 ];
+/// Retired: the inbound IPv6 permit on the tunnel. Nothing permits IPv6 in
+/// but loopback, so the catch-all blocks it on the tunnel too. Still
+/// deleted with the rest, so a kill switch an older version armed is
+/// replaced whole.
 const F_IN_TUNNEL_V6: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0007);
 const F_IN_DHCP_V4: GUID = GUID::from_u128(0x4849_4452_4156_504e_0000_0000_000b_0008);
 const F_IN_LAN_V4: [GUID; 4] = [
@@ -276,6 +284,21 @@ fn install(allow: &Allow<'_>) -> Result<()> {
         // rule: an interface that is not up is an error, not a skip.
         peered.push((luid_of(iface)?, *proto, v4(ep)?));
     }
+    // Every tunnel interface that is up, allowed whole or towards one
+    // destination, for the inbound blocks. One that is not up yet has
+    // nothing coming in on it.
+    let mut tunnel_luids: Vec<u64> = Vec::new();
+    for luid in allow
+        .tunnels
+        .iter()
+        .filter_map(|t| luid_of(t).ok())
+        .chain(peered.iter().map(|(l, _, _)| *l))
+    {
+        if !tunnel_luids.contains(&luid) {
+            tunnel_luids.push(luid);
+        }
+    }
+    let inbound = inbound(allow.lan, &tunnel_luids)?;
 
     let engine = open_engine()?;
     let result = (|| -> Result<()> {
@@ -529,97 +552,19 @@ fn install(allow: &Allow<'_>) -> Result<()> {
             },
         )?;
 
-        // Connections from outside, at the receive-accept layers. Replies to
-        // what this machine sent belong to the flow its connect opened, and
-        // pass; an unsolicited connection, or a datagram from a host this
-        // machine never sent to, reaches a listening program only from
-        // loopback, as a DHCP answer, or from the local network when "Allow
-        // LAN" is on. Not through a tunnel: the node at its other end
-        // chooses what comes out of it, and would otherwise reach every
-        // program listening here and learn the machine from what answers.
-        // The tunnel is treated as the physical link is, by the catch-all
-        // block, above Windows Firewall, whatever profile Windows gave the
-        // adapter.
-        for (key, layer, name) in [
-            (
-                F_IN_BLOCK_V4,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                "block all inbound IPv4",
-            ),
-            (
-                F_IN_BLOCK_V6,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                "block all inbound IPv6",
-            ),
-        ] {
+        // Connections from outside, at the receive-accept layers.
+        for f in &inbound {
             add_filter(
                 engine,
                 &Filter {
-                    key,
-                    name,
-                    layer,
-                    weight: 0,
-                    block: true,
-                    conditions: &[],
+                    key: f.key,
+                    name: f.name,
+                    layer: f.layer,
+                    weight: f.weight,
+                    block: f.block,
+                    conditions: &f.conditions,
                 },
             )?;
-        }
-        for (key, layer, name) in [
-            (
-                F_IN_LOOPBACK_V4,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                "allow inbound loopback IPv4",
-            ),
-            (
-                F_IN_LOOPBACK_V6,
-                FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
-                "allow inbound loopback IPv6",
-            ),
-        ] {
-            add_filter(
-                engine,
-                &Filter {
-                    key,
-                    name,
-                    layer,
-                    weight: 12,
-                    block: false,
-                    conditions: &[Cond::LoopbackFlag],
-                },
-            )?;
-        }
-        // The DHCP server answers from its own address, not the broadcast
-        // the request went to, so its answer is a new remote: from the
-        // server port to the client port, and nothing else.
-        add_filter(
-            engine,
-            &Filter {
-                key: F_IN_DHCP_V4,
-                name: "allow DHCP answers",
-                layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                weight: 10,
-                block: false,
-                conditions: &[
-                    Cond::Protocol(IPPROTO_UDP),
-                    Cond::LocalPort(68),
-                    Cond::RemotePort(67),
-                ],
-            },
-        )?;
-        if allow.lan {
-            for (i, (addr, mask)) in LAN_V4.iter().enumerate() {
-                add_filter(
-                    engine,
-                    &Filter {
-                        key: F_IN_LAN_V4[i],
-                        name: "allow the local network inbound",
-                        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
-                        weight: 8,
-                        block: false,
-                        conditions: &[Cond::RemoteSubnetV4(*addr, *mask)],
-                    },
-                )?;
-            }
         }
 
         ok(unsafe { FwpmTransactionCommit0(engine) })?;
@@ -631,6 +576,115 @@ fn install(allow: &Allow<'_>) -> Result<()> {
     }
     let _ = unsafe { FwpmEngineClose0(engine) };
     result
+}
+
+/// A filter for the receive-accept layers, built before the transaction.
+struct InFilter {
+    key: GUID,
+    name: &'static str,
+    layer: GUID,
+    weight: u8,
+    block: bool,
+    conditions: Vec<Cond>,
+}
+
+/// The receive-accept filters. Replies to what this machine sent belong to
+/// the flow its connect opened, and pass; an unsolicited connection, or a
+/// datagram from a host this machine never sent to, reaches a listening
+/// program only from loopback, as a DHCP answer, or from the local network
+/// when "Allow LAN" is on — and never through a tunnel: the node at its
+/// other end chooses what comes out of it, its addresses included (the
+/// node's own tunnel address is a private one, inside what "Allow LAN"
+/// opens), and would otherwise reach every program listening here and
+/// learn the machine from what answers. So each tunnel interface has a
+/// block above the DHCP and "Allow LAN" permits, below loopback; the
+/// physical link has the catch-all. What these block, Windows Firewall
+/// cannot let in, whatever profile Windows gave an adapter.
+fn inbound(lan: bool, tunnels: &[u64]) -> Result<Vec<InFilter>> {
+    if tunnels.len() > F_IN_TUNNEL_V4.len() {
+        bail!("the kill switch was given more tunnel interfaces than it has rules for");
+    }
+    let mut v = Vec::new();
+    for (key, layer, name) in [
+        (
+            F_IN_BLOCK_V4,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            "block all inbound IPv4",
+        ),
+        (
+            F_IN_BLOCK_V6,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+            "block all inbound IPv6",
+        ),
+    ] {
+        v.push(InFilter {
+            key,
+            name,
+            layer,
+            weight: 0,
+            block: true,
+            conditions: Vec::new(),
+        });
+    }
+    for (key, layer, name) in [
+        (
+            F_IN_LOOPBACK_V4,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            "allow inbound loopback IPv4",
+        ),
+        (
+            F_IN_LOOPBACK_V6,
+            FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
+            "allow inbound loopback IPv6",
+        ),
+    ] {
+        v.push(InFilter {
+            key,
+            name,
+            layer,
+            weight: 12,
+            block: false,
+            conditions: vec![Cond::LoopbackFlag],
+        });
+    }
+    for (i, luid) in tunnels.iter().enumerate() {
+        v.push(InFilter {
+            key: F_IN_TUNNEL_V4[i],
+            name: "nothing in through the tunnel unasked",
+            layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+            weight: 11,
+            block: true,
+            conditions: vec![Cond::LocalInterface(*luid)],
+        });
+    }
+    // The DHCP server answers from its own address, not the broadcast the
+    // request went to, so its answer is a new remote: from the server port
+    // to the client port, and nothing else.
+    v.push(InFilter {
+        key: F_IN_DHCP_V4,
+        name: "allow DHCP answers",
+        layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+        weight: 10,
+        block: false,
+        conditions: vec![
+            Cond::Protocol(IPPROTO_UDP),
+            Cond::LocalPort(68),
+            Cond::RemotePort(67),
+        ],
+    });
+    if lan {
+        for (i, (addr, mask)) in LAN_V4.iter().enumerate() {
+            v.push(InFilter {
+                key: F_IN_LAN_V4[i],
+                name: "allow the local network inbound",
+                layer: FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+                weight: 8,
+                block: false,
+                conditions: vec![Cond::RemoteSubnetV4(*addr, *mask)],
+            });
+        }
+    }
+    Ok(v)
 }
 
 pub fn apply(cfg: &KillConfig) -> Result<()> {
@@ -895,6 +949,113 @@ mod tests {
         for k in F_IN_TUNNEL_V4.iter().chain([&F_IN_TUNNEL_V6]) {
             assert!(ALL_FILTER_KEYS.contains(k));
         }
+    }
+
+    const TUN: u64 = 0x11;
+    const OUTER: u64 = 0x12;
+    const PHYS: u64 = 0x13;
+
+    /// A connection or datagram at the receive-accept layer, IPv4.
+    struct In {
+        luid: u64,
+        loopback: bool,
+        proto: u8,
+        remote: [u8; 4],
+        rport: u16,
+        lport: u16,
+    }
+
+    fn from(luid: u64, remote: [u8; 4], proto: u8, rport: u16, lport: u16) -> In {
+        In {
+            luid,
+            loopback: false,
+            proto,
+            remote,
+            rport,
+            lport,
+        }
+    }
+
+    /// What the sublayer decides, as WFP arbitrates inside one: the
+    /// matching filter of the highest weight. Two of the same weight that
+    /// both match would leave the order to WFP; none may.
+    fn permitted(filters: &[InFilter], p: &In) -> bool {
+        let remote = u32::from_be_bytes(p.remote);
+        let matching: Vec<&InFilter> = filters
+            .iter()
+            .filter(|f| f.layer == FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4)
+            .filter(|f| {
+                f.conditions.iter().all(|c| match c {
+                    Cond::LoopbackFlag => p.loopback,
+                    Cond::LocalInterface(l) => p.luid == *l,
+                    Cond::Protocol(x) => p.proto == *x,
+                    Cond::RemoteAddrV4(a) => remote == *a,
+                    Cond::RemotePort(x) => p.rport == *x,
+                    Cond::LocalPort(x) => p.lport == *x,
+                    Cond::RemoteSubnetV4(a, m) => remote & m == *a,
+                })
+            })
+            .collect();
+        let top = matching
+            .iter()
+            .map(|f| f.weight)
+            .max()
+            .expect("a catch-all");
+        let at_top: Vec<_> = matching.iter().filter(|f| f.weight == top).collect();
+        assert_eq!(at_top.len(), 1, "two filters of weight {top} match");
+        !at_top[0].block
+    }
+
+    #[test]
+    fn nothing_comes_in_through_a_tunnel_unasked_allow_lan_or_not() {
+        for lan in [false, true] {
+            let f = inbound(lan, &[TUN]).unwrap();
+            // The node, at its tunnel address (a private one, inside what
+            // "Allow LAN" opens), or at any other address it puts on a
+            // packet: a listener, a DHCP client's port.
+            for p in [
+                from(TUN, [10, 77, 0, 1], IPPROTO_UDP, 40000, 9902),
+                from(TUN, [10, 77, 0, 1], IPPROTO_TCP, 40000, 445),
+                from(TUN, [192, 168, 1, 1], IPPROTO_UDP, 137, 137),
+                from(TUN, [203, 0, 113, 10], IPPROTO_UDP, 51820, 9902),
+                from(TUN, [10, 77, 0, 1], IPPROTO_UDP, 67, 68),
+            ] {
+                assert!(!permitted(&f, &p), "lan={lan}: {:?}", p.remote);
+            }
+            // Off the tunnel: the local network only with "Allow LAN",
+            // DHCP answers always, the internet never.
+            assert_eq!(
+                permitted(&f, &from(PHYS, [192, 168, 1, 5], IPPROTO_TCP, 50000, 445)),
+                lan
+            );
+            assert!(permitted(
+                &f,
+                &from(PHYS, [192, 168, 1, 1], IPPROTO_UDP, 67, 68)
+            ));
+            assert!(!permitted(
+                &f,
+                &from(PHYS, [198, 51, 100, 7], IPPROTO_TCP, 50000, 445)
+            ));
+            let mut lo = from(0x1, [127, 0, 0, 1], IPPROTO_TCP, 50000, 8080);
+            lo.loopback = true;
+            assert!(permitted(&f, &lo));
+        }
+    }
+
+    #[test]
+    fn both_tunnels_of_two_hops_are_closed_inbound() {
+        let f = inbound(true, &[TUN, OUTER]).unwrap();
+        for luid in [TUN, OUTER] {
+            assert!(!permitted(
+                &f,
+                &from(luid, [10, 77, 0, 1], IPPROTO_UDP, 40000, 9902)
+            ));
+        }
+        assert!(permitted(
+            &f,
+            &from(PHYS, [10, 1, 2, 3], IPPROTO_UDP, 40000, 9902)
+        ));
+        assert!(inbound(true, &[TUN, OUTER, PHYS]).is_err());
     }
 
     #[test]

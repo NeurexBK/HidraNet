@@ -69,7 +69,7 @@ The other gaps are closed too:
 | Party | Learns | Does not learn |
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names (also with "Allow LAN", and when the network routes the resolver's address to itself; finding 19), anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
-| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:103-121`, test A). |
+| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:123-135`, test A). |
 | **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection. | Your two-hop sessions through it, and your other one-hop sessions, by key (test B). What listens on your machine (finding 19). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
@@ -184,8 +184,8 @@ bound to it (deliberately or by accident) sent its packets to the entry. The
 entry could read their destinations, and its resolver would answer names.
 
 **Fixed.** With two hops the outer interface carries only UDP to the
-exit's endpoint: on Linux in `killswitch/linux.rs:103-118`, on Windows with
-a WFP filter for that one peer (`killswitch/windows.rs:401`, finding 15).
+exit's endpoint: on Linux in `killswitch/linux.rs:123-135`, on Windows with
+a WFP filter for that one peer (`killswitch/windows.rs:464`, finding 15).
 On Windows they have run with two hops, by hand, on one PC (finding 15).
 
 **Test:** A: a socket bound to the outer interface reaches neither the
@@ -364,7 +364,7 @@ exit, and the route to the exit's admission port through the entry are now
 written for Windows too:
 
 - WFP filters for one destination through one interface, and for an
-  admission port off-tunnel (`killswitch/windows.rs:401`, `:424`);
+  admission port off-tunnel (`killswitch/windows.rs:464`, `:484`);
 - `route_host_via` (`netcfg/windows.rs:78`).
 
 They compile, and `clippy -D warnings` passes for the Windows target.
@@ -608,7 +608,8 @@ local network is let through, "Allow LAN" or not (`killswitch/linux.rs`,
 as a host route of its own, which a pushed route or an overlapping network
 cannot beat, and refuses the circuit if the system still resolves that
 route elsewhere (`netcfg/linux.rs`, `apply`). The local-network rules match
-the physical link only, never a tunnel interface: the nodes' tunnel
+every interface but the tunnels (the physical link, and any bridge of the
+machine's own, a container's or a virtual machine's): the nodes' tunnel
 addresses are private too.
 
 **What came in through the tunnel.** The kill switch accepted everything
@@ -627,30 +628,46 @@ modified one could.
 Now only what answers the machine's own packets comes back in through that
 tunnel (and the ICMP errors path MTU discovery needs); anything the far end
 starts is dropped (`killswitch/linux.rs`, `carrying_rules`). The two-hop
-outer tunnel already let in only the exit's WireGuard packets. The client's
+outer tunnel lets in only the exit's answers to the inner tunnel's packets
+(`peer_rules`), and so does the tunnel an admission request crosses. Each
+tunnel's rules end in a drop, ahead of the rules that let in the node's
+endpoint, DHCP answers and the local network by their addresses, since the
+far end chooses the addresses of what it puts inside: a datagram in the
+tunnel from the node's own endpoint address and port, which the kill switch
+lets in off the tunnel, finds nothing open either (`ruleset`). The client's
 tunnel also drops a decrypted packet not addressed to the address the node
 gave that end (`tunnel.rs`, `addressed_to`), kill switch or not. On Windows
 the kill switch no longer permits inbound connections on the tunnel at the
-receive-accept layers: the tunnel is treated as the physical link is, by
-the catch-all block, above Windows Firewall rules and whatever network
-profile Windows gave the adapter (`killswitch/windows.rs`). Replies to the
-machine's own connections belong to the flow its connect opened and pass
-without it.
+receive-accept layers, and each tunnel interface has a block there of its
+own, above the DHCP and "Allow LAN" permits (which match by address, and
+the node's tunnel address is inside the private ranges) and below loopback
+(`killswitch/windows.rs`, `inbound`). What these block, Windows Firewall
+rules cannot let in, whatever network profile Windows gave the adapter.
+Replies to the machine's own connections belong to the flow its connect
+opened and pass without them.
 
 **Tests.** `test-killswitch.sh`, with a veth standing in for the tunnel: from
 its far end, a TCP listener at the tunnel address and at the
 local-network address, a closed port, a UDP listener and an echo all
 answer without the kill switch and give nothing with it, "Allow LAN" or not,
-while the client's own connections through it work; with "Allow LAN", a
+and so do a datagram with the node's endpoint as its source and one shaped
+as a DHCP answer, while the client's own connections through it work; with
+"Allow LAN", a
 route pushed for the resolver through the local network and a local network
 on the tunnel's range both make the query fail with EPERM, the local
 network's own resolver is refused, and the local network is reached.
 `test-netns.sh` and `test-multihop-netns.sh`: a host behind the node, or
 behind the exit, given a route to the clients' subnet, gets no answer from
-the client's tunnel address; and in `test-netns.sh` a route pushed for the
-resolver's address before connecting does not take the lookups. On the code
-before the fix these checks fail. Windows: not yet probed from the exit side
-on a PC.
+the client's tunnel address, and in `test-multihop-netns.sh` a datagram
+from behind the exit with the entry's endpoint as its source reaches the
+inner tunnel and goes no further; and in `test-netns.sh` a route pushed for
+the resolver's address before connecting does not take the lookups. On the
+code before the fix these checks fail. Windows: unit tests decide the
+receive-accept filters as WFP arbitrates them, with and without "Allow
+LAN", one tunnel and two; `scripts/windows/phase4-test.ps1` has the node
+send a datagram through the tunnel to a port Windows Firewall lets in, with
+the kill switch lifted (it arrives) and armed (it does not), not yet run on
+a PC.
 
 ## Open
 

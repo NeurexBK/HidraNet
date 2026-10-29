@@ -268,10 +268,11 @@ page that were still missing.
   when the button is pressed.
 - **Allow the local network**, a box under Connect, off unless ticked; the
   main process passes `allow_lan` to the service only for a strict `true`.
-  It opens the private ranges on the physical link, both ways, and never
-  DNS: names go to the node through the tunnel, on Linux as on Windows.
-  Through the tunnel itself only answers come in, ticked or not: the node
-  cannot open a connection to this machine.
+  It opens the private ranges off the tunnels (the physical link, and the
+  machine's own bridges), both ways, and never DNS: names go to the node
+  through the tunnel, on Linux as on Windows. Through the tunnel itself
+  only answers come in, ticked or not, whatever address the node puts on a
+  packet: the node cannot open a connection to this machine.
 - **The route, with countries.** A signed list may now say where each node is
   (`"country": "FI"`, two letters, ISO 3166-1 alpha-2, validated as such;
   `hidravpn-node init --country FI` puts it in the node's own description). It
