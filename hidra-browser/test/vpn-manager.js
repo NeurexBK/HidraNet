@@ -504,6 +504,19 @@ function relayTo(sockPath, line) {
     await svc.close();
   });
 
+  await check('a request too large for the service once sealed is refused here, not sent and not called an impostor', async () => {
+    const svc = await fakeService();
+    // Under the list cap, but every quote escaped and the whole sealed:
+    // past the longest line the service reads.
+    const list = '"'.repeat(1000 * 1000);
+    const r = await managerFor(svc).importNodesFromTexts(list, 'sig');
+    assert.strictEqual(r.ok, false);
+    assert.ok(/larger than anything the service accepts/.test(r.error), r.error);
+    assert.strictEqual(r.state, undefined, 'the service was taken for unavailable');
+    assert.strictEqual(svc.wire.length, 0, 'it was sent');
+    await svc.close();
+  });
+
   await check('a request sealed to a key the service no longer holds is not believed either', async () => {
     const svc = await fakeService();
     fs.writeFileSync(svc.keyPath, serviceKey().public.toString('base64'));

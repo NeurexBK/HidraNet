@@ -1035,6 +1035,14 @@ where
         None => (plain, None),
     };
     line.push('\n');
+    // The service refuses a longer line in the clear, which a sealed request
+    // could not tell from an impostor's answer: said here, before sending.
+    if line.len() as u64 > MAX_REQUEST_BYTES {
+        anyhow::bail!(
+            "the request is {} bytes, larger than anything the service accepts ({MAX_REQUEST_BYTES})",
+            line.len()
+        );
+    }
     let mut answer = round_trip(stream, line.as_bytes()).await?;
     if let Some(opener) = opener {
         let plain = opener.open(&answer).map_err(|_| Impostor)?;
@@ -1916,6 +1924,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.is::<Impostor>(), "{e:#}");
+    }
+
+    #[tokio::test]
+    async fn a_request_too_large_for_the_service_is_refused_before_it_is_sent() {
+        let (sock, public) = serve_daemon(Daemon::new("tok".into())).await;
+        // Under the cap in the clear, past it once sealed: the service would
+        // refuse it in the clear, which reads as an impostor. The client
+        // says why itself, and sends nothing.
+        let list = "a".repeat(MAX_REQUEST_BYTES as usize * 9 / 10);
+        let e = call_unix_sealed_at(
+            &sock,
+            "tok",
+            Some(&public),
+            Command::ImportNodes {
+                list: list.clone(),
+                signature: "x".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(!e.is::<Impostor>(), "{e:#}");
+        assert!(format!("{e:#}").contains("larger than anything the service accepts"));
+        // A request that fits still goes, sealed.
+        let resp = call_unix_sealed_at(&sock, "tok", Some(&public), Command::Ping)
+            .await
+            .unwrap();
+        assert!(resp.ok);
     }
 
     /// Something else answering on the channel, as a squatter on the

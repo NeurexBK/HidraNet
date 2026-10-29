@@ -28,7 +28,7 @@ cleanup() {
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/control.pub \
-         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key
+         /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/resolv.conf.saved
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -132,16 +132,27 @@ kill -0 $SVC 2>/dev/null && fail "the service did not stop on SIGINT" || pass "t
 # ── No service without its control channel ──────────────────────────────────
 # Something in the way of the socket: the service must not run deaf (nobody
 # could send it `down`, and on Windows whatever held the pipe's name would
-# answer in its place). It says why and exits with an error.
+# answer in its place). It says why and exits with an error, and leaves the
+# token and key of whatever holds the channel as they were. A resolv.conf left
+# by a connection cut short (a power cut) is put back all the same.
 rm -rf /run/hidravpn/control.sock; mkdir -p /run/hidravpn/control.sock/in-the-way
+cp -p /run/hidravpn/control.token "$WORK/token.before"; cp -p /run/hidravpn/control.pub "$WORK/pub.before"
+rm -f /run/hidravpn/netcfg.json
+python3 -I -c 'import json,sys; print(json.dumps({"link": None, "content": sys.argv[1]}))' "$ORIG_RESOLV
+" > /etc/hidravpn/resolv.conf.saved
+printf '# HidraVPN: restored by `hidravpn down`\nnameserver 10.66.0.1\n' > /etc/netns/hv-client/resolv.conf
 $C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc-deaf.log" 2>&1 & DEAF=$!; PIDS+=($DEAF)
 for i in $(seq 1 25); do kill -0 $DEAF 2>/dev/null || break; sleep 0.2; done
 if kill -0 $DEAF 2>/dev/null; then
   fail "the service runs without its control channel"; kill -INT $DEAF 2>/dev/null
 else
   wait $DEAF; RC=$?
-  [ $RC -ne 0 ] && grep -q "binding the control socket" "$WORK/svc-deaf.log" && pass "with no control channel the service stops with an error and says why (exit $RC)" || { cat "$WORK/svc-deaf.log"; fail "the service stopped, but not with the reason (exit $RC)"; }
+  [ $RC -ne 0 ] && grep -q "binding the control socket" "$WORK/svc-deaf.log" && grep -q "ERROR" "$WORK/svc-deaf.log" && pass "with no control channel the service stops with an error and says why (exit $RC)" || { cat "$WORK/svc-deaf.log"; fail "the service stopped, but not with the reason (exit $RC)"; }
 fi
+cmp -s "$WORK/token.before" /run/hidravpn/control.token && cmp -s "$WORK/pub.before" /run/hidravpn/control.pub \
+  && pass "a service that could not have the channel left the token and the key as they were" || fail "a service without the channel rewrote the token or the key"
+[ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] && [ ! -e /etc/hidravpn/resolv.conf.saved ] \
+  && pass "the DNS a connection cut short had left is put back even when the start then fails" || fail "resolv.conf left as the tunnel's: $(cat /etc/netns/hv-client/resolv.conf)"
 rm -rf /run/hidravpn/control.sock
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

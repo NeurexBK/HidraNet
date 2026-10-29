@@ -465,14 +465,26 @@ where
     S: std::future::Future<Output = ()>,
     R: FnOnce(),
 {
-    let token = ipc::write_token().context("writing the control token")?;
+    tracing::info!("HidraVPN service starting");
+    // A machine that lost power while connected gets its DNS back whether or
+    // not this start goes on to have its channel.
+    hidravpn_core::netcfg::recover_dns();
+    let listener = match ipc::listen() {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("{e:#}; not starting");
+            return Err(e.context("the service cannot run without its control channel"));
+        }
+    };
+    // Only a service that holds the channel writes the key and the token: a
+    // second one that could not have it leaves the running service's alone.
+    // The key first, so a client that finds the new token finds the new key.
+    // Clients that connect meanwhile wait until `serve` takes them.
     let key =
         std::sync::Arc::new(ipc::write_service_key().context("writing the control channel's key")?);
+    let token = ipc::write_token().context("writing the control token")?;
     let daemon = Daemon::new(token);
-    tracing::info!("HidraVPN service starting");
-    let listener = ipc::listen()?;
     ready();
-    hidravpn_core::netcfg::recover_dns();
 
     let mut serve = {
         let d = daemon.clone();

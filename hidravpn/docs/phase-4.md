@@ -85,17 +85,24 @@ a node behind a home router (doc 16 §7). The section at the end says so.
   HKDF-SHA256, AES-256-GCM), and believe an answer only when it opens under
   the key the service derived for that request (each answer sealed under a
   random nonce of its own, so a request passed on twice gives nothing away).
-  Both files are written beside their place and moved into it, so a client
-  never finds the token without the key while the service starts. Whatever else answers sees
-  neither the control token nor an account token, cannot answer in the
-  service's place, and cannot change an answer it passes on: the browser
-  shows "Service unavailable", the command line refuses. The command line
-  also refuses a pipe whose server is not in session 0 (where services
-  live). A plain request is still answered, so an older browser or command
+  Both are written only once the service holds its channel, so one that
+  could not have it leaves the running service's alone; beside their place
+  and moved into it, the key first, so a client never finds the new token
+  without the new key. Whatever else answers sees neither the control token
+  nor an account token, cannot answer in the service's place, and cannot
+  change an answer it passes on: the browser shows "Service unavailable",
+  the command line refuses. The command line also refuses a pipe whose
+  server is not in session 0 (where services live). A plain request is still answered, so an older browser or command
   line keeps working with a newer service (without that protection); a newer
   browser asks a Windows service that has no key nothing and says "Update
   HidraVPN", and asks an older Linux service in the clear, as before (only
-  root can make its socket). And the service never runs without its
+  root can make its socket). **Release order:** a HidraVPN release that
+  writes `control.pub` (the version after 0.1.1) must be signed and
+  published before, or with, the first browser that seals; a browser out
+  first would show every Windows user "Update HidraVPN" with nothing newer
+  to install (the page cannot read the installed version from a service it
+  does not ask, so it offers the current signed release, which would put
+  the same old service back). And the service never runs without its
   channel: it makes the socket or the pipe's first instance before it tells
   the system it is running, and when it cannot (on Windows: someone already
   holds the name), or when the channel ever ends, it stops with an error.
@@ -556,7 +563,10 @@ Get-Content "$env:ProgramData\HidraVPN\service.log" -Tail 5
   user may make `\\.\pipe\hidravpn` while the service is stopped, or add an
   instance beside the service's while it runs. Made first, it keeps the
   service from starting (the start fails, with an error in `service.log`
-  and the system's event log) until it is closed or the machine restarts.
+  and the system's event log). The SCM tries three more times, a minute
+  apart; held past those, the service stays stopped, and the page shows it
+  stopped, until someone starts it (`Start-Service HidraVPN`, or Install or
+  Update on the page) or the machine restarts.
   Beside the service, it may be the instance a client reaches. Either way
   the command line and the browser seal their requests and refuse an answer
   that does not open, so that pipe learns no token and cannot show a made-up

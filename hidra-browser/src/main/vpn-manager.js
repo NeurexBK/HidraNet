@@ -48,6 +48,8 @@ const MAX_ANSWER_BYTES = 1024 * 1024;
 // A published node list, read from disk to be handed to the service: hundreds
 // of invites fit in a fraction of this.
 const MAX_LIST_BYTES = 1024 * 1024;
+// The longest request line the service reads (MAX_REQUEST_BYTES in ipc.rs).
+const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
 const MODES = new Set(['rapido', 'privado']);
 
@@ -244,7 +246,13 @@ class VpnManager {
     }
     // A service older than sealed requests on Linux is asked in the clear,
     // as before: only root can make the socket where it lives.
-    let answer = await this._roundTrip((sealed ? sealed.line : plain) + '\n', SLOW_COMMANDS.has(cmd.cmd) ? this.slowTimeoutMs : this.timeoutMs);
+    const line = (sealed ? sealed.line : plain) + '\n';
+    // The service refuses a longer line in the clear, which a sealed request
+    // could not tell from an impostor's answer: said here, and not sent.
+    if (Buffer.byteLength(line) > MAX_REQUEST_BYTES) {
+      return { ok: false, error: `the request is larger than anything the service accepts (${MAX_REQUEST_BYTES} bytes)` };
+    }
+    let answer = await this._roundTrip(line, SLOW_COMMANDS.has(cmd.cmd) ? this.slowTimeoutMs : this.timeoutMs);
     if (sealed) {
       answer = sealed.open(answer);
       if (answer === null) throw new VpnUnavailable('unavailable', NOT_THE_SERVICE, NOT_THE_SERVICE_HINT);
