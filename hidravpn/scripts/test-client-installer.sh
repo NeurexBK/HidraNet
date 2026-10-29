@@ -130,6 +130,13 @@ if command -v node >/dev/null && [ -x "$BIN/hidravpn-sign" ]; then
   mkdir -p "$W/old"
   "$HERE/make-release-manifest.sh" --version 9.9.9 --sequence 6 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" > "$W/old/manifest.json"
   "$BIN/hidravpn-sign" sign --key "$W/release.key" "$W/old/manifest.json" >/dev/null 2>&1
+  # Sequence 0 is what the 0.1.0 manifest counts as: one signed at 0 would
+  # set no floor above it, so the script refuses it, and writes nothing.
+  OUT=$("$HERE/make-release-manifest.sh" --version 9.9.9 --sequence 0 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" 2>&1 >"$W/zero.json"); RC=$?
+  [ $RC != 0 ] && [ ! -s "$W/zero.json" ] && echo "$OUT" | grep -q 'sequence must be 1 or more: the 0.1.0 manifest counts as sequence 0' \
+    && pass "the script refuses --sequence 0, and says why" || fail "--sequence 0: rc $RC, $OUT"
+  OUT=$("$HERE/make-release-manifest.sh" --version 9.9.9 --sequence 000 --base https://hidranet.org/vpn/release/9.9.9 --linux-x64 "$W/rel/linux-x64" 2>&1 >/dev/null); RC=$?
+  [ $RC != 0 ] && pass "the script refuses --sequence 000 too" || fail "--sequence 000 was taken: $OUT"
   grep -q '"sequence": 7,' "$W/rel/manifest.json" && grep -q '"expires": "20[0-9-]*T[0-9:]*Z",' "$W/rel/manifest.json" \
     && pass "the script's manifest carries a sequence and an expiry, under the signature" || fail "manifest fields: $(head -8 "$W/rel/manifest.json")"
   OUT=$(cd "$HERE/../../hidra-browser" && HV_REL="$W/rel" HV_OLD="$W/old" HV_STATE="$W/vpn-release.json" HV_PUB="$PUB" HV_USER="$TESTUSER" node -e '
