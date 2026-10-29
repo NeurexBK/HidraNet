@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use hidravpn_core::release::Version;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -80,6 +81,76 @@ fn still_in_use(e: &std::io::Error) -> bool {
     e.raw_os_error().is_some_and(|c| busy.contains(&c))
 }
 
+/// This build's version, spelled out in the executable where an install can
+/// find it in a copy without running that copy: `install` reads it from the
+/// service already in place and will not put an older build over a newer one
+/// unless told to. The browser's installer reads it from a download the same
+/// way (vpn-installer.js), to know the download understands
+/// `--allow-downgrade`.
+const VERSION_MARK: &str = concat!(
+    "\0hidravpn-service-version=",
+    env!("CARGO_PKG_VERSION"),
+    "\0"
+);
+
+/// The version a service executable carries, if it carries one. Builds from
+/// before the mark carry none.
+fn version_in(bytes: &[u8]) -> Option<Version> {
+    // black_box: the mark has to be in this executable as it is written, not
+    // folded away; this reads it from the executable's own bytes too.
+    let mark = std::hint::black_box(VERSION_MARK).as_bytes();
+    let head = &mark[..mark.iter().position(|&c| c == b'=')? + 1];
+    let mut at = 0;
+    while let Some(i) = bytes[at..].windows(head.len()).position(|w| w == head) {
+        let rest = &bytes[at + i + head.len()..];
+        let end = rest.iter().take(16).position(|&c| c == 0);
+        if let Some(v) = end.and_then(|end| {
+            std::str::from_utf8(&rest[..end])
+                .ok()
+                .and_then(Version::parse)
+        }) {
+            return Some(v);
+        }
+        at += i + 1;
+    }
+    None
+}
+
+/// The version of the service already installed, when there is one that
+/// says.
+fn installed_version() -> Option<Version> {
+    let path = installed_binary();
+    // A service is a few megabytes; anything far larger is not one.
+    if std::fs::metadata(&path).ok()?.len() > 256 * 1024 * 1024 {
+        return None;
+    }
+    version_in(&std::fs::read(&path).ok()?)
+}
+
+/// Why this build must not replace the installed one, if it must not: the
+/// installed one is newer and no downgrade was asked for. An installed copy
+/// that does not say its version (one from before the mark) is older than
+/// any build that reads it, and is replaced as before.
+fn check_not_older(
+    installed: Option<Version>,
+    this: Option<Version>,
+    allow_downgrade: bool,
+) -> Result<()> {
+    if let (Some(have), Some(this)) = (installed, this) {
+        if this < have && !allow_downgrade {
+            anyhow::bail!(
+                "HidraVPN {have} is installed, which is newer than this {this}; nothing was changed. To go back to {this} on purpose, run install again with --allow-downgrade"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// This build's version, as the mark in it says.
+fn this_version() -> Option<Version> {
+    version_in(VERSION_MARK.as_bytes())
+}
+
 /// What `install` does besides registering the service.
 #[derive(Debug, Default, Clone)]
 pub struct InstallOptions {
@@ -90,6 +161,8 @@ pub struct InstallOptions {
     /// runs can drive the service. The installer runs as root and cannot
     /// tell who asked otherwise.
     pub user: Option<String>,
+    /// Replace an installed service even when it is newer than this one.
+    pub allow_downgrade: bool,
 }
 
 /// Where the installed command-line client lives.
@@ -164,6 +237,7 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
                 anyhow::bail!("{} is not a file", client.display());
             }
         }
+        check_not_older(installed_version(), this_version(), opts.allow_downgrade)?;
         stop_for_update();
         // Stopped, the old service is started again if the new one cannot
         // be put in place: a failed update never leaves the machine with no
@@ -208,7 +282,8 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
 
 /// Removes the service. With `purge`, also the installed programs and the
 /// data: the pocket of nodes, the machine's key, which nodes know this
-/// machine by, the passes and the account token. Without it, a later install finds both where they were.
+/// machine by, the passes, the account token and the tokens it replaced.
+/// Without it, a later install finds both where they were.
 pub fn uninstall(purge: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -223,6 +298,9 @@ pub fn uninstall(purge: bool) -> Result<()> {
             let _ = std::fs::remove_file(crate::paths::circuit_pocket());
             let _ = std::fs::remove_file(crate::paths::client_key());
             let _ = std::fs::remove_file(crate::paths::pass_wallet());
+            for kept in crate::passes::kept_tokens(&crate::paths::pass_token()) {
+                let _ = std::fs::remove_file(kept);
+            }
             let _ = std::fs::remove_file(crate::paths::pass_token());
             let pocket = crate::paths::circuit_pocket();
             for name in ["hidravpn.lock", "resolv.conf.saved"] {
@@ -309,6 +387,60 @@ mod tests {
         assert!(!still_in_use(&std::io::Error::from_raw_os_error(2)));
         assert!(!still_in_use(&std::io::Error::from_raw_os_error(5)));
         assert!(!still_in_use(&std::io::Error::other("not an OS error")));
+    }
+
+    #[test]
+    fn this_executable_carries_its_version_where_install_can_read_it() {
+        let this = Version::this_build().unwrap();
+        assert_eq!(this_version(), Some(this));
+        // In the file itself, read without running it: what `install` reads
+        // from the installed copy.
+        let exe = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(version_in(&exe), Some(this));
+    }
+
+    #[test]
+    fn a_version_is_read_from_the_mark_and_nothing_else() {
+        let v = |s| Version::parse(s);
+        let mark = |ver: &str| format!("\0hidravpn-service-version={ver}\0").into_bytes();
+        let mut bytes = b"MZ...binary...".to_vec();
+        bytes.extend(mark("0.4.10"));
+        bytes.extend(b"...more");
+        assert_eq!(version_in(&bytes), v("0.4.10"));
+        // A build from before the mark, and marks that do not hold a version.
+        assert_eq!(version_in(b"MZ hidravpn-service 0.1.0 no mark"), None);
+        assert_eq!(version_in(&mark("0.4")), None);
+        assert_eq!(version_in(&mark("0.4.1-rc1")), None);
+        assert_eq!(
+            version_in(b"\0hidravpn-service-version=0.4.1"),
+            None,
+            "no end"
+        );
+        // A broken one first does not hide a good one after it.
+        let mut two = mark("x.y.z");
+        two.extend(mark("0.2.0"));
+        assert_eq!(version_in(&two), v("0.2.0"));
+    }
+
+    #[test]
+    fn an_older_build_does_not_replace_a_newer_one_unless_told_to() {
+        let v = |s| Version::parse(s);
+        // Newer or the same: an update, or installing again.
+        check_not_older(v("0.1.1"), v("0.1.2"), false).unwrap();
+        check_not_older(v("0.1.2"), v("0.1.2"), false).unwrap();
+        // Older: refused, saying what is installed and how to go back on
+        // purpose.
+        let e = check_not_older(v("0.2.0"), v("0.1.9"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("HidraVPN 0.2.0 is installed") && e.contains("--allow-downgrade"),
+            "{e}"
+        );
+        assert!(e.contains("nothing was changed"), "{e}");
+        check_not_older(v("0.2.0"), v("0.1.9"), true).unwrap();
+        // Nothing installed, or a copy that does not say: as before.
+        check_not_older(None, v("0.1.0"), false).unwrap();
     }
 
     #[test]

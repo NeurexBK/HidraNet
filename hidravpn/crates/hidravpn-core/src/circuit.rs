@@ -852,9 +852,12 @@ pub async fn prepare(
 }
 
 /// A first hop that admits with a pass: the next pass, redeemed directly.
-/// None means the invite is used as it is — a pass redeemed and not yet
-/// used, or, with no pass left or none taken, the last pass's key (and a
-/// note says so).
+/// None means the invite is used as it is — a pass redeemed from this
+/// machine's address and not yet used, or, with no pass left or none taken,
+/// the last such pass's key (and a note says so). A key redeemed through an
+/// entry, or one an older version did not say how it redeemed, is neither:
+/// shown from this machine's address, it would tie the two-hop sessions it
+/// carried to that address.
 async fn first_hop_pass(
     node: &Invite,
     wallet: &mut crate::pass::Wallet,
@@ -862,16 +865,23 @@ async fn first_hop_pass(
     cancel: &Cancel,
 ) -> Result<Option<Invite>> {
     let now = crate::timefmt::now_unix().max(0) as u64;
-    if node.pass.as_ref().is_some_and(|p| p.fresh(now)) {
+    let last = node.direct_pass();
+    if last.is_some_and(|p| p.fresh(now)) {
         return Ok(None);
     }
     let Some(pass) = wallet.take_for(&node.node_public_key) else {
-        if node.pass.is_some() {
+        if last.is_some() {
             notes.push(format!(
                 "no pass left for {}: connecting with the last one's key; `hidravpn passes get` for more",
                 node.node_name
             ));
             return Ok(None);
+        }
+        if node.pass.is_some() {
+            return Err(anyhow!(
+                "no pass left for {}: its last pass's key was admitted through an entry (or by an older version that did not write down how), and is never shown from this machine's own address; `hidravpn passes get` asks the issuer for more",
+                node.node_name
+            ));
         }
         return Err(anyhow!(
             "no pass left for {}: `hidravpn passes get` asks the issuer for more",
@@ -879,7 +889,7 @@ async fn first_hop_pass(
         ));
     };
     match cancel
-        .or(crate::admission::redeem_pass(&node.record(), &pass))
+        .or(crate::admission::redeem_pass(&node.record(), &pass, false))
         .await
     {
         Ok(invite) => Ok(Some(invite)),
@@ -887,7 +897,7 @@ async fn first_hop_pass(
             if e.downcast_ref::<crate::admission::PassRefused>().is_none() {
                 wallet.passes.push(pass);
             }
-            if node.pass.is_some() && !cancel.is_set() {
+            if last.is_some() && !cancel.is_set() {
                 notes.push(format!("{e:#}; connecting with the last pass's key"));
                 Ok(None)
             } else {
@@ -1014,7 +1024,7 @@ async fn admit_behind(
                     Ok((invite, Some(fresh)))
                 }
                 Ask::Pass(pass) => {
-                    let invite = crate::admission::redeem_pass(&exit.record(), pass)
+                    let invite = crate::admission::redeem_pass(&exit.record(), pass, true)
                         .await
                         .context(how)?;
                     Ok((invite, None))
@@ -1163,6 +1173,88 @@ mod tests {
             behind: false,
             features: Vec::new(),
         }
+    }
+
+    fn pass_node(behind: Option<bool>, used_at: u64) -> Invite {
+        let mut inv = invite("q", "127.0.0.1:51820", 1420);
+        inv.admission = Some("pass".into());
+        // Nothing answers there: a redemption fails at once, unrefused.
+        inv.admission_port = Some(1);
+        inv.pass = Some(crate::config::PassBinding {
+            client_secret: ClientKey::generate().unwrap().secret_base64(),
+            admission_port: Some(1),
+            redeemed_at: crate::timefmt::now_unix() as u64 - 60,
+            used_at,
+            behind,
+        });
+        inv
+    }
+
+    fn a_pass_for(node: &Invite) -> crate::pass::Pass {
+        crate::pass::Pass {
+            key_id: "00".into(),
+            node_public_key: node.node_public_key.clone(),
+            client_secret: ClientKey::generate().unwrap().secret_base64(),
+            nonce: String::new(),
+            randomizer: String::new(),
+            signature: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_first_hop_is_never_shown_a_pass_key_redeemed_through_an_entry() {
+        let now = crate::timefmt::now_unix() as u64;
+        let never = Cancel::never();
+        // Redeemed from here: fresh, it is used as it is, and no pass is
+        // taken; used, with no pass left, its key is shown again, and a note
+        // says so.
+        let fresh = pass_node(Some(false), 0);
+        let mut wallet = crate::pass::Wallet::default();
+        wallet.passes.push(a_pass_for(&fresh));
+        let mut notes = Vec::new();
+        assert!(first_hop_pass(&fresh, &mut wallet, &mut notes, &never)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(wallet.passes.len(), 1, "no pass taken for a fresh key");
+        let used = pass_node(Some(false), now - 600);
+        let mut empty = crate::pass::Wallet::default();
+        assert!(first_hop_pass(&used, &mut empty, &mut notes, &never)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(notes.iter().any(|n| n.contains("the last one's key")));
+        // Redeemed through an entry, or by an older version that did not
+        // write down how: neither fresh nor the last key. With no pass
+        // left, refused; never used as it is.
+        for (behind, used_at) in [(Some(true), 0), (Some(true), now - 600), (None, now - 600)] {
+            let node = pass_node(behind, used_at);
+            let mut notes = Vec::new();
+            let e = first_hop_pass(
+                &node,
+                &mut crate::pass::Wallet::default(),
+                &mut notes,
+                &never,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("admitted through an entry"), "{behind:?}: {e}");
+            assert!(notes.is_empty());
+        }
+        // With a pass, even a fresh key from two hops is not used: the
+        // next pass is redeemed (here it cannot reach the node, so it goes
+        // back in the wallet, and the connection fails rather than fall
+        // back on that key).
+        let node = pass_node(Some(true), 0);
+        let mut wallet = crate::pass::Wallet::default();
+        wallet.passes.push(a_pass_for(&node));
+        let mut notes = Vec::new();
+        assert!(first_hop_pass(&node, &mut wallet, &mut notes, &never)
+            .await
+            .is_err());
+        assert_eq!(wallet.passes.len(), 1, "the pass never reached the node");
+        assert!(notes.is_empty());
     }
 
     #[test]

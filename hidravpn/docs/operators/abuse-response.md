@@ -13,7 +13,10 @@ lawyer; the legal picture is `docs/business/10-legal-and-regulatory-risk.md`.
    reach you directly are complaints that do not reach your provider first.
 2. **Know what the node blocks.** From the tunnel, an exit never forwards
    mail (TCP 25) nor the usual abuse ports (135–139, 445, 1433, 3389); an
-   entry forwards nothing but WireGuard. `hidravpn-node run` installs these
+   entry forwards nothing but WireGuard (UDP 51820) and admission requests
+   (TCP 51821), to any public address. No node forwards a client to a
+   private, link-local or reserved address, so your provider's network and
+   its metadata service are out of reach. `hidravpn-node run` installs these
    rules in nftables (`nat.rs`).
 3. **Know what the node keeps.** Nothing about traffic: no destination, no
    packet, no name looked up. The leases file holds clients' public keys and

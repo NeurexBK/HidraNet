@@ -221,7 +221,7 @@ losing control of it.
 ```bash
 ./hidra-node                          # relay mode (default)
 ./hidra-node --server                 # full server mode
-./hidra-node --proxy                  # SOCKS5 gateway for the browser
+./hidra-node --proxy                  # SOCKS5 gateway (9050) for other programs; the HidraNet Browser uses its own Tor
 ./hidra-node --sevennine              # .hidra site builder (port 8084)
 ./hidra-node --dashboard              # analytics panel (port 8082)
 ./hidra-node --apps                   # HidraMail (8080) + HidraChat (8081)

@@ -106,6 +106,23 @@ app.whenReady().then(async () => {
     check('the listing is shown with its name', /^Cafe /.test(seen.name), seen.name);
     check('no javascript: link', seen.js === 0);
     check('Object.prototype is untouched', seen.proto);
+
+    // Before anyone posts, the form says where the review goes: this page
+    // talks to the brokers itself, without Tor, and what it posts is public.
+    const notice = await run(`(() => {
+      const n = document.getElementById('review-notice'), b = document.getElementById('send');
+      const hosts = (window.BROKERS || []).map((u) => new URL(u).hostname);
+      return { found: !!n && !!b, shown: !!n && n.offsetParent !== null && n.getClientRects().length > 0,
+        before: !!n && !!b && !!(n.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING),
+        text: n ? n.textContent.replace(/\\s+/g, ' ') : '', hosts,
+        footer: (document.getElementById('relay-notice') || {}).textContent || '' };
+    })()`);
+    check('the review form shows a notice before the button', notice.found && notice.shown && notice.before, JSON.stringify(notice));
+    check('the notice names every broker the page connects to',
+      notice.hosts.length > 0 && notice.hosts.every((h) => notice.text.includes(h)), notice.text);
+    check('the notice says the review is public and the page connects without Tor',
+      /public/.test(notice.text) && /without Tor/.test(notice.text), notice.text);
+    check('every view says the page reaches the brokers without Tor', /without Tor/.test(notice.footer), notice.footer);
     win.destroy();
   }
 

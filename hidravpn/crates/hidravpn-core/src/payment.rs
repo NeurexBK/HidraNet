@@ -11,7 +11,8 @@
 //!    with the token's SHA-256 and the pack it wants (`POST /quote`).
 //! 2. The issuer answers an **order**: the pack's price plus a few random
 //!    micro-HNET that no other open order has, so the amount names the
-//!    order; the receiving wallet; the mint; when the order lapses.
+//!    order; the receiving wallet; the mint; when the order lapses
+//!    (`UNCLAIMED_LIFETIME`, or `ORDER_LIFETIME` once a claim reached it).
 //! 3. The person sends exactly that amount, from any Solana wallet, to the
 //!    receiving wallet. Nothing but the amount is needed: no memo, no
 //!    special wallet.
@@ -43,8 +44,21 @@ pub const HNET_MINT: &str = "Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump";
 pub const HNET_DECIMALS: u8 = 6;
 /// The random part of an amount: this many of the last digits.
 pub const TAG_DIGITS: u32 = 5;
-/// How long an order can be paid and claimed, in seconds (24 hours).
+/// How long an order can be paid and claimed before any claim reached it,
+/// in seconds (2 hours): what the quote says it is open until. An order
+/// lives only so long unless its token claims it, so orders opened for
+/// nobody's payment cannot fill the issuer.
+pub const UNCLAIMED_LIFETIME: i64 = 2 * 3600;
+/// How long an order a claim has reached stays open, counted from when it
+/// was made, in seconds (24 hours): a claim that came too soon, before the
+/// chain finalized the payment, or that the issuer could not answer, can
+/// be made again.
 pub const ORDER_LIFETIME: i64 = 24 * 3600;
+/// What the issuer answers a claim it turns away only for now (429), after
+/// the claim has reached the token's orders: the client knows these, to say
+/// the order is still open.
+pub const CLAIM_PACED: &str = "this token made many claims just now; try again in a few seconds";
+pub const CLAIMS_BUSY: &str = "too many claims at once; try again in a moment";
 /// A transaction may carry a block time this much before the order was made
 /// (clocks differ) and still pay it.
 pub const CLOCK_SLACK: i64 = 300;

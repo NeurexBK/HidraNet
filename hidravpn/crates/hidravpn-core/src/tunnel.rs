@@ -8,6 +8,14 @@
 //! a timer that drives handshakes, keepalives and rekeys. The critical
 //! sections are a single encrypt or decrypt each, so the mutex is not a
 //! bottleneck at the speeds a VPN client sees.
+//!
+//! A decrypted packet goes to the interface only when it is addressed to the
+//! address the node gave this end of the tunnel. The node chooses what it
+//! puts inside, and Linux would deliver a packet for any of the machine's
+//! addresses that arrived on the interface (the local network's, the other
+//! tunnel's). The kill switch drops what nobody asked for; this drops a
+//! packet for any other address before the system sees it, kill switch or
+//! not.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +53,9 @@ pub struct Tunnel {
     tx: Arc<AtomicU64>,
     rx: Arc<AtomicU64>,
     stop: watch::Sender<bool>,
+    /// The addresses the node gave this end of the tunnel: the only
+    /// destinations a decrypted packet may have.
+    own: Arc<Vec<IpAddr>>,
 }
 
 impl Tunnel {
@@ -75,6 +86,12 @@ impl Tunnel {
             0,
             None,
         );
+        let mut own = vec![IpAddr::V4(cfg.invite.client_ip()?.0)];
+        // An IPv6 address is taken only when it is one the client would put
+        // on the interface; one it would refuse adds nothing.
+        if let Ok(Some((a, _))) = cfg.invite.client_ip6() {
+            own.push(IpAddr::V6(a));
+        }
         let (stop, _) = watch::channel(false);
         Ok(Self {
             tunn: Arc::new(Mutex::new(tunn)),
@@ -83,6 +100,7 @@ impl Tunnel {
             tx: Arc::new(AtomicU64::new(0)),
             rx: Arc::new(AtomicU64::new(0)),
             stop,
+            own: Arc::new(own),
         })
     }
 
@@ -127,6 +145,7 @@ impl Tunnel {
             self.sock.clone(),
             self.tun.clone(),
             self.rx.clone(),
+            self.own.clone(),
         ));
         let mut timers = tokio::spawn(drive_timers(self.tunn.clone(), self.sock.clone()));
 
@@ -229,6 +248,7 @@ async fn network_to_tun(
     sock: Arc<UdpSocket>,
     tun: Arc<AsyncDevice>,
     rx: Arc<AtomicU64>,
+    own: Arc<Vec<IpAddr>>,
 ) -> Result<()> {
     let mut dgram = vec![0u8; BUF];
     let mut out = vec![0u8; BUF];
@@ -258,7 +278,9 @@ async fn network_to_tun(
                         res = t.decapsulate(None, &[], &mut out);
                     }
                     TunnResult::WriteToTunnelV4(p, _) | TunnResult::WriteToTunnelV6(p, _) => {
-                        to_tun.push(p.to_vec());
+                        if addressed_to(p, &own) {
+                            to_tun.push(p.to_vec());
+                        }
                         break;
                     }
                     TunnResult::Done | TunnResult::Err(_) => break,
@@ -274,6 +296,24 @@ async fn network_to_tun(
             }
         }
     }
+}
+
+/// Whether a decrypted packet is addressed to one of `own`, this end's
+/// tunnel addresses. Anything else (another of the machine's addresses, a
+/// packet too short to say) is dropped.
+fn addressed_to(packet: &[u8], own: &[IpAddr]) -> bool {
+    let dst = match packet.first().map(|b| b >> 4) {
+        Some(4) if packet.len() >= 20 => {
+            let d: [u8; 4] = packet[16..20].try_into().expect("four bytes");
+            IpAddr::from(d)
+        }
+        Some(6) if packet.len() >= 40 => {
+            let d: [u8; 16] = packet[24..40].try_into().expect("sixteen bytes");
+            IpAddr::from(d)
+        }
+        _ => return false,
+    };
+    own.contains(&dst)
 }
 
 /// An error a connected UDP socket hands back for an ICMP error about an
@@ -312,5 +352,58 @@ async fn drive_timers(tunn: Arc<Mutex<Tunn>>, sock: Arc<UdpSocket>) -> Result<()
         if let Some(p) = send {
             let _ = sock.send(&p).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v4(src: [u8; 4], dst: [u8; 4]) -> Vec<u8> {
+        let mut p = vec![0u8; 28];
+        p[0] = 0x45;
+        p[9] = 17;
+        p[12..16].copy_from_slice(&src);
+        p[16..20].copy_from_slice(&dst);
+        p
+    }
+
+    fn v6(dst: std::net::Ipv6Addr) -> Vec<u8> {
+        let mut p = vec![0u8; 48];
+        p[0] = 0x60;
+        p[6] = 17;
+        p[24..40].copy_from_slice(&dst.octets());
+        p
+    }
+
+    #[test]
+    fn only_packets_for_this_end_of_the_tunnel_reach_the_interface() {
+        let ula: std::net::Ipv6Addr = "fd68:6964:7261::a4d:2".parse().unwrap();
+        let own = [IpAddr::from([10, 77, 0, 2]), IpAddr::V6(ula)];
+        assert!(addressed_to(&v4([10, 201, 0, 2], [10, 77, 0, 2]), &own));
+        assert!(addressed_to(&v6(ula), &own));
+        // Another of the machine's addresses (the local network's, the
+        // outer tunnel's), another client's, a broadcast: dropped.
+        for dst in [
+            [192, 168, 1, 20],
+            [10, 77, 0, 3],
+            [100, 64, 0, 2],
+            [255, 255, 255, 255],
+        ] {
+            assert!(!addressed_to(&v4([10, 77, 0, 1], dst), &own), "{dst:?}");
+        }
+        assert!(!addressed_to(&v6("fd00::1".parse().unwrap()), &own));
+        // IPv6 to a tunnel the node gave no IPv6 address.
+        assert!(!addressed_to(&v6(ula), &own[..1]));
+        // Too short to carry a destination, or no IP at all.
+        assert!(!addressed_to(&[], &own));
+        assert!(!addressed_to(
+            &v4([10, 77, 0, 1], [10, 77, 0, 2])[..19],
+            &own
+        ));
+        assert!(!addressed_to(&v6(ula)[..39], &own));
+        let mut odd = v4([10, 77, 0, 1], [10, 77, 0, 2]);
+        odd[0] = 0x55;
+        assert!(!addressed_to(&odd, &own));
     }
 }

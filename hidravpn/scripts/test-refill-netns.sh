@@ -10,12 +10,17 @@
 #   hv-client ──veth── hv-inet: 10.209.0.2 / 10.209.0.1, a side door used
 #   once, to get the first passes, then shut: from then on the issuer is
 #   reachable through the tunnel only.
+#   hv-e, hv-x ──veth── hv-inet: node-e (entry, open) and node-x (exit,
+#   pass), 10.206.0.2 and 10.205.0.2, for two hops.
 #
 # It proves: `passes auto` keeps its settings root-only and says them; with
 # auto on, a connection that leaves a node low gets it topped up to the
 # count, and the issuer could only have been reached through the tunnel;
 # with auto off nothing is fetched; while disconnected nothing is fetched
-# even when low; and no log names the client's address or the token.
+# even when low; with two hops up nothing is fetched either, by itself or by
+# hand, since it would leave through the exit, whether the service or the
+# command line holds them; and no log names the client's address or the
+# token.
 #
 # Run as root:  hidravpn/scripts/test-refill-netns.sh
 set -u
@@ -23,7 +28,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
-C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"
+C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet"; E="ip netns exec hv-e"; X="ip netns exec hv-x"
 PIDS=()
 export RUST_BACKTRACE=0
 export HIDRAVPN_PLAIN_HTTP_ISSUER=1
@@ -34,10 +39,10 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null; done
   ip netns pids hv-client 2>/dev/null | xargs -r kill 2>/dev/null
   sleep 0.5
-  for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
+  for ns in hv-client hv-node hv-inet hv-e hv-x; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /etc/hidravpn/refill.json /var/run/wireguard/hvp0.sock
+         /etc/hidravpn/refill.json /var/run/wireguard/hvp0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
@@ -71,7 +76,8 @@ for i in $(seq 1 50); do grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" &&
 grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" && pass "the issuer is up, on the internet side" || { cat "$WORK/issuer.log"; fail "issuer"; exit 1; }
 
 # ── A pass node ─────────────────────────────────────────────────────────────
-$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvp0"/' "$WORK/p.toml"
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run"
@@ -97,8 +103,11 @@ OUT=$("$BIN/hidravpn" passes auto on --low 3 --count 6 2>&1); echo "$OUT" | grep
 OUT=$("$BIN/hidravpn" passes auto --low 7 --count 6 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "below --count" && pass "a low that is not below the count is refused" || fail "bad auto: $OUT"
 
 # ── The service, checking every 2 seconds ───────────────────────────────────
-$C env RUST_LOG=hidravpn_service=info HIDRAVPN_REFILL_SECS=2 "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & PIDS+=($!)
-for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+start_service() {
+  $C env RUST_LOG=hidravpn_service=info HIDRAVPN_REFILL_SECS=2 "$BIN/hidravpn-service" run >> "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
+  for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+}
+start_service
 svc() { python3 -I - "$1" <<'PY'
 import socket, sys, json
 tok = open('/run/hidravpn/control.token').read().strip()
@@ -142,6 +151,107 @@ BEFORE=$(count); sleep 6
 $C ip link set c-i down
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "connect again: $R"
 wait_count 9 20 && pass "connected again, topped up to 9" || fail "second top-up: $(count)"
+
+# ── Two hops: never through the exit ───────────────────────────────────────
+# node-e, an entry that admits openly, and node-x, an exit that admits with
+# a pass, hang off the "internet". With two hops up, a request with the
+# account token would leave through node-x, and the issuer (run by the
+# exits' operator) could tie the session to the account: no top-up, and
+# passes asked for by hand are refused, by the service and by the command
+# line, until they are down.
+svc '{"cmd":"down"}' >/dev/null
+$I ip route add 10.200.0.0/24 via 10.201.0.1; $I sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
+ip netns add hv-e; ip netns add hv-x
+ip link add e-i type veth peer name i-e; ip link set e-i netns hv-e; ip link set i-e netns hv-inet
+ip link add x-i type veth peer name i-x; ip link set x-i netns hv-x; ip link set i-x netns hv-inet
+$E ip addr add 10.206.0.2/24 dev e-i; $E ip link set e-i up; $E ip link set lo up; $E ip route add default via 10.206.0.1
+$I ip addr add 10.206.0.1/24 dev i-e; $I ip link set i-e up
+$X ip addr add 10.205.0.2/24 dev x-i; $X ip link set x-i up; $X ip link set lo up; $X ip route add default via 10.205.0.1
+$I ip addr add 10.205.0.1/24 dev i-x; $I ip link set i-x up
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --forward-private-destinations --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator others --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
+sed -i 's/^interface = "hvpn0"/interface = "hve0"/' "$WORK/e.toml"
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --forward-private-destinations --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-x --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
+sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
+mkdir -p "$WORK/run-e" "$WORK/run-x"
+$E env HIDRAVPN_RUN_DIR="$WORK/run-e" "$BIN/hidravpn-node" --config "$WORK/e.toml" run > "$WORK/node-e.log" 2>&1 & PIDS+=($!)
+$X env HIDRAVPN_RUN_DIR="$WORK/run-x" "$BIN/hidravpn-node" --config "$WORK/x.toml" run > "$WORK/node-x.log" 2>&1 & PIDS+=($!)
+for i in $(seq 1 100); do grep -q "admission service on" "$WORK/node-e.log" && grep -q "admission service on" "$WORK/node-x.log" && break; sleep 0.2; done
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" record > "$WORK/rec-e.json" 2>/dev/null
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" record > "$WORK/rec-x.json" 2>/dev/null
+HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes2.json" --sequence 2 \
+  --issuer-url http://10.201.0.2:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec.json" "$WORK/rec-e.json" "$WORK/rec-x.json" > /dev/null 2>&1
+OUT=$("$BIN/hidravpn" nodes import "$WORK/nodes2.json" --pubkey "$LISTPUB" 2>&1); echo "$OUT" | grep -q "added 2 node(s)" || fail "import with node-e and node-x: $OUT"
+# node-x's first passes through the side door, disconnected.
+$C ip link set c-i up; $C ip route add 10.201.0.2/32 via 10.209.0.1 2>/dev/null
+OUT=$($C "$BIN/hidravpn" passes get --node node-x --count 2 2>&1); echo "$OUT" | grep -q "2 pass(es)" || fail "passes for node-x: $OUT"
+$C ip link set c-i down
+count_of() { svc '{"cmd":"nodes"}' | python3 -I -c "import json,sys; print([n.get('passes') for n in json.load(sys.stdin)['nodes'] if n['node_name']==sys.argv[1]][0])" "$1"; }
+# Low enough that a top-up would fire at once for node-x once it has spent one.
+"$BIN/hidravpn" passes auto on --low 9 --count 10 > /dev/null 2>&1
+# node-x is the one exit meanwhile: node-p sits on the client's own link.
+cp /etc/hidravpn/circuit.json "$WORK/pocket-with-node-p.json"
+"$BIN/hidravpn" nodes remove node-p > /dev/null 2>&1
+R=$(svc '{"cmd":"connect","mode":"privado"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"status":{"connected":true' && break; sleep 0.4; done
+ST=$(svc '{"cmd":"status"}')
+echo "$ST" | grep -q '"status":{"connected":true' && echo "$ST" | grep -q '"entry_name":"node-e"' && echo "$ST" | grep -q '"node_name":"node-x"' && pass "two hops: node-e, then node-x as the exit (a pass redeemed through node-e)" || fail "privado: $R $ST"
+echo "$ST" | grep -q '"account_one_hop_only":true' && pass "the status says the service keeps the account token off two hops, which the VPN page tells an older service by" || fail "status lacks account_one_hop_only: $ST"
+EXIT_IP=""
+for _ in $(seq 1 10); do EXIT_IP=$($C curl -s --max-time 3 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] && break; sleep 0.5; done
+[ "$EXIT_IP" = "10.205.0.2" ] && $C curl -s --max-time 3 -o /dev/null http://10.201.0.2:8730/keys && pass "through the two hops the issuer can be reached, through the exit" || fail "two hops do not reach the issuer: '$EXIT_IP'"
+ISSUED_BEFORE=$(grep -c "issued" "$WORK/issuer.log")
+BEFORE=$(count_of node-x); sleep 6
+[ "$(count_of node-x)" = "$BEFORE" ] && [ "$BEFORE" -lt 9 ] && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "with two hops up, nothing is topped up though node-x is low ($BEFORE < 9): it would go out through the exit" || fail "privado top-up: node-x $BEFORE -> $(count_of node-x), issued $ISSUED_BEFORE -> $(grep -c "issued" "$WORK/issuer.log")"
+R=$(svc '{"cmd":"get_passes","count":1}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes asked of the service by hand are refused while two hops are up, and say why" || fail "get_passes in privado: $R"
+OUT=$($C "$BIN/hidravpn" passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and so are they from the command line" || fail "passes get in privado: $OUT"
+OUT=$($C "$BIN/hidravpn" --direct passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and with --direct too: the service is still asked whether two hops are up" || fail "--direct passes get in privado: $OUT"
+OUT=$("$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "never in privado" && pass "passes list says automatic passes never go through two hops" || fail "list: $OUT"
+# Joining node-x now would redeem a pass through node-x itself, the exit,
+# and the key it admitted would later be shown to it from this machine's
+# own address in one hop: no join while two hops are up, of a pass node or
+# an open one, asked of the service or of the command line.
+LEFT=$(count_of node-x)
+R=$(svc '{"cmd":"join","name":"node-x"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up: the node would be asked for admission through the exit" && [ "$(count_of node-x)" = "$LEFT" ] && pass "joining a pass node through the service is refused while two hops are up, and no pass is spent" || fail "join in privado: $R (node-x $LEFT -> $(count_of node-x))"
+OUT=$($C "$BIN/hidravpn" nodes join --all 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up: the node would be asked for admission" && [ "$(count_of node-x)" = "$LEFT" ] && pass "and from the command line" || fail "nodes join in privado: $OUT"
+svc '{"cmd":"down"}' >/dev/null
+
+# ── Two hops held by the command line, with no service ─────────────────────
+# `hidravpn up --privado` in another terminal holds the circuit itself: no
+# service can tell, but the network plan it wrote says two hops. Passes,
+# an order and a claim are all refused, with or without --direct.
+kill "$SVC"; wait "$SVC" 2>/dev/null
+for i in $(seq 1 25); do [ -S /run/hidravpn/control.sock ] || break; sleep 0.2; done
+$C "$BIN/hidravpn" up --privado > "$WORK/fg.log" 2>&1 & FG=$!; PIDS+=($FG)
+for i in $(seq 1 50); do grep -q "routes and DNS set" "$WORK/fg.log" && break; sleep 0.2; done
+grep -qi "everything now goes through the privado (2 hops)" "$WORK/fg.log" && grep -q '"hops": 2' /run/hidravpn/netcfg.json && pass "two hops held by the command line, no service; its network plan says two hops" || fail "foreground privado: $(cat "$WORK/fg.log")"
+EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] || fail "foreground privado exit IP '$EXIT_IP'"
+for args in "passes get --count 1" "--direct passes get --count 1" "passes buy 5" "passes claim 5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo" "nodes join --all"; do
+  OUT=$($C "$BIN/hidravpn" $args 2>&1); RC=$?
+  [ $RC -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" || fail "$args with two hops held by the command line: $OUT"
+done
+[ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes get (with or without --direct), passes buy, passes claim and nodes join are refused while it holds them, and nothing reached the issuer" || fail "issued while the command line held two hops"
+kill -INT "$FG"; wait "$FG" 2>/dev/null
+[ ! -e /run/hidravpn/netcfg.json ] || fail "the foreground circuit left its plan behind"
+start_service
+# Back to one hop through node-p alone: topped up again.
+cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
+"$BIN/hidravpn" nodes remove node-x > /dev/null 2>&1
+R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "rapido after privado: $R"
+for _ in $(seq 1 20); do [ "$(count_of node-p)" = 10 ] && break; sleep 1; done
+[ "$(count_of node-p)" = 10 ] && pass "back in one hop, node-p is topped up to 10" || fail "top-up after privado: $(count_of node-p)"
+# In one hop a join goes ahead: node-x, known again from the list, gets a
+# pass (its two went on the two-hop connections) and is joined with it,
+# redeemed from this machine (through node-p, not behind an entry), and
+# written down so, to be shown from here again.
+"$BIN/hidravpn" nodes import "$WORK/nodes2.json" --pubkey "$LISTPUB" > /dev/null 2>&1
+R=$(svc '{"cmd":"get_passes","name":"node-x","count":1}'); echo "$R" | grep -q '"ok":true' || fail "a pass for node-x in rapido: $R"
+R=$(svc '{"cmd":"join","name":"node-x"}')
+BEHIND=$(python3 -I -c "import json; print([x.get('pass', {}).get('behind') for x in json.load(open('/etc/hidravpn/circuit.json'))['exits'] if x['node_name']=='node-x'])")
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q "node-x: admitted with a pass" && [ "$BEHIND" = "[False]" ] && pass "in rapido node-x is joined with a pass, written down as redeemed from here" || fail "join in rapido: $R (behind $BEHIND)"
+svc '{"cmd":"down"}' >/dev/null
 
 # ── Nothing in the logs ─────────────────────────────────────────────────────
 grep -F -e "$TOKEN" "$WORK"/*.log >/dev/null && fail "a log holds the token" || pass "no log holds the token"

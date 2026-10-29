@@ -1,6 +1,7 @@
 const { app, BrowserWindow, session, ipcMain, protocol, net, safeStorage, dialog, nativeImage, shell } = require('electron');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
 const appOrigins = require('./app-origins');
@@ -10,14 +11,13 @@ const { VpnInstaller, installable } = require('./vpn-installer');
 const { runLeakTest } = require('./vpn-leaktest');
 const { senderPage, requirePage } = require('./ipc-guard');
 const releaseVerify = require('./release-verify');
+const { UpdateCheck, STATE_FILE: UPDATE_STATE_FILE } = require('./update-check');
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
-const { TorManager } = require('./tor-manager');
-const { NetworkLock } = require('./network-lock');
+const { TorManager, SOCKS_PORT, proxyRulesFor } = require('./tor-manager');
+const { NetworkLock, HOST_RESOLVER_RULES } = require('./network-lock');
 const { FingerprintEngine } = require('../fingerprint/engine');
 
-const PROXY_ADDR = '127.0.0.1';
-const PROXY_PORT = 9050;
 const CHAT_PORT = 8090;
 const SEVENNINE_PORT = 8084;
 
@@ -78,14 +78,21 @@ function vpnFetchAllowed(url) {
 }
 
 async function fetchText(url, maxBytes) {
+  return (await fetchSmall(url, maxBytes)).toString('utf8');
+}
+
+// The bytes of a small file (a node list, a signature, the checksum table),
+// exactly as served. An HTTP error carries its status, so a caller can tell
+// "not there" from "not reachable".
+async function fetchSmall(url, maxBytes) {
   vpnFetchAllowed(url);
   const res = await net.fetch(url, { ...VPN_FETCH_OPTS, redirect: 'follow', signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  const tooBig = new Error(`${url}: far larger than a node list`);
+  if (!res.ok) throw Object.assign(new Error(`${url}: ${res.status}`), { status: res.status });
+  const tooBig = new Error(`${url}: larger than ${maxBytes} bytes, far more than this file should be`);
   const declared = Number(res.headers.get('content-length') || 0);
   if (declared > maxBytes) throw tooBig;
   // Read with the cap, so a server that lies about its length (or sends no
-  // length) cannot make this process buffer more than a node list.
+  // length) cannot make this process buffer more than the cap.
   const reader = res.body.getReader();
   const chunks = [];
   let total = 0;
@@ -96,7 +103,7 @@ async function fetchText(url, maxBytes) {
     if (total > maxBytes) { try { await reader.cancel(); } catch { /* already closed */ } throw tooBig; }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 // The same, for a release file: bytes, capped at what the signed manifest
@@ -118,30 +125,69 @@ async function fetchBuffer(url, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-const vpnInstaller = new VpnInstaller({ manifestUrl: VPN_RELEASE_URL, fetchText, fetchBuffer });
+// The installer asks the service which version is installed (and, when it
+// does not answer, reads it from the installed copy), so it never puts an
+// older one over it without asking the person first.
+const vpnInstaller = new VpnInstaller({
+  manifestUrl: VPN_RELEASE_URL,
+  fetchText,
+  fetchBuffer,
+  installedVersion: async () => {
+    const st = await vpnManager.status();
+    return (st && st.report && st.report.version) || null;
+  },
+});
+// Where the installer keeps the highest release manifest sequence it has
+// accepted, so an older signed manifest is refused in later runs too.
+function vpnReleaseState() {
+  return path.join(app.getPath('userData'), 'vpn-release.json');
+}
+
+// Whether a newer build is out (update-check.js): the signed checksum table,
+// fetched the same way as the node list, through Tor with the same bare
+// request, once the network lock has opened. It only ever leads to a notice
+// on the new tab page. The most it has verified is kept in the data folder,
+// so a site serving an older record is caught after a restart too.
+let updateCheck = null;
+function updater() {
+  if (!updateCheck) {
+    updateCheck = new UpdateCheck({
+      fetchBytes: fetchSmall, currentVersion: app.getVersion(), log: (m) => console.log(m),
+      stateFile: path.join(app.getPath('userData'), UPDATE_STATE_FILE),
+    });
+  }
+  return updateCheck;
+}
+function checkForUpdate() {
+  updater().run().catch((e) => console.log('[update] check failed: ' + ((e && e.message) || e)));
+}
 
 // The leak test has to see what every other program on this machine sees,
-// not what the browser's own Tor route sees, so it asks from a session with
-// no proxy at all. Used only when the person presses the button, and only
-// once runLeakTest has seen the kill switch armed and the tunnel alive, so
-// what the address service learns is the exit's address. It is told nothing
-// else: a generic user agent, no cookies, an in-memory session.
+// not what the browser's own Tor route sees, so it asks through Node's own
+// https, which knows nothing of the browser's sessions: the system resolver
+// and no proxy, like any other program. It used to ask from a Chromium
+// session set to 'direct', but no Chromium session is ever direct now, and
+// Chromium resolves no names itself (HOST_RESOLVER_RULES). Used only when the
+// person presses the button, and only once runLeakTest has seen the kill
+// switch armed and the tunnel alive, so what the address service learns is
+// the exit's address. It is told nothing else: a generic user agent, no
+// cookies, no connection kept for later.
 function directProbe(url) {
   return new Promise((resolve, reject) => {
-    const probe = session.fromPartition('hidravpn-leak-test');
-    probe.setUserAgent(VPN_FETCH_UA);
-    probe.setProxy({ mode: 'direct' }).then(() => {
-      const request = net.request({ url, session: probe, useSessionCookies: false, credentials: 'omit' });
-      request.setHeader('User-Agent', VPN_FETCH_UA);
+    // `timeout` below only notices a silent socket; this bounds the whole
+    // exchange, so a server that sends a byte at a time cannot hold it open.
+    let deadline = null;
+    const done = (fn) => (v) => { clearTimeout(deadline); fn(v); };
+    const request = https.get(url, { headers: { 'User-Agent': VPN_FETCH_UA }, agent: false, timeout: 10000 }, (res) => {
       let body = '';
-      const timer = setTimeout(() => { try { request.abort(); } catch (e) {} reject(new Error('timeout')); }, 10000);
-      request.on('response', (res) => {
-        res.on('data', (c) => { if (body.length < 4096) body += c; });
-        res.on('end', () => { clearTimeout(timer); resolve(body); });
-      });
-      request.on('error', (e) => { clearTimeout(timer); reject(e); });
-      request.end();
-    }).catch(reject);
+      res.setEncoding('utf8');
+      res.on('data', (c) => { if (body.length < 4096) body += c; });
+      res.on('end', () => done(resolve)(body));
+      res.on('error', done(reject));
+    });
+    deadline = setTimeout(() => request.destroy(new Error('timeout')), 10000);
+    request.on('timeout', () => request.destroy(new Error('timeout')));
+    request.on('error', done(reject));
   });
 }
 
@@ -174,8 +220,9 @@ let tabManager = null;
 let proxyManager = null;
 let torManager = null;
 let chatServer = null;
-// Closed until Tor confirms it is carrying the traffic. See network-lock.js.
-let networkLock = new NetworkLock();
+// Closed until Tor confirms it is carrying the traffic, and the one place
+// every session gets its route: Tor's SOCKS port, always. See network-lock.js.
+const networkLock = new NetworkLock(proxyRulesFor(SOCKS_PORT));
 // Whether the apps server actually got its port. A silent failure here
 // costs chat, mail, forum and search with no sign in the interface.
 let appsServer = { listening: false, error: null };
@@ -183,25 +230,6 @@ let appsServer = { listening: false, error: null };
 // Where the apps keep what identifies you, under the system keychain. See
 // vault.js. Created once the app is ready, because safeStorage is not before.
 let vault = null;
-
-// Applies (or clears) the network proxy on every session the browser owns —
-// the default one plus each tab's isolated partition. New tabs pick the same
-// rules up through TabManager.setProxyRules.
-async function applyProxyEverywhere(proxyRules) {
-  const config = proxyRules
-    ? { proxyRules, proxyBypassRules: LOOPBACK_ONLY }
-    : { mode: 'direct' };
-
-  if (tabManager) tabManager.setProxyRules(proxyRules);
-
-  networkLock.protect(session.defaultSession);
-  await session.defaultSession.setProxy(config);
-  if (tabManager) {
-    for (const s of tabManager.getAllSessions()) {
-      await s.setProxy(config);
-    }
-  }
-}
 
 // Shared by the Connect button and the automatic connect at startup, so both
 // paths route traffic and verify the exit the same way. Connect pressed while
@@ -214,6 +242,9 @@ function connectTor() {
 }
 
 async function connectTorOnce() {
+  // Taken before anything is awaited: a Disconnect or a Tor crash from here
+  // on engages the lock again, and then this connect may no longer open it.
+  const generation = networkLock.generation;
   const started = await torManager.start(app.getPath('userData'));
   if (!started.ok) {
     // Stays closed: a Tor that did not start must not let traffic out.
@@ -221,14 +252,29 @@ async function connectTorOnce() {
     return { ok: false, msg: started.error || 'could not start Tor' };
   }
 
+  // Every session has been on Tor's SOCKS port since it was made; nothing
+  // needs switching now. What is checked is that Chromium agrees, session by
+  // session, and that the Tor that came up is the one on that port.
   const rules = torManager.getStatus().proxyRules;
-  await applyProxyEverywhere(rules);
+  const unrouted = rules === networkLock.proxyRules ? await networkLock.unrouted() : ['all'];
+  if (unrouted.length) {
+    networkLock.engage('a session is not routed through Tor');
+    // Not left running as "connected" behind a lock that stays shut.
+    await torManager.stop();
+    return { ok: false, msg: `Tor is up, but ${unrouted.length} session(s) would not take its route; the network stays blocked` };
+  }
 
-  // Tor reached 100% and the rules are applied to every session: the
-  // traffic physically goes through its SOCKS port. This is the moment to open —
-  // not the IP check, which depends on an external site being up. If that check
-  // fails we tell the user, but we do not leave them without a network.
-  networkLock.release();
+  // Tor reached 100% and Chromium confirms every session goes through its
+  // SOCKS port. This is the moment to open — not the IP check, which depends
+  // on an external site being up. If that check fails we tell the user, but
+  // we do not leave them without a network. Only if this connect is still
+  // the current one: the checks above are awaited, and Tor may have died or
+  // the user pressed Disconnect while they ran.
+  // What closed the lock meanwhile left it closed, with its own reason.
+  if (torManager.getStatus().state !== 'ready' || !networkLock.release(generation)) {
+    return { ok: false, msg: 'Tor stopped before the connection was confirmed; the network stays blocked' };
+  }
+  checkForUpdate();
 
   const exit = await detectExitIp(rules);
   torManager.exitIp = exit && exit.ip ? exit.ip : null;
@@ -311,7 +357,7 @@ function savePrefs() {
 // knows nothing about Electron sessions, so every query used to leave with the
 // user's real IP even while connected — and a search history is the most
 // revealing thing this browser handles. net.request rides the default session,
-// which applyProxyEverywhere points at Tor.
+// which the network lock points at Tor.
 function netRequest(options) {
   return new Promise((resolve, reject) => {
     let request;
@@ -796,6 +842,9 @@ function startChatServer(attempt) {
 //
 // This one does exist, and hides local IPs behind mDNS names.
 app.commandLine.appendSwitch('enable-features', 'WebRtcHideLocalIpsWithMdns');
+// Chromium resolves no name itself, except this machine's own (see
+// HOST_RESOLVER_RULES in network-lock.js): every other name goes to Tor.
+app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 app.commandLine.appendSwitch('disable-reading-from-canvas');
 app.commandLine.appendSwitch('disable-gl-extensions');
 app.commandLine.appendSwitch('disable-accelerated-2d-canvas');
@@ -828,28 +877,21 @@ app.whenReady().then(async () => {
   loadPrefs();
   vault = new VaultStore(path.join(app.getPath('userData'), 'vault'), safeStorage);
   startChatServer();
-  proxyManager = new ProxyManager(PROXY_ADDR, PROXY_PORT);
+  proxyManager = new ProxyManager();
   torManager = new TorManager();
 
-  // Before any request can leave.
-  networkLock.protect(session.defaultSession);
+  // Before any request can leave: the filter, and Tor's route.
+  await networkLock.protect(session.defaultSession);
 
   // A Tor that dies mid-session used to leave the proxy falling back to
-  // direct, and browsing carried on with no warning. Now it closes again.
+  // direct, and browsing carried on with no warning. Now the lock closes
+  // again, and the sessions stay on Tor's port, which is closed now too.
   torManager.onUnexpectedExit = (reason) => {
     networkLock.engage('Tor exited unexpectedly' + (reason ? ' — ' + reason : ''));
-    applyProxyEverywhere(null).catch(() => {});
   };
 
-  const proxyReady = await proxyManager.configure(session.defaultSession);
-  if (proxyReady) {
-    console.log('SOCKS5 proxy detected — connected');
-  } else {
-    console.log('Waiting for user to click Connect');
-  }
-
   mainWindow = createMainWindow();
-  tabManager = new TabManager(mainWindow, proxyManager, networkLock);
+  tabManager = new TabManager(mainWindow, networkLock);
 
   setupIPC(tabManager, proxyManager);
 
@@ -988,12 +1030,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
 
   ipcMain.handle('proxy:status', (event) => {
     fromChromeOr(event, ['newtab.html'], 'proxy:status');
-    const base = proxy.getStatus();
     const tor = torManager.getStatus();
     const connected = tor.state === 'ready';
 
     return {
-      ...base,
+      // The one route every session has, whatever the state.
+      proxy: `127.0.0.1:${tor.socksPort}`,
       connected,
       mode: connected ? 'tor' : (tor.state === 'starting' ? 'connecting' : 'disconnected'),
       tor,
@@ -1072,10 +1114,12 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
 
   ipcMain.handle('proxy:disconnect', async (event) => {
     fromPages(event, ['newtab.html'], 'proxy:disconnect');
-    await torManager.stop();
+    // Closed before Tor is stopped, not after: Tor's port is free before its
+    // process is seen to exit, and nothing may carry on meanwhile. Not
+    // 'direct': the sessions keep Tor's route, to a port nothing listens on
+    // any more, and the lock blocks what reaches the filter.
     networkLock.engage('disconnected by the user');
-    await applyProxyEverywhere(null);
-    await proxy.shutdown(null);
+    await torManager.stop();
     return { ok: true, msg: 'disconnected' };
   });
 
@@ -1090,7 +1134,13 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     ]);
     // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
     // the port was taken, usually by a second copy of the browser.
-    return { chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo() };
+    // update: a newer build, this one below the minimum safe version, or no
+    // signed record to confirm either, from the checksum table; null when
+    // there is nothing to say.
+    return {
+      chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo(),
+      update: updater().notice(),
+    };
   });
 
   // HidraVPN. The service picks the nodes and holds the tunnel; the browser
@@ -1121,17 +1171,40 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   // key did not sign.
   ipcMain.handle('vpn:check-release', (event) => {
     vpnOnlyOurs(event);
+    vpnInstaller.stateFile = vpnReleaseState();
     return vpnInstaller.checkRelease();
   });
-  ipcMain.handle('vpn:install', async (event) => {
+  // `approved` is the { version, digest } check-release answered with: only
+  // that manifest is installed, never whatever the server answers next.
+  ipcMain.handle('vpn:install', async (event, approved) => {
     vpnOnlyOurs(event);
+    const named = approved && typeof approved === 'object'
+      ? { version: String(approved.version || ''), digest: String(approved.digest || '') }
+      : null;
     // Downloads go under the browser's own data folder, not /tmp: /tmp is
     // mounted noexec on many Linux systems, and the checked service has to
     // run from where it was checked.
     const root = path.join(app.getPath('userData'), 'vpn-install');
     await fs.promises.mkdir(root, { recursive: true, mode: 0o700 });
     vpnInstaller.tmpRoot = root;
-    return vpnInstaller.install();
+    vpnInstaller.stateFile = vpnReleaseState();
+    // Going back to an older version is asked here, by the browser itself,
+    // never taken from the page.
+    vpnInstaller.confirmDowngrade = async ({ installed, offered }) => {
+      const owner = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || undefined;
+      const r = await dialog.showMessageBox(owner, {
+        type: 'warning',
+        title: 'Install an older HidraVPN?',
+        message: `HidraVPN ${installed} is installed. The release offered is ${offered}, which is older.`,
+        detail: 'An older version may have problems the installed one fixed. Install it only if you meant to go back.',
+        buttons: ['Keep ' + installed, 'Install ' + offered],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return r.response === 1;
+    };
+    return vpnInstaller.install(named);
   });
   ipcMain.handle('vpn:uninstall', async (event, purge) => {
     vpnOnlyOurs(event);
@@ -1183,8 +1256,9 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     const r = await vpnManager.importNodesFromTexts(list, signature);
     return { ...r, url: VPN_LIST_URL };
   });
-  // Passes: the service asks the issuer with the token it keeps; the page
-  // hands the token over once and never gets it back.
+  // Passes: the service asks the issuer with the token it keeps. It takes
+  // a token only from an administrator (`sudo hidravpn passes token`), so
+  // the VPN page has no field for one; one handed over is never sent back.
   ipcMain.handle('vpn:get-passes', (event, count) => {
     vpnOnlyOurs(event);
     return vpnManager.getPasses(Number.isInteger(count) ? count : 10);

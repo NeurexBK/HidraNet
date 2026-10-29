@@ -21,7 +21,9 @@
 # `connect` joins the node by redeeming one; the internet sees the node;
 # every connection shows the node a fresh key; with two hops the exit's pass
 # is redeemed through the entry, the exit never hears from the client, and
-# with no pass left for it the connection is refused; when the exit and the
+# with no pass left for it the connection is refused; used next as the one
+# hop, it is never shown that key from the client's address (refused, or a
+# key redeemed from there, or a fresh pass); when the exit and the
 # entry give this machine the same address (Windows cannot hold it twice), the
 # entry is asked for another session and no second pass is spent; a pass spent once is refused
 # the second time; the quota and a switched-off account stop issuance; the
@@ -94,14 +96,24 @@ for i in $(seq 1 50); do grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" &&
 grep -q "pass issuer on TCP 8730 with 1 key" "$WORK/issuer.log" && pass "the issuer is up with its key" || { cat "$WORK/issuer.log"; fail "issuer did not start"; exit 1; }
 
 # ── The node: admits with a pass, trusts the issuer's key ───────────────────
-$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
+# The "internet" here is a private range: the nodes are told to forward to it, which a public node never is.
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" init --forward-private-destinations --endpoint 10.200.0.1:51820 --name node-p --role exit --operator maintainers --pass-admission --dns udp://10.201.0.2 --out-interface n-i > "$WORK/init.log" 2>&1 || { cat "$WORK/init.log"; fail "node init"; exit 1; }
 sed -i 's/^interface = "hvpn0"/interface = "hvp0"/' "$WORK/p.toml"
 grep -q "admission pass" "$WORK/init.log" && pass "init records admission with a pass" || fail "init: $(cat "$WORK/init.log")"
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key add "$WORK/pass-key.json" > "$WORK/passkey.log" 2>&1 && grep -q "trusting passes under" "$WORK/passkey.log" && $N "$BIN/hidravpn-node" --config "$WORK/p.toml" pass-key list | grep -q "until" && pass "the node trusts the issuer's key (pass-key add, list)" || fail "pass-key: $(cat "$WORK/passkey.log")"
+# node.toml now ends with the [[pass_keys]] table. A setting appended to the
+# file by hand belongs to that table and would be read as nothing: the node
+# refuses such a file. set-admission-relays writes the setting where it is
+# read, as the installer does on an existing node.toml.
+cp "$WORK/p.toml" "$WORK/stray.toml"; echo 'admission_relays = ["198.51.100.20"]' >> "$WORK/stray.toml"
+OUT=$($N "$BIN/hidravpn-node" --config "$WORK/stray.toml" record 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "unknown field \`admission_relays\`" && echo "$OUT" | grep -q "above the first one" && pass "a setting below a [[pass_keys]] table is refused, with where it belongs" || fail "stray setting read: $OUT"
+$N "$BIN/hidravpn-node" --config "$WORK/p.toml" set-admission-relays 198.51.100.20 > "$WORK/relays.log" 2>&1 && grep -q "1 entry address(es) listed" "$WORK/relays.log" \
+  && [ "$(grep -n '^admission_relays = \["198.51.100.20"\]' "$WORK/p.toml" | cut -d: -f1)" -lt "$(grep -n '^\[\[pass_keys\]\]' "$WORK/p.toml" | head -1 | cut -d: -f1)" ] \
+  && pass "set-admission-relays writes the relays above the pass keys" || fail "set-admission-relays: $(cat "$WORK/relays.log"; grep -n 'admission_relays\|pass_keys' "$WORK/p.toml")"
 mkdir -p "$WORK/run"
 $N env HIDRAVPN_RUN_DIR="$WORK/run" "$BIN/hidravpn-node" --config "$WORK/p.toml" run > "$WORK/node.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node.log" && grep -q "admission service on" "$WORK/node.log" && break; sleep 0.2; done
-grep -q "admission service on TCP 51821 (with a pass" "$WORK/node.log" && grep -q "1 issuer key(s) trusted" "$WORK/node.log" && pass "the node is up, admitting with passes under one trusted key" || { tail -5 "$WORK/node.log"; fail "node did not come up"; exit 1; }
+grep -q "admission service on TCP 51821 (with a pass" "$WORK/node.log" && grep -q "1 issuer key(s) trusted" "$WORK/node.log" && grep -q "1 entry address(es) relay admission requests here" "$WORK/node.log" && pass "the node is up, admitting with passes under one trusted key, with the relay it was given" || { tail -5 "$WORK/node.log"; fail "node did not come up"; exit 1; }
 CODE=$($C curl -s -o "$WORK/admit.json" -w '%{http_code}' --max-time 5 -X POST -d "{\"public_key\":\"$($BIN/hidravpn-sign keygen --out "$WORK/junk.key" 2>/dev/null)\"}" http://10.200.0.1:51821/admit)
 [ "$CODE" = 403 ] && grep -q "admits with a pass" "$WORK/admit.json" && pass "open admission is shut on a pass node (403, says to get a pass)" || fail "admit on a pass node: $CODE $(cat "$WORK/admit.json")"
 
@@ -130,6 +142,35 @@ OUT=$($C "$BIN/hidravpn" passes get --count 6 2>&1); [ $? -ne 0 ] && echo "$OUT"
 # ── Connecting redeems a pass; every connection a fresh one ─────────────────
 $C env RUST_LOG=hidravpn_service=info HIDRAVPN_PLAIN_HTTP_ISSUER=1 "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+# A node's own peer table, as its operator can read it: "key endpoint
+# handshake" lines. A node on userspace WireGuard answers on its control
+# socket; one on the kernel's (as on a CI runner) through `wg`. Arguments:
+# the interface, then the namespace prefix it lives in.
+peers() {
+  if [ -S "/var/run/wireguard/$1.sock" ]; then peers_uapi "/var/run/wireguard/$1.sock"
+  else $2 wg show "$1" dump 2>/dev/null | awk 'NR > 1 { ep = $3; if (ep == "(none)") ep = "-"; else sub(/:[0-9]+$/, "", ep); print $1, ep, $5 }'
+  fi
+}
+peers_uapi() { python3 -I - "$1" <<'PY'
+import socket, sys, base64
+s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b"get=1\n\n")
+buf = b""
+while not buf.endswith(b"\n\n"):
+    c = s.recv(65536)
+    if not c: break
+    buf += c
+key = None; ep = "-"; hs = 0; out = []
+def flush():
+    if key: out.append(f"{key} {ep} {hs}")
+for line in buf.decode().splitlines():
+    k, _, v = line.partition("=")
+    if k == "public_key":
+        flush(); key = base64.b64encode(bytes.fromhex(v)).decode(); ep = "-"; hs = 0
+    elif k == "endpoint": ep = v.rsplit(":", 1)[0]
+    elif k == "last_handshake_time_sec": hs = int(v)
+flush(); print("\n".join(out))
+PY
+}
 svc() { python3 -I - "$1" <<'PY'
 import socket, sys, json
 tok = open('/run/hidravpn/control.token').read().strip()
@@ -191,7 +232,7 @@ echo "$OUT" | grep -q '"t":{"ok":true' && ! echo "$OUT" | grep -qF "$TOKEN" && p
 echo "$OUT" | grep -q '2 pass(es) for 1 node(s); the account has 3 left today' && echo "$OUT" | grep -q '"passes":2' && pass "the browser's module gets two passes through the service: two in the wallet" || fail "browser passes: $OUT"
 
 # ── A new identity to another pass node redeems its next pass, through the tunnel
-$Q "$BIN/hidravpn-node" --config "$WORK/q.toml" init --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-q --role exit --operator others --pass-admission --dns udp://10.201.0.2 --out-interface q-i > "$WORK/init-q.log" 2>&1 || { cat "$WORK/init-q.log"; fail "node-q init"; }
+$Q "$BIN/hidravpn-node" --config "$WORK/q.toml" init --forward-private-destinations --endpoint 10.205.0.2:51820 --tunnel 10.78.0.0/16 --name node-q --role exit --operator others --pass-admission --dns udp://10.201.0.2 --out-interface q-i > "$WORK/init-q.log" 2>&1 || { cat "$WORK/init-q.log"; fail "node-q init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvq0"/' "$WORK/q.toml"
 $Q "$BIN/hidravpn-node" --config "$WORK/q.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-q"
@@ -242,7 +283,7 @@ ip netns add hv-e
 ip link add e-i type veth peer name i-e; ip link set e-i netns hv-e; ip link set i-e netns hv-inet
 $E ip addr add 10.206.0.2/24 dev e-i; $E ip link set e-i up; $E ip link set lo up; $E ip route add default via 10.206.0.1
 $I ip addr add 10.206.0.1/24 dev i-e; $I ip link set i-e up
-$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator third --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
+$E "$BIN/hidravpn-node" --config "$WORK/e.toml" init --forward-private-destinations --endpoint 10.206.0.2:51820 --tunnel 10.79.0.0/16 --name node-e --role entry --operator third --open-admission --dns udp://10.201.0.2 --out-interface e-i > "$WORK/init-e.log" 2>&1 || { cat "$WORK/init-e.log"; fail "node-e init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hve0"/' "$WORK/e.toml"
 mkdir -p "$WORK/run-e"
 $E env HIDRAVPN_RUN_DIR="$WORK/run-e" "$BIN/hidravpn-node" --config "$WORK/e.toml" run > "$WORK/node-e.log" 2>&1 & PIDS+=($!)
@@ -273,6 +314,8 @@ ST=$(svc '{"cmd":"status"}')
 echo "$R" | grep -q '"ok":true' && echo "$ST" | grep -q '"entry_name":"node-e"' && echo "$ST" | grep -q '"node_name":"node-q"' && pass "two hops: node-e as the entry, node-q (which takes passes) as the exit" || fail "privado with a pass exit: $R $ST"
 EXIT_IP=$($C curl -s --max-time 8 http://10.201.0.2/ 2>/dev/null); [ "$EXIT_IP" = "10.205.0.2" ] && pass "the internet sees node-q ($EXIT_IP)" || fail "privado exit IP '$EXIT_IP'"
 [ "$(q_passes)" = $((QP - 1)) ] && grep -q "admitted a client with a pass" "$WORK/node-q.log" && pass "one of node-q's passes was redeemed for this connection" || fail "node-q passes: $QP -> $(q_passes)"
+# The key node-q was shown as the exit of two hops: the one arriving from node-e.
+K_BEHIND=$(peers hvq0 "$Q" | awk '$2 == "10.206.0.2" { print $1 }' | head -1)
 sleep 1; kill -INT $TCPD 2>/dev/null; wait $TCPD 2>/dev/null
 FROM_CLIENT=$(tcpdump -n -r "$WORK/q.pcap" "src host 10.200.0.2 or dst host 10.200.0.2" 2>/dev/null | wc -l)
 VIA_ENTRY=$(tcpdump -n -r "$WORK/q.pcap" "src host 10.206.0.2 and tcp dst port 51821" 2>/dev/null | wc -l)
@@ -288,6 +331,55 @@ ST=$(svc '{"cmd":"status"}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "no pass left for node-" && echo "$R" | grep -q "only ever shown a key admitted through the entry" && echo "$ST" | grep -q '"connected":false' && echo "$ST" | grep -q '"killswitch":false' && pass "with no pass left for the exit of two hops, connect is refused and says why; it never falls back to a key the exit saw" || fail "no pass for the exit: $R $ST"
 [ "$(tcpdump -n -r "$WORK/q2.pcap" "src host 10.200.0.2 or dst host 10.200.0.2" 2>/dev/null | wc -l)" = 0 ] && pass "and node-q heard nothing from the client" || fail "node-q heard from the client on a refused connect"
 
+# ── After two hops, one hop through the same pass node ─────────────────────
+# node-q was just the exit of two hops, under a key redeemed through node-e.
+# Used next as the one hop, with no pass left for it, it is never shown that
+# key from this machine's address: neither as the last pass's key nor as a
+# fresh one. Either the key redeemed from here before is used, or the
+# connection is refused; with a pass, a fresh key. node-p is taken out of
+# the pocket meanwhile, so node-q is the one hop.
+from_client() { peers hvq0 "$Q" | awk -v k="$1" '$1 == k && $2 == "10.200.0.2"' | wc -l; }
+[ -n "$K_BEHIND" ] && pass "node-q saw its two-hop key arrive from node-e only" || fail "no key from node-e in node-q's peers: $(peers hvq0 "$Q" | tr '\n' ';')"
+[ "$(secret_of node-q)" = "$AFTER" ] && pass "the key redeemed through the entry did not take the place of the one redeemed from here in the pocket" || fail "node-q's key in the pocket is no longer the one redeemed from here"
+cp /etc/hidravpn/circuit.json "$WORK/pocket-before-one-hop.json"
+"$BIN/hidravpn" nodes remove node-p > /dev/null 2>&1
+R=$(svc '{"cmd":"connect","mode":"rapido"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+$C curl -s --max-time 5 -o /dev/null http://10.201.0.2/ 2>/dev/null
+[ "$(from_client "$K_BEHIND")" = 0 ] && pass "rapido through node-q with no pass left: the two-hop key never arrived from the client ($(echo "$R" | grep -q '"ok":true' && echo "the key redeemed from here was used" || echo refused))" || fail "node-q got its two-hop key from the client's address: $R"
+R=$(svc '{"cmd":"new_identity"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+[ "$(from_client "$K_BEHIND")" = 0 ] && pass "nor after a new identity in rapido" || fail "a new identity showed node-q its two-hop key from the client: $R"
+svc '{"cmd":"down"}' >/dev/null
+# node-q only ever used as the exit of two hops: the pocket keeps no key
+# redeemed from here for it, only the two-hop one.
+python3 -I - <<'PY'
+import json
+p = json.load(open('/etc/hidravpn/circuit.json'))
+q = [x for x in p['exits'] if x['node_name'] == 'node-q'][0]
+p['exits'] = [x for x in p['exits'] if x['node_name'] != 'node-q']
+p['entries'] = [x for x in p.get('entries', []) if x['node_name'] != 'node-q']
+keep = ('node_name', 'node_public_key', 'endpoint', 'operator', 'role', 'admission', 'admission_port', 'country', 'features')
+p.setdefault('known', []).append({k: q[k] for k in keep if q.get(k) is not None})
+open('/etc/hidravpn/circuit.json', 'w').write(json.dumps(p))
+PY
+OUT=$($C "$BIN/hidravpn" passes get --node node-q --count 1 --token-file <(echo "$TOKEN3") 2>&1); echo "$OUT" | grep -q "1 pass(es) for 1 node(s)" || fail "a pass for node-q: $OUT"
+R=$(svc '{"cmd":"connect","mode":"privado"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+K2=$(peers hvq0 "$Q" | awk -v k="$K_BEHIND" '$2 == "10.206.0.2" && $1 != k { print $1 }' | head -1)
+svc '{"cmd":"status"}' | grep -q '"entry_name":"node-e"' && [ -n "$K2" ] && pass "two hops again through node-q, under a new key from node-e" || fail "second privado: $R"
+svc '{"cmd":"down"}' >/dev/null
+R=$(svc '{"cmd":"connect","mode":"rapido"}'); ST=$(svc '{"cmd":"status"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "no pass left for node-q" && echo "$R" | grep -q "admitted through an entry" && echo "$ST" | grep -q '"connected":false' && [ "$(from_client "$K2")" = 0 ] && pass "rapido right after, with no pass left and only the two-hop key: refused, says why, and node-q never got that key from the client" || fail "rapido with only a two-hop key: $R $ST (from the client: $(from_client "$K2"))"
+OUT=$($C "$BIN/hidravpn" passes get --node node-q --count 1 --token-file <(echo "$TOKEN3") 2>&1); echo "$OUT" | grep -q "1 pass(es) for 1 node(s)" || fail "another pass for node-q: $OUT"
+R=$(svc '{"cmd":"connect","mode":"rapido"}')
+for _ in $(seq 1 25); do svc '{"cmd":"status"}' | grep -q '"connected":true' && break; sleep 0.4; done
+EXIT_IP=$($C curl -s --max-time 5 http://10.201.0.2/ 2>/dev/null)
+NEWK=$(peers hvq0 "$Q" | awk '$2 == "10.200.0.2" && $3 > 0 { print $1 }' | sort -u)
+[ "$EXIT_IP" = 10.205.0.2 ] && [ "$(from_client "$K2")" = 0 ] && [ "$(from_client "$K_BEHIND")" = 0 ] && [ -n "$NEWK" ] && pass "with a pass, rapido through node-q shows it a fresh key, never a two-hop one" || fail "rapido with a pass: '$EXIT_IP' $R"
+svc '{"cmd":"down"}' >/dev/null
+cp "$WORK/pocket-before-one-hop.json" /etc/hidravpn/circuit.json
+
 # ── Two hops through an entry that takes passes: none wasted on failures ───
 # node-f, an entry that admits with a pass. When the exit cannot be used,
 # nothing is spent on node-f; when the exit fails after node-f admitted this
@@ -297,7 +389,7 @@ ip netns add hv-f
 ip link add f-i type veth peer name i-f; ip link set f-i netns hv-f; ip link set i-f netns hv-inet
 $F ip addr add 10.207.0.2/24 dev f-i; $F ip link set f-i up; $F ip link set lo up; $F ip route add default via 10.207.0.1
 $I ip addr add 10.207.0.1/24 dev i-f; $I ip link set i-f up
-$F "$BIN/hidravpn-node" --config "$WORK/f.toml" init --endpoint 10.207.0.2:51820 --tunnel 10.80.0.0/16 --name node-f --role entry --operator fourth --pass-admission --dns udp://10.201.0.2 --out-interface f-i > "$WORK/init-f.log" 2>&1 || { cat "$WORK/init-f.log"; fail "node-f init"; }
+$F "$BIN/hidravpn-node" --config "$WORK/f.toml" init --forward-private-destinations --endpoint 10.207.0.2:51820 --tunnel 10.80.0.0/16 --name node-f --role entry --operator fourth --pass-admission --dns udp://10.201.0.2 --out-interface f-i > "$WORK/init-f.log" 2>&1 || { cat "$WORK/init-f.log"; fail "node-f init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvf0"/' "$WORK/f.toml"
 $F "$BIN/hidravpn-node" --config "$WORK/f.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
 mkdir -p "$WORK/run-f" "$WORK/f"
@@ -346,10 +438,10 @@ $X ip addr add 10.208.0.2/24 dev x-i; $X ip link set x-i up; $X ip link set lo u
 $I ip addr add 10.208.0.1/24 dev i-x; $I ip link set i-x up
 $Y ip addr add 10.209.0.2/24 dev y-i; $Y ip link set y-i up; $Y ip link set lo up; $Y ip route add default via 10.209.0.1
 $I ip addr add 10.209.0.1/24 dev i-y; $I ip link set i-y up
-$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --endpoint 10.208.0.2:51820 --tunnel 10.81.0.0/16 --name node-x --role exit --operator fifth --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
+$X "$BIN/hidravpn-node" --config "$WORK/x.toml" init --forward-private-destinations --endpoint 10.208.0.2:51820 --tunnel 10.81.0.0/16 --name node-x --role exit --operator fifth --pass-admission --dns udp://10.201.0.2 --out-interface x-i > "$WORK/init-x.log" 2>&1 || { cat "$WORK/init-x.log"; fail "node-x init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvx0"/' "$WORK/x.toml"
 $X "$BIN/hidravpn-node" --config "$WORK/x.toml" pass-key add "$WORK/pass-key.json" > /dev/null 2>&1
-$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" init --endpoint 10.209.0.2:51820 --tunnel 10.81.0.0/16 --name node-y --role entry --operator sixth --open-admission --dns udp://10.201.0.2 --out-interface y-i > "$WORK/init-y.log" 2>&1 || { cat "$WORK/init-y.log"; fail "node-y init"; }
+$Y "$BIN/hidravpn-node" --config "$WORK/y.toml" init --forward-private-destinations --endpoint 10.209.0.2:51820 --tunnel 10.81.0.0/16 --name node-y --role entry --operator sixth --open-admission --dns udp://10.201.0.2 --out-interface y-i > "$WORK/init-y.log" 2>&1 || { cat "$WORK/init-y.log"; fail "node-y init"; }
 sed -i 's/^interface = "hvpn0"/interface = "hvy0"/' "$WORK/y.toml"
 mkdir -p "$WORK/run-x" "$WORK/run-y" "$WORK/s"
 $X env HIDRAVPN_RUN_DIR="$WORK/run-x" "$BIN/hidravpn-node" --config "$WORK/x.toml" run > "$WORK/node-x.log" 2>&1 & PIDS+=($!)

@@ -20,8 +20,9 @@
 // make this test pass. It cannot catch the service being wrong about its own
 // kill switch.
 //
-// The two network checks go to api.ipify.org / api6.ipify.org, from a session
-// with no proxy, exactly as any other program on this machine would — which
+// The two network checks go to api.ipify.org / api6.ipify.org through Node's
+// own https, with the system resolver and no proxy (directProbe in main.js),
+// exactly as any other program on this machine would — which
 // is the point: the browser's own tabs go through Tor whatever the VPN does,
 // so a test through them would prove nothing about the machine. ipify sees
 // the address it reports back (the exit's), the moment someone asked, and a

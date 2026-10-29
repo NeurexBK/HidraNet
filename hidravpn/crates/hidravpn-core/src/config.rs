@@ -92,6 +92,11 @@ pub struct PassBinding {
     /// one; these two say whether the lease is likely still there.
     #[serde(default)]
     pub used_at: u64,
+    /// Whether the pass was redeemed through the entry of two hops (true)
+    /// or from this machine's own address (false). None in a pocket written
+    /// before this was recorded: where it was redeemed is not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind: Option<bool>,
 }
 
 /// A lease never used is gone this long after it was granted (the node's
@@ -102,6 +107,15 @@ pub const UNUSED_LEASE_SECS: u64 = 600;
 pub const IDLE_LEASE_SECS: u64 = 5 * 3600;
 
 impl PassBinding {
+    /// Redeemed from this machine's own address: the node has seen the key
+    /// arrive from it, and may be shown it from there again. A key the node
+    /// saw arrive through an entry never is, nor one whose origin is not
+    /// known: shown from this address, it would tie the two-hop sessions it
+    /// carried to this machine.
+    pub fn direct(&self) -> bool {
+        self.behind == Some(false)
+    }
+
     /// Redeemed and never used yet, recently enough that its lease stands:
     /// connecting with it spends nothing, and it shows the node a key it has
     /// not seen.
@@ -291,6 +305,13 @@ impl Invite {
                 .is_some_and(|a| a.trim().eq_ignore_ascii_case("pass"))
     }
 
+    /// The pass this invite was won with, when this machine may show its
+    /// key from its own address again: one redeemed from here. None for a
+    /// key redeemed through an entry, or whose origin is not known.
+    pub fn direct_pass(&self) -> Option<&PassBinding> {
+        self.pass.as_ref().filter(|p| p.direct())
+    }
+
     /// Whether the node is asked for a key for each connection: it admits
     /// openly and its software can.
     pub fn admits_sessions(&self) -> bool {
@@ -364,7 +385,25 @@ impl ClientConfig {
         if let ShownKey::Exact(k) = &self.shown {
             return Ok(k.clone());
         }
+        // A pass's key is shown only the way it was admitted: one redeemed
+        // through an entry never from this machine's own address, one
+        // redeemed from here never behind an entry, and one whose origin is
+        // not known neither way.
         if let Some(p) = &self.invite.pass {
+            let fits = match &self.shown {
+                ShownKey::Behind => p.behind == Some(true),
+                _ => p.direct(),
+            };
+            if !fits {
+                let (how, never) = match &self.shown {
+                    ShownKey::Behind => ("from this machine's own address", "behind an entry"),
+                    _ => ("through an entry", "from this machine's own address"),
+                };
+                return Err(anyhow!(
+                    "{}: the key of its last pass was admitted {how} (or by an older version that did not write down how); it is never shown {never}, and a new pass is needed",
+                    self.invite.node_name
+                ));
+            }
             return ClientKey::from_base64(&p.client_secret)
                 .context("the key of the pass this invite was won with");
         }
@@ -446,6 +485,70 @@ mod tests {
             again.client_ip().unwrap(),
             (Ipv4Addr::new(10, 77, 0, 2), 16)
         );
+    }
+
+    #[test]
+    fn a_pass_key_is_shown_only_the_way_it_was_admitted() {
+        let key = ClientKey::generate().unwrap();
+        let pass_key = ClientKey::generate().unwrap();
+        let with = |behind: Option<bool>| {
+            let mut inv = sample();
+            inv.pass = Some(PassBinding {
+                client_secret: pass_key.secret_base64(),
+                admission_port: None,
+                redeemed_at: 1,
+                used_at: 0,
+                behind,
+            });
+            inv
+        };
+        let shown = |inv: Invite, shown: ShownKey| {
+            ClientConfig {
+                invite: inv,
+                key: key.clone(),
+                shown,
+            }
+            .node_key()
+        };
+        let direct = shown(with(Some(false)), ShownKey::Direct).unwrap();
+        assert_eq!(direct.public_base64(), pass_key.public_base64());
+        let behind = shown(with(Some(true)), ShownKey::Behind).unwrap();
+        assert_eq!(behind.public_base64(), pass_key.public_base64());
+        // A key the node saw arrive through an entry is never shown from
+        // this machine's address, nor one an older pocket did not mark; one
+        // it saw from here is never shown behind an entry.
+        for (b, s) in [
+            (Some(true), ShownKey::Direct),
+            (None, ShownKey::Direct),
+            (Some(false), ShownKey::Behind),
+            (None, ShownKey::Behind),
+        ] {
+            let e = shown(with(b), s.clone()).unwrap_err().to_string();
+            assert!(e.contains("a new pass is needed"), "{b:?} {s:?}: {e}");
+        }
+        // A key made for this connection is shown as it is, whatever the
+        // invite remembers.
+        let fresh = ClientKey::generate().unwrap();
+        let exact = shown(with(Some(true)), ShownKey::Exact(fresh.clone())).unwrap();
+        assert_eq!(exact.public_base64(), fresh.public_base64());
+    }
+
+    #[test]
+    fn a_pass_binding_from_an_older_pocket_reads_and_says_its_origin_is_not_known() {
+        let b: PassBinding =
+            serde_json::from_str(r#"{"client_secret":"x","redeemed_at":5,"used_at":7}"#).unwrap();
+        assert_eq!(b.behind, None);
+        assert!(!b.direct());
+        let again = serde_json::to_string(&b).unwrap();
+        assert!(!again.contains("behind"), "{again}");
+        let marked = PassBinding {
+            behind: Some(true),
+            ..b
+        };
+        let json = serde_json::to_string(&marked).unwrap();
+        assert!(json.contains(r#""behind":true"#), "{json}");
+        let back: PassBinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.behind, Some(true));
     }
 
     #[test]

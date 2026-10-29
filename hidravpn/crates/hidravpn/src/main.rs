@@ -44,6 +44,7 @@ use hidravpn_core::killswitch;
 use hidravpn_core::netcfg;
 use hidravpn_core::{Circuit, CircuitOptions, CircuitSpec, ClientKey, Invite, ReleaseKey, Slot};
 use hidravpn_service::ipc::{self, Command, StatusReport};
+use hidravpn_service::passes::TwoHopsRefuse;
 use hidravpn_service::paths;
 // The pocket is read and written as the service does: root only, and
 // atomically, so neither ever reads half a file the other wrote.
@@ -187,7 +188,10 @@ enum Nodes {
     Remove { name: String },
     /// Ask admission from known nodes whose operators admit openly: by name,
     /// or every one with --all. Each node is shown the key derived for it
-    /// and its invite is checked against the list's record of it.
+    /// and its invite is checked against the list's record of it. An entry
+    /// refuses (403): it gives a key for each connection as this machine
+    /// connects, so there is nothing to join there. Not while two hops
+    /// (privado) are up: the request would leave through the exit.
     Join {
         /// The node to ask; absent with --all.
         #[arg(required_unless_present = "all")]
@@ -226,11 +230,14 @@ enum Nodes {
 #[derive(Subcommand)]
 enum Passes {
     /// Keep the account token passes are asked for with, root only. From a
-    /// file, or `-` for standard input.
+    /// file, or `-` for standard input. The token it replaces is kept beside
+    /// it, as pass.token.previous (then .previous.1 and on: none is written
+    /// over).
     Token { file: PathBuf },
     /// Ask the issuer for passes: COUNT for each node that admits with a
     /// pass, or for the one named. The issuer never learns which node a pass
-    /// is for.
+    /// is for. Not while connected in privado: the request would leave
+    /// through the exit.
     Get {
         #[arg(long, default_value_t = 10)]
         count: usize,
@@ -254,8 +261,10 @@ enum Passes {
     /// Claim the open order with the signature of the transaction that
     /// paid it: the pack goes on this machine's account.
     Claim { signature: String },
-    /// Let the service top the wallet up by itself, only while connected
-    /// (through the tunnel): `on`, `off`, or nothing to see how it is set.
+    /// Let the service top the wallet up by itself, only while connected in
+    /// rapido (through the tunnel), never in privado, where the request
+    /// would leave through the exit: `on`, `off`, or nothing to see how it
+    /// is set.
     Auto {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
@@ -479,14 +488,21 @@ async fn main() -> Result<()> {
                     };
                     let token = hidravpn_service::passes::parse_token(&text)?;
                     let dest = token_beside(&pocket_path);
-                    hidravpn_service::daemon::write_private_atomic(&dest, token.as_bytes())?;
+                    let kept = hidravpn_service::passes::keep_token(&dest, &token)?;
                     println!("account token kept at {} (root only)", dest.display());
+                    if let Some(p) = kept {
+                        println!(
+                            "the token it replaced is kept at {} (root only): it may hold passes bought on it",
+                            p.display()
+                        );
+                    }
                 }
                 Passes::Get {
                     count,
                     node,
                     token_file,
                 } => {
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     let pocket = load_pocket(&pocket_path)?;
                     let token = hidravpn_service::passes::read_token(
                         &token_file.unwrap_or_else(|| token_beside(&pocket_path)),
@@ -553,11 +569,12 @@ async fn main() -> Result<()> {
                             }
                         }
                         if let Some(r) = &p.rate {
-                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for 24 hours");
+                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for as long as it is open");
                         }
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());
                     };
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
                         if !replace {
                             return Err(anyhow!(
@@ -583,6 +600,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 Passes::Claim { signature } => {
+                    not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
                     let order =
                         hidravpn_service::passes::load_order(&pocket_path)?.ok_or_else(|| {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
@@ -611,7 +629,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     println!(
-                        "`hidravpn passes get` fetches passes for the nodes now, or the service does it by itself while connected"
+                        "`hidravpn passes get` fetches passes for the nodes now, or the service does it by itself while connected in rapido"
                     );
                 }
                 Passes::Auto { state, low, count } => {
@@ -721,6 +739,7 @@ async fn main() -> Result<()> {
                     );
                 }
                 Nodes::Join { name, all } => {
+                    not_through_two_hops(TwoHopsRefuse::Join).await?;
                     let joined =
                         join_known(&mut pocket, &pocket_path, &key_path, name.as_deref(), all)
                             .await?;
@@ -1113,6 +1132,30 @@ fn print_detail(s: &StatusReport) {
     }
 }
 
+/// Refuses a request that carries the pass account token (passes, an order,
+/// a claim), or one for admission (`nodes join`), while two hops are up or
+/// being built: it would leave through their exit
+/// (`passes::NOT_THROUGH_TWO_HOPS`, `passes::JOIN_NOT_THROUGH_TWO_HOPS`).
+/// The service is asked even under `--direct`, since its circuit carries
+/// this process's requests either way, and the network plan tells of a
+/// circuit this command line holds in another terminal. When either cannot
+/// say, it is refused (`passes::not_through_two_hops`).
+async fn not_through_two_hops(what: TwoHopsRefuse) -> Result<()> {
+    let service = service_call(false, Command::Status).await.map(|r| {
+        r.and_then(|r| {
+            if r.ok {
+                Ok(r.status.map(|s| s.hops))
+            } else {
+                Err(anyhow!(
+                    "{}",
+                    r.error.unwrap_or_else(|| "no reason given".into())
+                ))
+            }
+        })
+    });
+    hidravpn_service::passes::not_through_two_hops(service, netcfg::load_plan(), what)
+}
+
 /// Tries the background service. Returns None when it is not reachable (or when
 /// `--direct` asked us to skip it), so the caller can act in this process
 /// instead; Some(..) carries the service's answer to the command.
@@ -1216,12 +1259,12 @@ async fn up(
     // Invites won with a pass that this circuit uses: their use is written
     // down when it goes up and when it comes down, which is what tells later
     // picks the node still holds the lease.
-    let pass_keys: Vec<String> = {
+    let pass_keys: Vec<Invite> = {
         let spec = circuit.spec();
         std::iter::once(&spec.exit)
             .chain(spec.entry.as_ref())
             .filter(|i| i.pass.is_some())
-            .map(|i| i.node_public_key.clone())
+            .cloned()
             .collect()
     };
     if !pass_keys.is_empty() {

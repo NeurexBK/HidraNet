@@ -5,7 +5,6 @@ const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
 const { guardFingerprint } = require('./fingerprint-guard');
-const { LOOPBACK_ONLY } = require('./proxy-manager');
 const { APPS, ORIGINS, appOrigin, appOfUrl } = require('./app-origins');
 
 // Trailing slash matters: without it, a sibling directory whose name merely
@@ -85,16 +84,15 @@ function vaultNamespaceOf(event) {
 }
 
 class TabManager {
-  constructor(parentWindow, proxyManager, networkLock) {
+  // `networkLock` filters every session made here and gives it its route
+  // (network-lock.js); a tab cannot be made without it.
+  constructor(parentWindow, networkLock) {
+    if (!networkLock) throw new Error('tabs need the network lock: it is what routes them');
     this.window = parentWindow;
-    this.proxyManager = proxyManager;
     this.networkLock = networkLock;
     this.tabs = new Map();
     this.activeTabId = null;
     this.nextId = 1;
-    // Set while connected, so tabs opened after connecting inherit the same
-    // network route instead of quietly going out direct.
-    this.proxyRules = null;
     // The apps' shared partition, made on first use, and the one fingerprint
     // every tab in it presents: a session has one user agent, so tabs sharing
     // it cannot each claim a different one.
@@ -114,18 +112,6 @@ class TabManager {
     if (!this.window || this.window.isDestroyed()) return;
     const tab = this.tabs.get(this.activeTabId);
     if (tab && tab.view) this._resizeView(tab.view);
-  }
-
-  setProxyRules(rules) {
-    this.proxyRules = rules || null;
-  }
-
-  async _applyProxy(tabSession) {
-    if (this.proxyRules) {
-      await tabSession.setProxy({ proxyRules: this.proxyRules, proxyBypassRules: LOOPBACK_ONLY });
-      return;
-    }
-    await this.proxyManager.configure(tabSession);
   }
 
   async createTab(url) {
@@ -174,12 +160,13 @@ class TabManager {
       ? this._appsSession()
       : this._createIsolatedSession(tab.id, fingerprint);
 
-    // Routed before anything is created that could load, so nothing in this
-    // view ever goes out on a route other than the one every tab is on.
-    await this._applyProxy(tabSession);
+    // The session was put on Tor's route the moment it was made (the lock
+    // does that in _secureSession, before this first await). Nothing that
+    // could load is created until the route is in place.
+    await this.networkLock.routed(tabSession);
 
     if (tab.closed) {
-      if (!persistent) tabSession.clearStorageData();
+      if (!persistent) this._drop(tabSession);
       return false;
     }
 
@@ -193,7 +180,7 @@ class TabManager {
     }
     if (tab.closed) {
       view.webContents.close();
-      if (!persistent) tabSession.clearStorageData();
+      if (!persistent) this._drop(tabSession);
       return false;
     }
 
@@ -224,7 +211,13 @@ class TabManager {
     // would delete the mail address along with the tab. What the tab wrote
     // goes to disk now instead.
     if (persistent) this._flushApps();
-    else tabSession.clearStorageData();
+    else this._drop(tabSession);
+  }
+
+  // A website tab's partition is never used again once its view is gone.
+  _drop(tabSession) {
+    tabSession.clearStorageData();
+    if (this.networkLock) this.networkLock.forget(tabSession);
   }
 
   _buildView(tab, tabSession, fingerprint) {
@@ -544,8 +537,9 @@ class TabManager {
     }
   }
 
-  // Every session that has to follow the network route. The apps' one is in
-  // here even with no app open, so an app opened later is already routed.
+  // Every tab session in use, for dropping their connections on a new
+  // identity. The apps' one is in here even with no app open. Routing does
+  // not depend on this list: the lock routes each session as it is made.
   getAllSessions() {
     const all = new Set([...this.tabs.values()].map(t => t.session).filter(Boolean));
     if (this.appsSession) all.add(this.appsSession);
@@ -605,9 +599,10 @@ class TabManager {
   // What every session gets, throwaway or kept: the kill switch, the spoofed
   // user agent, the header stripping and the permission lockdown.
   _secureSession(tabSession, fingerprint) {
-    // Every session needs the filter: a session without it is a way straight
-    // around the kill switch.
-    if (this.networkLock) this.networkLock.protect(tabSession);
+    // Every session needs the filter and Tor's route, from the moment it
+    // exists: a session without them is a way straight around the kill
+    // switch. The route is being set from here on; _attach waits for it.
+    this.networkLock.protect(tabSession);
 
     // Without this every request advertises the real Electron user agent
     // ("HidraNet Browser/1.0.0 ... Electron/44"), which both identifies the

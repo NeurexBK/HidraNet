@@ -158,7 +158,7 @@
 
     .status-label { font-size: 14px; font-weight: 500; }
 
-    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 
     .stat {
       text-align: center; padding: 12px 8px;
@@ -211,6 +211,8 @@
       font-size: 8px; color: var(--text-muted); white-space: nowrap;
       letter-spacing: 0.5px; text-transform: uppercase;
     }
+    /* A longer label wraps rather than running into the nodes beside it. */
+    .line-encrypted.long { white-space: normal; text-align: center; width: max-content; max-width: 100%; }
 
     /* Settings */
     .settings-list { display: flex; flex-direction: column; gap: 2px; }
@@ -371,6 +373,19 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 1s linear infinite; }
 
+    /* Update notice: a newer build, or this one below the minimum safe
+       version, from the signed checksum table. A notice only. */
+    .update-notice {
+      margin: 0 0 20px; padding: 12px 16px; border-radius: var(--radius-sm);
+      border: 1px solid rgba(255,170,51,0.4); background: rgba(255,170,51,0.08);
+      color: var(--text-primary); font-size: 13px; line-height: 1.5;
+    }
+    .update-notice.unsafe { border-color: rgba(255,68,102,0.5); background: rgba(255,68,102,0.1); }
+    .update-notice strong { color: var(--warning); }
+    .update-notice.unsafe strong { color: var(--danger); }
+    .update-notice.neutral { border-color: var(--border); background: transparent; }
+    .update-notice.neutral strong { color: var(--text-primary); }
+
     /* Footer */
     .footer {
       display: flex; justify-content: space-between; align-items: center;
@@ -422,7 +437,6 @@
       .dashboard { padding: 24px 16px; }
       .logo-svg { height: 80px; width: auto; }
       .logo-text h1 { font-size: 24px; letter-spacing: 4px; }
-      .stat-grid { grid-template-columns: repeat(2, 1fr); }
       .footer { flex-direction: column; gap: 8px; text-align: center; }
     }
   </style>
@@ -439,6 +453,11 @@
         </div>
       </div>
     </header>
+
+    <div class="update-notice" id="update-notice" role="status" hidden>
+      <strong id="update-title"></strong>
+      <span id="update-text"></span>
+    </div>
 
     <div class="search-container">
       <div class="search-box">
@@ -579,14 +598,6 @@
         </div>
         <div class="stat-grid">
           <div class="stat">
-            <span class="stat-value" id="stat-relays">—</span>
-            <span class="stat-label">Active Relays</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="stat-latency">—</span>
-            <span class="stat-label">Latency</span>
-          </div>
-          <div class="stat">
             <span class="stat-value" id="stat-uptime">0s</span>
             <span class="stat-label">Uptime</span>
           </div>
@@ -597,7 +608,10 @@
         </div>
       </div>
 
-      <!-- Circuit Viewer -->
+      <!-- Circuit Viewer. Each hop is labelled with what carries it and no
+           more. The labels used to be cipher names (AES-256, ChaCha20) and the
+           last hop "encrypted": every hop here is Tor's, and past the exit a
+           site is only as encrypted as its own HTTPS. -->
       <div class="card">
         <div class="card-header">
           <svg class="card-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -619,7 +633,7 @@
             <span class="node-label">You</span>
             <span class="node-ip">localhost</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">AES-256</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-1">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -629,7 +643,7 @@
             <span class="node-label">Guard</span>
             <span class="node-ip" id="relay-1-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-2">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -639,7 +653,7 @@
             <span class="node-label">Middle</span>
             <span class="node-ip" id="relay-2-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">ChaCha20</span></div>
+          <div class="circuit-line"><span class="line-encrypted">Tor</span></div>
           <div class="circuit-node relay" id="relay-3">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -649,7 +663,7 @@
             <span class="node-label">Exit</span>
             <span class="node-ip" id="relay-3-ip">—</span>
           </div>
-          <div class="circuit-line"><span class="line-encrypted">TLS</span></div>
+          <div class="circuit-line"><span class="line-encrypted long">TLS if the site uses HTTPS</span></div>
           <div class="circuit-node destination">
             <div class="node-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -660,7 +674,7 @@
               </svg>
             </div>
             <span class="node-label">Internet</span>
-            <span class="node-ip">encrypted</span>
+            <span class="node-ip">sees the exit</span>
           </div>
         </div>
       </div>
@@ -706,9 +720,9 @@
           <div class="setting-row">
             <div class="setting-info">
               <span class="setting-name">DNS Leak Protection</span>
-              <span class="setting-desc" id="dns-desc">Checking…</span>
+              <span class="setting-desc">Pages never reach this machine's resolver; Tor resolves names at the exit relay</span>
             </div>
-            <div class="setting-badge" id="dns-badge">—</div>
+            <div class="setting-badge">Enforced</div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
@@ -934,10 +948,14 @@
     </section>
 
     <footer class="footer">
+      <!-- What carries the traffic, not what the HidraNet engine could. The
+           engine's post-quantum handshake was named here, but connecting
+           means Tor (main.js, proxy:connect) and the engine carries none of
+           the browsing; the apps meet on public brokers. -->
       <div class="footer-left">
         <span class="version" id="app-version">HidraNet Browser</span>
         <span class="separator">&middot;</span>
-        <span class="crypto">Noise XX · X25519 + ML-KEM-1024 · ChaCha20-Poly1305 · BLAKE3</span>
+        <span class="crypto">Browsing: Tor &middot; Apps: public MQTT brokers, through Tor</span>
       </div>
       <div class="footer-right">
         <span class="footer-indicator">
@@ -1028,9 +1046,47 @@
       }
     }
 
+    // Shown when the signed checksum table names a newer build than this
+    // one, or a minimum safe version this one is below, or when there is no
+    // signed record to confirm that it is neither. Nothing is downloaded:
+    // the person gets the new build from the site and checks it.
+    function showUpdate(update) {
+      var box = document.getElementById('update-notice');
+      if (!box) return;
+      if (update && update.state === 'unconfirmed') {
+        box.className = 'update-notice neutral';
+        document.getElementById('update-title').textContent = 'Could not confirm that this browser is up to date.';
+        document.getElementById('update-text').textContent = 'The signed version record on hidranet.org could not be ' +
+          'checked. Visit hidranet.org to see whether a newer version is out, and check its SHA-256 against ' +
+          'SHA256SUMS.txt there.';
+        box.hidden = false;
+        return;
+      }
+      var version = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+      if (!update || update.state !== 'update' || !version.test(update.current) || !version.test(update.latest) ||
+          (update.unsafe && !version.test(update.minimum))) {
+        box.hidden = true;
+        return;
+      }
+      if (update.unsafe) {
+        box.className = 'update-notice unsafe';
+        document.getElementById('update-title').textContent = 'This browser has known security problems.';
+        document.getElementById('update-text').textContent = 'HidraNet Browser ' + update.current +
+          ' is older than ' + update.minimum + ', the oldest version still considered safe. Download ' +
+          update.latest + ' from hidranet.org, check its SHA-256 against SHA256SUMS.txt there, and replace this copy.';
+      } else {
+        box.className = 'update-notice';
+        document.getElementById('update-title').textContent = 'HidraNet Browser ' + update.latest + ' is available.';
+        document.getElementById('update-text').textContent = 'This is ' + update.current +
+          '. Download the new version from hidranet.org and check its SHA-256 against SHA256SUMS.txt there.';
+      }
+      box.hidden = false;
+    }
+
     async function detectApps() {
       detectVpn();
       var status = await appsStatus();
+      showUpdate(status.update);
       // The exact build, so an older copy can be told apart at a glance.
       var about = status.about;
       if (about && typeof about.version === 'string') {
@@ -1219,9 +1275,6 @@
             mode = status.mode || (connected ? 'local' : 'disconnected');
             tor = status.tor || null;
             connectedSince = connected && tor && tor.readyAt ? tor.readyAt : null;
-            document.getElementById('stat-relays').textContent = status.relayCount || '—';
-            document.getElementById('stat-latency').textContent =
-              status.latencyMs ? status.latencyMs + 'ms' : '—';
             // Only while connected: the address the last connection left
             // through is not where anything goes now.
             document.getElementById('stat-exit').textContent =
@@ -1270,26 +1323,6 @@
         text.textContent = failedWhy ? 'Disconnected — Tor stopped' : 'Disconnected';
         text.style.color = '#ff4466';
         if (!isConnecting) updateConnectUI(failedWhy ? 'failed' : 'disconnected', failedWhy);
-      }
-
-      // Every other badge on this panel describes something the browser does
-      // on its own, in every tab, connected or not. This one does not: names
-      // only reach an exit relay while traffic is routed through the engine.
-      // Disconnected, Chromium resolves them itself, straight to whatever
-      // resolver the machine uses — so saying "Active" here was false exactly
-      // when it mattered.
-      var dnsBadge = document.getElementById('dns-badge');
-      var dnsDesc = document.getElementById('dns-desc');
-      if (connected && (mode === 'tor' || mode === 'full')) {
-        dnsBadge.textContent = 'Active';
-        dnsBadge.style.color = '';
-        dnsDesc.textContent = 'Names are resolved at the exit relay';
-      } else {
-        dnsBadge.textContent = 'Not routed';
-        dnsBadge.style.color = '#ff4466';
-        dnsDesc.textContent = connected
-          ? 'Local mode — this machine resolves names itself'
-          : 'Disconnected — this machine resolves names itself';
       }
 
       updateUptime();
@@ -1451,7 +1484,18 @@
     'use strict';
     var TOPIC = 'hidra/node/v1';
     var BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-    var VER = '1.0.0';
+    // The version this build says it is (the footer shows the same), read
+    // once from the main process; left out of the signal if it cannot be.
+    var VER = null;
+    async function version() {
+      if (VER) return VER;
+      try {
+        var s = await window.hidra.apps.status();
+        var v = s && s.about && s.about.version;
+        if (typeof v === 'string' && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)) VER = v;
+      } catch (e) {}
+      return VER;
+    }
     // Ephemeral, per session. It used to be kept in localStorage, which made
     // it stable across restarts — a durable fingerprint of this installation,
     // published on a public channel. Counting presence does not require
@@ -1473,7 +1517,9 @@
       // that that machine, in that city, was at that moment running WITHOUT
       // protection (tor: false). That is a targeting signal. It now carries an
       // ephemeral id, the version and a timestamp, and nothing else.
-      var msg = { cid: cid, ver: VER, t: Date.now() };
+      var ver = await version();
+      if (!cli || !cli.connected) return;
+      var msg = ver ? { cid: cid, ver: ver, t: Date.now() } : { cid: cid, t: Date.now() };
       try { cli.publish(TOPIC, JSON.stringify(msg), { qos: 0 }); } catch (e) {}
     }
 

@@ -125,6 +125,40 @@ the client and the browser — `RELEASE_PUBLIC_KEY_B64` in
 hidravpn-sign verify --pubkey <project public key> SHA256SUMS-hidravpn-v0.3.0.txt
 ```
 
+The browser installs from a manifest signed with the same key
+(`landing/vpn/release/manifest.json` and its `.sig`). Make it with a sequence
+higher than the published one's, sign it, and publish both:
+
+```
+hidravpn/scripts/make-release-manifest.sh --version 0.3.0 --sequence 2026110101 \
+    --base https://hidranet.org/vpn/release/0.3.0 \
+    --linux-x64 dist/linux --win32-x64 dist/windows > manifest.json
+hidravpn-sign sign --key hidravpn-release.key manifest.json
+```
+
+The manifest expires (90 days by default; `--expires` sets another date), and
+after that the browser refuses it, so that a site serving an old manifest
+forever cannot hold back later releases. Before it runs out, make and sign it
+again with a higher sequence, even when nothing else changed.
+
+The sequence only protects a browser that has already seen a later manifest.
+A new profile, a reinstalled browser, or one whose service was installed with
+the CLI starts at sequence 0, and 0.1.0 is signed, never expires and carries
+neither the version mark nor the service's own downgrade check. What keeps
+such a browser from being served an old release is `MIN_VERSION` in
+`hidra-browser/src/main/vpn-installer.js`, the oldest release it installs
+whatever is signed. Raise it in a browser release:
+
+- once 0.1.1 (the first release whose service carries its version mark) is
+  published with a manifest of sequence above 0: set `MIN_VERSION` to
+  `0.1.1`;
+- with every HidraVPN release that fixes a security problem in the service:
+  set it to that release.
+
+Raise it only after that release's manifest is live, or the browser has
+nothing it may install. Browsers already shipped keep the value they were
+built with; only an update of the browser itself moves them on.
+
 There are **two keys**, and they are made the same way:
 
 ```

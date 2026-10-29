@@ -96,7 +96,8 @@ sudo hidravpn up exit.json --via entry.json     # Privado: two hops — the entr
 sudo hidravpn nodes add --entry entry.json      # the pocket: nodes to pick from
 sudo hidravpn nodes add --exit exit.json        #   (nodes list / nodes remove NAME)
 sudo hidravpn nodes import nodes.json           # the maintainers' signed list, checked before it is read
-sudo hidravpn nodes join --all                  # ask every listed node that admits openly; now they are usable
+sudo hidravpn nodes join --all                  # ask every listed node that admits openly for a lasting lease
+                                                #   (entries give none and answer 403: they need no joining)
 sudo hidravpn up --privado                      # two hops, picked at random from the pocket (joins first if needed)
 sudo hidravpn up --rapido --node <name>         # one hop through a named node
 sudo hidravpn nodes discover <ip> --trust       # a node you know by other means, such as your own

@@ -234,8 +234,14 @@ pub struct PassRefused(pub String);
 
 /// Redeems a pass on the node the record names and returns the invite,
 /// checked the same way: the node's key and endpoint as the list has them.
-/// The invite remembers the pass's fresh key, which the tunnel then shows.
-pub async fn redeem_pass(record: &NodeRecord, pass: &crate::pass::Pass) -> Result<Invite> {
+/// The invite remembers the pass's fresh key, which the tunnel then shows,
+/// and whether it was redeemed through an entry (`behind`) or from this
+/// machine's own address: the key is only ever shown the same way.
+pub async fn redeem_pass(
+    record: &NodeRecord,
+    pass: &crate::pass::Pass,
+    behind: bool,
+) -> Result<Invite> {
     if pass.node_public_key.trim() != record.node_public_key.trim() {
         return Err(anyhow!(
             "that pass was made for another node than {}",
@@ -275,6 +281,7 @@ pub async fn redeem_pass(record: &NodeRecord, pass: &crate::pass::Pass) -> Resul
         admission_port: record.admission_port,
         redeemed_at: crate::timefmt::now_unix().max(0) as u64,
         used_at: 0,
+        behind: Some(behind),
     });
     Ok(invite)
 }
@@ -365,7 +372,26 @@ use crate::http::parse_response;
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
+    /// The `Content-Type` header as sent, if any.
+    pub content_type: Option<String>,
     pub body: Vec<u8>,
+}
+
+impl HttpRequest {
+    /// Whether the body is declared JSON (`application/json`, with or
+    /// without parameters). A web page can make a visitor's browser send a
+    /// POST cross-origin without asking first only as text, a form or no
+    /// type at all; one declared JSON it must ask about first, and nothing
+    /// here answers that question.
+    pub fn is_json(&self) -> bool {
+        self.content_type.as_deref().is_some_and(|t| {
+            t.split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+    }
 }
 
 /// Reads one HTTP/1.1 request with strict limits; anything odd is an error
@@ -381,6 +407,7 @@ pub async fn read_request<R: tokio::io::AsyncRead + Unpin>(r: R) -> Result<HttpR
         return Err(anyhow!("not an HTTP request"));
     }
     let mut content_length = 0usize;
+    let mut content_type = None;
     let mut total = line.len();
     loop {
         line.clear();
@@ -398,6 +425,8 @@ pub async fn read_request<R: tokio::io::AsyncRead + Unpin>(r: R) -> Result<HttpR
                     .trim()
                     .parse()
                     .map_err(|_| anyhow!("bad content-length"))?;
+            } else if k.trim().eq_ignore_ascii_case("content-type") {
+                content_type = Some(v.trim().to_string());
             }
         }
     }
@@ -408,7 +437,12 @@ pub async fn read_request<R: tokio::io::AsyncRead + Unpin>(r: R) -> Result<HttpR
     if content_length > 0 {
         reader.read_exact(&mut body).await?;
     }
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        content_type,
+        body,
+    })
 }
 
 /// One answer: a status, a JSON body, and the connection closes.
@@ -420,6 +454,7 @@ pub fn http_response(status: u16, body: &str) -> Vec<u8> {
         428 => "Precondition Required",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        415 => "Unsupported Media Type",
         429 => "Too Many Requests",
         503 => "Service Unavailable",
         _ => "Error",
@@ -494,8 +529,27 @@ mod tests {
         let r = read_request(&raw[..]).await.unwrap();
         assert_eq!((r.method.as_str(), r.path.as_str()), ("POST", "/admit"));
         assert_eq!(r.body, b"hello");
+        assert!(r.content_type.is_none() && !r.is_json(), "no type said");
         let r = read_request(&b"GET / HTTP/1.1\r\n\r\n"[..]).await.unwrap();
         assert!(r.body.is_empty());
+        // The type a body is declared as: JSON, with or without parameters,
+        // in any case; text or a form is not.
+        let typed = |t: &str| {
+            format!("POST /quote HTTP/1.1\r\ncontent-type: {t}\r\nContent-Length: 2\r\n\r\n{{}}")
+        };
+        for (t, json) in [
+            ("application/json", true),
+            ("Application/JSON; charset=utf-8", true),
+            ("text/plain", false),
+            ("text/plain;charset=UTF-8", false),
+            ("application/x-www-form-urlencoded", false),
+            ("application/jsonx", false),
+            ("", false),
+        ] {
+            let r = read_request(typed(t).as_bytes()).await.unwrap();
+            assert_eq!(r.is_json(), json, "{t:?}");
+            assert_eq!(r.body, b"{}");
+        }
         assert!(read_request(&b"nonsense\r\n\r\n"[..]).await.is_err());
         let big = format!(
             "POST /admit HTTP/1.1\r\nContent-Length: {}\r\n\r\n",

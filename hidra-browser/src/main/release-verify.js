@@ -56,6 +56,27 @@ function verifyBytes(data, signatureB64, publicKeyB64) {
   }
 }
 
+// The browser's checksum table (landing/SHA256SUMS.txt) is signed with the
+// same release key, but never over its bare bytes: the signature covers this
+// label, a zero byte, then the file. The key also signs HidraVPN's manifest
+// and its own SHA256SUMS-hidravpn-*.txt over their bare bytes, so without the
+// label a signature made for one could be presented as the other. With it, a
+// signature of the browser table checks out as nothing else, and nothing else
+// checks out as the browser table. scripts/sign-sums.ps1 adds the same label.
+const BROWSER_SUMS_CONTEXT = Buffer.concat([Buffer.from('hidranet-browser-sums-v1', 'ascii'), Buffer.from([0])]);
+
+// The bytes a signature of the browser's checksum table is made over.
+function browserSumsMessage(data) {
+  return Buffer.concat([BROWSER_SUMS_CONTEXT, Buffer.isBuffer(data) ? data : Buffer.from(data)]);
+}
+
+// True only when `signatureB64` is the release key's signature of the
+// browser's checksum table `data`, label and all.
+function verifyBrowserSums(data, signatureB64, publicKeyB64 = RELEASE_PUBLIC_KEY) {
+  if (!publicKeyB64) return false;
+  return verifyBytes(browserSumsMessage(data), signatureB64, publicKeyB64);
+}
+
 function sha256Hex(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
@@ -94,4 +115,7 @@ async function verifyFile(filePath, options = {}) {
   return { ok: true, sha256: sha256Hex(data) };
 }
 
-module.exports = { RELEASE_PUBLIC_KEY, verifyBytes, verifyFile, sha256Hex, publicKeyFromBase64, SPKI_PREFIX };
+module.exports = {
+  RELEASE_PUBLIC_KEY, verifyBytes, verifyFile, sha256Hex, publicKeyFromBase64, SPKI_PREFIX,
+  BROWSER_SUMS_CONTEXT, browserSumsMessage, verifyBrowserSums,
+};
