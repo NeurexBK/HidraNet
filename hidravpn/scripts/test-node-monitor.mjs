@@ -248,7 +248,10 @@ const realSig = readFileSync(join(REPO, 'landing', 'vpn', 'nodes.json.sig'), 'ut
 const realRead = mon.readList(real, realSig, mon.LIST_PUBLIC_KEY_B64);
 expect('the published list verifies, and passes every check a client makes', realRead.list !== undefined, realRead.error);
 const realKey = realRead.list && mon.newestCurrent(realRead.list.pass_issuer.keys, Math.floor(NOW.getTime() / 1000));
-expect('the published pass key is one a client would ask with', realKey && realKey.key.id === realRead.list.pass_issuer.keys[0].id, JSON.stringify(realKey));
+// During a rotation the list carries two keys, in any order: clients ask
+// under the one that runs latest, which has to be current.
+const realLatest = realRead.list && [...realRead.list.pass_issuer.keys].sort((a, b) => mon.parseTime(b.not_after) - mon.parseTime(a.not_after))[0];
+expect('the published pass key is one a client would ask with', realKey && realLatest && realKey.key.id === realLatest.id, JSON.stringify(realKey));
 const d = mon.defaults();
 expect('three tries, two minutes apart, https only, by default', d.attempts === 3 && d.retryDelayMs === 120000 && d.allowHttp === false && d.timeoutMs === 10000, JSON.stringify(d));
 
