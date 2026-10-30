@@ -20,28 +20,67 @@ on:
     # 41 minutes past every hour. Not on the hour: everything else is.
     - cron: '41 * * * *'
   workflow_dispatch:
+  # Every pull request: see the changes job below.
   pull_request:
-    paths:
-      - '.github/workflows/node-monitor.yml'
-      - 'hidravpn/scripts/node-monitor.mjs'
-      - 'hidravpn/scripts/test-node-monitor.mjs'
-      - 'landing/vpn/**'
-      - 'landing/SHA256SUMS.txt'
-      - 'landing/SHA256SUMS.txt.sig'
-      # What the check copies from the client; the test compares them.
-      - 'hidravpn/crates/hidravpn-core/src/admission.rs'
-      - 'hidravpn/crates/hidravpn-core/src/directory.rs'
-      - 'hidravpn/crates/hidravpn-core/src/http.rs'
-      - 'hidravpn/crates/hidravpn-core/src/pass.rs'
-      - 'hidravpn/crates/hidravpn-core/src/release.rs'
-      - 'hidravpn/crates/hidravpn-core/src/timefmt.rs'
-      - 'hidra-browser/src/main/main.js'
-      - 'hidra-browser/src/main/update-check.js'
 
 permissions:
   contents: read
 
 jobs:
+  # Which parts of the repository a pull request touches. The test and preview jobs
+  # need this one: on a pull request into main that touches none of these
+  # paths they are skipped, which GitHub counts as passed, so the
+  # repository's rules can require them without holding up a change
+  # elsewhere. If this job fails or is cancelled they run anyway: only a
+  # clear "not touched" skips them. The list is the one the pull request
+  # trigger used to filter on.
+  changes:
+    name: does the change touch the monitor
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      touched: ${{ steps.diff.outputs.touched }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        name: the paths the change touches
+        run: |
+          # A pull request into a branch other than main: everything runs. Only
+          # the result against main may skip a check main requires.
+          if [ "$GITHUB_BASE_REF" != main ]; then
+            echo touched=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # HEAD is the pull request merged into its base, HEAD^1 the base.
+          # git diff --quiet exits 0 when nothing listed changed, 1 when
+          # something did, more when it cannot compare: then everything runs.
+          # From admission.rs on: what the check copies from the client; the
+          # test compares them.
+          if git diff --quiet HEAD^1 HEAD -- \
+            '.github/workflows/node-monitor.yml' \
+            'hidravpn/scripts/node-monitor.mjs' \
+            'hidravpn/scripts/test-node-monitor.mjs' \
+            ':(glob)landing/vpn/**' \
+            'landing/SHA256SUMS.txt' \
+            'landing/SHA256SUMS.txt.sig' \
+            'hidravpn/crates/hidravpn-core/src/admission.rs' \
+            'hidravpn/crates/hidravpn-core/src/directory.rs' \
+            'hidravpn/crates/hidravpn-core/src/http.rs' \
+            'hidravpn/crates/hidravpn-core/src/pass.rs' \
+            'hidravpn/crates/hidravpn-core/src/release.rs' \
+            'hidravpn/crates/hidravpn-core/src/timefmt.rs' \
+            'hidra-browser/src/main/main.js' \
+            'hidra-browser/src/main/update-check.js'; then
+            echo touched=false >> "$GITHUB_OUTPUT"
+          else
+            echo touched=true >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   check:
     name: check the network
     if: github.event_name != 'pull_request'
@@ -67,7 +106,8 @@ jobs:
 
   test:
     name: node monitor tests
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.touched != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -78,7 +118,8 @@ jobs:
 
   preview:
     name: the list in this branch
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.touched != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
