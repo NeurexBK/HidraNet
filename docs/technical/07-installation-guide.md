@@ -24,9 +24,9 @@ port filtering.
 
 ```bash
 # Linux / macOS
-sha256sum HidraNet-Browser-1.0.0-Linux-x64.zip
+sha256sum HidraNet-Browser-1.1.0-Linux-x64.zip
 # Windows (PowerShell)
-Get-FileHash .\HidraNet-Browser-1.0.0-Windows-x64.zip -Algorithm SHA256
+Get-FileHash .\HidraNet-Browser-1.1.0-Windows-x64.zip -Algorithm SHA256
 ```
 
 Compare it with the value published in `SHA256SUMS.txt` on the site. **If it does
