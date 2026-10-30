@@ -12,14 +12,54 @@ on:
     paths:
       - "hidra-node/**"
       - ".github/workflows/hidra-node-tests.yml"
+  # Every pull request: see the changes job below.
   pull_request:
-    paths:
-      - "hidra-node/**"
-      - ".github/workflows/hidra-node-tests.yml"
 
 jobs:
+  # Which parts of the repository a pull request touches. The jobs below
+  # need this one: on a pull request into main that touches none of these
+  # paths they are skipped, which GitHub counts as passed, so the
+  # repository's rules can require them without holding up a change
+  # elsewhere. If this job fails or is cancelled they run anyway: only a
+  # clear "not touched" skips them. The list is the same as the push
+  # paths above; keep the two in step.
+  changes:
+    name: does the change touch hidra-node
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      touched: ${{ steps.diff.outputs.touched }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        name: the paths the change touches
+        run: |
+          # A push, or a pull request into a branch other than main: everything
+          # runs. Only the result against main may skip a check main requires.
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] || [ "$GITHUB_BASE_REF" != main ]; then
+            echo touched=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # HEAD is the pull request merged into its base, HEAD^1 the base.
+          # git diff --quiet exits 0 when nothing listed changed, 1 when
+          # something did, more when it cannot compare: then everything runs.
+          if git diff --quiet HEAD^1 HEAD -- \
+            ':(glob)hidra-node/**' \
+            '.github/workflows/hidra-node-tests.yml'; then
+            echo touched=false >> "$GITHUB_OUTPUT"
+          else
+            echo touched=true >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   test:
     name: cargo test (Linux)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.touched != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
