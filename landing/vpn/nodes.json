@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated": "2026-10-28T00:19:49Z",
-  "sequence": 2026102801,
-  "expires": "2026-11-25T00:00:00Z",
+  "generated": "2026-10-30T16:04:14Z",
+  "sequence": 2026103001,
+  "expires": "2026-12-15T00:00:00Z",
   "note": "HidraNet official node list",
   "nodes": [
     {
@@ -49,6 +49,11 @@
         "id": "3d7c13bb08e6b535",
         "key": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEApCPTseqJN6r9+n2H9o/OPJSjLPIU+lcEIQmmOk2oMr8xPuyn++qCcLYrWFtmIFajMQMiI2ZYsQ2SEvKpULcMenehYm85AupsWTvmbfQ/C1v5j2FjsGIwYFviwoFxgFeW1M9eiylIXKgm19rG+e8H826iM1J8c+P0sdTkg9mR04fO6eUDIC1u5qHnXavPAWRtrpCKIhWM5Au6ZbrZP8SSlQYqDUTkWp17Tb1LmxniMhlrqadtPEyEaMcAkueiXQJYuX5bC2oVz4sFg7a3D0q86JpKWBYEXFyGolQc2FZdWDrgdb6XBP8hpn1NONfFERvw8VQgsSEe7/87ASkc+tsivwIDAQAB",
         "not_after": "2026-11-25T00:00:00Z"
+      },
+      {
+        "id": "14de2aecb5484284",
+        "key": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEAvvsR7pjHLnHhhW3f8RZPDrSh0p0qt5oL/o7KKPEyYbRX8k7+YXqG6plLw/iGcH5T+in4NEapm6sJshgD1ZX7AXOJEQP9NMetAs2Rc2bL8Yy0bnafN9tF0V05kNUbqai0j32jqeWjT3ttZGC5T63kV1NvV41xCE+rB9+iAQfOqCJkEcdsO29tR5HiiEAonW20q4nsvEBu6lqHgcv5ogex0+naNt5ana+UHUoPgpCa2dyPXMlO5w4LA53KdmTUI4pHEo1lQPQRQni5Zf+axL//zbRM+Da59nRJ0xU1LvUpZ7rznNmjXO13R5JCqkdoBkiXWMPxBdiyzosGME9SVOM36QIDAQAB",
+        "not_after": "2026-12-15T00:00:00Z"
       }
     ]
   }
