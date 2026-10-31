@@ -647,11 +647,13 @@ mod node {
             std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             cfg.admission_port,
         );
+        let limiter: crate::admission::SharedLimiter = Default::default();
         let mut admission = tokio::spawn(crate::admission::serve(
             admission_addr,
             shared,
             admit_tx,
             held.clone(),
+            limiter.clone(),
         ));
 
         // The reaper: openly admitted clients that never came, or stopped
@@ -833,6 +835,13 @@ mod node {
                                     Ok((gone, left)) => {
                                         held.store(left, std::sync::atomic::Ordering::Relaxed);
                                         for l in &gone { let _ = dev.remove_peer(&l.public_key); }
+                                        // A session key that never shook hands was a request,
+                                        // not a client: its place in the window is given back.
+                                        let never_came = crate::leases::never_came_sessions(&gone);
+                                        if !never_came.is_empty() {
+                                            let mut limiter = limiter.lock().await;
+                                            for k in &never_came { limiter.forget_session(k); }
+                                        }
                                         if !gone.is_empty() {
                                             info!("{} idle client(s) expired ({} leases left)", gone.len(), left);
                                         }

@@ -103,11 +103,18 @@ however slowly they were taken. That cost falls on real users too: on a
 node seven eighths full of them, every new connection carries sixty-four
 times the work, about a minute of one core (a client works on one), so
 give a busy node more places (`max_clients`, which its subnet allows up to
-its size) well before it gets there. Sessions are not counted per address,
-because an exit sees every client of an entry under the entry's address;
-the node takes at most 600 every ten minutes. A lasting lease (`hidravpn
-nodes join`) costs no work: it is counted the old way, at most three times
-per address every ten minutes and 120 per node, and lasting leases hold at
+its size) well before it gets there. Sessions are counted per address too,
+at most 30 new keys every ten minutes, except from the entries listed in
+`admission_relays`, because an exit sees every client of an entry under the
+entry's address: on an open exit, list its entries there, or all of an
+entry's two-hop clients share one address's 30. Everyone behind one address
+shares it the same way. The node takes at most 600 every ten minutes, and
+gives back the place of a key it refused or that never completed a
+handshake. Someone with a few tens of addresses can still fill those 600;
+more than one entry, or entries that admit with a pass, are the answer. A
+lasting lease (`hidravpn nodes join`) costs no work: it is counted the old
+way, at most three times per address every ten minutes and 120 per node,
+and lasting leases hold at
 most a quarter of `--max-clients` together, so the other places stay for
 sessions. **An entry gives no lasting lease at all** (it answers `join` with
 403): a client asks an entry only for a key for each connection, and a
