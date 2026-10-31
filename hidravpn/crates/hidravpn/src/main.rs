@@ -250,8 +250,9 @@ enum Passes {
     /// How many passes the wallet holds, per node.
     List,
     /// Buy passes with HNET: opens an order for a pack of COUNT passes and
-    /// says exactly what to send where. Without COUNT, lists the packs.
-    /// Then `passes claim`.
+    /// says exactly what to send where, to the wallet the signed node list
+    /// names and to no other. Without COUNT, lists the packs. Then `passes
+    /// claim`.
     Buy {
         count: Option<u32>,
         /// Open a new order even though one is open and unclaimed.
@@ -529,7 +530,18 @@ async fn main() -> Result<()> {
                         println!("no node in the pocket admits with a pass");
                     }
                     match &pocket.pass_issuer {
-                        Some(i) => println!("issuer: {} ({} key(s))", i.url, i.keys.len()),
+                        Some(i) => println!(
+                            "issuer: {} ({} key(s)); {}",
+                            i.url,
+                            i.keys.len(),
+                            match i.pay_wallet() {
+                                Some(w) => format!(
+                                    "passes are bought with {} sent to {w}",
+                                    hidravpn_service::passes::token_name(i.pay_mint())
+                                ),
+                                None => "the list names no wallet to buy passes with".into(),
+                            }
+                        ),
                         None => println!("the node list names no pass issuer"),
                     }
                     println!(
@@ -537,49 +549,72 @@ async fn main() -> Result<()> {
                         hidravpn_service::passes::load_refill(&pocket_path).describe()
                     );
                     if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
-                        println!(
-                            "an order for {} pass(es) is open, unclaimed: {} HNET by {}; `hidravpn passes claim <signature>` once paid",
-                            o.passes, o.amount, o.expires
-                        );
+                        match hidravpn_service::passes::check_order(&pocket, &o) {
+                            Ok(()) => println!(
+                                "an order for {} pass(es) is open, unclaimed: {} {} by {}; `hidravpn passes claim <signature>` once paid",
+                                o.passes,
+                                o.amount,
+                                hidravpn_service::passes::token_name(&o.mint),
+                                o.expires
+                            ),
+                            Err(e) => println!(
+                                "an order for {} pass(es) is open, unclaimed, and not to be paid: {e}",
+                                o.passes
+                            ),
+                        }
                     }
                 }
                 Passes::Buy { count, replace } => {
                     let pocket = load_pocket(&pocket_path)?;
+                    // Paid only to the wallet, and in the token, the signed
+                    // list names: from a list that names no wallet, nothing
+                    // is listed or bought, and no token is made.
+                    let sells = hidravpn_service::passes::selling_issuer(&pocket);
                     let Some(count) = count else {
+                        let (issuer, wallet) = sells?;
+                        let token_name = hidravpn_service::passes::token_name(issuer.pay_mint());
                         let p = hidravpn_service::passes::packs(&pocket).await?;
-                        println!("passes for sale, paid in HNET sent to {}:", p.wallet);
+                        println!("passes for sale, paid in {token_name} sent to {wallet}:");
                         for k in &p.packs {
-                            let hnet =
+                            let amount =
                                 hidravpn_core::payment::amount_to_string(k.price_raw, p.decimals)
                                     .trim_end_matches('0')
                                     .trim_end_matches('.')
                                     .to_string();
                             match k.usd_cents {
                                 Some(c) => println!(
-                                    "  {:>5} passes for {} USD, {hnet} HNET today   (hidravpn passes buy {})",
+                                    "  {:>5} passes for {} USD, {amount} {token_name} today   (hidravpn passes buy {})",
                                     k.passes,
                                     hidravpn_core::payment::usd_to_string(c),
                                     k.passes
                                 ),
                                 None => println!(
-                                    "  {:>5} passes for {hnet} HNET   (hidravpn passes buy {})",
+                                    "  {:>5} passes for {amount} {token_name}   (hidravpn passes buy {})",
                                     k.passes, k.passes
                                 ),
                             }
                         }
                         if let Some(r) = &p.rate {
-                            println!("today's rate: {r} USD for one HNET; an order fixes the amount for as long as it is open");
+                            println!("today's rate: {r} USD for one {token_name}; an order fixes the amount for as long as it is open");
                         }
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());
                     };
                     not_through_two_hops(TwoHopsRefuse::AccountToken).await?;
+                    let (issuer, _) = sells?;
+                    let token_name = hidravpn_service::passes::token_name(issuer.pay_mint());
                     if let Some(o) = hidravpn_service::passes::load_order(&pocket_path)? {
                         if !replace {
-                            return Err(anyhow!(
-                                "an order for {} pass(es) is already open: {} HNET by {}.\nIf you paid it: hidravpn passes claim <signature>. For a new order instead: hidravpn passes buy {count} --replace (the open one can still be claimed until it lapses)",
-                                o.passes, o.amount, o.expires
-                            ));
+                            return Err(match hidravpn_service::passes::check_order(&pocket, &o) {
+                                Ok(()) => anyhow!(
+                                    "an order for {} pass(es) is already open: {} {token_name} by {}.\nIf you paid it: hidravpn passes claim <signature>. For a new order instead: hidravpn passes buy {count} --replace (the open one can still be claimed until it lapses)",
+                                    o.passes, o.amount, o.expires
+                                ),
+                                Err(e) => anyhow!(
+                                    "an order for {} pass(es) is open, unclaimed, and not to be paid: {e}",
+                                    o.passes
+                                ),
+                            });
                         }
                     }
                     let (token, made) =
@@ -604,10 +639,17 @@ async fn main() -> Result<()> {
                         hidravpn_service::passes::load_order(&pocket_path)?.ok_or_else(|| {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
                         })?;
+                    let pocket = load_pocket(&pocket_path)?;
                     let token = hidravpn_service::passes::read_token(&token_beside(&pocket_path))?;
                     use hidravpn_service::passes::Claimed;
-                    match hidravpn_service::passes::claim(&pocket_path, &order, &token, &signature)
-                        .await?
+                    match hidravpn_service::passes::claim(
+                        &pocket,
+                        &pocket_path,
+                        &order,
+                        &token,
+                        &signature,
+                    )
+                    .await?
                     {
                         Claimed::Credited { passes, balance } => println!(
                             "paid: {passes} pass(es) credited; the account has {balance} in all"
@@ -621,9 +663,10 @@ async fn main() -> Result<()> {
                             already,
                         } => {
                             return Err(anyhow!(
-                                "that transaction {} an earlier order of {passes} pass(es), not the open one ({} HNET), which stays open; the account has {balance} in all",
+                                "that transaction {} an earlier order of {passes} pass(es), not the open one ({} {}), which stays open; the account has {balance} in all",
                                 if already { "had already paid" } else { "paid" },
-                                order.amount
+                                order.amount,
+                                hidravpn_service::passes::token_name(&order.mint)
                             ))
                         }
                     }

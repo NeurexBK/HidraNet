@@ -10,13 +10,13 @@ and costs nothing.
 
 | Check | Fails when | Issue key |
 |---|---|---|
-| The node list on hidranet.org | it does not load, its signature does not hold under the list key the client embeds, or a client would refuse it for any other reason (a bad node record, an operator name over 64 characters, an expiry that is not a date) | `list` |
+| The node list on hidranet.org | it does not load, its signature does not hold under the list key the client embeds, or a client would refuse it for any other reason (a bad node record, an operator name over 64 characters, an expiry that is not a date, a pass issuer's wallet or mint that is not a Solana address) | `list` |
 | The release manifest on hidranet.org | the same, under the release key, or its `expires` is not a date | `manifest` |
 | The browser's checksum record on hidranet.org | once `SHA256SUMS.txt.sig` is on hidranet.org or in `landing/` on main: the table or the `.sig` does not load (a site without the `.sig` main holds included), the signature does not hold under the release key (with the browser's label), or the record has no single `valid-until` day | `sums` |
 | hidranet.org against main | the site serves different bytes from `landing/vpn/` on main: a merge the deployment never picked up | `site` |
 | Every node in the list | it does not answer `GET /` on its admission port (TCP 51821 unless the list says otherwise), or answers with a key other than the one the list names | `node:<name>` |
 | The pass issuer the list names | `/keys` does not answer, or does not hold as current the key clients ask passes under (the newest current key in the list); or the list names no issuer while nodes in it take passes | `issuer` |
-| Passes for sale | `/packs` does not answer, or lists nothing (with packs priced in dollars, usually a stale HNET rate) | `issuer-sales` |
+| Passes for sale | `/packs` does not answer, or lists nothing (with packs priced in dollars, usually a stale HNET rate); or clients would refuse to buy: the list names no wallet to pay passes to, or `/packs` asks for payment to another wallet, or in another token, than the list names | `issuer-sales` |
 | Dates | the list's `expires`, or the `not_after` of the key clients ask passes under, is less than 14 days away, or past | `expiry` |
 | Release dates | the release manifest's `expires`, or the signed checksum record's `valid-until`, is less than 14 days away, or past. A manifest with no `expires` (0.1.0's) never expires, and before the first `SHA256SUMS.txt.sig` there is no record to run out | `release-expiry` |
 

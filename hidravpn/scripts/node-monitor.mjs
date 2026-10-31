@@ -9,9 +9,10 @@
 // cannot use. It also checks what everyone depends on and nobody looks at: the
 // release manifest's signature, that hidranet.org serves what main holds, that
 // the pass issuer signs under the key clients ask with and has passes for
-// sale, and the dates on which the list, the pass key, the release manifest
-// and the browser's checksum record (SHA256SUMS.txt, once it is signed) stop
-// being valid, two weeks ahead.
+// sale, paid to the wallet and in the token the list names, and the dates on
+// which the list, the pass key, the release manifest and the browser's
+// checksum record (SHA256SUMS.txt, once it is signed) stop being valid, two
+// weeks ahead.
 //
 // Each problem is one GitHub issue, opened by the workflow and closed by it
 // when the check passes again; GitHub sends the e-mail. A network check is
@@ -46,6 +47,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const LIST_PUBLIC_KEY_B64 = '0HfVyf5QtcUjBQSvRYQNeirD/I0432RnmlKQ+/gmNkk=';
 export const RELEASE_PUBLIC_KEY_B64 = 'denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=';
 export const DEFAULT_ADMISSION_PORT = 51821;
+// The token passes are paid in when the list names none
+// (hidravpn-core/src/payment.rs); the test checks it is the same.
+export const HNET_MINT = 'Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump';
+// The most decimals a client reads an amount with (payment.rs, MAX_DECIMALS).
+const MAX_DECIMALS = 18;
 // Where the browser fetches them (hidra-browser/src/main/main.js).
 export const LIST_URL = 'https://hidranet.org/vpn/nodes.json';
 export const MANIFEST_URL = 'https://hidranet.org/vpn/release/manifest.json';
@@ -187,6 +193,26 @@ function passKeyProblem(k) {
   return null;
 }
 
+// payment::check_address: 32 bytes in base58 (Bitcoin's alphabet), once
+// trimmed.
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+export function isSolanaAddress(s) {
+  if (typeof s !== 'string') return false;
+  const t = s.trim();
+  if (!t || t.length > 128) return false;
+  let n = 0n;
+  for (const c of t) {
+    const d = BASE58.indexOf(c);
+    if (d < 0) return false;
+    n = n * 58n + BigInt(d);
+  }
+  // Each leading '1' is a zero byte; the rest is the number's bytes.
+  let bytes = t.length - t.replace(/^1+/, '').length;
+  for (; n > 0n; n >>= 8n) bytes++;
+  return bytes === 32;
+}
+const optAddress = (v) => v === undefined || v === null || isSolanaAddress(v);
+
 // pass::newest_current: the key a client asks passes under.
 export function newestCurrent(keys, now) {
   let best = null;
@@ -245,6 +271,8 @@ export function clientRefusal(d) {
       const why = passKeyProblem(k);
       if (why) return why;
     }
+    if (!optAddress(p.wallet)) return "its pass issuer's wallet is not a Solana address";
+    if (!optAddress(p.mint)) return "its pass issuer's mint is not a Solana address";
   }
   return null;
 }
@@ -580,11 +608,26 @@ async function round(cfg) {
       if (ok) pass('issuer', 'the pass issuer signs under the key clients ask with');
       else fail('issuer', 'The pass issuer does not sign under the key clients ask with', `Clients ask for passes under ${id}, the newest current key in the list; ${host} does not hold it as current, so it refuses them.`);
     }
-    const packs = p.bytes ? jsonOr(p.bytes)?.packs : null;
+    const sold = p.bytes ? jsonOr(p.bytes) : null;
+    const packs = sold?.packs;
+    // What a client checks before it lists the packs or opens an order
+    // (hidravpn-service, passes::check_answer): the list names the wallet,
+    // and the issuer asks for payment to it, in the list's token.
+    const wallet = typeof issuer.wallet === 'string' ? issuer.wallet.trim() : null;
+    const mint = typeof issuer.mint === 'string' ? issuer.mint.trim() : HNET_MINT;
+    const said = (v) => (typeof v === 'string' ? v.trim() : null);
     if (p.error) fail('issuer-sales', 'Passes cannot be bought', `${host}/packs ${p.error}.`);
     else if (!Array.isArray(packs) || packs.length === 0)
       fail('issuer-sales', 'Passes cannot be bought', `${host}/packs lists nothing for sale. With packs priced in dollars, that usually means the HNET rate is stale.`);
-    else pass('issuer-sales', 'the pass issuer has passes for sale');
+    else if (!wallet)
+      fail('issuer-sales', 'The list names no wallet for payments', 'The pass issuer has passes for sale, but the list does not name the wallet they are paid to, and HidraVPN buys only from a list that does (0.1.2 on). Make the list with make-node-list.sh --pay-wallet.', { transient: false });
+    else if (said(sold.wallet) !== wallet)
+      fail('issuer-sales', 'Passes cannot be bought', `${host}/packs asks for payment to another wallet than the list names, so clients refuse to buy. The list and the issuer's --pay-wallet must name the same wallet.`);
+    else if (said(sold.mint) !== mint)
+      fail('issuer-sales', 'Passes cannot be bought', `${host}/packs asks for payment in another token than the list names (HNET, when it names none), so clients refuse to buy.`);
+    else if (!(Number.isInteger(sold.decimals) && sold.decimals >= 0 && sold.decimals <= MAX_DECIMALS))
+      fail('issuer-sales', 'Passes cannot be bought', `${host}/packs names a token with more decimals than clients read an amount with, so they refuse to buy.`);
+    else pass('issuer-sales', 'the pass issuer has passes for sale, paid to the wallet and in the token the list names');
   }
 
   // The nodes. A node changed by this checkout (new, or a new key, address
@@ -752,7 +795,7 @@ function advice(key, operator) {
     'release-expiry': 'After its expiry browsers refuse the manifest, and every Install and Update of HidraVPN through the browser fails; after its valid-until they set the checksum record aside and say they cannot confirm they are up to date. Make the manifest again with `make-release-manifest.sh`, a higher `--sequence` and a later `--expires`, sign it offline and publish both (hidravpn/docs/code-signing.md); renew the record\'s `valid-until` and sign the table again (hidra-browser/docs/code-signing.md).',
     expiry: 'After that date clients refuse the list, and get no passes once no key in it is current. Make a new pass key, load it in the issuer, `hidravpn-node pass-key add` it on every node that takes passes, and sign and publish a list that names it, with a later expiry and a higher sequence.',
     issuer: 'Clients cannot get passes, and the nodes that take passes admit no one new. Check the issuer service on its server (`systemctl status hidravpn-issuer`) and the keys it was started with, against the list.',
-    'issuer-sales': 'The issuer answers, but nobody can buy passes. Look at the issuer\'s log for the HNET rate feed, and at its payment settings.',
+    'issuer-sales': 'The issuer answers, but nobody can buy passes. When the list names no wallet, or `/packs` asks for another wallet or token than the list names, the list and the issuer\'s `--pay-wallet` and `--pay-mint` must be made to name the same wallet and token (`make-node-list.sh --pay-wallet`, and `--pay-mint` for a token other than HNET). Otherwise look at the issuer\'s log for the HNET rate feed, and at its payment settings.',
   }[key] ?? '';
 }
 

@@ -7,7 +7,9 @@
 // a failure seen in every round is an alert and only a pass in the latest one
 // closes; that a list or manifest whose signature does not hold, a site
 // serving other bytes than main, an issuer that does not sign under the key
-// clients ask with or sells nothing, and a list, pass key, release manifest
+// clients ask with, sells nothing, or asks for payment to another wallet or
+// in another token than the list names (or a list that names no wallet),
+// and a list, pass key, release manifest
 // or signed checksum record about to run out are each reported; that when nothing answers no issue is touched, and that
 // an issue whose check could not run stays open; that only the workflow's
 // own issues count; that nothing a node says reaches an issue as markup, and
@@ -105,14 +107,19 @@ const siteServer = await serve((req, res) => {
   res.end(body);
 });
 
+// The wallet passes are paid to, as the list and the issuer name it, and
+// another; the mint of another token.
+const WALLET = 'So11111111111111111111111111111111111111112';
+const ELSEWHERE = 'ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc';
+const OTHER_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const issuer = { keys: [], packs: [], mode: 'ok' };
-const issuerReset = () => Object.assign(issuer, { keys: [{ id: PK1.id, not_after: day(60) }, { id: PK2.id, not_after: day(90) }], packs: [{ passes: 10, price_raw: 1 }], mode: 'ok' });
+const issuerReset = () => Object.assign(issuer, { keys: [{ id: PK1.id, not_after: day(60) }, { id: PK2.id, not_after: day(90) }], packs: [{ passes: 10, price_raw: 1 }], wallet: WALLET, mint: mon.HNET_MINT, decimals: 6, mode: 'ok' });
 issuerReset();
 const issuerServer = await serve((req, res) => {
   if (issuer.mode === 'down') return json(res, 503, {});
   if (issuer.mode === 'drop') return req.socket.destroy();
   if (req.url === '/keys') return json(res, 200, { keys: issuer.keys });
-  if (req.url === '/packs') return json(res, 200, { packs: issuer.packs, decimals: 6, mint: 'm', wallet: 'w' });
+  if (req.url === '/packs') return json(res, 200, { packs: issuer.packs, decimals: issuer.decimals, mint: issuer.mint, wallet: issuer.wallet });
   return json(res, 404, {});
 });
 const ISSUER_URL = `http://127.0.0.1:${port(issuerServer)}`;
@@ -122,7 +129,7 @@ const ISSUER_URL = `http://127.0.0.1:${port(issuerServer)}`;
 const alpha = await fakeNode('alpha-1', wgKey(1), { listPort: false });
 const beta = await fakeNode('beta-1', wgKey(2));
 
-function listFor(nodes, { sequence = 5, expires = day(28), keys = [{ ...PK1, not_after: day(28) }], issuerUrl = ISSUER_URL, noIssuer = false } = {}) {
+function listFor(nodes, { sequence = 5, expires = day(28), keys = [{ ...PK1, not_after: day(28) }], issuerUrl = ISSUER_URL, noIssuer = false, pay = { wallet: WALLET } } = {}) {
   return Buffer.from(JSON.stringify({
     version: 1, generated: day(0), sequence, expires,
     nodes: nodes.map((n) => ({
@@ -132,7 +139,7 @@ function listFor(nodes, { sequence = 5, expires = day(28), keys = [{ ...PK1, not
       role: 'exit', admission: 'pass', country: 'FI', features: ['sessions'],
       ...(n.extra ?? {}),
     })),
-    ...(noIssuer ? {} : { pass_issuer: { url: issuerUrl, keys } }),
+    ...(noIssuer ? {} : { pass_issuer: { url: issuerUrl, keys, ...pay } }),
   }, null, 2));
 }
 // No expires by default, as the 0.1.0 manifest: one that never expires.
@@ -238,6 +245,8 @@ const mainJs = readFileSync(join(REPO, 'hidra-browser', 'src', 'main', 'main.js'
 expect('the list key is the one the client embeds', releaseRs.includes(`LIST_PUBLIC_KEY_B64: &str = "${mon.LIST_PUBLIC_KEY_B64}"`), 'LIST_PUBLIC_KEY_B64 differs from release.rs');
 expect('the release key is the one the client embeds', releaseRs.includes(`RELEASE_PUBLIC_KEY_B64: &str = "${mon.RELEASE_PUBLIC_KEY_B64}"`), 'RELEASE_PUBLIC_KEY_B64 differs from release.rs');
 expect('the default admission port is the node\'s', admissionRs.includes(`DEFAULT_ADMISSION_PORT: u16 = ${mon.DEFAULT_ADMISSION_PORT};`), 'DEFAULT_ADMISSION_PORT differs from admission.rs');
+const paymentRs = readFileSync(join(REPO, 'hidravpn', 'crates', 'hidravpn-core', 'src', 'payment.rs'), 'utf8');
+expect('the token a list that names none is paid in is the client\'s', paymentRs.includes(`HNET_MINT: &str = "${mon.HNET_MINT}";`) && paymentRs.includes('MAX_DECIMALS: u8 = 18;'), 'HNET_MINT or MAX_DECIMALS differs from payment.rs');
 expect('the list and manifest addresses are the browser\'s', mainJs.includes(`VPN_LIST_URL = '${mon.LIST_URL}'`) && mainJs.includes(`VPN_RELEASE_URL = '${mon.MANIFEST_URL}'`), 'LIST_URL or MANIFEST_URL differs from main.js');
 const updateCheck = createRequire(import.meta.url)(join(REPO, 'hidra-browser', 'src', 'main', 'update-check.js'));
 expect('the checksum record\'s address is the browser\'s', mon.SUMS_URL === updateCheck.SUMS_URL, `${mon.SUMS_URL} / ${updateCheck.SUMS_URL}`);
@@ -305,6 +314,10 @@ const refusals = [
   ['a pass key that is not RSA', (l) => { l.pass_issuer.keys[0].key = wgKey(5); }, 'RSA'],
   ['an issuer on plain HTTP on the internet', (l) => { l.pass_issuer.url = 'http://passes.example.org'; }, 'plain HTTP'],
   ['an issuer with no key', (l) => { l.pass_issuer.keys = []; }, 'no key'],
+  ['a wallet that is not a Solana address', (l) => { l.pass_issuer.wallet = 'not-a-wallet'; }, 'wallet is not a Solana address'],
+  ['a wallet of 11 bytes', (l) => { l.pass_issuer.wallet = 'StV1DL6CwTryKyV'; }, 'wallet'],
+  ['a wallet that is a number', (l) => { l.pass_issuer.wallet = 7; }, 'wallet'],
+  ['a mint that is empty', (l) => { l.pass_issuer.mint = ' '; }, 'mint is not a Solana address'],
 ];
 for (const [what, edit, says] of refusals) {
   const why = refusal(edit);
@@ -314,6 +327,10 @@ expect('a refusal never names an address', !refusal((l) => { l.nodes[0].operator
 expect('accepted, as by the client: only removed keys', refusal((l) => { l.nodes = []; l.removed = [wgKey(8)]; }) === null, 'refused');
 expect('accepted, as by the client: an issuer on plain HTTP on a private network', refusal((l) => { l.pass_issuer.url = 'http://10.1.2.3:8080'; }) === null, 'refused');
 expect('accepted, as by the client: an expiry in +00:00 form', refusal((l) => { l.expires = '2027-01-26T00:00:00+00:00'; }) === null, 'refused');
+expect('accepted, as by the client: an issuer with no wallet or mint, as lists before them', refusal((l) => { delete l.pass_issuer.wallet; }) === null && refusal((l) => { l.pass_issuer.wallet = null; }) === null, 'refused');
+expect('accepted, as by the client: a wallet and a mint, padded', refusal((l) => { l.pass_issuer.wallet = ` ${WALLET} `; l.pass_issuer.mint = OTHER_MINT; }) === null, 'refused');
+for (const a of ['11111111111111111111111111111111', mon.HNET_MINT, WALLET]) expect(`${a.slice(0, 8)}... is a Solana address, as payment::check_address reads it`, mon.isSolanaAddress(a), 'refused');
+for (const a of ['1111111111111111111111111111111', '111111111111111111111111111111111', `${WALLET}1`, 'O'.repeat(44), '']) expect(`${JSON.stringify(a.slice(0, 12))}... is not`, !mon.isSolanaAddress(a), 'accepted');
 
 // ── All well ─────────────────────────────────────────────────────────────
 publish(listFor([alpha, beta]));
@@ -617,6 +634,33 @@ issuer.packs = [];
 r = await check();
 expect('an issuer selling nothing is reported', r.confirmed.get('issuer-sales')?.detail.includes('nothing for sale'), JSON.stringify(r.confirmed.get('issuer-sales')));
 issuerReset();
+// Clients buy only from a list that names the wallet, and only when the
+// issuer asks for payment to it, in the list's token.
+r = await check();
+expect('an issuer selling to the wallet the list names, in HNET: passes for sale', r.passed.get('issuer-sales')?.includes('paid to the wallet'), JSON.stringify(r.confirmed.get('issuer-sales')));
+publish(listFor([alpha, beta], { ...twoKeys, pay: {} }));
+r = await check();
+expect('a list that names no wallet is reported: clients buy nothing', r.confirmed.get('issuer-sales')?.title === 'The list names no wallet for payments' && r.confirmed.get('issuer-sales').detail.includes('--pay-wallet') && !r.confirmed.get('issuer-sales').transient, JSON.stringify(r.confirmed.get('issuer-sales')));
+const salesBody = mon.issueBody('issuer-sales', r.confirmed.get('issuer-sales'), { at, rounds: 1, mention: [] });
+expect("its issue points at the list and the issuer's --pay-wallet and --pay-mint", salesBody.includes('--pay-wallet') && salesBody.includes('--pay-mint'), salesBody);
+publish(listFor([alpha, beta], twoKeys));
+for (const [what, edit, says] of [
+  ['asks for payment to another wallet than the list names', () => { issuer.wallet = ELSEWHERE; }, 'another wallet'],
+  ['asks for payment in another token than the list names', () => { issuer.mint = OTHER_MINT; }, 'another token'],
+  ['names more decimals than clients read', () => { issuer.decimals = 19; }, 'decimals'],
+]) {
+  edit();
+  r = await check();
+  const got = r.confirmed.get('issuer-sales');
+  expect(`an issuer that ${what} is reported: clients refuse to buy`, got?.title === 'Passes cannot be bought' && got.detail.includes(says) && !got.detail.includes(ELSEWHERE) && !got.detail.includes(WALLET), JSON.stringify(got));
+  issuerReset();
+}
+publish(listFor([alpha, beta], { ...twoKeys, pay: { wallet: WALLET, mint: OTHER_MINT } }));
+issuer.mint = OTHER_MINT;
+r = await check();
+expect('a list that names another token, and the issuer selling in it: passes for sale', r.passed.has('issuer-sales'), JSON.stringify(r.confirmed.get('issuer-sales')));
+issuerReset();
+publish(listFor([alpha, beta], twoKeys));
 issuer.mode = 'down';
 r = await check();
 expect('an issuer that is down is reported', r.confirmed.get('issuer')?.detail.includes('answers HTTP 503'), JSON.stringify(r.confirmed.get('issuer')));

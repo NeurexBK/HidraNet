@@ -245,7 +245,8 @@ pub struct Directory {
     #[serde(default)]
     pub nodes: Vec<NodeRecord>,
     /// Who issues passes, for nodes that admit with one (phase 5): where to
-    /// ask, and the keys passes are signed under.
+    /// ask, the keys passes are signed under, and the wallet passes bought
+    /// are paid to (phase 7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_issuer: Option<PassIssuer>,
 }
@@ -256,6 +257,15 @@ pub struct PassIssuer {
     /// `https://...` (plain HTTP only on a private network).
     pub url: String,
     pub keys: Vec<crate::pass::PassKeyRecord>,
+    /// The Solana wallet passes bought from this issuer are paid to (phase
+    /// 7). A client buys only from a list that names it, and opens no order
+    /// to any other wallet, whatever the issuer answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet: Option<String>,
+    /// The token they are paid in; HNET (`payment::HNET_MINT`) when the
+    /// list names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint: Option<String>,
 }
 
 impl PassIssuer {
@@ -267,7 +277,26 @@ impl PassIssuer {
         for k in &self.keys {
             k.validate()?;
         }
+        if let Some(w) = &self.wallet {
+            crate::payment::check_address(w).context("the pass issuer's wallet")?;
+        }
+        if let Some(m) = &self.mint {
+            crate::payment::check_address(m).context("the pass issuer's mint")?;
+        }
         Ok(())
+    }
+
+    /// The wallet purchases are paid to, if the list names one.
+    pub fn pay_wallet(&self) -> Option<&str> {
+        self.wallet.as_deref().map(str::trim)
+    }
+
+    /// The token purchases are paid in: the list's mint, or HNET's.
+    pub fn pay_mint(&self) -> &str {
+        self.mint
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(crate::payment::HNET_MINT)
     }
 }
 
@@ -382,8 +411,11 @@ impl Directory {
             pocket.list_sequence = self.sequence;
         }
         // The issuer comes with the newest list: a newer list without one
-        // takes it away, an older one cannot bring an old one back.
-        if newer || pocket.pass_issuer.is_none() {
+        // takes it away, an older one cannot bring an old one back. The same
+        // list read again sets it again, so a record saved by a client that
+        // did not know all its fields (0.1.0 keeps no wallet) is whole once
+        // that list is imported again.
+        if self.sequence >= pocket.list_sequence || pocket.pass_issuer.is_none() {
             pocket.pass_issuer = self.pass_issuer.clone();
         }
         m
@@ -812,5 +844,136 @@ mod tests {
         assert!(!pocket.known.iter().any(|k| k.node_name == "node-2"));
         assert_eq!(pocket.list_sequence, 4);
         assert!(m.summary().contains("removed 1"));
+    }
+
+    #[test]
+    fn the_issuer_may_name_the_wallet_and_the_mint_and_a_list_without_them_still_reads() {
+        const WALLET: &str = "So11111111111111111111111111111111111111112";
+        const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let signer = TestSigner::new();
+        let signed = |d: &Directory| {
+            let json = d.to_json();
+            let sig = signer.sign(json.as_bytes());
+            (json, sig)
+        };
+        let issuer = PassIssuer {
+            url: "https://passes.example.org".into(),
+            keys: vec![crate::pass::testing::record("2027-01-01T00:00:00Z")],
+            wallet: None,
+            mint: None,
+        };
+
+        // A list without them, as every list before them: written without
+        // the fields, read with none, and paid in HNET once it names a wallet.
+        let mut d = directory();
+        d.pass_issuer = Some(issuer.clone());
+        let (json, sig) = signed(&d);
+        assert!(!json.contains("wallet") && !json.contains("mint"), "{json}");
+        let p = Directory::from_signed(json.as_bytes(), &sig, &signer.public())
+            .unwrap()
+            .pass_issuer
+            .unwrap();
+        assert_eq!(p, issuer);
+        assert_eq!(p.pay_wallet(), None);
+        assert_eq!(p.pay_mint(), crate::payment::HNET_MINT);
+
+        // With them: under the signature like the rest, and read back.
+        d.pass_issuer = Some(PassIssuer {
+            wallet: Some(WALLET.into()),
+            mint: Some(format!(" {MINT} ")),
+            ..issuer.clone()
+        });
+        let (json, sig) = signed(&d);
+        let p = Directory::from_signed(json.as_bytes(), &sig, &signer.public())
+            .unwrap()
+            .pass_issuer
+            .unwrap();
+        assert_eq!(p.pay_wallet(), Some(WALLET));
+        assert_eq!(p.pay_mint(), MINT);
+        let other = json.replace(WALLET, "ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc");
+        let e = Directory::from_signed(other.as_bytes(), &sig, &signer.public())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not accepted"), "{e}");
+
+        // A client that knows only the url and the keys, as 0.1.0, reads the
+        // same record: nothing in it refuses a field it does not know.
+        #[derive(Deserialize)]
+        struct Before {
+            url: String,
+            keys: Vec<crate::pass::PassKeyRecord>,
+        }
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let before: Before = serde_json::from_value(v["pass_issuer"].clone()).unwrap();
+        assert_eq!(
+            (before.url, before.keys),
+            (issuer.url.clone(), issuer.keys.clone())
+        );
+
+        // A wallet or a mint that is not a Solana address: the list is refused.
+        for (wallet, mint, says) in [
+            (Some("not-a-wallet"), None, "wallet"),
+            (Some(WALLET), Some("StV1DL6CwTryKyV"), "mint"),
+            (None, Some(""), "mint"),
+        ] {
+            d.pass_issuer = Some(PassIssuer {
+                wallet: wallet.map(String::from),
+                mint: mint.map(String::from),
+                ..issuer.clone()
+            });
+            let e = Directory::from_json_unchecked(&d.to_json())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(says), "{wallet:?} {mint:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_same_list_read_again_gives_back_the_wallet_a_client_before_it_did_not_keep() {
+        const WALLET: &str = "So11111111111111111111111111111111111111112";
+        let signer = TestSigner::new();
+        let now = crate::timefmt::rfc3339_to_unix("2026-10-13T12:00:00Z").unwrap();
+        let issuer = PassIssuer {
+            url: "https://passes.example.org".into(),
+            keys: vec![crate::pass::testing::record("2027-01-01T00:00:00Z")],
+            wallet: Some(WALLET.into()),
+            mint: None,
+        };
+        let mut d = directory();
+        d.sequence = 7;
+        d.pass_issuer = Some(issuer.clone());
+        let json = d.to_json();
+        let sig = signer.sign(json.as_bytes());
+        let import = |pocket: &mut Pocket| {
+            import_signed_at(pocket, json.as_bytes(), &sig, Some(&signer.public()), now).unwrap()
+        };
+
+        // Imported, then saved by 0.1.0, which knows the issuer's url and
+        // keys only: the pocket holds the list's sequence, but no wallet.
+        let mut pocket = Pocket::default();
+        import(&mut pocket);
+        let mut saved: serde_json::Value = serde_json::from_str(&pocket.to_json()).unwrap();
+        let held = saved["pass_issuer"].as_object_mut().unwrap();
+        assert!(held.remove("wallet").is_some());
+        let mut pocket = Pocket::from_json(&saved.to_string()).unwrap();
+        assert_eq!(pocket.list_sequence, 7);
+        assert_eq!(pocket.pass_issuer.as_ref().unwrap().pay_wallet(), None);
+
+        // The same list again: no node is added, and the wallet is back.
+        let m = import(&mut pocket);
+        assert!(m.added.is_empty(), "{m:?}");
+        assert_eq!(pocket.pass_issuer.as_ref(), Some(&issuer));
+
+        // An older list, even merged without the check that refuses it, does
+        // not bring back its own issuer.
+        let mut old = directory();
+        old.sequence = 6;
+        old.pass_issuer = Some(PassIssuer {
+            wallet: Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into()),
+            ..issuer.clone()
+        });
+        old.merge_into(&mut pocket);
+        assert_eq!(pocket.pass_issuer.as_ref(), Some(&issuer));
+        assert_eq!(pocket.list_sequence, 7);
     }
 }

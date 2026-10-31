@@ -82,7 +82,8 @@ of; the nonce, so each pass is spent once.
   if it never had one; `max_clients` still applies.
 - **The signed list names the issuer**: `pass_issuer` with its `url` and its
   `keys` (id, key, `not_after`); `make-node-list.sh --issuer-url URL
-  --pass-key record.json`. A node record can say `"admission": "pass"`. The
+  --pass-key record.json`, and `--pay-wallet` for an issuer that sells
+  passes (phase 7). A node record can say `"admission": "pass"`. The
   issuer's keys come from the list, never from the issuer: an issuer that
   answered under another key would make passes nobody takes, and is refused.
 - **The client and the service.** A wallet of passes,

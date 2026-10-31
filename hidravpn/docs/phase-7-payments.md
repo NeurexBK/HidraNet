@@ -12,7 +12,8 @@ real purchases on the main network by the maintainers. The legal review
 
 ## How a purchase goes
 
-1. `hidravpn passes buy` lists the packs the issuer sells (`GET /packs`).
+1. `hidravpn passes buy` lists the packs the issuer sells (`GET /packs`),
+   paid to the wallet the signed node list names.
 2. `hidravpn passes buy 10` makes this machine's pass account token if it
    has none (32 random bytes, kept root-only at `/etc/hidravpn/pass.token`,
    as the issuer's own `account add` makes them), and asks the issuer for an
@@ -23,9 +24,11 @@ real purchases on the main network by the maintainers. The legal review
    wallet, the mint and when the order lapses: two hours after it is made,
    unless a claim from its token comes first, which keeps it open for 24
    hours from when it was made while the issuer has room for that (see
-   "Orders for nobody's payment" below). The client checks the
-   answer adds up, keeps it root-only at `/etc/hidravpn/order.json`, and
-   prints what to send where, and to claim by then.
+   "Orders for nobody's payment" below). The client checks that the
+   answer asks for payment to the wallet, and in the token, the signed node
+   list names (next section), and that it adds up, keeps it root-only at
+   `/etc/hidravpn/order.json`, and prints what to send where, and to claim
+   by then.
 3. The person sends exactly that amount, from any Solana wallet. Nothing but
    the amount matters: no memo, no particular wallet, no form.
 4. `hidravpn passes claim <signature>` (`POST /claim`, with the token and
@@ -59,6 +62,34 @@ than once to cross-check a payment across several independent RPCs: a
 claim is credited only when a strict majority of them read the same
 payment, so one lying or faulty RPC cannot conjure a payment out of
 nothing (see "A payment no single RPC decides" below).
+
+## The wallet is in the signed list
+
+Where a payment goes is not the issuer's word. The signed node list names
+the wallet passes are paid to, and the token when it is not HNET, beside
+the issuer's address and keys (`pass_issuer.wallet` and `pass_issuer.mint`,
+from `make-node-list.sh --pay-wallet ADDR [--pay-mint MINT]`). The client:
+
+- buys only from a list that names the wallet. With a list that names none,
+  as every list made before these fields, `passes buy` lists nothing, opens
+  no order, makes no token, and says to import a newer node list;
+- refuses a `/packs` or `/quote` answer that asks for payment to another
+  wallet, or in another token (HNET's mint, when the list names none), and
+  keeps no order then. It never shows the wallet such an answer named;
+- refuses an answer whose token has more than 18 decimals;
+- keeps and shows the list's wallet and token in the order, never the
+  answer's;
+- treats an open order that the list it now holds does not stand behind
+  (another wallet or token, after a newer list) as not to be paid:
+  `passes list` and `passes buy` say so, `passes claim` sends nothing, and
+  `passes buy N --replace` makes a new order.
+
+The issuer's `--pay-wallet` and `--pay-mint` and the list must agree. To
+change the wallet, restart the issuer with the new one and publish the list
+that names it at the same time: in between, clients refuse to buy, and
+nothing is paid anywhere else. A client from before these fields (0.1.0)
+reads the list as before, does not check the wallet and does not keep it;
+once it is upgraded, the same list imported again names the wallet to it.
 
 ## A price in dollars, paid in HNET
 
@@ -457,6 +488,11 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
 - **A price in HNET stays what it was set to**, whatever the market does;
   a price in dollars follows the feed, with the brakes above. Either way,
   open orders keep the amount they were made at.
+- **The amount is the issuer's word.** The signed list fixes where a
+  payment goes and in which token; how much comes from the issuer's answer
+  over TLS, checked only to add up and to match the pack asked for. The
+  person sees the amount before paying. A quote signed under a key the list
+  names would fix the amount too; it is not in this phase.
 - **The browser has no button for it yet**: the command line only.
 - **The public RPC is rate-limited** and run by someone else; an operator
   who sells in earnest runs or rents RPCs and gives `--pay-rpc` (one or,
@@ -493,6 +529,14 @@ every quote, and stop the sales. In this order:
    says `pass issuer on TCP 8730`, and no line says `selling is stopped`.
    One that does names the orders file it could not read.
 
+Before HidraVPN 0.1.2 reaches anyone, publish a list made with
+`--pay-wallet` (the issuer's own wallet) and a higher `--sequence`: 0.1.2
+buys nothing until the person imports a list that names the wallet. Clients
+from before do not read the field, so that list can go out first. A machine
+that imported it under 0.1.0 kept no wallet; under 0.1.2, importing the same
+list again (or pressing **Get the maintainers' list** in the browser) gives
+it back.
+
 Whenever an exit is added to the signed list or changes address, change the
 five `remote_ip` and `not remote_ip` lines (in the zones quote, claim, exits,
 quote_hour and exits_quote_hour) with it and reload Caddy: until then the
@@ -524,6 +568,11 @@ hidravpn-issuer order lapsed [--amount 50.042399]          # orders that lapsed 
 hidravpn-issuer order credit --amount 50.042399 --signature <sig> --paid-at <block time, UTC>
                                              # one of them, paid in time (checked on chain by hand)
 
+# the list (offline, with the list key): the issuer, its keys, and the wallet it sells for
+bash hidravpn/scripts/make-node-list.sh --key list.key --out nodes.json --sequence N \
+    --issuer-url https://passes.example.org --pass-key pass-key.json \
+    --pay-wallet <the receiving wallet's address> record-*.json
+
 # a client
 sudo hidravpn passes buy                     # the packs
 sudo hidravpn passes buy 10                  # an order: send exactly this much, here, by then
@@ -536,8 +585,8 @@ sudo hidravpn passes buy 10 --replace        # a new order, leaving the open one
 ## How to check it
 
 ```
-hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 75 checks
-cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer
+hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 89 checks
+cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer -p hidravpn-service
 ```
 
 `test-pay-netns.sh` proves, in three namespaces with `test/solana-rpc-stub.py`
@@ -548,8 +597,18 @@ in today's HNET with the rate; the rate up 10 % is taken at the next fetch,
 doubled at once it is held and taken only once the feed insisted three
 times, a feed down leaves the last rate serving until it is stale and then
 the dollar pack off the list and its order refused, and a feed back puts it
-on again; an order in dollars tells the HNET, the dollars and the rate, kept
-with it; an order is the price plus a tag under 0.1 HNET, kept root-only
+on again; `make-node-list.sh` puts the wallet and the mint in the signed
+list, and refuses a wallet that is not an address, one that is the mint, a
+mint without a wallet and a wallet without an issuer; with a list that
+names no wallet the client lists
+nothing, opens no order and makes no token; packs and a quote that ask for
+payment to another wallet, or a quote in another token, than the list names
+are refused and no order is kept; an open order a newer list does not name
+is shown as not to be paid and its claim is not sent, and a list naming the
+wallet again makes it payable, as does the same list imported again into a
+pocket saved without the wallet; an order in dollars tells the HNET, the
+dollars and the rate, kept with it; an order is the price plus a tag under
+0.1 HNET, kept root-only
 with the token made for it; a claim with no transaction, a failed one, one
 unit short, one from before the order, one to another wallet and one in
 another token are each refused and say why, and the order stays open; the
@@ -574,7 +633,14 @@ after, another amount, and the same transaction twice; and the issuer's
 files and logs hold no token, transaction, amount, wallet or client.
 
 Unit tests cover the rest: base58 against known vectors; amounts written
-and read back with every decimal; packs in HNET and in dollars, at a rate
+and read back with every decimal, and none read with more than 18; a list
+whose issuer names the wallet and the mint, or neither, signed and read
+alike, one whose wallet or mint is not an address refused, and the same
+list read again giving back a wallet the pocket was saved without; an order
+only to the list's wallet and in its token, labelled from the list, with
+other wallets, tokens, decimals over 18 and a list without a wallet
+refused, and `buy` keeping no order then; an open order the list no longer
+names neither payable nor claimed; packs in HNET and in dollars, at a rate
 and without one; the feed's answer read (the deepest pair of the mint, both
 shapes, nothing from nonsense); a move of the rate held and then taken, a
 stale rate not used, an issuer selling in dollars against a stub feed; what
