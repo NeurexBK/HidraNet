@@ -333,7 +333,7 @@ docker run -d --name hidra \
 |---|---|---|
 | Tor does not get past 0% | The network blocks Tor | Configure a bridge; see the User Guide |
 | "port 9052 already in use" | A previous instance is still shutting down | Wait 10 s; or close the other window |
-| "port 8090 in use" | A second copy of the browser is open | Close the other window and restart |
+| Apps marked "Off" ("another program holds port 8090") | Another program uses port 8090 on 127.0.0.1 or ::1 | Close it and restart the browser |
 | Node finds no peers | `bootstrap_nodes` is empty | Fill it in with bootstrap nodes |
 | `Tor binary not found` | Tor was not downloaded | `npm run fetch-tor` |
 | Node receives no connections | Firewall or NAT | Open 9150/tcp and 7000/udp; check port forwarding |

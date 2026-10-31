@@ -72,6 +72,7 @@ arrive with it already resolved, or declared as a known item with a date. See
 | Client hints removed (`Sec-CH-UA-*`) | Implemented | |
 | Cross-origin referer stripped | Implemented | Keeps same-origin, which is functional |
 | DNS rebinding protection on the apps server | Implemented | `Host` and `Origin` checks |
+| Apps answered only by the browser's own server | Implemented | Listens on 127.0.0.1 and ::1; the apps stay off if another program holds either; a per-run token on every response; no service worker in the apps' partition |
 | **Network kill switch** | **Implemented** | See 1.4 |
 
 ### 1.3 Applications

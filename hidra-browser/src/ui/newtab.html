@@ -491,7 +491,7 @@
             </div>
             <span class="app-name">HidraMail</span>
             <span class="app-desc">E2E encrypted email</span>
-            <span class="app-badge online">Ready</span>
+            <span class="app-badge online" id="mail-badge">Ready</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://chat.localhost:8090/" id="app-chat">
             <div class="app-icon chat-icon">
@@ -512,7 +512,7 @@
             </div>
             <span class="app-name">Hidra Forum</span>
             <span class="app-desc">Anonymous community</span>
-            <span class="app-badge online">Ready</span>
+            <span class="app-badge online" id="forum-badge">Ready</span>
           </a>
           <a class="app-shortcut" href="#" data-url="http://donate.localhost:8090/" id="app-donate">
             <div class="app-icon" style="background: linear-gradient(135deg, #00d4aa, #3df5c4); color: #032018;">
@@ -1093,19 +1093,24 @@
         document.getElementById('app-version').textContent = 'HidraNet Browser ' + about.version +
           ' · build ' + about.build + (about.date ? ' · ' + about.date : '');
       }
+      // Chat, mail and the forum are served by the browser itself, and are up
+      // or down together. "Offline" alone sent people hunting for a problem in
+      // the app when the real cause was another program holding the port: the
+      // badge says the apps are off, and its tooltip says why.
       var chatOk = status.chat;
-      var chatBadge = document.getElementById('chat-badge');
-      if (chatOk) {
-        chatBadge.textContent = 'Online';
-        chatBadge.className = 'app-badge online';
-        chatBadge.title = '';
-      } else {
-        // "Offline" alone sent people hunting for a problem in the app when the
-        // real cause was a second copy of the browser holding the port.
-        chatBadge.textContent = status.error ? 'Port in use' : 'Offline';
-        chatBadge.className = 'app-badge offline';
-        chatBadge.title = status.error || '';
-      }
+      [['chat-badge', 'Online'], ['mail-badge', 'Ready'], ['forum-badge', 'Ready']].forEach(function (b) {
+        var badge = document.getElementById(b[0]);
+        if (!badge) return;
+        if (chatOk) {
+          badge.textContent = b[1];
+          badge.className = 'app-badge online';
+          badge.title = '';
+        } else {
+          badge.textContent = status.appsOff ? 'Off' : status.error ? 'Starting…' : 'Offline';
+          badge.className = 'app-badge offline';
+          badge.title = status.error || '';
+        }
+      });
 
       var hrBadge = document.getElementById('hidrareview-badge');
       if (hrBadge) {
