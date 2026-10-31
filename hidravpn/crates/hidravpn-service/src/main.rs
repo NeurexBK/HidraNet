@@ -119,6 +119,10 @@ enum Firewall {
     On {
         #[arg(long, default_value = "hvpn0")]
         interface: String,
+        /// The tunnel interface's own IPv4 address, the only source IPv4
+        /// may enter it from (a node's first client gets 10.77.0.2).
+        #[arg(long, default_value = "10.77.0.2")]
+        address: std::net::Ipv4Addr,
         /// The node's WireGuard endpoint, ip:port.
         #[arg(long)]
         node: SocketAddr,
@@ -128,8 +132,11 @@ enum Firewall {
         #[arg(long)]
         allow_lan: bool,
         /// A second tunnel interface to allow (the inner tunnel of a two-hop circuit).
-        #[arg(long)]
+        #[arg(long, requires = "extra_address")]
         extra_interface: Option<String>,
+        /// The second tunnel interface's own IPv4 address.
+        #[arg(long, requires = "extra_interface")]
+        extra_address: Option<std::net::Ipv4Addr>,
     },
     /// Hold the line as a rotation does: the nodes' WireGuard endpoints
     /// and the admission ports given, off-tunnel, and nothing else, no
@@ -314,17 +321,20 @@ fn main() -> Result<()> {
             match what {
                 Firewall::On {
                     interface,
+                    address,
                     node,
                     dns,
                     allow_lan,
                     extra_interface,
+                    extra_address,
                 } => {
                     killswitch::apply(&KillConfig {
                         interface,
+                        interface_ipv4: address,
                         node_endpoint: node,
                         dns,
                         allow_lan,
-                        extra_interface,
+                        extra_interface: extra_interface.zip(extra_address),
                         outer_peer: None,
                         tunnel_ipv6: None,
                     })?;

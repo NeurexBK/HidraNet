@@ -11,7 +11,11 @@
 //! "Allow LAN" or not: on Linux allowed only to the node's own resolver and
 //! only out of the tunnel, so a route that sends that address to the local
 //! network carries nothing; on Windows any resolver, but only through the
-//! tunnel, which carries it to the exit).
+//! tunnel, which carries it to the exit). IPv4, too, enters a tunnel only
+//! from that tunnel's own address: Linux routes a packet by its destination
+//! alone, so a connection opened before the tunnel came up, or a socket
+//! bound to the physical link's address, would carry that address to the
+//! node. Windows sends from an interface's own addresses only.
 //!
 //! Nothing comes in through a tunnel unasked: only what answers this
 //! machine's own packets. The node at the other end chooses what comes out
@@ -27,7 +31,7 @@
 //! our own, so removing it removes everything and nothing else on the machine
 //! is disturbed. Nothing here is logged.
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 
 use anyhow::Result;
 
@@ -42,6 +46,13 @@ pub struct KillConfig {
     /// The tunnel interface; all traffic out on it is allowed (that is the
     /// point), and back in what answers it.
     pub interface: String,
+    /// The address the node gave this end of `interface`: IPv4 enters that
+    /// tunnel only from it. A packet from another of the machine's
+    /// addresses (the physical link's, kept by a connection opened before
+    /// the tunnel came up or taken by a socket bound to it; the other
+    /// tunnel's) would show that address to the node, which decrypts the
+    /// packet before it drops it.
+    pub interface_ipv4: Ipv4Addr,
     /// The node's WireGuard endpoint: the one address reachable off-tunnel.
     pub node_endpoint: SocketAddr,
     /// The node's resolver, the only DNS server any query may go to.
@@ -49,16 +60,19 @@ pub struct KillConfig {
     /// Let the local subnet through as well (a printer, a NAS). Off by default:
     /// strict is safer, and phase 1 users asked for the whole machine covered.
     pub allow_lan: bool,
-    /// A second tunnel interface to allow: the inner tunnel of a two-hop
-    /// circuit. The only address reachable off-tunnel is still `node_endpoint`,
-    /// the entry node. None for a single hop.
-    pub extra_interface: Option<String>,
+    /// A second tunnel interface to allow, with the address the exit gave
+    /// this end of it: the inner tunnel of a two-hop circuit. IPv4 enters it
+    /// only from that address, as with `interface_ipv4`. The only address
+    /// reachable off-tunnel is still `node_endpoint`, the entry node. None
+    /// for a single hop.
+    pub extra_interface: Option<(String, Ipv4Addr)>,
     /// Two hops: the one destination allowed on `interface`, the outer
-    /// tunnel — the exit's WireGuard endpoint. Anything else a program sends
-    /// into the outer tunnel (a name to the entry's resolver, a packet bound
-    /// to that interface on purpose) would show the entry where it goes, so
-    /// it is dropped here, before the entry sees it.
-    pub outer_peer: Option<SocketAddr>,
+    /// tunnel — the exit's WireGuard endpoint, IPv4 as the tunnel's own
+    /// address is. Anything else a program sends into the outer tunnel (a
+    /// name to the entry's resolver, a packet bound to that interface on
+    /// purpose) would show the entry where it goes, so it is dropped here,
+    /// before the entry sees it.
+    pub outer_peer: Option<SocketAddrV4>,
     /// The IPv6 address the exit gave the tunnel that carries the traffic
     /// (the only one of one hop, the inner one of two), when it gave one.
     /// IPv6 enters that tunnel only from this address; with none, no IPv6
@@ -74,7 +88,10 @@ pub struct KillConfig {
 #[derive(Debug, Clone)]
 pub struct Bridge {
     pub interface: String,
-    pub to: SocketAddr,
+    /// The address the entry gave this end of the tunnel, the only source
+    /// the request may leave with.
+    pub from: Ipv4Addr,
+    pub to: SocketAddrV4,
 }
 
 /// Turns the kill switch on. Replaces any rules a previous run left behind, so

@@ -21,7 +21,7 @@
 //!
 //! Nothing here logs an address, a name looked up or a byte of traffic.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -362,8 +362,9 @@ impl Circuit {
     /// 4. only then the inner tunnel's socket, so its first packet already
     ///    goes into the outer interface (a connected UDP socket caches its
     ///    route);
-    /// 5. the kill switch, allowing both interfaces and the entry's endpoint,
-    ///    in place of whatever was armed before, in one step;
+    /// 5. the kill switch, allowing both interfaces, each from its own
+    ///    address, and the entry's endpoint, in place of whatever was armed
+    ///    before, in one step;
     /// 6. the inner tunnel's first packet.
     pub async fn up(spec: CircuitSpec, key: ClientKey, opts: CircuitOptions) -> Result<Self> {
         spec.validate()?;
@@ -509,18 +510,28 @@ impl Circuit {
         // worse than no tunnel. (`tunnel` is dropped on the way out, which
         // closes its socket and removes the interface.)
         if opts.kill_switch {
-            let (interface, extra_interface, node_endpoint, outer_peer) =
+            // Each interface with the address its node gave it, the only
+            // source IPv4 enters that tunnel from (`ip` is the exit's).
+            let (interface, interface_ipv4, extra_interface, node_endpoint, outer_peer) =
                 match (&spec.entry, &steps.outer) {
                     (Some(entry), Some(outer)) => (
                         outer.interface.clone(),
-                        Some(inner_ifname.clone()),
+                        entry.client_ip()?.0,
+                        Some((inner_ifname.clone(), ip)),
                         entry.endpoint_addr()?,
-                        Some(spec.exit.endpoint_addr()?),
+                        Some(ipv4_peer(spec.exit.endpoint_addr()?)?),
                     ),
-                    _ => (inner_ifname.clone(), None, spec.exit.endpoint_addr()?, None),
+                    _ => (
+                        inner_ifname.clone(),
+                        ip,
+                        None,
+                        spec.exit.endpoint_addr()?,
+                        None,
+                    ),
                 };
             killswitch::apply(&KillConfig {
                 interface,
+                interface_ipv4,
                 node_endpoint,
                 dns: spec.exit.dns,
                 allow_lan: opts.allow_lan,
@@ -1078,7 +1089,8 @@ async fn bridge_to(
         &[],
         Some(&killswitch::Bridge {
             interface: ifname.clone(),
-            to: admission,
+            from: ip,
+            to: ipv4_peer(admission)?,
         }),
     )
     .context("could not hold the kill switch to ask the exit through the entry")?;
@@ -1101,6 +1113,16 @@ async fn bridge_to(
         runner: Some(runner),
     };
     Ok((hop, admission))
+}
+
+/// A node's address as the kill switch names the one peer of a tunnel,
+/// next to the tunnel's own IPv4 address. Every node is reached over IPv4
+/// (`Invite::validate_shape`), so this refuses nothing a valid invite gives.
+fn ipv4_peer(a: SocketAddr) -> Result<SocketAddrV4> {
+    match a {
+        SocketAddr::V4(a) => Ok(a),
+        SocketAddr::V6(_) => Err(anyhow!("the node's address {a} is not IPv4")),
+    }
 }
 
 fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {

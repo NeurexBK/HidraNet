@@ -167,8 +167,10 @@ hidravpn down
 (except `--privado`/`--rapido`: the pocket is the client's). `--direct` holds
 a two-hop circuit in the current process as it held one hop before; the
 alternates are for the service's `new-identity` and do nothing there.
-`hidravpn-service firewall on --extra-interface hvpn1` arms the kill switch
-for two interfaces by hand, for diagnosis.
+`hidravpn-service firewall on --extra-interface hvpn1 --extra-address IP`
+arms the kill switch for two interfaces by hand, for diagnosis; `--address`
+and `--extra-address` are each tunnel's own IPv4 address, the only source
+IPv4 enters it from.
 
 Requests from the phase-2 client still work: `via`, `alternates` and
 `alternate_entries` are optional on the wire, and a status report without

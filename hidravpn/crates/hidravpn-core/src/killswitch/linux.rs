@@ -28,12 +28,19 @@
 //! that pushes one, or uses the same private range as the tunnel) must not
 //! carry the machine's lookups there.
 //!
+//! What goes into a tunnel leaves from the address the node gave this end
+//! of it. Linux routes a packet by its destination alone, whatever its
+//! source: a connection opened before the tunnel came up keeps the physical
+//! link's address, and so does a socket bound to that address at any time.
+//! Their packets are dropped at the tunnel, before the node, which decrypts
+//! a packet before it checks its source, could read that address.
+//!
 //! The table is always replaced in one nftables transaction — declare,
 //! delete, create — never deleted and then created, so there is no instant
 //! with no table while the rules change.
 
 use std::io::Write;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -102,14 +109,18 @@ fn ruleset(cfg: &KillConfig) -> String {
     let iface = &cfg.interface;
     let dns = cfg.dns;
     let (node_out, node_in) = node_rules(&[cfg.node_endpoint]);
+    let inner = cfg
+        .extra_interface
+        .as_ref()
+        .map(|(x, own)| (x.as_str(), *own));
 
     // Optionally let the private LAN ranges through, both ways — off the
     // tunnels only: the node's tunnel address is a private one too, and
     // what it sends in through a tunnel is not the local network.
     let (lan_out, lan_in) = if cfg.allow_lan {
         let nets = "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }";
-        let tunnels = std::iter::once(iface)
-            .chain(cfg.extra_interface.as_ref())
+        let tunnels = std::iter::once(iface.as_str())
+            .chain(inner.map(|(x, _)| x))
             .map(|t| format!("\"{t}\""))
             .collect::<Vec<_>>()
             .join(", ");
@@ -128,8 +139,8 @@ fn ruleset(cfg: &KillConfig) -> String {
     // Two-hop: the inner tunnel interface is allowed as well. Its packets go
     // into the outer tunnel, never to the physical link, so this opens no
     // new way out of the machine.
-    let (extra_out, extra_in) = match &cfg.extra_interface {
-        Some(x) => carrying_rules(x, cfg.tunnel_ipv6, " comment \"inner tunnel\""),
+    let (extra_out, extra_in) = match inner {
+        Some((x, own)) => carrying_rules(x, own, cfg.tunnel_ipv6, " comment \"inner tunnel\""),
         None => (String::new(), String::new()),
     };
 
@@ -138,24 +149,29 @@ fn ruleset(cfg: &KillConfig) -> String {
     // destination it could read; and back only the exit's answers to them.
     let (tunnel_out, tunnel_in) = match cfg.outer_peer {
         Some(peer) => {
-            let (o, i) = peer_rules(iface, "udp", peer);
+            let (o, i) = peer_rules(iface, "udp", cfg.interface_ipv4, peer);
             (
                 format!("{o}    oifname \"{iface}\" drop comment \"the outer tunnel carries only the inner one\"\n"),
                 i,
             )
         }
-        None => carrying_rules(iface, cfg.tunnel_ipv6, ""),
+        None => carrying_rules(iface, cfg.interface_ipv4, cfg.tunnel_ipv6, ""),
     };
-    // The tunnel's own packets to the node come first: a node whose
-    // WireGuard port is 53 (to get past firewalls that allow DNS) must not
-    // fall to the DNS rules, which are about names, not about the tunnel.
-    // Then DNS to the node's resolver, out of the tunnel that carries the
-    // traffic only (the inner one of two hops), and every other packet to
-    // port 53 dropped — before the local network is let through, as on
-    // Windows. The node's resolver is an IPv4 address, so no query goes over
-    // IPv6.
-    let carrying = cfg.extra_interface.as_deref().unwrap_or(iface);
-    let mut output = node_out;
+    // First each tunnel's own address, so that no rule below takes a
+    // packet from another address into a tunnel. Then the tunnel's own
+    // packets to the node: a node whose WireGuard port is 53 (to get past
+    // firewalls that allow DNS) must not fall to the DNS rules, which are
+    // about names, not about the tunnel. Then DNS to the node's resolver,
+    // out of the tunnel that carries the traffic only (the inner one of two
+    // hops), and every other packet to port 53 dropped — before the local
+    // network is let through, as on Windows. The node's resolver is an IPv4
+    // address, so no query goes over IPv6.
+    let carrying = inner.map_or(iface.as_str(), |(x, _)| x);
+    let mut output = own_source_only(iface, cfg.interface_ipv4);
+    if let Some((x, own)) = inner {
+        output.push_str(&own_source_only(x, own));
+    }
+    output.push_str(&node_out);
     for proto in ["udp", "tcp"] {
         output.push_str(&format!(
             "    oifname \"{carrying}\" ip daddr {dns} {proto} dport 53 accept comment \"DNS to the node, through the tunnel\"\n"
@@ -176,17 +192,35 @@ fn ruleset(cfg: &KillConfig) -> String {
     table(&output, &input, "nothing leaves outside the tunnel")
 }
 
+/// What goes into a tunnel leaves from `own`, the address the node gave
+/// this end of it, or is dropped there and counted. It comes first on the
+/// way out, so no later rule (the node's endpoint, DNS, DHCP: they match by
+/// destination or port) lets a packet from another of the machine's
+/// addresses, the physical link's or the other tunnel's, into the tunnel.
+fn own_source_only(iface: &str, own: Ipv4Addr) -> String {
+    format!(
+        "    oifname \"{iface}\" ip saddr != {own} counter drop comment \"into a tunnel only from its own address\"\n"
+    )
+}
+
 /// The tunnel that carries the traffic (the only one of one hop, the inner
-/// one of two): IPv4 out, and IPv6 out only from the address the exit gave
-/// it. An IPv6 packet routed into a tunnel with no address of its own leaves
-/// with the machine's own address, which the exit would read when it
-/// decrypts the packet; it is dropped here instead. Back in, only what
-/// answers this machine's own packets (the replies, and the ICMP errors
-/// path MTU discovery needs): a connection the node opens, or a datagram it
-/// sends unasked, is dropped, so the node cannot reach a program listening
-/// on this machine, nor learn its other addresses from what answers.
-fn carrying_rules(iface: &str, tunnel6: Option<Ipv6Addr>, comment: &str) -> (String, String) {
-    let mut out = format!("    oifname \"{iface}\" meta nfproto ipv4 accept{comment}\n");
+/// one of two): IPv4 out from `own`, the address the node gave this end of
+/// it, and IPv6 out only from the address the exit gave it. An IPv6 packet
+/// routed into a tunnel with no address of its own leaves with the
+/// machine's own address, which the exit would read when it decrypts the
+/// packet; it is dropped here instead, as is IPv4 from any address but
+/// `own`. Back in, only what answers this machine's own packets (the
+/// replies, and the ICMP errors path MTU discovery needs): a connection the
+/// node opens, or a datagram it sends unasked, is dropped, so the node
+/// cannot reach a program listening on this machine, nor learn its other
+/// addresses from what answers.
+fn carrying_rules(
+    iface: &str,
+    own: Ipv4Addr,
+    tunnel6: Option<Ipv6Addr>,
+    comment: &str,
+) -> (String, String) {
+    let mut out = format!("    oifname \"{iface}\" ip saddr {own} accept{comment}\n");
     if let Some(a) = tunnel6 {
         out.push_str(&format!(
             "    oifname \"{iface}\" ip6 saddr {a} accept{comment}\n"
@@ -198,18 +232,19 @@ fn carrying_rules(iface: &str, tunnel6: Option<Ipv6Addr>, comment: &str) -> (Str
     (out, inp)
 }
 
-/// One destination on one interface: out, and back in only its answers
-/// (and the ICMP errors about what went to it), then nothing else in on
-/// that interface. The node at the other end of the tunnel could put the
-/// destination's address on a packet of its own; this machine sends to the
-/// destination first, so what it starts finds nothing open.
-fn peer_rules(iface: &str, proto: &str, peer: SocketAddr) -> (String, String) {
-    let fam = if peer.is_ipv4() { "ip" } else { "ip6" };
+/// One destination on one interface: out from `from`, the address the node
+/// gave this end of the tunnel, and back in only its answers (and the ICMP
+/// errors about what went to it), then nothing else in on that interface.
+/// Both addresses are IPv4, as a tunnel's own address is. The node at the
+/// other end of the tunnel could put the destination's address on a packet
+/// of its own; this machine sends to the destination first, so what it
+/// starts finds nothing open.
+fn peer_rules(iface: &str, proto: &str, from: Ipv4Addr, peer: SocketAddrV4) -> (String, String) {
     let (a, p) = (peer.ip(), peer.port());
     (
-        format!("    oifname \"{iface}\" {fam} daddr {a} {proto} dport {p} accept\n"),
+        format!("    oifname \"{iface}\" ip saddr {from} ip daddr {a} {proto} dport {p} accept\n"),
         format!(
-            "    iifname \"{iface}\" {fam} saddr {a} {proto} sport {p} ct state established accept\n    iifname \"{iface}\" meta l4proto icmp ct state related accept\n    iifname \"{iface}\" drop comment \"only answers come in through the tunnel\"\n"
+            "    iifname \"{iface}\" ip saddr {a} {proto} sport {p} ct state established accept\n    iifname \"{iface}\" meta l4proto icmp ct state related accept\n    iifname \"{iface}\" drop comment \"only answers come in through the tunnel\"\n"
         ),
     )
 }
@@ -230,14 +265,17 @@ fn admitting_ruleset(
     direct: &[SocketAddr],
     bridge: Option<&Bridge>,
 ) -> String {
-    let (mut out, node_in) = node_rules(endpoints);
-    // The bridge's tunnel first on the way in, as in `ruleset`.
-    let mut inp = String::new();
-    if let Some(b) = bridge {
-        let (o, i) = peer_rules(&b.interface, "tcp", b.to);
-        out.push_str(&o);
-        inp.push_str(&i);
-    }
+    let (node_out, node_in) = node_rules(endpoints);
+    // The bridge's tunnel first both ways, as in `ruleset`: its own address
+    // on the way out, its answers on the way in.
+    let (mut out, mut inp) = match bridge {
+        Some(b) => {
+            let (o, i) = peer_rules(&b.interface, "tcp", b.from, b.to);
+            let own = own_source_only(&b.interface, b.from);
+            (format!("{own}{node_out}{o}"), i)
+        }
+        None => (node_out, String::new()),
+    };
     inp.push_str(&node_in);
     for d in direct {
         let fam = if d.is_ipv4() { "ip" } else { "ip6" };
@@ -284,7 +322,8 @@ fn nft(input: &str) -> Result<()> {
 pub fn apply(cfg: &KillConfig) -> Result<()> {
     // The names go into the ruleset between quotes: only what an interface
     // name can be, so none can close the quote and add a rule of its own.
-    for name in std::iter::once(&cfg.interface).chain(cfg.extra_interface.as_ref()) {
+    let inner = cfg.extra_interface.as_ref().map(|(x, _)| x);
+    for name in std::iter::once(&cfg.interface).chain(inner) {
         if !interface_name_ok(name) {
             return Err(anyhow!(
                 "\"{name}\" is not an interface name (1-15 letters, digits, - or _)"
@@ -370,11 +409,12 @@ pub fn is_active() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     fn cfg(allow_lan: bool) -> KillConfig {
         KillConfig {
             interface: "hvpn0".into(),
+            interface_ipv4: Ipv4Addr::new(10, 77, 0, 2),
             node_endpoint: SocketAddr::from(([203, 0, 113, 10], 51820)),
             dns: Ipv4Addr::new(10, 77, 0, 1),
             allow_lan,
@@ -384,13 +424,20 @@ mod tests {
         }
     }
 
+    /// The inner tunnel of two hops, with the address the exit gave it.
+    fn inner() -> Option<(String, Ipv4Addr)> {
+        Some(("hvpn1".into(), Ipv4Addr::new(10, 78, 0, 2)))
+    }
+
     #[test]
     fn with_two_hops_the_outer_tunnel_reaches_the_exit_and_nothing_else() {
         let mut two = cfg(false);
-        two.extra_interface = Some("hvpn1".into());
-        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        two.extra_interface = inner();
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let r = ruleset(&two);
-        assert!(r.contains(r#"oifname "hvpn0" ip daddr 198.51.100.9 udp dport 51820 accept"#));
+        assert!(r.contains(
+            r#"oifname "hvpn0" ip saddr 10.77.0.2 ip daddr 198.51.100.9 udp dport 51820 accept"#
+        ));
         assert!(r.contains(
             r#"iifname "hvpn0" ip saddr 198.51.100.9 udp sport 51820 ct state established accept"#
         ));
@@ -400,10 +447,11 @@ mod tests {
         assert!(!r.contains(r#"iifname "hvpn0" accept"#), "{r}");
         // The drop comes after the one accept, before anything else could match.
         assert!(
-            r.find(r#"oifname "hvpn0" ip daddr"#).unwrap()
+            r.find(r#"oifname "hvpn0" ip saddr 10.77.0.2 ip daddr"#)
+                .unwrap()
                 < r.find(r#"oifname "hvpn0" drop"#).unwrap()
         );
-        assert!(r.contains(r#"oifname "hvpn1" meta nfproto ipv4 accept"#));
+        assert!(r.contains(r#"oifname "hvpn1" ip saddr 10.78.0.2 accept"#));
     }
 
     #[test]
@@ -411,11 +459,14 @@ mod tests {
         let entry = SocketAddr::from(([203, 0, 113, 10], 51820));
         let b = Bridge {
             interface: "hvpn0".into(),
-            to: SocketAddr::from(([198, 51, 100, 9], 51821)),
+            from: Ipv4Addr::new(10, 77, 0, 2),
+            to: SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51821),
         };
         let r = admitting_ruleset(&[entry], &[], Some(&b));
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
-        assert!(r.contains(r#"oifname "hvpn0" ip daddr 198.51.100.9 tcp dport 51821 accept"#));
+        assert!(r.contains(
+            r#"oifname "hvpn0" ip saddr 10.77.0.2 ip daddr 198.51.100.9 tcp dport 51821 accept"#
+        ));
         assert!(r.contains(
             r#"iifname "hvpn0" ip saddr 198.51.100.9 tcp sport 51821 ct state established accept"#
         ));
@@ -445,7 +496,7 @@ mod tests {
         let r = ruleset(&cfg(false));
         assert!(r.contains("ip daddr 203.0.113.10 udp dport 51820 accept"));
         assert!(r.contains("ip saddr 203.0.113.10 udp sport 51820 ct state established accept"));
-        assert!(r.contains(r#"oifname "hvpn0" meta nfproto ipv4 accept"#));
+        assert!(r.contains(r#"oifname "hvpn0" ip saddr 10.77.0.2 accept"#));
     }
 
     #[test]
@@ -466,11 +517,93 @@ mod tests {
         assert!(!r.contains("ip6 daddr"), "{r}");
         assert!(r.find("    udp dport 53 drop").unwrap() < r.find("ip6 saddr fd68").unwrap());
         // Two hops: on the inner tunnel, never on the outer one.
-        c.extra_interface = Some("hvpn1".into());
-        c.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        c.extra_interface = inner();
+        c.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let r = ruleset(&c);
         assert!(r.contains(r#"oifname "hvpn1" ip6 saddr fd68:6964:7261::a4d:8 accept"#));
         assert!(!r.contains(r#"oifname "hvpn0" ip6"#), "{r}");
+    }
+
+    #[test]
+    fn ipv4_enters_each_tunnel_only_from_its_own_address() {
+        // A connection opened before the tunnel came up, or a socket bound
+        // to the physical link's address or to the other tunnel's, sends
+        // into the tunnel with that address when the routes say so. Every
+        // table that names a tunnel drops such a packet there first, ahead
+        // of every rule that lets a packet out by its destination or port,
+        // and lets IPv4 into the tunnel only from the address the node gave
+        // this end of it, in every shape the table takes.
+        let mut one = cfg(true);
+        one.tunnel_ipv6 = Some("fd68:6964:7261::a4d:8".parse().unwrap());
+        let mut inner_only = one.clone();
+        inner_only.extra_interface = inner();
+        let mut two = inner_only.clone();
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
+        let bridge = Bridge {
+            interface: "hvpn0".into(),
+            from: one.interface_ipv4,
+            to: SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51821),
+        };
+        let (outer, inner) = (("hvpn0", "10.77.0.2"), ("hvpn1", "10.78.0.2"));
+        for (r, tunnels, accepts) in [
+            (
+                ruleset(&one),
+                vec![outer],
+                vec![r#"oifname "hvpn0" ip saddr 10.77.0.2 accept"#],
+            ),
+            (
+                ruleset(&inner_only),
+                vec![outer, inner],
+                vec![
+                    r#"oifname "hvpn0" ip saddr 10.77.0.2 accept"#,
+                    r#"oifname "hvpn1" ip saddr 10.78.0.2 accept comment "inner tunnel""#,
+                ],
+            ),
+            (
+                ruleset(&two),
+                vec![outer, inner],
+                vec![
+                    r#"oifname "hvpn0" ip saddr 10.77.0.2 ip daddr 198.51.100.9 udp dport 51820 accept"#,
+                    r#"oifname "hvpn1" ip saddr 10.78.0.2 accept comment "inner tunnel""#,
+                ],
+            ),
+            (
+                admitting_ruleset(&[one.node_endpoint], &[], Some(&bridge)),
+                vec![outer],
+                vec![
+                    r#"oifname "hvpn0" ip saddr 10.77.0.2 ip daddr 198.51.100.9 tcp dport 51821 accept"#,
+                ],
+            ),
+        ] {
+            let output = &r[..r.find("chain input").unwrap()];
+            let rules: Vec<&str> = output.lines().map(str::trim).collect();
+            let first_accept = rules
+                .iter()
+                .position(|l| l.contains(" accept") && *l != r#"oif "lo" accept"#)
+                .unwrap();
+            for (t, own) in tunnels {
+                let guard = format!(
+                    "oifname \"{t}\" ip saddr != {own} counter drop comment \"into a tunnel only from its own address\""
+                );
+                let at = rules
+                    .iter()
+                    .position(|l| *l == guard)
+                    .unwrap_or_else(|| panic!("no source rule for {t}: {output}"));
+                assert!(at < first_accept, "{t}: {output}");
+            }
+            for a in accepts {
+                assert!(rules.contains(&a), "{a}: {output}");
+            }
+            assert!(!output.contains("meta nfproto ipv4"), "{output}");
+        }
+        // The holds name no tunnel, and so no tunnel's address.
+        let adm = SocketAddr::from(([203, 0, 113, 10], 51821));
+        for r in [
+            hold_ruleset(&[one.node_endpoint]),
+            admitting_ruleset(&[one.node_endpoint], &[adm], None),
+        ] {
+            assert!(!r.contains("saddr !="), "{r}");
+        }
     }
 
     #[test]
@@ -513,8 +646,8 @@ mod tests {
         }
         // Two hops: through the inner tunnel, never the outer one.
         let mut two = cfg(true);
-        two.extra_interface = Some("hvpn1".into());
-        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        two.extra_interface = inner();
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let r = ruleset(&two);
         assert!(r.contains(r#"oifname "hvpn1" ip daddr 10.77.0.1 udp dport 53 accept"#));
         assert!(!r.contains(r#"oifname "hvpn0" ip daddr 10.77.0.1"#), "{r}");
@@ -543,8 +676,8 @@ mod tests {
         // Never a tunnel interface: the nodes' tunnel addresses are private
         // too, and what they send through a tunnel is not the local network.
         let mut two = cfg(true);
-        two.extra_interface = Some("hvpn1".into());
-        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        two.extra_interface = inner();
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let r = ruleset(&two);
         assert!(
             r.contains(r#"iifname != { "hvpn0", "hvpn1" } ip saddr { 10.0.0.0/8"#),
@@ -575,8 +708,8 @@ mod tests {
         // only the exit's answers to the inner tunnel's packets (and the
         // ICMP errors about them).
         let mut two = cfg(true);
-        two.extra_interface = Some("hvpn1".into());
-        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        two.extra_interface = inner();
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let r = ruleset(&two);
         assert!(r.contains(
             r#"iifname "hvpn1" ct state established,related accept comment "inner tunnel""#
@@ -608,12 +741,13 @@ mod tests {
         let node_in = "ip saddr 203.0.113.10 udp sport 51820 ct state established accept";
         let one = cfg(true);
         let mut inner_only = cfg(true);
-        inner_only.extra_interface = Some("hvpn1".into());
+        inner_only.extra_interface = inner();
         let mut two = inner_only.clone();
-        two.outer_peer = Some(SocketAddr::from(([198, 51, 100, 9], 51820)));
+        two.outer_peer = Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51820));
         let bridge = Bridge {
             interface: "hvpn0".into(),
-            to: SocketAddr::from(([198, 51, 100, 9], 51821)),
+            from: one.interface_ipv4,
+            to: SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 51821),
         };
         for (r, tunnels) in [
             (ruleset(&one), &["hvpn0"][..]),
@@ -678,9 +812,9 @@ mod tests {
         let single = ruleset(&cfg(false));
         assert!(!single.contains("inner tunnel"));
         let mut two = cfg(false);
-        two.extra_interface = Some("hvpn1".into());
+        two.extra_interface = inner();
         let r = ruleset(&two);
-        assert!(r.contains(r#"oifname "hvpn1" meta nfproto ipv4 accept comment "inner tunnel""#));
+        assert!(r.contains(r#"oifname "hvpn1" ip saddr 10.78.0.2 accept comment "inner tunnel""#));
         assert!(r.contains(
             r#"iifname "hvpn1" ct state established,related accept comment "inner tunnel""#
         ));

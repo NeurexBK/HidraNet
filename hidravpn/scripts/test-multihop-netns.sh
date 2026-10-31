@@ -228,8 +228,13 @@ grep -q "laptop" "$WORK/entry-status.log" && ! grep -q "never" "$WORK/entry-stat
 echo "── the kill switch"
 $C nft list table inet hidravpn_ks > "$WORK/ks.log" 2>&1 && pass "the kill switch is armed" || fail "the kill switch is not armed"
 grep -q 'ip daddr 10.200.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -v 'oifname' "$WORK/ks.log" | grep -q 'ip daddr 10.202.0.1' && pass "the entry's endpoint is the only address allowed off-tunnel" || fail "kill switch rules: $(grep -c accept "$WORK/ks.log") accepts"
-grep -q 'oifname "hvpn1" meta nfproto ipv4 accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -qE 'oifname "hvpn0" (meta nfproto ipv4 )?accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
+grep -q 'oifname "hvpn1" ip saddr 10.77.0.2 accept' "$WORK/ks.log" && grep -q 'oifname "hvpn0" ip saddr 10.77.0.2 ip daddr 10.202.0.1 udp dport 51820 accept' "$WORK/ks.log" && ! grep -qE 'oifname "hvpn0" (ip saddr [0-9.]+ )?accept' "$WORK/ks.log" && pass "the inner tunnel is allowed, and the outer one only towards the exit" || fail "the tunnel interfaces in the kill switch: $(grep hvpn "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
+grep -q 'oifname "hvpn0" ip saddr != 10.77.0.2 counter' "$WORK/ks.log" && grep -q 'oifname "hvpn1" ip saddr != 10.77.0.2 counter' "$WORK/ks.log" && pass "each tunnel takes IPv4 only from the address its node gave it" || fail "the source rules in the kill switch: $(grep 'saddr !=' "$WORK/ks.log" | tr -s ' ' | tr '\n' ';')"
 $C curl -s --max-time 3 http://10.200.0.1:8081/ >/dev/null 2>&1 && fail "a plain request to the physical link got through the kill switch" || pass "a plain request to a host on the physical link is blocked"
+# A socket bound to the client's own address on its link: what it sends to
+# the internet is routed into the inner tunnel with that address, which the
+# exit would read. It is refused there.
+[ "$($C python3 -I "$HERE/test/udp-from.py" 10.200.0.2 10.201.0.2 9905 1100 1 | tail -1)" = blocked ] && pass "a socket bound to the client's own address is refused at the inner tunnel (EPERM), so the exit never reads that address" || fail "a datagram from the client's own address was not refused at the inner tunnel"
 $C ip -4 route | grep -q "^10.77.0.1 dev hvpn1" && $C ip -4 route get 10.77.0.1 | grep -q " dev hvpn1 " && pass "the exit's resolver has a host route into the inner tunnel" || fail "the route to the resolver: $($C ip -4 route get 10.77.0.1 | head -1)"
 # The inner tunnel takes in only answers, as one hop does: a host behind the
 # exit (the internet, given a route to the clients' subnet) reaches nothing
