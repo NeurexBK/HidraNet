@@ -232,6 +232,14 @@ passes.example.org {
 	request_body {
 		max_size 32KiB
 	}
+	# Payment requests are JSON; one declared as anything else is answered
+	# here, before it counts against anyone or reaches the issuer.
+	@notjson {
+		method POST
+		path /quote /claim
+		not header Content-Type application/json*
+	}
+	respond @notjson "the request must be JSON" 415
 	rate_limit {
 		zone quote {
 			match {
@@ -266,6 +274,47 @@ passes.example.org {
 			events 60
 			window 1m
 		}
+		# A quote opens an order that stays open for hours unpaid: a limit
+		# per hour too, for each address and for each exit.
+		zone quote_hour {
+			match {
+				method POST
+				path /quote
+				not remote_ip 203.0.113.10 198.51.100.20
+			}
+			key {remote_host}
+			events 10
+			window 1h
+		}
+		zone exits_quote_hour {
+			match {
+				method POST
+				path /quote
+				remote_ip 203.0.113.10 198.51.100.20
+			}
+			key {remote_host}
+			events 300
+			window 1h
+		}
+	}
+	# New orders from everyone together, counted after the limits above:
+	# this many an hour, times the hours an unpaid order is kept, stays
+	# under the issuer's ceiling of open orders. The key names no one.
+	rate_limit {
+		zone quote_all {
+			match {
+				method POST
+				path /quote
+			}
+			key quote_all
+			events 700
+			window 1h
+		}
+	}
+	# A request over a limit gets a reason the client can show.
+	handle_errors 429 {
+		header Content-Type application/json
+		respond `{"error":"too many requests to the pass issuer right now; new orders are limited per hour: try again later"}` 429
 	}
 	# Each request read whole before the issuer is asked: see below.
 	reverse_proxy 127.0.0.1:8730 {
@@ -280,7 +329,24 @@ passes.example.org {
 ```
 
 A client over the limit is answered 429, and `hidravpn passes buy` or
-`claim` says so; trying again a minute later works.
+`claim` says so; trying again a minute later works, or an hour later for a
+quote past the hourly limit. A quote opens an order that is kept until it
+lapses, so the quotes an address may ask for in an hour, times the hours an
+order stays open, are the orders it can hold: with an issuer that keeps an
+unpaid order 24 hours and holds at most 20 000, 10 an hour is 240 for one
+address and 300 an hour is 7 200 for one exit. Many addresses together
+could still fill the table, so the second `rate_limit` caps new orders for
+everyone at 700 an hour: 16 800 in 24 hours, under 20 000. It is a separate
+directive after the first, so it counts only the quotes the per-address and
+per-exit zones let through; within one `rate_limit`, a zone that lets a
+request through counts it even when another zone refuses it. A flood can
+still take those 700 while it lasts, but it leaves no full table behind.
+Check the order with `caddy adapt`: the route with `quote_all` comes after
+the one with the other zones. The issuer refuses a request not declared as JSON itself (415);
+answering it at the proxy too keeps such requests from counting against
+anyone, and covers an issuer from before that check. A web page can make its
+visitors' browsers send a form or plain text to another site, but not JSON
+without the site's consent, which the issuer never gives.
 
 The issuer answers at most 64 requests at a time, and gives each client
 five seconds to send its request, so a request that comes slowly holds a
@@ -294,9 +360,9 @@ opens a connection to the issuer, so a slow client holds only its own
 connection to Caddy, and the timeouts in the global block end that. nginx
 reads the whole body first by default (`proxy_request_buffering on`):
 leave it on, and set `client_body_timeout` and `client_header_timeout`. The addresses are
-examples: put the exits' own in the `exits` zone's `remote_ip` line and in
-the `not remote_ip` lines of the other two, so each address is counted in
-one zone only. With nginx, the same is `limit_req_zone
+examples: put the exits' own in the `remote_ip` lines of the two exit zones
+and in the `not remote_ip` lines of the other three, so each address is
+counted in its own zones only. With nginx, the same is `limit_req_zone
 $binary_remote_addr zone=pay:1m rate=20r/m;` and a `limit_req zone=pay
 burst=5;` in `location = /quote` and `location = /claim`, with a `geo` map
 sending the exits' addresses to a second zone at a higher rate. The issuer
@@ -414,11 +480,12 @@ every quote, and stop the sales. In this order:
    limit: build it with the plug-in,
    `xcaddy build --with github.com/mholt/caddy-ratelimit`, and put that
    `caddy` in place of the packaged one. Deploy the Caddyfile above with the
-   exits' real addresses in the `exits` zone and in both `not remote_ip`
-   lines, and with no access log, then reload Caddy. Check it from a machine
-   that is not an exit: the 21st `POST /quote` within a minute is answered
-   429 by the proxy (`for i in $(seq 21); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' https://<issuer host>/quote; done`
-   ends with 429).
+   exits' real addresses in its five `remote_ip` and `not remote_ip` lines,
+   and with no access log, then reload Caddy. If a Caddyfile is already in
+   front, keep it and add only what it lacks. Check it from a machine that
+   is not an exit: the 11th `POST /quote` within an hour is answered 429 by
+   the proxy (`for i in $(seq 11); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' https://<issuer host>/quote; done`
+   ends with 429), and one sent as a form is answered 415.
 3. Replace the issuer's binary and restart it
    (`systemctl restart hidravpn-issuer`). The files carry over, and the
    lapsed file appears with the first order that lapses.
@@ -427,8 +494,9 @@ every quote, and stop the sales. In this order:
    One that does names the orders file it could not read.
 
 Whenever an exit is added to the signed list or changes address, change the
-`exits` zone and the `not remote_ip` lines with it and reload Caddy: until
-then the clients behind that exit share one client's limit.
+five `remote_ip` and `not remote_ip` lines (in the zones quote, claim, exits,
+quote_hour and exits_quote_hour) with it and reload Caddy: until then the
+clients behind that exit share one client's limit.
 
 Orders open at the upgrade were promised 24 hours and keep them: they count
 as held, so for up to a day the room for held orders, and the cap on open
