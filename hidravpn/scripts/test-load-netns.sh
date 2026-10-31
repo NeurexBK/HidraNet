@@ -99,7 +99,7 @@ $LO env HIDRAVPN_RUN_DIR="$WORK/run-o" "$BIN/hidravpn-node" --config "$WORK/o.to
 for i in $(seq 1 100); do grep -q "admission service on" "$WORK/node-o.log" && break; sleep 0.2; done
 grep -q "admission service on TCP 51821 (open" "$WORK/node-o.log" && pass "node-o is up, open, 41 clients at most" || { tail -5 "$WORK/node-o.log"; fail "node-o"; exit 1; }
 for i in $(seq 1 20); do grep -q "no entry is listed in admission_relays" "$WORK/node-o.log" && break; sleep 0.1; done
-grep -q "no entry is listed in admission_relays: .* share the 8 connections" "$WORK/node-o.log" && pass "node-o, an open exit that lists no entry as a relay, warns that two-hop clients would share one address's connections" || fail "no warning of unlisted relays: $(grep -i relay "$WORK/node-o.log")"
+grep -q "no entry is listed in admission_relays: .* share the 8 connections one address may hold at once and the 30 new session keys" "$WORK/node-o.log" && pass "node-o, an open exit that lists no entry as a relay, warns that two-hop clients would share one address's connections and session keys" || fail "no warning of unlisted relays: $(grep -i relay "$WORK/node-o.log")"
 $LR "$BIN/hidravpn" --key "$WORK/real.key" up "$WORK/real-invite.json" > "$WORK/real.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 100); do grep -q "^connected" "$WORK/real.log" && break; sleep 0.2; done
 grep -q "^connected" "$WORK/real.log" && pass "a real client is connected to node-o" || { cat "$WORK/real.log"; fail "real client"; exit 1; }

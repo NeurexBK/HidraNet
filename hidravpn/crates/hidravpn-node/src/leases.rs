@@ -39,6 +39,17 @@ fn manual() -> String {
     "manual".into()
 }
 
+/// The keys of the session leases in `gone` that never completed a
+/// handshake: requests, not clients, whose places in the admission window
+/// of new sessions are given back.
+pub fn never_came_sessions(gone: &[Lease]) -> Vec<[u8; 32]> {
+    gone.iter()
+        .filter(|l| l.source == "session" && l.last_seen == 0)
+        .filter_map(|l| hidravpn_core::keys::public_key_from_base64(&l.public_key).ok())
+        .map(|k| *k.as_bytes())
+        .collect()
+}
+
 /// How long an openly admitted lease with no handshake ever is kept.
 pub const NEVER_CAME_SECS: u64 = 900;
 
@@ -897,6 +908,40 @@ mod tests {
         assert!(l.admit("x", "not-a-key", &net()).is_err());
         let k = Key::generate_private().get_public().to_base64();
         assert!(l.admit("has space", &k, &net()).is_err());
+    }
+
+    #[test]
+    fn only_a_session_that_never_shook_hands_gives_its_place_back() {
+        let mut l = Leases::default();
+        let k = || {
+            wireguard_control::Key::generate_private()
+                .get_public()
+                .to_base64()
+        };
+        let (never, came, open) = (k(), k(), k());
+        l.admit_open("client", &never, &net(), true).unwrap();
+        l.admit_open("client", &came, &net(), true).unwrap();
+        l.admit_open("client", &open, &net(), false).unwrap();
+        let t0 = l.find(&never).unwrap().admitted_at;
+        let mut ages = std::collections::HashMap::new();
+        ages.insert(came.clone(), Some(std::time::Duration::from_secs(0)));
+        l.note_handshakes(t0 + 10, &ages);
+        let windows = IdleWindows {
+            open: 60,
+            session: 60,
+            pass: 0,
+        };
+        let gone = l.expire_idle(t0 + 10 + 3600, &windows);
+        assert_eq!(gone.len(), 3, "all three lapsed");
+        let back = never_came_sessions(&gone);
+        let want = *hidravpn_core::keys::public_key_from_base64(&never)
+            .unwrap()
+            .as_bytes();
+        assert_eq!(
+            back,
+            vec![want],
+            "only the session key that never shook hands"
+        );
     }
 
     #[test]

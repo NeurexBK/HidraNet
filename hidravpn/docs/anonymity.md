@@ -313,14 +313,22 @@ entry shares the entry's address, so they would all be stopped together.
 - the current minute.
 
 It costs about a second of one core at the default of 20 bits (a node's
-`admission_work_bits`). Session admissions are not counted per address. They
-have a node-wide ceiling of 600 per ten minutes
-(`hidravpn-node/src/admission.rs:61`), and each key counts once against it
-(finding 17). A key whose session never shakes hands is forgotten after two
-minutes (`leases.rs:65`). A node that wants more work answers 428 with how
-much, and the client works the proof out again for that, up to 26 bits; a
-node asks for more as its ceiling fills (finding 17). Lasting leases (Join
-on the command line, for root's `up` with an invite) keep the old count.
+`admission_work_bits`). Session admissions have a node-wide ceiling of 600
+per ten minutes (`hidravpn-node/src/admission.rs`), and each key counts once
+against it (finding 17). They are also counted per address, 30 new keys
+every ten minutes, except from an entry listed in `admission_relays`, which
+asks an exit for all of its clients from one address; an address over its
+share is told so before it is asked for any work. Everyone behind one
+address shares its 30, so one of them can use them up for the others. A key
+whose session never shakes hands is forgotten within about four and a half
+minutes (`leases.rs:65` and the reaper's period), and so is its place under
+the ceiling; a key the node refuses takes none. This does not stop someone
+with a few tens of addresses and enough processor time from filling the
+ceiling and holding it while they keep their sessions alive. A node that
+wants more work answers 428 with how much, and the client works the proof
+out again for that, up to 26 bits; a node asks for more as its ceiling
+fills (finding 17). Lasting leases (Join on the command line, for root's
+`up` with an invite) keep the old count.
 
 This makes filling a node cost computing for every lease, and the most for
 the last places. It does not stop someone with many machines; the passes of

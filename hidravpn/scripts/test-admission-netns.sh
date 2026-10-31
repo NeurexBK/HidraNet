@@ -199,6 +199,14 @@ R=$($E $LOAD burst 10.202.0.1:51821 10.200.0.1 12)
 # then it is full.
 R=$($C $LOAD session 10.200.0.1:51821 "$B_PUB" 10.200.0.2 2)
 [ "$(jget "$R" 'd["statuses"].get("200", 0)')" = 1 ] && [ "$(jget "$R" 'd["statuses"].get("503", 0)')" = 1 ] && jget "$R" 'd["last_answer"]' | grep -q "full" && pass "a node admits up to --max-clients and then answers 503 full ($(jget "$R" 'd["statuses"]'))" || fail "max_clients: $R"
+# node-b is full now, so every new session is refused (503) and gives its
+# place in the window back; an address still has only its share of tries.
+$C ip addr add 10.200.0.3/24 dev c-e
+R=$($C $LOAD session 10.200.0.1:51821 "$B_PUB" 10.200.0.3 31)
+[ "$(jget "$R" 'd["statuses"].get("503", 0)')" = 30 ] && [ "$(jget "$R" 'd["statuses"].get("429", 0)')" = 1 ] && jget "$R" 'd["last_answer"]' | grep -q "too many sessions from this address" && pass "one address gets 30 new session keys in ten minutes, then 429 before any work, and refused keys do not fill the window ($(jget "$R" 'd["statuses"]'))" || fail "per-address sessions: $R"
+$C ip addr add 10.200.0.4/24 dev c-e
+R=$($C $LOAD session 10.200.0.1:51821 "$B_PUB" 10.200.0.4 1)
+[ "$(jget "$R" 'd["statuses"].get("503", 0)')" = 1 ] && pass "another address is still served (503 full, not 429)" || fail "another address after the first used its share: $R"
 kill $NODE_B; wait $NODE_B 2>/dev/null; sed -i 's/^admission = "open"/admission = "manual"/' "$WORK/b.toml"
 $E env HIDRAVPN_RUN_DIR="$WORK/run-b" "$BIN/hidravpn-node" --config "$WORK/b.toml" run > "$WORK/b2.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 50); do grep -q "admission service on TCP 51821 (by hand" "$WORK/b2.log" && break; sleep 0.2; done

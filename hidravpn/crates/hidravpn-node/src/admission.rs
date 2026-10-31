@@ -16,16 +16,22 @@
 //! which a client only ever asks for a key for one connection, gives none.
 //! A session costs a proof of work, more as the window of recent sessions
 //! or the node's table of leases fills, whichever is fuller, so the last
-//! places cost the most. A connection is accepted, then closed at once when
+//! places cost the most. Sessions are counted per address too (except from
+//! an entry listed in `admission_relays`, which asks for all its clients),
+//! so one address cannot take the whole window, and the place of a key the
+//! main loop refused, or that never completed a handshake, is given back.
+//! An address over its share is told so before it is asked for any work. A connection is accepted, then closed at once when
 //! the service holds all the connections it serves or the address holds
 //! its share; one that sends nothing for two seconds, or not a whole request
 //! in three, is closed. A lease that never completes a handshake lapses
 //! within a quarter of an hour (`leases.rs`), so filling a node costs real
 //! tunnels, not requests. What this does not stop: one handshake every few
-//! minutes keeps a session alive, so someone with enough processor time can
-//! still fill an open node with sessions and hold it while they keep them
-//! alive, and someone with hundreds of addresses can keep the door busy.
-//! Nodes that admit with a pass are the answer to that.
+//! minutes keeps a session alive, so someone with enough processor time and
+//! a few tens of addresses can still fill the window of new sessions, or an
+//! open node, and hold it while they keep the sessions alive. Everyone
+//! behind one address (a household, a carrier's NAT) shares its share, and
+//! one of them can use it up. Nodes that admit with a pass, and more than
+//! one entry, are the answer to that.
 //! Nothing here logs an address or a key: counts only.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -64,11 +70,16 @@ const PER_IP_WINDOW: Duration = Duration::from_secs(600);
 const GLOBAL: usize = 120;
 const GLOBAL_WINDOW: Duration = Duration::from_secs(600);
 /// Session admissions (a fresh key per connection) are paid for with a
-/// proof of work instead of being counted per address: they come from the
-/// client's own address for a first hop and from the entry's for an exit,
-/// and counting the entry's address would throttle all its clients
-/// together. They have a node-wide ceiling of their own.
+/// proof of work, and have a node-wide ceiling of their own.
 const SESSION_GLOBAL: usize = 600;
+/// New session keys one address may be admitted in the window. A first hop
+/// sees each client's own address, and a client asks for one key per
+/// connection (a few more when a hop hands it an address it already holds),
+/// so this leaves room for a household behind one address reconnecting
+/// often, and filling the window takes many addresses, not one. An exit is
+/// asked by its entry for all of the entry's two-hop clients, from one
+/// address: an address in `admission_relays` is not counted.
+const SESSION_PER_IP: usize = 30;
 
 /// How many connections the service holds open, and for how long.
 #[derive(Debug, Clone, Copy)]
@@ -106,8 +117,8 @@ const LIMITS: Limits = Limits {
     per_connection: Duration::from_secs(5),
 };
 
-/// Sliding windows: per source address and overall for lasting leases,
-/// overall only for session leases.
+/// Sliding windows: per source address and overall, for lasting leases
+/// and for session leases.
 #[derive(Default)]
 pub struct RateLimiter {
     per_ip: HashMap<IpAddr, VecDeque<Instant>>,
@@ -117,6 +128,28 @@ pub struct RateLimiter {
     /// minutes) takes no further room.
     sessions: VecDeque<(Instant, [u8; 32])>,
     session_keys: HashSet<[u8; 32]>,
+    /// When each address was admitted a new session key, in the window. A
+    /// place given back (`forget_session`) stays counted here: this is how
+    /// often the address asked, not what it holds.
+    session_per_ip: HashMap<IpAddr, VecDeque<Instant>>,
+}
+
+/// What a session admission that is allowed did to the window.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// The key took a place.
+    New,
+    /// The key already had one: it took nothing more.
+    Again,
+}
+
+/// Why a session admission is refused before the main loop is asked.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionRefusal {
+    /// The node-wide window is full.
+    Node,
+    /// The address had its share of the window.
+    Address,
 }
 
 /// The bits of work added as `used` nears `ceiling`: two from half full,
@@ -190,23 +223,79 @@ impl RateLimiter {
         base.saturating_add(extra).min(work::MAX_BITS.max(base))
     }
 
-    /// Whether a session admission for `key` is allowed now, whoever asks;
-    /// records it if so. The proof of work is checked before this. A key
-    /// already admitted in the window is allowed again without taking more
-    /// room: the node answers with the lease it already holds.
-    pub fn allow_session(&mut self, key: [u8; 32], now: Instant) -> bool {
-        self.slide_sessions(now);
+    /// Whether a session admission for `key`, asked from `from`, is allowed
+    /// now; records it if so. `from` is None for an address in
+    /// `admission_relays`, which is not counted. The proof of work is
+    /// checked before this. A key already admitted in the window is allowed
+    /// again without taking more room: the node answers with the lease it
+    /// already holds.
+    pub fn allow_session(
+        &mut self,
+        key: [u8; 32],
+        from: Option<IpAddr>,
+        now: Instant,
+    ) -> std::result::Result<Recorded, SessionRefusal> {
+        self.session_room(&key, from, now)?;
         if self.session_keys.contains(&key) {
-            return true;
+            return Ok(Recorded::Again);
         }
-        if self.sessions.len() >= SESSION_GLOBAL {
-            return false;
+        if let Some(ip) = from {
+            let q = self.session_per_ip.entry(ip).or_default();
+            q.push_back(now);
+            // Forget addresses that have gone quiet, so the map cannot grow forever.
+            if self.session_per_ip.len() > 10_000 {
+                self.session_per_ip.retain(|_, q| {
+                    q.back()
+                        .is_some_and(|t| now.duration_since(*t) <= GLOBAL_WINDOW)
+                });
+            }
         }
         self.sessions.push_back((now, key));
         self.session_keys.insert(key);
-        true
+        Ok(Recorded::New)
+    }
+
+    /// Whether a session admission for `key` from `from` would be allowed
+    /// now, recording nothing: asked before the proof of work, so that an
+    /// address over its share, or a full window, is told at once instead of
+    /// after a minute of work.
+    pub fn session_room(
+        &mut self,
+        key: &[u8; 32],
+        from: Option<IpAddr>,
+        now: Instant,
+    ) -> std::result::Result<(), SessionRefusal> {
+        self.slide_sessions(now);
+        if self.session_keys.contains(key) {
+            return Ok(());
+        }
+        if self.sessions.len() >= SESSION_GLOBAL {
+            return Err(SessionRefusal::Node);
+        }
+        if let Some(ip) = from {
+            if let Some(q) = self.session_per_ip.get_mut(&ip) {
+                if !room(q, now, GLOBAL_WINDOW, SESSION_PER_IP) {
+                    return Err(SessionRefusal::Address);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Gives back the window place of a session key that did not become a
+    /// client: the main loop refused it, or it never completed a handshake
+    /// and its lease lapsed. Without this, keys that never connect would
+    /// hold the window for its whole length. Its address's count stays.
+    pub fn forget_session(&mut self, key: &[u8; 32]) {
+        if self.session_keys.remove(key) {
+            self.sessions.retain(|(_, k)| k != key);
+        }
     }
 }
+
+/// The limiter the admission service and the node's main loop share: the
+/// main loop gives back the places of session keys that never connected.
+pub type SharedLimiter = Arc<Mutex<RateLimiter>>;
 
 /// A pass to write down as spent, once the main loop has checked it is not.
 pub struct SpentPass {
@@ -236,6 +325,7 @@ pub async fn serve(
     cfg: Arc<NodeConfig>,
     tx: mpsc::Sender<Admit>,
     held: Arc<AtomicUsize>,
+    limiter: SharedLimiter,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
@@ -278,7 +368,7 @@ pub async fn serve(
     if let Some(w) = unlisted_relays(&cfg, listen.port(), LIMITS) {
         warn!("{w}");
     }
-    serve_on(listener, cfg, tx, held, LIMITS).await
+    serve_on(listener, cfg, tx, held, limiter, LIMITS).await
 }
 
 /// What a node that may be the exit of two hops says when it lists no
@@ -292,8 +382,8 @@ fn unlisted_relays(cfg: &NodeConfig, port: u16, limits: Limits) -> Option<String
         && cfg.admission_relays.is_empty())
     .then(|| {
         format!(
-            "no entry is listed in admission_relays: every two-hop client of an entry asks this node from the entry's address, and all of them share the {} connections one address may hold at once; on an exit of a signed list, list its entries' addresses there",
-            limits.per_ip
+            "no entry is listed in admission_relays: every two-hop client of an entry asks this node from the entry's address, and all of them share the {} connections one address may hold at once and the {} new session keys it may be admitted every ten minutes; on an exit of a signed list, list its entries' addresses there",
+            limits.per_ip, SESSION_PER_IP
         )
     })
 }
@@ -303,9 +393,9 @@ async fn serve_on(
     cfg: Arc<NodeConfig>,
     tx: mpsc::Sender<Admit>,
     held: Arc<AtomicUsize>,
+    limiter: SharedLimiter,
     limits: Limits,
 ) -> Result<()> {
-    let limiter = Arc::new(Mutex::new(RateLimiter::default()));
     let slots = Arc::new(Semaphore::new(limits.connections));
     let open = Arc::new(std::sync::Mutex::new(OpenPerIp::default()));
     let counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
@@ -493,9 +583,20 @@ async fn admit(
             &refusal("this node is an entry: it admits a key for one connection, which a client asks for as it connects; there is nothing to join here"),
         );
     }
+    let mut recorded = None;
     if req.session {
         // A session key is paid for with work, bound to this node and this
-        // key, not counted against an address.
+        // key, and counted against the address it comes from unless that is
+        // a listed relay. An address over its share, or a full window, is
+        // told so before any work is asked of it.
+        let from = (!cfg.admission_relays.contains(&ip)).then_some(ip);
+        if let Err(r) = limiter
+            .lock()
+            .await
+            .session_room(&client, from, Instant::now())
+        {
+            return session_refused(r);
+        }
         let bits = limiter.lock().await.session_bits(
             cfg.admission_work_bits,
             Instant::now(),
@@ -514,11 +615,13 @@ async fn admit(
         if !paid {
             return http_response(428, &refusal_wanting_work(bits));
         }
-        if !limiter.lock().await.allow_session(client, Instant::now()) {
-            return http_response(
-                429,
-                &refusal("this node is admitting too many sessions right now; try another"),
-            );
+        match limiter
+            .lock()
+            .await
+            .allow_session(client, from, Instant::now())
+        {
+            Ok(r) => recorded = Some(r),
+            Err(r) => return session_refused(r),
         }
     } else if !limiter.lock().await.allow(ip, Instant::now()) {
         return http_response(
@@ -531,7 +634,7 @@ async fn admit(
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     );
     let (reply, rx) = oneshot::channel();
-    if tx
+    let answer = if tx
         .send(Admit {
             public_key: req.public_key,
             session: req.session,
@@ -542,12 +645,41 @@ async fn admit(
         .await
         .is_err()
     {
-        return http_response(503, &refusal("the node is stopping"));
+        Err(http_response(503, &refusal("the node is stopping")))
+    } else {
+        match tokio::time::timeout(Duration::from_secs(4), rx).await {
+            Ok(Ok(Ok(invite))) => Ok(http_response(200, &invite.to_json())),
+            Ok(Ok(Err((status, why)))) => Err(http_response(status, &refusal(why))),
+            _ => Err(http_response(
+                503,
+                &refusal("the node did not answer in time"),
+            )),
+        }
+    };
+    match answer {
+        Ok(a) => a,
+        Err(a) => {
+            // A session key that was not admitted holds no place in the
+            // window, unless it held one before this request.
+            if recorded == Some(Recorded::New) {
+                limiter.lock().await.forget_session(&client);
+            }
+            a
+        }
     }
-    match tokio::time::timeout(Duration::from_secs(4), rx).await {
-        Ok(Ok(Ok(invite))) => http_response(200, &invite.to_json()),
-        Ok(Ok(Err((status, why)))) => http_response(status, &refusal(why)),
-        _ => http_response(503, &refusal("the node did not answer in time")),
+}
+
+/// The answer to a session admission refused before the main loop is asked.
+fn session_refused(r: SessionRefusal) -> Vec<u8> {
+    match r {
+        SessionRefusal::Node => http_response(
+            429,
+            &refusal("this node is admitting too many sessions right now; try another"),
+        ),
+        SessionRefusal::Address => http_response(
+            429,
+            &refusal("too many sessions from this address in the last minutes; try again later"),
+        ),
     }
 }
 
@@ -662,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn session_admissions_are_not_counted_per_address_but_have_a_ceiling() {
+    fn session_admissions_from_a_relay_are_not_counted_per_address_but_have_a_ceiling() {
         let mut l = RateLimiter::default();
         let entry: IpAddr = "203.0.113.7".parse().unwrap();
         let t0 = Instant::now();
@@ -671,14 +803,20 @@ mod tests {
         }
         assert!(!l.allow(entry, t0), "lasting leases: a few per address");
         let mut sessions = 0;
-        while l.allow_session(key(sessions), t0) {
+        while l.allow_session(key(sessions), None, t0).is_ok() {
             sessions += 1;
         }
         assert_eq!(
             sessions, SESSION_GLOBAL as u32,
             "sessions: the node-wide ceiling only"
         );
-        assert!(l.allow_session(key(sessions), t0 + GLOBAL_WINDOW + Duration::from_secs(1)));
+        assert!(l
+            .allow_session(
+                key(sessions),
+                None,
+                t0 + GLOBAL_WINDOW + Duration::from_secs(1)
+            )
+            .is_ok());
     }
 
     fn key(n: u32) -> [u8; 32] {
@@ -688,27 +826,130 @@ mod tests {
     }
 
     #[test]
+    fn one_address_gets_a_share_of_the_session_window_not_all_of_it() {
+        let mut l = RateLimiter::default();
+        let ip: IpAddr = "203.0.113.8".parse().unwrap();
+        let t0 = Instant::now();
+        for n in 0..SESSION_PER_IP as u32 {
+            assert!(l.allow_session(key(n), Some(ip), t0).is_ok());
+        }
+        assert_eq!(
+            l.allow_session(key(1000), Some(ip), t0),
+            Err(SessionRefusal::Address),
+            "one more from the same address is refused"
+        );
+        assert!(
+            l.allow_session(key(3), Some(ip), t0).is_ok(),
+            "a key it already has still gets its lease"
+        );
+        let other: IpAddr = "203.0.113.9".parse().unwrap();
+        assert!(
+            l.allow_session(key(1001), Some(other), t0).is_ok(),
+            "another address is not affected"
+        );
+        assert!(
+            l.allow_session(key(1002), None, t0).is_ok(),
+            "nor is a relay"
+        );
+        assert_eq!(l.sessions.len(), SESSION_PER_IP + 2);
+        let later = t0 + GLOBAL_WINDOW + Duration::from_secs(1);
+        assert!(
+            l.allow_session(key(1003), Some(ip), later).is_ok(),
+            "after the window it may ask again"
+        );
+    }
+
+    #[test]
+    fn filling_the_session_window_takes_many_addresses() {
+        let mut l = RateLimiter::default();
+        let t0 = Instant::now();
+        let (mut admitted, mut addresses) = (0u32, 0u32);
+        while (admitted as usize) < SESSION_GLOBAL {
+            let ip: IpAddr = format!("198.51.100.{addresses}").parse().unwrap();
+            addresses += 1;
+            while l.allow_session(key(admitted), Some(ip), t0).is_ok() {
+                admitted += 1;
+            }
+        }
+        assert_eq!(admitted as usize, SESSION_GLOBAL);
+        assert_eq!(
+            addresses as usize,
+            SESSION_GLOBAL.div_ceil(SESSION_PER_IP),
+            "one address fills its share, never the window"
+        );
+    }
+
+    #[test]
+    fn a_session_that_never_connected_gives_its_place_back() {
+        let mut l = RateLimiter::default();
+        let t0 = Instant::now();
+        for n in 0..SESSION_GLOBAL as u32 {
+            assert!(l.allow_session(key(n), None, t0).is_ok());
+        }
+        assert_eq!(
+            l.allow_session(key(9999), None, t0),
+            Err(SessionRefusal::Node)
+        );
+        l.forget_session(&key(7));
+        l.forget_session(&key(7));
+        l.forget_session(&key(123_456));
+        assert_eq!(l.sessions.len(), SESSION_GLOBAL - 1);
+        assert!(!l.session_keys.contains(&key(7)));
+        assert!(
+            l.allow_session(key(9999), None, t0).is_ok(),
+            "the place is free again"
+        );
+        assert_eq!(
+            l.allow_session(key(10_000), None, t0),
+            Err(SessionRefusal::Node)
+        );
+        // A forgotten key coming back takes a place again, like a new one.
+        assert_eq!(l.allow_session(key(7), None, t0), Err(SessionRefusal::Node));
+    }
+
+    #[test]
+    fn a_place_given_back_still_counts_against_its_address() {
+        let mut l = RateLimiter::default();
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        let t0 = Instant::now();
+        for n in 0..SESSION_PER_IP as u32 {
+            assert!(l.allow_session(key(n), Some(ip), t0).is_ok());
+            l.forget_session(&key(n));
+        }
+        assert!(l.sessions.is_empty(), "every place was given back");
+        assert_eq!(
+            l.allow_session(key(5000), Some(ip), t0),
+            Err(SessionRefusal::Address),
+            "but the address asked its share: churning keys does not help"
+        );
+    }
+
+    #[test]
     fn a_replayed_session_request_takes_no_more_room() {
         let mut l = RateLimiter::default();
         let t0 = Instant::now();
         for _ in 0..(SESSION_GLOBAL * 2) {
-            assert!(l.allow_session(key(1), t0), "the same key, again and again");
+            assert!(
+                l.allow_session(key(1), None, t0).is_ok(),
+                "the same key, again and again"
+            );
         }
         assert_eq!(l.sessions.len(), 1, "counted once");
         for n in 2..=SESSION_GLOBAL as u32 {
-            assert!(l.allow_session(key(n), t0));
+            assert!(l.allow_session(key(n), None, t0).is_ok());
         }
-        assert!(
-            !l.allow_session(key(0), t0),
+        assert_eq!(
+            l.allow_session(key(0), None, t0),
+            Err(SessionRefusal::Node),
             "the window is full of different keys"
         );
         assert!(
-            l.allow_session(key(1), t0),
+            l.allow_session(key(1), None, t0).is_ok(),
             "a key already in it still has its lease"
         );
         // Once it slides out, the key is forgotten with it.
         let later = t0 + GLOBAL_WINDOW + Duration::from_secs(1);
-        assert!(l.allow_session(key(0), later));
+        assert!(l.allow_session(key(0), None, later).is_ok());
         assert!(!l.session_keys.contains(&key(1)));
         assert_eq!(l.sessions.len(), 1);
     }
@@ -723,7 +964,7 @@ mod tests {
             if seen.last() != Some(&b) {
                 seen.push(b);
             }
-            assert!(l.allow_session(key(n), t0));
+            assert!(l.allow_session(key(n), None, t0).is_ok());
         }
         assert_eq!(
             seen,
@@ -764,7 +1005,7 @@ mod tests {
         assert_eq!(l.session_bits(20, t0, 0, 0), 26, "no places: the most");
         // The fuller of the window and the table decides.
         for n in 0..(SESSION_GLOBAL as u32 * 3 / 4) {
-            assert!(l.allow_session(key(n), t0));
+            assert!(l.allow_session(key(n), None, t0).is_ok());
         }
         assert_eq!(l.session_bits(20, t0, 0, max), 24);
         assert_eq!(l.session_bits(20, t0, 3600, max), 26);
@@ -860,6 +1101,150 @@ mod tests {
         assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"));
     }
 
+    #[test]
+    fn the_room_is_checked_without_taking_any() {
+        let mut l = RateLimiter::default();
+        let ip: IpAddr = "203.0.113.12".parse().unwrap();
+        let t0 = Instant::now();
+        assert!(l.session_room(&key(1), Some(ip), t0).is_ok());
+        assert!(
+            l.sessions.is_empty() && l.session_per_ip.is_empty(),
+            "asking takes nothing"
+        );
+        for n in 0..SESSION_PER_IP as u32 {
+            assert_eq!(l.allow_session(key(n), Some(ip), t0), Ok(Recorded::New));
+        }
+        assert_eq!(
+            l.session_room(&key(999), Some(ip), t0),
+            Err(SessionRefusal::Address)
+        );
+        assert_eq!(
+            l.session_room(&key(0), Some(ip), t0),
+            Ok(()),
+            "a key it holds is still answered"
+        );
+        assert_eq!(l.allow_session(key(0), Some(ip), t0), Ok(Recorded::Again));
+        assert!(
+            l.session_room(&key(999), None, t0).is_ok(),
+            "a relay is not counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_over_its_share_hears_so_before_any_work() {
+        let cfg = node("entry");
+        let limiter = Mutex::new(RateLimiter::default());
+        let ip: IpAddr = "203.0.113.13".parse().unwrap();
+        {
+            let mut l = limiter.lock().await;
+            for n in 0..SESSION_PER_IP as u32 {
+                l.allow_session(key(n), Some(ip), Instant::now()).unwrap();
+            }
+        }
+        let (tx, mut rx) = mpsc::channel::<Admit>(4);
+        let counter = std::sync::atomic::AtomicU64::new(1);
+        let held = AtomicUsize::new(0);
+        let k = wireguard_control::Key::generate_private()
+            .get_public()
+            .to_base64();
+        let body = format!(r#"{{"public_key":"{k}","name":"x","session":true}}"#);
+        let answer = admit(body.as_bytes(), ip, &cfg, &tx, &limiter, &counter, &held).await;
+        let text = String::from_utf8_lossy(&answer).to_string();
+        assert!(text.starts_with("HTTP/1.1 429"), "{text}");
+        assert!(text.contains("from this address"), "{text}");
+        assert!(rx.try_recv().is_err(), "nothing reached the main loop");
+        let other: IpAddr = "203.0.113.14".parse().unwrap();
+        let answer = admit(body.as_bytes(), other, &cfg, &tx, &limiter, &counter, &held).await;
+        let text = String::from_utf8_lossy(&answer).to_string();
+        assert!(
+            text.starts_with("HTTP/1.1 428"),
+            "another address is asked for the work: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_retry_of_a_key_already_admitted_keeps_its_place() {
+        let mut cfg = node("entry");
+        cfg.admission_work_bits = 8;
+        let node_key = *hidravpn_core::keys::public_key_from_base64(&cfg.public_key().unwrap())
+            .unwrap()
+            .as_bytes();
+        let limiter = Mutex::new(RateLimiter::default());
+        let counter = std::sync::atomic::AtomicU64::new(1);
+        let held = AtomicUsize::new(0);
+        let (tx, mut rx) = mpsc::channel::<Admit>(4);
+        let ip: IpAddr = "203.0.113.15".parse().unwrap();
+        let k = wireguard_control::Key::generate_private().get_public();
+        let client: [u8; 32] = k.as_bytes().try_into().unwrap();
+        // Admitted before: it holds a place.
+        assert_eq!(
+            limiter
+                .lock()
+                .await
+                .allow_session(client, Some(ip), Instant::now()),
+            Ok(Recorded::New)
+        );
+        let w = work::solve(&node_key, &client, work::now_minute(), 8);
+        let body = serde_json::json!({
+            "public_key": k.to_base64(), "name": "x", "session": true, "work": w,
+        })
+        .to_string();
+        let reply = async {
+            let req = rx.recv().await.expect("the main loop is asked");
+            let _ = req
+                .reply
+                .send(Err((503, "could not write the leases".into())));
+        };
+        let (answer, ()) = tokio::join!(
+            admit(body.as_bytes(), ip, &cfg, &tx, &limiter, &counter, &held),
+            reply
+        );
+        assert!(String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 503"));
+        assert!(
+            limiter.lock().await.session_keys.contains(&client),
+            "the place it held before is not given away by a refused retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_the_main_loop_refuses_gives_its_place_back() {
+        let mut cfg = node("entry");
+        cfg.admission_work_bits = 8;
+        let node_key = *hidravpn_core::keys::public_key_from_base64(&cfg.public_key().unwrap())
+            .unwrap()
+            .as_bytes();
+        let limiter = Mutex::new(RateLimiter::default());
+        let counter = std::sync::atomic::AtomicU64::new(1);
+        let held = AtomicUsize::new(0);
+        let (tx, mut rx) = mpsc::channel::<Admit>(4);
+        let ip: IpAddr = "203.0.113.11".parse().unwrap();
+        for status in [503u16, 400] {
+            let key = wireguard_control::Key::generate_private().get_public();
+            let client: [u8; 32] = key.as_bytes().try_into().unwrap();
+            let w = work::solve(&node_key, &client, work::now_minute(), 8);
+            let body = serde_json::json!({
+                "public_key": key.to_base64(), "name": "x", "session": true, "work": w,
+            })
+            .to_string();
+            let reply = async {
+                let req = rx.recv().await.expect("the main loop is asked");
+                assert!(req.session);
+                let _ = req.reply.send(Err((status, "refused".into())));
+            };
+            let (text, ()) = tokio::join!(
+                admit(body.as_bytes(), ip, &cfg, &tx, &limiter, &counter, &held),
+                reply
+            );
+            let text = String::from_utf8_lossy(&text).to_string();
+            assert!(!text.starts_with("HTTP/1.1 200"), "{text}");
+            assert!(
+                !limiter.lock().await.session_keys.contains(&client),
+                "a refused key holds no place: {text}"
+            );
+        }
+        assert!(limiter.lock().await.sessions.is_empty());
+    }
+
     const QUICK: Limits = Limits {
         connections: 4,
         per_ip: 2,
@@ -880,6 +1265,7 @@ mod tests {
             Arc::new(cfg),
             tx,
             Arc::new(AtomicUsize::new(0)),
+            Arc::new(Mutex::new(RateLimiter::default())),
             limits,
         ));
         (addr, rx)
