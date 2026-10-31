@@ -63,6 +63,13 @@ being checked against those pins. They are rebuilt from scratch, on the
 pinned Electron and Tor, under a new version number: the 1.0.0 names are
 never given other files.
 
+Every 1.0.0 package also has two leaks, fixed in the next version. A
+page can make the system look up the names it hints at (DNS prefetch)
+through the system's own resolver, outside Tor: the site can learn which
+resolver you use, and your network can see those names. And a tab opened
+while Tor is still connecting can load without Tor, or through any other
+program listening on port 9050 of this machine.
+
 Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
 22 October 2026 also lack some or all of the security fixes listed below,
 among them the bridge that let any downloaded .html file turn Tor off
