@@ -150,9 +150,10 @@ round.
 ## 4. What does *not* differentiate us (and has to be said)
 
 - **The anonymity itself is Tor's**, not ours. The volunteer network that
-  provides the real anonymity is the Tor Project's. Our own engine, with its
-  relays pointed at `127.0.0.1` in the current configuration, encrypts in layers
-  but exits from the user's own machine — it does not change the IP. The code
+  provides the real anonymity is the Tor Project's. Our own engine has no relays
+  on other machines yet: on a local test network it encrypts in layers but exits
+  from the user's own machine, so it does not change the IP, and `--proxy`
+  refuses to start without three keyed relays elsewhere. The code
   already documents this correctly. **We cannot tell an investor that we have our
   own anonymity network running.** We have the protocol; we do not yet have the
   volunteers.

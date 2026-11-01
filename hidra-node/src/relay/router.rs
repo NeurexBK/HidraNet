@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rand_core::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn, Instrument};
 use uuid::Uuid;
 use x25519_dalek::StaticSecret;
@@ -35,9 +35,21 @@ struct CircuitEntry {
 pub struct ClientPipe {
     pub from_client: mpsc::Receiver<Vec<u8>>,
     pub to_client: mpsc::Sender<Vec<u8>>,
+    /// The service's turn, given back when the pipe is dropped.
+    _turn: OwnedSemaphorePermit,
 }
 
-type IntroRegistry = Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<ClientPipe>>>>;
+/// A hidden service registered at this intro point. Its circuit carries one
+/// client at a time, so `turn` has a single permit, held by the client being
+/// bridged; the next waits up to `TURN_WAIT` for it, then is told the service
+/// is busy.
+#[derive(Clone)]
+struct Registration {
+    pipes: mpsc::Sender<ClientPipe>,
+    turn: Arc<Semaphore>,
+}
+
+type IntroRegistry = Arc<Mutex<HashMap<Vec<u8>, Registration>>>;
 type Circuits = Arc<Mutex<HashMap<u32, CircuitEntry>>>;
 
 pub struct RelayRouter {
@@ -459,6 +471,9 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// links open for good, but well above the downstream budget (one bounded
 /// connect plus propagation) so real traffic is never cut off.
 const NEXT_HOP_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a client waits at an intro point for a hidden service's turn.
+/// Well under `NEXT_HOP_REPLY_TIMEOUT`, which the hops before it wait.
+const TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a circuit's per-relay state is kept with no use before it is reaped
 /// (the timer is refreshed on each cell). This must exceed the client's
 /// pooled-circuit lifetime (its own CIRCUIT_TTL, 300s) so the relay never
@@ -577,43 +592,57 @@ async fn handle_exit_command(
                 return reply(conn, circuit_id, layer, &RelayCommand::ConnectFailed(format!("{e}"))).await;
             }
             info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — registering hidden service");
-            let (pipe_tx, mut pipe_rx) = mpsc::channel::<ClientPipe>(16);
-            ctx.intro_registry.lock().await.insert(service_hash.clone(), pipe_tx);
-            reply(conn, circuit_id, layer, &RelayCommand::ServiceRegistered).await?;
-            info!(circuit_id, "intro relay — service registered, waiting for clients");
-            while let Some(mut client_pipe) = pipe_rx.recv().await {
-                info!(circuit_id, "intro relay — bridging client to service");
-                if let Err(e) = bridge(
-                    conn,
-                    circuit_id,
-                    layer,
-                    &client_pipe.to_client,
-                    &mut client_pipe.from_client,
-                )
+            let (pipes, mut pipe_rx) = mpsc::channel::<ClientPipe>(1);
+            let turn = Arc::new(Semaphore::new(1));
+            let registration = Registration {
+                pipes,
+                turn: Arc::clone(&turn),
+            };
+            ctx.intro_registry
+                .lock()
                 .await
-                {
-                    warn!(error = %e, "service bridge session ended");
-                }
+                .insert(service_hash.clone(), registration);
+            let served = serve_registration(conn, circuit_id, layer, &mut pipe_rx).await;
+            let mut registry = ctx.intro_registry.lock().await;
+            // A later registration of the same service may hold the place now.
+            if registry
+                .get(&service_hash)
+                .is_some_and(|r| Arc::ptr_eq(&r.turn, &turn))
+            {
+                registry.remove(&service_hash);
+                info!(circuit_id, "intro relay — service deregistered");
             }
-            ctx.intro_registry.lock().await.remove(&service_hash);
-            info!(circuit_id, "intro relay — service deregistered");
-            Ok(())
+            served
         }
         RelayCommand::ConnectService { service_hash } => {
             info!(circuit_id, hash = ?service_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(), "intro relay — client connecting to service");
-            let pipe_tx = ctx.intro_registry.lock().await.get(&service_hash).cloned();
-            let Some(pipe_tx) = pipe_tx else {
+            let registration = ctx.intro_registry.lock().await.get(&service_hash).cloned();
+            let Some(registration) = registration else {
                 warn!(circuit_id, "intro relay — service not found");
                 let fail = RelayCommand::ConnectFailed("service not found at this intro point".into());
                 return reply(conn, circuit_id, layer, &fail).await;
+            };
+            let turn = match tokio::time::timeout(
+                TURN_WAIT,
+                Arc::clone(&registration.turn).acquire_owned(),
+            )
+            .await
+            {
+                Ok(Ok(turn)) => turn,
+                _ => {
+                    info!(circuit_id, "intro relay — service busy with another client");
+                    let fail = RelayCommand::ConnectFailed("service busy".into());
+                    return reply(conn, circuit_id, layer, &fail).await;
+                }
             };
             let (client_to_svc_tx, client_to_svc_rx) = mpsc::channel::<Vec<u8>>(256);
             let (svc_to_client_tx, mut svc_to_client_rx) = mpsc::channel::<Vec<u8>>(256);
             let client_pipe = ClientPipe {
                 from_client: client_to_svc_rx,
                 to_client: svc_to_client_tx,
+                _turn: turn,
             };
-            if pipe_tx.send(client_pipe).await.is_err() {
+            if registration.pipes.send(client_pipe).await.is_err() {
                 warn!(circuit_id, "intro relay — service handler gone");
                 let fail = RelayCommand::ConnectFailed("service handler disconnected".into());
                 return reply(conn, circuit_id, layer, &fail).await;
@@ -645,6 +674,47 @@ async fn handle_exit_command(
             Ok(())
         }
     }
+}
+
+/// Confirms a service's registration, then bridges the clients sent to it, one
+/// at a time, until its circuit closes or a later registration replaces it.
+async fn serve_registration(
+    conn: &mut SecureConnection,
+    circuit_id: u32,
+    layer: &mut LayerCipher,
+    pipes: &mut mpsc::Receiver<ClientPipe>,
+) -> Result<()> {
+    reply(conn, circuit_id, layer, &RelayCommand::ServiceRegistered).await?;
+    info!(
+        circuit_id,
+        "intro relay — service registered, waiting for clients"
+    );
+    loop {
+        tokio::select! {
+            pipe = pipes.recv() => {
+                let Some(mut client_pipe) = pipe else { break };
+                info!(circuit_id, "intro relay — bridging client to service");
+                if let Err(e) = bridge(
+                    conn,
+                    circuit_id,
+                    layer,
+                    &client_pipe.to_client,
+                    &mut client_pipe.from_client,
+                )
+                .await
+                {
+                    warn!(error = %e, "service bridge session ended");
+                }
+            }
+            msg = conn.recv_message() => match msg {
+                // Cells the service sends after its client has gone. Each is
+                // still opened, to keep this hop's cell count in step.
+                Ok(Message::Relay { data, .. }) if open_command(layer, &data).is_ok() => {}
+                _ => break,
+            },
+        }
+    }
+    Ok(())
 }
 
 async fn exit_streaming_loop(
