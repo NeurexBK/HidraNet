@@ -10,6 +10,11 @@
 # a private address: the client reaches it only through the tunnel, where the
 # node's NAT gives the packets the node's address. That is the "exit IP".
 #
+# What the client sends into the tunnel leaves from the tunnel's address
+# only: a socket opened before connecting, or bound to the client's own
+# address after, sends nothing the node could read, with the kill switch
+# and without it.
+#
 # Run as root:  hidravpn/scripts/test-netns.sh
 # Needs: the release binaries built, python3, curl, nft, /dev/net/tun.
 set -u
@@ -87,6 +92,17 @@ grep -q '"client_address": "10.77.0.2/16"' "$WORK/invite.json" && pass "client a
 # name would go to the local network.
 $C ip route add 10.77.0.1/32 via 10.200.0.1 dev c-n metric 100
 
+# A socket the client has open before it connects, to a host of the
+# internet: connecting it gave it the client's own address, by the routes of
+# that moment, and it keeps that address whatever the routes say later. It
+# sends once the tunnel is up.
+open_before() {
+  rm -f "$WORK/go"
+  $C python3 -I "$HERE/test/udp-from.py" --wait "$WORK/go" 0.0.0.0 10.201.0.2 9905 1100 3 > "$WORK/kept.log" 2>&1 & KEPT=$!; PIDS+=($KEPT)
+  for _ in $(seq 1 50); do grep -q "^from" "$WORK/kept.log" && break; sleep 0.1; done
+}
+open_before
+
 # ── Up ───────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client.log" 2>&1 & UP=$!; PIDS+=($UP)
 for i in $(seq 1 100); do grep -q "^connected" "$WORK/client.log" && break; sleep 0.2; done
@@ -105,6 +121,42 @@ $C ip -4 route | grep -q "^0.0.0.0/1 dev hvpn0" && $C ip -4 route | grep -q "^12
 $C ip -4 route | grep -q "^10.200.0.1 " && pass "the node itself stays reachable outside the tunnel" || fail "no host route to the node"
 grep -q "nameserver 10.77.0.1" /etc/netns/hv-client/resolv.conf && pass "resolv.conf points at the node's tunnel address" || fail "resolv.conf: $(cat /etc/netns/hv-client/resolv.conf)"
 $C ip -4 route get 10.77.0.1 | grep -q " dev hvpn0 " && $C ip -4 route | grep -q "^10.77.0.1 dev hvpn0" && pass "the node's resolver has a host route into the tunnel, over the one the local network pushed" || fail "the route to the resolver: $($C ip -4 route get 10.77.0.1 | head -1)"
+
+echo "── what leaves from the client's own address"
+# Linux routes a packet into the tunnel by its destination alone, so the
+# socket opened before connecting, and one bound to the client's own address
+# now, would send into the tunnel with that address, and the node reads it
+# when it decrypts the packet. A counter at the node's end of the link
+# counts the large WireGuard packets from the client: every datagram here is
+# 1100 bytes, more than anything else the client sends meanwhile.
+$N nft -f - <<'NFT'
+table inet hv_wire {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "n-c" ip saddr 10.200.0.2 udp dport 51820 udp length > 1000 counter
+  }
+}
+NFT
+wire() { $N nft list table inet hv_wire | grep -o 'packets [0-9]*' | awk '{print $2}'; }
+# $1 names the round, $2 is what the system says of each datagram from the
+# client's own address (blocked: the kill switch refused it, EPERM; sent:
+# into the tunnel), $3 says it in words.
+own_address() {
+  touch "$WORK/go"; wait $KEPT
+  local bound; bound=$($C python3 -I "$HERE/test/udp-from.py" 10.200.0.2 10.201.0.2 9905 1100 3 | tail -1)
+  sleep 0.5
+  local sent; sent=$(wire)
+  grep -q "^from 10.200.0.2$" "$WORK/kept.log" && grep -q "^$2$" "$WORK/kept.log" && pass "$1: a socket opened before connecting, with the client's own address: $3" || fail "$1: the socket opened before connecting: $(tr '\n' ' ' < "$WORK/kept.log")"
+  [ "$bound" = "$2" ] && pass "$1: a socket bound to the client's own address after connecting: $3" || fail "$1: the socket bound to the client's own address: $bound"
+  [ "$sent" = 0 ] && pass "$1: none of their datagrams reached the node, encrypted or not" || fail "$1: $sent large WireGuard packet(s) from the client reached the node"
+  local own; own=$($C python3 -I "$HERE/test/udp-from.py" 0.0.0.0 10.201.0.2 9905 1100 3 | tr '\n' ' ')
+  sleep 0.5
+  [ "$own" = "from 10.77.0.2 sent " ] && [ "$(wire)" -ge 3 ] && pass "$1: the same datagrams from the tunnel's address do reach it ($(wire) packets)" || fail "$1: from the tunnel's address ($own): $(wire) packet(s) reached the node"
+}
+own_address "kill switch on" blocked "refused (EPERM)"
+DROPS=$($C nft list chain inet hidravpn_ks output | grep 'into a tunnel only from its own address' | sed -E 's/.*packets ([0-9]+).*/\1/')
+[ "${DROPS:-0}" -ge 6 ] && pass "the kill switch counted all six at the tunnel ($DROPS)" || fail "the kill switch counted ${DROPS:-no} drop(s) for the source address"
+$N nft delete table inet hv_wire
 
 echo "── what reaches the client through the tunnel unasked"
 # Programs listening on every address of the client, and a host behind the
@@ -237,5 +289,25 @@ $C ip -4 route | grep -q "hvpn0" && fail "routes to hvpn0 remain" || pass "tunne
 $C ip link show hvpn0 >/dev/null 2>&1 && fail "hvpn0 still exists" || pass "tunnel interface gone"
 [ -f /run/hidravpn/netcfg.json ] && fail "a network plan was left behind" || pass "no network plan left behind"
 $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "still reaching the internet host after down" || pass "after down the client is back to its own network"
+
+echo "── without the kill switch, the tunnel drops them itself"
+# The node is the default one by now, which forwards nothing to a private
+# address; what matters here is only what reaches it.
+open_before
+$C "$BIN/hidravpn" --key "$WORK/client.key" up --no-kill-switch "$WORK/invite.json" > "$WORK/client2.log" 2>&1 & UP=$!; PIDS+=($UP)
+for i in $(seq 1 100); do grep -q "^connected" "$WORK/client2.log" && break; sleep 0.2; done
+grep -q "^connected" "$WORK/client2.log" && ! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && pass "connected again, with no kill switch" || { cat "$WORK/client2.log"; fail "no connection without the kill switch"; }
+$N nft -f - <<'NFT'
+table inet hv_wire {
+  chain pre {
+    type filter hook prerouting priority -400; policy accept;
+    iifname "n-c" ip saddr 10.200.0.2 udp dport 51820 udp length > 1000 counter
+  }
+}
+NFT
+own_address "no kill switch" sent "the system sends it into the tunnel"
+$N nft delete table inet hv_wire
+kill -INT $UP; for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
+grep -q "network restored" "$WORK/client2.log" && pass "and disconnected cleanly" || { tail -5 "$WORK/client2.log"; fail "disconnect without the kill switch"; }
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

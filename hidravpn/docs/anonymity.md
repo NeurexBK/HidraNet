@@ -71,8 +71,8 @@ The other gaps are closed too:
 | Party | Learns | Does not learn |
 |---|---|---|
 | **Your local network / ISP** | That you use WireGuard, to which entry address and port; when, and how much; DHCP as before. | Destinations, DNS names (also with "Allow LAN", and when the network routes the resolver's address to itself; finding 19), anything inside the tunnel. IPv6: nothing (it goes through the exit when the exit carries IPv6, and is blocked otherwise; finding 18). |
-| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:706`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:136-147`, test A). |
-| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:975`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5), unless it shares its logs with the issuer while passes are fetched through it, which the client no longer does (finding 21). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
+| **Entry node (two hops)** | Your address. A key made for this connection (`circuit.rs:717`), so across connections it has only your address to go by — and if you move between networks, not even that. Which exit you use (it forwards to it). When you connect, for how long, how much. One admission request to the exit per connection: plain HTTP inside your tunnel, so the entry can read it, and it carries only a fresh public key and the word "client". | Destinations, DNS names: its resolver is never asked and nothing but WireGuard to the exit leaves the outer tunnel (`killswitch/linux.rs:147-158`, test A). |
+| **Exit node (two hops)** | Destinations, DNS names, and traffic content that is not encrypted end to end. The entry's address. A key made for this one connection (`circuit.rs:986`), and an inner address leased to it. If it admits with a pass: one pass, redeemed through the entry. | Your address (test A, and the passes test: zero packets from it), also from a connection opened before connecting or a socket bound to your address (finding 22). Any key it has seen from your address (test B). Whether two connections, or the connections before and after a new identity, are the same person, *by key* (tests B, C). Which account a pass came from (blind signatures, phase 5), unless it shares its logs with the issuer while passes are fetched through it, which the client no longer does (finding 21). What listens on your machine: nothing comes in through the tunnel unasked (finding 19). |
 | **Node used for one hop (Rápido)** | Your address and your traffic. That is what one hop is, and the page says so. A key made for this connection, or for a node that admits with a pass and none is left, the last pass's key it saw from your address. | Your two-hop sessions through it, by key: a pass key redeemed through the entry is never shown to it from your address (finding 20, the passes test). Your other one-hop sessions, by key, while a pass is left for it (test B). What listens on your machine (finding 19). |
 | **The pass issuer** | Your account (its token's hash), how many passes it asks for and when, the payment of a pack, and the address a request comes from: yours when you fetch or buy while disconnected, the node's when automatic passes fetch them in one hop. | Which node a pass is for, and so which node you use (blind signatures). A two-hop session: nothing that carries the account goes through two hops (finding 21). |
 | **One operator running entry and exit** | Everything: who and where. | — That is why such a pair is refused unless you say yes (`pocket.rs:410`, `daemon.rs:1259`, test C). |
@@ -96,13 +96,13 @@ address next to your traffic. The admission test did exactly this
 (`test-admission-netns.sh`: node-a, the exit, was joined from the client).
 
 **Fixed.** An exit of two hops is asked for admission through the entry,
-with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:975`).
+with a fresh key: `circuit::admit_behind` (`hidravpn-core/src/circuit.rs:986`).
 While it runs, the kill switch allows only the encrypted packets to the entry
 and, inside the outer tunnel, one TCP connection to the exit's admission port
 (`killswitch/linux.rs`, `bridge_ruleset`). It sends no DNS and adds no
 default route into the entry. An entry forwards TCP 51821 for this, and still
 nothing else (`hidravpn-node/src/nat.rs:60`). For two hops the client asks
-only entries from its own address (`circuit.rs:706`, `prepare`, used by the service and `hidravpn/src/main.rs`).
+only entries from its own address (`circuit.rs:717`, `prepare`, used by the service and `hidravpn/src/main.rs`).
 
 **Test:** `test-anonymity-netns.sh` A: 0 packets from the client to any exit,
 0 packets at the exit from the client's address, and the exit's own peer
@@ -136,7 +136,7 @@ for 30 idle days.
 maintainers' list admit with a pass):
 
 - A fresh key on every connection and every new identity, even to the same
-  exit (`circuit.rs:706`).
+  exit (`circuit.rs:717`).
 - An exit that admits openly keeps such a "session" lease only until ten
   minutes after the last packet it received under that key
   (`hidravpn-node/src/leases.rs:61`, `:241`).
@@ -188,8 +188,8 @@ bound to it (deliberately or by accident) sent its packets to the entry. The
 entry could read their destinations, and its resolver would answer names.
 
 **Fixed.** With two hops the outer interface carries only UDP to the
-exit's endpoint: on Linux in `killswitch/linux.rs:136-147`, on Windows with
-a WFP filter for that one peer (`killswitch/windows.rs:510-530`, finding 15).
+exit's endpoint: on Linux in `killswitch/linux.rs:147-158`, on Windows with
+a WFP filter for that one peer (`killswitch/windows.rs:520-540`, finding 15).
 On Windows they have run with two hops, by hand, on one PC (finding 15).
 
 **Test:** A: a socket bound to the outer interface reaches neither the
@@ -218,10 +218,10 @@ over and why (`daemon.rs:1259`). `status` still reports `same_operator`.
 
 When the exit stopped, its ICMP error made the client's tunnel task end. The
 service then panicked ("JoinHandle polled after completion",
-`tunnel.rs:136`), and the tunnel never recovered. The kill switch held, so
+`tunnel.rs:165`), and the tunnel never recovered. The kill switch held, so
 nothing leaked, but the person stayed offline until they reconnected.
 
-**Fixed.** Transient socket errors are waited out (`tunnel.rs:279`), and a
+**Fixed.** Transient socket errors are waited out (`tunnel.rs:348`), and a
 finished task is not awaited twice.
 
 **Test:** D: the exit is killed for six seconds; the kill switch stays armed;
@@ -290,7 +290,7 @@ morning, a café at noon, the same key both times. Their leases also kept
 every key's activity on disk for 30 days.
 
 **Fixed.** Every node that admits openly is asked for a key for each
-connection, the first hop directly (`circuit::prepare`, `circuit.rs:706`).
+connection, the first hop directly (`circuit::prepare`, `circuit.rs:717`).
 Connecting no longer "joins" anything: the browser has no Join button and no
 `join` bridge any more. Rápido and the prober take open nodes from the list
 as they are. A node admitted by hand keeps its lease: its operator knows who
@@ -376,7 +376,7 @@ exit, and the route to the exit's admission port through the entry are now
 written for Windows too:
 
 - WFP filters for one destination through one interface, and for an
-  admission port off-tunnel (`killswitch/windows.rs:464`, `:484`);
+  admission port off-tunnel (`killswitch/windows.rs:520`, `:542`);
 - `route_host_via` (`netcfg/windows.rs:78`).
 
 They compile, and `clippy -D warnings` passes for the Windows target.
@@ -473,13 +473,13 @@ use.
 Fixed in the merge:
 
 - Passes are spent in one place, `circuit::prepare`
-  (`circuit.rs:706`), the same one that asks open nodes for a session key.
+  (`circuit.rs:717`), the same one that asks open nodes for a session key.
   The first hop redeems its pass directly: it sees the address anyway
-  (`circuit.rs:858`). The exit of two hops redeems its pass *through the
-  entry* (`admit_behind`, `circuit.rs:975`), so its redemption and its
+  (`circuit.rs:869`). The exit of two hops redeems its pass *through the
+  entry* (`admit_behind`, `circuit.rs:986`), so its redemption and its
   tunnel come from the entry's address.
 - The exit of two hops never falls back to a key it saw before: with no pass
-  left for it, the connection is refused and says so (`circuit.rs:729`). A
+  left for it, the connection is refused and says so (`circuit.rs:740`). A
   first hop with no pass left may reuse its last key, with a note, since it
   sees the address anyway, but only a key it was shown from that address
   before (finding 20).
@@ -577,10 +577,11 @@ blocked IPv6 outright.
 `test-ipv6-netns.sh` (new) captures what goes into the tunnel. On a runner
 with IPv6 it found six packets carrying the client's own address on the
 code before the fix, and none after. The kill switch now lets IPv4 into the
-tunnel that carries the traffic, and IPv6 only from the address the exit
-gave that tunnel; with none, no IPv6 enters it at all
-(`killswitch/linux.rs`, `carrying_rules`). No DNS goes over IPv6: the
-node's resolver is an IPv4 address.
+tunnel that carries the traffic (since finding 22, only from the tunnel's
+own IPv4 address), and IPv6 only from the address the exit gave that
+tunnel; with none, no IPv6 enters it at all (`killswitch/linux.rs`,
+`carrying_rules`). No DNS goes over IPv6: the node's resolver is an IPv4
+address.
 
 With the same change an exit now carries IPv6. An exit (never an entry)
 that runs the kernel's WireGuard on a host with an IPv6 default route gives
@@ -786,6 +787,66 @@ with two hops held by `hidravpn up --privado` and no service, for
 Not done: a list field for the issuer's operator, which would let an exit
 run by someone else carry a top-up; and fetching through Tor, which the
 service does not have.
+
+### 22. Medium — on Linux, IPv4 went into the tunnel from any of the machine's addresses (sixth round)
+
+The kill switch let any IPv4 packet into the tunnel that carries the
+traffic, whatever its source, and the client encrypted every packet it read
+from the tunnel interface. Linux routes a packet by its destination alone,
+so a socket that holds another of the machine's addresses sends into the
+tunnel with that address once the routes point there:
+
+- a connection opened before connecting (a mail client, a chat, SSH, a
+  sync program), whose data and retransmissions keep the physical link's
+  address;
+- a socket bound to that address, before connecting or at any time after
+  (programs that bind a socket to each interface's address do, and so do
+  servers);
+- with two hops, a socket bound to the other tunnel's address.
+
+Nothing of this reached the internet (a node drops a packet from an address
+it did not allow), but the node decrypts the packet first, so the exit of
+two hops, run with modified software, could read the address: the person's
+public IPv4 address where the interface holds one (PPPoE on the computer, a
+modem in bridge mode, some campus networks), and otherwise the local
+network's address, with the destinations of the connections opened before.
+IPv6 was already held to the tunnel's own address (finding 18).
+
+Now such packets are dropped, not carried, in two places, either of which
+is enough:
+
+- the kill switch lets IPv4 into each tunnel only from the address its node
+  gave that end of it. The rule comes first, ahead of every rule that lets
+  a packet out by its destination or port, and counts what it drops; it is
+  there for both tunnels of two hops, and for the outer tunnel while the
+  exit is asked for admission through it (`killswitch/linux.rs`,
+  `own_source_only`, `carrying_rules`, `peer_rules`);
+- the client's tunnel encrypts only what comes from its own addresses
+  (`tunnel.rs`, `sent_from`, the mirror of `addressed_to`), kill switch or
+  not.
+
+A connection opened before connecting stops: its packets are refused, or,
+without the kill switch, dropped; a new connection the program opens goes
+through the tunnel from the tunnel's address. Windows was not affected: it
+sends from an interface's own addresses only (the strong host model, its
+default), so such a packet stays on the physical link, where the kill
+switch blocks it (`killswitch/windows.rs`, `install`); its tunnel drops one
+in any case.
+
+**Tests.** `test-netns.sh`: a socket connected before `up`, and one bound
+to the client's own address after it, are refused (EPERM) and the kill
+switch counts their datagrams at the tunnel; connected again with
+`--no-kill-switch`, the system sends them into the tunnel and none reaches
+the node, while the same datagrams from the tunnel's address do.
+`test-killswitch.sh`: without the kill switch a socket bound to the
+local-network address reaches the far end of the tunnel with that address;
+with it, "Allow LAN" or not, it is refused and counted, and the tunnel's
+own address still goes through. `test-multihop-netns.sh`: the same socket
+is refused at the inner tunnel of two hops. Unit tests: every table that
+names a tunnel (one hop, two hops, the admission request through the entry)
+puts that tunnel's address rule ahead of every accept but loopback's, and
+`sent_from` takes only the tunnel's own addresses. On the code before the
+fix these checks fail.
 
 ## Open
 

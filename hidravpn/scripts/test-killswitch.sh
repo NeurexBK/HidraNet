@@ -20,6 +20,9 @@
 # resolver address there. It holds in the hold a rotation installs too,
 # which names no tunnel while tunnels still run under it: from the node's
 # endpoint, and from a first hop's admission port, only answers come in.
+# What the client sends into the tunnel leaves from the tunnel's own
+# address: a socket bound to its local-network address reaches the far end
+# with that address before the kill switch, and is refused with it.
 #
 # Run as root:  hidravpn/scripts/test-killswitch.sh
 # Needs: the release binary built, python3, curl, nft, ip netns.
@@ -35,16 +38,19 @@ ok() { echo "ok    $1"; pass=$((pass + 1)); }
 no() { echo "FAIL  $1"; fail=$((fail + 1)); }
 
 SINK=""
+FAR=""
 cleanup() {
   for ns in ks gw kt; do
     ip netns pids "$ns" 2>/dev/null | xargs -r kill 2>/dev/null
     ip netns del "$ns" 2>/dev/null
   done
   [ -n "$SINK" ] && rm -f "$SINK"
+  [ -n "$FAR" ] && rm -f "$FAR"
 }
 trap cleanup EXIT
 cleanup
 SINK="$(mktemp /tmp/hidravpn-ks-sink.XXXXXX)"
+FAR="$(mktemp /tmp/hidravpn-ks-far.XXXXXX)"
 
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 [ -x "$SVC" ] || { echo "build first: cargo build --release --manifest-path hidravpn/Cargo.toml -p hidravpn-service"; exit 1; }
@@ -92,6 +98,9 @@ ip netns exec gw python3 "$PY/dns-stub.py" 10.90.0.1 >/dev/null 2>&1 &
 echo "── starting the node's resolver and a web server at the tunnel's far end"
 ip netns exec kt python3 "$PY/dns-stub.py" 10.77.0.1 >/dev/null 2>&1 &
 ip netns exec kt python3 -m http.server 8080 --bind 10.77.0.1 >/dev/null 2>&1 &
+# And one that notes the source of each datagram it gets: what the node
+# would read when it decrypts a packet the client put in the tunnel.
+ip netns exec kt python3 "$PY/udp-sink.py" "$FAR" 9905 >/dev/null 2>&1 &
 # Programs listening on every address of the client, TCP and UDP: what the
 # far end of the tunnel must not reach.
 ip netns exec ks python3 -m http.server 9901 --bind 0.0.0.0 >/dev/null 2>&1 &
@@ -125,6 +134,20 @@ connects() {
   ip netns exec kt python3 "$PY/probe.py" connect "$1" "$2" 10.77.0.2 9901 >/dev/null
   ! cq nft list counter inet hv_probe syn9901 | grep -q "packets 0 "
 }
+# A datagram from a socket the client binds to the address given, to the
+# tunnel's far end: what probe.py says of it, then "far: ADDRESS" for each
+# source the far end got. Linux routes it into the tunnel by its
+# destination, whatever its source.
+from_client() {
+  : > "$FAR"
+  cq python3 "$PY/probe.py" send "$1" 0 10.77.0.1 9905
+  sleep 1
+  sed -n 's/^from \([0-9.]*\):.*/far: \1/p' "$FAR"
+}
+# What the kill switch dropped at the tunnel for its source address.
+source_drops() {
+  cq nft list chain inet hidravpn_ks output | grep 'into a tunnel only from its own address' | sed -E 's/.*packets ([0-9]+).*/\1/'
+}
 
 echo "── before the kill switch (the leak path must work)"
 code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
@@ -136,6 +159,10 @@ cq python3 "$PY/udp-ping.py" 10.90.0.1 51820 && ok "the node endpoint answers" |
 [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.77.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" tcp 10.90.0.2 9901)" = open ] && [ "$(ip netns exec kt python3 "$PY/probe.py" udp 10.77.0.2 9902)" = answered ] && ok "the tunnel's far end reaches the client's listeners (the exposure the kill switch must close)" || no "the probes from the tunnel's far end did not work before the kill switch"
 arrives 10.90.0.1 51820 9904 && arrives 10.77.0.1 67 68 && ok "so do its datagrams with the node's endpoint, or a DHCP server's port, as their source" || no "the forged-source datagrams from the tunnel's far end did not arrive before the kill switch"
 connects 10.90.0.1 8080 && ok "and its connections with a node's admission port as their source" || no "the forged-source connection from the tunnel's far end did not arrive before the kill switch"
+# The other way: a socket bound to the client's local-network address sends
+# into the tunnel with that address, which a node reads when it decrypts it.
+got=$(from_client 10.90.0.2 | tr '\n' ' ')
+[ "$got" = "sent far: 10.90.0.2 " ] && ok "a socket bound to the client's local-network address reaches the tunnel's far end with that address (the leak the kill switch must close)" || no "the datagram from the client's local-network address did not reach the far end before the kill switch: $got"
 # A connection to the internet that is open before the kill switch, and kept
 # open across it: an established flow, the kind a blanket "established
 # connections pass" rule would let carry on in the clear. A desktop firewall
@@ -155,7 +182,7 @@ for _ in $(seq 1 30); do grep -q "^first ok" "$REUSE_DIR/log" 2>/dev/null && bre
 grep -q "^first ok" "$REUSE_DIR/log" && ok "a connection to the internet is open before the kill switch, and stays open" || no "the keep-alive connection did not work before the kill switch: $(cat "$REUSE_DIR/log")"
 
 echo "── arming the kill switch"
-cq "$SVC" firewall on --interface hvpn0 --node 10.90.0.1:51820 --dns 10.77.0.1 >/dev/null 2>&1 && ok "kill switch armed" || no "could not arm the kill switch"
+cq "$SVC" firewall on --interface hvpn0 --address 10.77.0.2 --node 10.90.0.1:51820 --dns 10.77.0.1 >/dev/null 2>&1 && ok "kill switch armed" || no "could not arm the kill switch"
 cq nft list table inet hidravpn_ks >/dev/null 2>&1 && ok "the kill-switch table is present" || no "the table should be present"
 
 echo "── with the kill switch on"
@@ -191,9 +218,17 @@ code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.77.0.1:8080 2>/d
 [ "$code" = 200 ] && ok "a connection the client opens through the tunnel works, answers and all" || no "a connection through the tunnel should work (got $code)"
 [ "$(cq python3 "$PY/probe.py" udp 10.77.0.1 53)" = answered ] && ok "DNS to the node's resolver through the tunnel is answered" || no "DNS to the node's resolver through the tunnel should work"
 inbound "kill switch on"
+own_address() {
+  got=$(from_client 10.90.0.2 | tr '\n' ' ')
+  [ "$got" = "blocked " ] && ok "$1: a socket bound to the client's local-network address: refused (EPERM), nothing reaches the far end" || no "$1: from the client's local-network address into the tunnel: $got"
+  [ "$(source_drops)" -gt 0 ] && ok "$1: the kill switch counted it at the tunnel" || no "$1: the kill switch did not count the drop: $(source_drops)"
+  got=$(from_client 10.77.0.2 | tr '\n' ' ')
+  [ "$got" = "sent far: 10.77.0.2 " ] && ok "$1: from the tunnel's own address the same datagram goes through" || no "$1: from the tunnel's own address: $got"
+}
+own_address "kill switch on"
 
 echo "── with \"Allow LAN\""
-cq "$SVC" firewall on --interface hvpn0 --node 10.90.0.1:51820 --dns 10.77.0.1 --allow-lan >/dev/null 2>&1 && ok "kill switch armed again, with the local network allowed" || no "could not arm the kill switch with --allow-lan"
+cq "$SVC" firewall on --interface hvpn0 --address 10.77.0.2 --node 10.90.0.1:51820 --dns 10.77.0.1 --allow-lan >/dev/null 2>&1 && ok "kill switch armed again, with the local network allowed" || no "could not arm the kill switch with --allow-lan"
 code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.90.0.1:8080 2>/dev/null)
 [ "$code" = 200 ] && ok "a host on the local network is reached" || no "the local network should be reached with --allow-lan (got $code)"
 [ "$(cq python3 "$PY/probe.py" udp 10.90.0.1 53)" = blocked ] && ok "DNS to the local network's resolver is refused (EPERM)" || no "DNS to the local network's resolver was not refused"
@@ -203,6 +238,8 @@ code=$(cq curl -s -m 4 -o /dev/null -w "%{http_code}" http://10.77.0.1:8080 2>/d
 # The node's tunnel address is a private one, inside what "Allow LAN" opens:
 # what it sends in through the tunnel must not pass for the local network.
 inbound "Allow LAN"
+# Nor does the client's local-network address go into the tunnel for it.
+own_address "Allow LAN"
 # A network that routes the resolver's address to itself: a route it pushes
 # (DHCP option 121), then a subnet of its own on the tunnel's private range.
 # gw answers at that address. The query must not leave on the link.

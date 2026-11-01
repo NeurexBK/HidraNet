@@ -21,8 +21,9 @@
 //! loopback exception and, when the exit gave the tunnel an IPv6 address,
 //! the tunnel that carries the traffic (the only one of one hop, the inner
 //! one of two), so it never leaves the machine off the tunnel. Windows sends
-//! from an interface's own addresses only (the strong host model), so IPv6
-//! into that tunnel carries the tunnel's address, never the machine's own.
+//! from an interface's own addresses only (the strong host model), so IPv4
+//! and IPv6 into a tunnel carry that tunnel's address, never the machine's
+//! own (see `install`).
 //! DNS to anything but the node is not permitted, so it is blocked with
 //! everything else.
 
@@ -445,6 +446,15 @@ fn install(allow: &Allow<'_>) -> Result<()> {
         // rule matches by name and simply catches nothing until the interface
         // appears. The inner tunnel of a two-hop circuit sends into the outer
         // tunnel, never to the physical link.
+        //
+        // No source address in the permit, unlike Linux's rule: Windows
+        // sends only from the outgoing interface's own addresses (the strong
+        // host model, the default on every interface; nothing here turns it
+        // off). A packet from the physical link's address, from a connection
+        // opened before the tunnel came up or a socket bound to it, is
+        // routed among that link's routes and blocked there by the
+        // catch-all, never sent into a tunnel; and the tunnel itself drops
+        // one that is (`tunnel.rs`, `sent_from`).
         for (i, iface) in allow.tunnels.iter().enumerate() {
             let (key, name) = if i == 0 {
                 (F_TUNNEL_V4, "allow the tunnel interface")
@@ -764,15 +774,18 @@ pub fn apply(cfg: &KillConfig) -> Result<()> {
     // towards the exit. One hop: the one tunnel, whole.
     let (tunnels, peered): (Vec<&str>, Vec<(&str, u8, SocketAddr)>) =
         match (&cfg.extra_interface, cfg.outer_peer) {
-            (Some(inner), Some(exit)) => (
+            (Some((inner, _)), Some(exit)) => (
                 vec![inner.as_str()],
-                vec![(cfg.interface.as_str(), IPPROTO_UDP, exit)],
+                vec![(cfg.interface.as_str(), IPPROTO_UDP, exit.into())],
             ),
-            (Some(inner), None) => (vec![cfg.interface.as_str(), inner.as_str()], Vec::new()),
+            (Some((inner, _)), None) => (vec![cfg.interface.as_str(), inner.as_str()], Vec::new()),
             (None, _) => (vec![cfg.interface.as_str()], Vec::new()),
         };
     // The tunnel that carries the traffic: the inner one of two hops.
-    let carrying = cfg.extra_interface.as_deref().unwrap_or(&cfg.interface);
+    let carrying = cfg
+        .extra_interface
+        .as_ref()
+        .map_or(cfg.interface.as_str(), |(x, _)| x.as_str());
     install(&Allow {
         tunnels: &tunnels,
         nodes: &[cfg.node_endpoint],
@@ -795,7 +808,7 @@ pub fn hold_admitting(
         bail!("a hold needs at least one node endpoint to allow");
     }
     let peered: Vec<(&str, u8, SocketAddr)> = bridge
-        .map(|b| (b.interface.as_str(), IPPROTO_TCP, b.to))
+        .map(|b| (b.interface.as_str(), IPPROTO_TCP, b.to.into()))
         .into_iter()
         .collect();
     install(&Allow {

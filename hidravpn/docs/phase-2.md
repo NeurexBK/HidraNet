@@ -57,9 +57,13 @@ hidravpn-service status       # connected? kill switch on?
 hidravpn-service up invite.json
 hidravpn-service down
 hidravpn-service uninstall
-hidravpn-service firewall on --node IP:PORT --dns 10.77.0.1   # the kill switch alone
+hidravpn-service firewall on --node IP:PORT --dns 10.77.0.1 [--address TUNNEL_IP]   # the kill switch alone
 hidravpn-service firewall off
 ```
+
+`--address` is the tunnel interface's own IPv4 address, 10.77.0.2 (a
+node's first client) when not given; on Linux IPv4 enters the tunnel only
+from it.
 
 The command line now prefers the service when it is running, so `hidravpn up`,
 `hidravpn down` and `hidravpn status` do the right thing whether or not the

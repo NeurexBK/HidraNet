@@ -16,6 +16,14 @@
 //! tunnel's). The kill switch drops what nobody asked for; this drops a
 //! packet for any other address before the system sees it, kill switch or
 //! not.
+//!
+//! The other way, a packet read from the interface goes to the node only
+//! when it comes from one of those addresses. Linux routes a packet into
+//! the tunnel by its destination alone: a connection opened before the
+//! tunnel came up keeps the physical link's address, and so does a socket
+//! bound to that address, or to the other tunnel's. The node decrypts a
+//! packet before it checks its source, so it would read that address; this
+//! drops the packet before it is encrypted, kill switch or not.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,7 +62,8 @@ pub struct Tunnel {
     rx: Arc<AtomicU64>,
     stop: watch::Sender<bool>,
     /// The addresses the node gave this end of the tunnel: the only
-    /// destinations a decrypted packet may have.
+    /// sources a packet sent through it may have, and the only destinations
+    /// a decrypted packet may have.
     own: Arc<Vec<IpAddr>>,
 }
 
@@ -139,6 +148,7 @@ impl Tunnel {
             self.sock.clone(),
             self.tun.clone(),
             self.tx.clone(),
+            self.own.clone(),
         ));
         let mut to_tun = tokio::spawn(network_to_tun(
             self.tunn.clone(),
@@ -211,6 +221,7 @@ async fn tun_to_network(
     sock: Arc<UdpSocket>,
     tun: Arc<AsyncDevice>,
     tx: Arc<AtomicU64>,
+    own: Arc<Vec<IpAddr>>,
 ) -> Result<()> {
     let mut pkt = vec![0u8; BUF];
     let mut out = vec![0u8; BUF];
@@ -219,7 +230,9 @@ async fn tun_to_network(
             .recv(&mut pkt)
             .await
             .context("reading the tunnel interface")?;
-        if n == 0 {
+        // A packet from another of the machine's addresses is dropped, and
+        // nothing about it is logged.
+        if n == 0 || !sent_from(&pkt[..n], &own) {
             continue;
         }
         let send = {
@@ -302,18 +315,32 @@ async fn network_to_tun(
 /// tunnel addresses. Anything else (another of the machine's addresses, a
 /// packet too short to say) is dropped.
 fn addressed_to(packet: &[u8], own: &[IpAddr]) -> bool {
-    let dst = match packet.first().map(|b| b >> 4) {
+    ends(packet).is_some_and(|(_, dst)| own.contains(&dst))
+}
+
+/// Whether a packet read from the interface was sent from one of `own`:
+/// the mirror of `addressed_to`. Anything else (another of the machine's
+/// addresses, the unspecified one, a packet too short to say) is dropped.
+fn sent_from(packet: &[u8], own: &[IpAddr]) -> bool {
+    ends(packet).is_some_and(|(src, _)| own.contains(&src))
+}
+
+/// An IP packet's source and destination, when it is long enough to carry
+/// them.
+fn ends(packet: &[u8]) -> Option<(IpAddr, IpAddr)> {
+    match packet.first().map(|b| b >> 4) {
         Some(4) if packet.len() >= 20 => {
+            let s: [u8; 4] = packet[12..16].try_into().expect("four bytes");
             let d: [u8; 4] = packet[16..20].try_into().expect("four bytes");
-            IpAddr::from(d)
+            Some((IpAddr::from(s), IpAddr::from(d)))
         }
         Some(6) if packet.len() >= 40 => {
+            let s: [u8; 16] = packet[8..24].try_into().expect("sixteen bytes");
             let d: [u8; 16] = packet[24..40].try_into().expect("sixteen bytes");
-            IpAddr::from(d)
+            Some((IpAddr::from(s), IpAddr::from(d)))
         }
-        _ => return false,
-    };
-    own.contains(&dst)
+        _ => None,
+    }
 }
 
 /// An error a connected UDP socket hands back for an ICMP error about an
@@ -374,6 +401,46 @@ mod tests {
         p[6] = 17;
         p[24..40].copy_from_slice(&dst.octets());
         p
+    }
+
+    fn v6_from(src: std::net::Ipv6Addr) -> Vec<u8> {
+        let mut p = v6("2001:db8::77".parse().unwrap());
+        p[8..24].copy_from_slice(&src.octets());
+        p
+    }
+
+    #[test]
+    fn only_packets_from_this_end_of_the_tunnel_reach_the_node() {
+        let ula: std::net::Ipv6Addr = "fd68:6964:7261::a4d:2".parse().unwrap();
+        let own = [IpAddr::from([10, 77, 0, 2]), IpAddr::V6(ula)];
+        let far = [198, 51, 100, 77];
+        assert!(sent_from(&v4([10, 77, 0, 2], far), &own));
+        assert!(sent_from(&v6_from(ula), &own));
+        // The physical link's address, kept by a connection opened before
+        // the tunnel came up or taken by a socket bound to it; the other
+        // tunnel's; the unspecified one: dropped. Only the source counts,
+        // so the tunnel's own address as the destination changes nothing.
+        for src in [
+            [192, 168, 50, 20],
+            [203, 0, 113, 20],
+            [10, 78, 0, 2],
+            [0, 0, 0, 0],
+        ] {
+            assert!(!sent_from(&v4(src, far), &own), "{src:?}");
+            assert!(!sent_from(&v4(src, [10, 77, 0, 2]), &own), "{src:?}");
+        }
+        for src in ["2001:db8::20", "fe80::1", "::"] {
+            assert!(!sent_from(&v6_from(src.parse().unwrap()), &own), "{src}");
+        }
+        // IPv6 from a tunnel the node gave no IPv6 address.
+        assert!(!sent_from(&v6_from(ula), &own[..1]));
+        // Too short to carry a source, or no IP at all.
+        assert!(!sent_from(&[], &own));
+        assert!(!sent_from(&v4([10, 77, 0, 2], far)[..19], &own));
+        assert!(!sent_from(&v6_from(ula)[..39], &own));
+        let mut odd = v4([10, 77, 0, 2], far);
+        odd[0] = 0x55;
+        assert!(!sent_from(&odd, &own));
     }
 
     #[test]
