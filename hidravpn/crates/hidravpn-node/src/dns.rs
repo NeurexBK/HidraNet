@@ -20,7 +20,7 @@ use hickory_resolver::Resolver;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::info;
 
 /// What fits in a UDP answer without fragmentation trouble.
 const UDP_MAX: usize = 1232;
@@ -77,8 +77,15 @@ fn build_resolver(upstreams: &[String]) -> Result<Resolver<TokioRuntimeProvider>
     builder.build().context("building the resolver")
 }
 
-pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
-    let resolver = Arc::new(build_resolver(&upstreams)?);
+/// The resolver and both sockets, ready to serve.
+pub struct Forwarder {
+    resolver: Arc<Resolver<TokioRuntimeProvider>>,
+    udp: Arc<UdpSocket>,
+    tcp: TcpListener,
+}
+
+pub async fn bind(bind: SocketAddr, upstreams: &[String]) -> Result<Forwarder> {
+    let resolver = Arc::new(build_resolver(upstreams)?);
     let udp = Arc::new(
         UdpSocket::bind(bind)
             .await
@@ -87,6 +94,13 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
     let tcp = TcpListener::bind(bind)
         .await
         .with_context(|| format!("binding DNS/TCP on {bind}"))?;
+    Ok(Forwarder { resolver, udp, tcp })
+}
+
+/// Answers until one of its loops ends, which only a panic does: the error
+/// says which.
+pub async fn serve(forwarder: Forwarder) -> Result<()> {
+    let Forwarder { resolver, udp, tcp } = forwarder;
 
     let udp_task = {
         let udp = udp.clone();
@@ -174,10 +188,9 @@ pub async fn serve(bind: SocketAddr, upstreams: Vec<String>) -> Result<()> {
 
     info!("DNS forwarder ready");
     tokio::select! {
-        r = udp_task => { warn!("DNS/UDP loop ended: {r:?}"); }
-        r = tcp_task => { warn!("DNS/TCP loop ended: {r:?}"); }
+        r = udp_task => Err(anyhow!("the DNS/UDP loop ended: {r:?}")),
+        r = tcp_task => Err(anyhow!("the DNS/TCP loop ended: {r:?}")),
     }
-    Ok(())
 }
 
 /// A response for one query, or nothing if the bytes were not a query.
@@ -255,5 +268,16 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert!(parse_upstream("dns.quad9.net").is_err());
         assert!(parse_upstream("https://dns.quad9.net/dns-query").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_port_already_taken_fails_the_bind() {
+        let taken = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = taken.local_addr().unwrap();
+        let e = bind(addr, &["udp://127.0.0.1".to_string()])
+            .await
+            .err()
+            .expect("bound a port another socket holds");
+        assert!(format!("{e:#}").contains("binding DNS on"), "{e:#}");
     }
 }

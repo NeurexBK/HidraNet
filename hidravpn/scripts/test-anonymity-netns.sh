@@ -38,6 +38,7 @@
 # and wg (wireguard-tools) where the kernel has WireGuard.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/test/guard.sh"
 BIN="$HERE/../target/release"
 WORK=""
 C="ip netns exec hv-client"; P="ip netns exec hv-isp"; E="ip netns exec hv-entry"
@@ -59,7 +60,7 @@ cleanup() {
          /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock /var/run/wireguard/hvx1.sock
   [ -n "${WORK:-}" ] && [ -z "${KEEP:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 cleanup
 WORK="$(mktemp -d /tmp/hidravpn-anon.XXXXXX)"
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }

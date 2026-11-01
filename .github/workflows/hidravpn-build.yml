@@ -146,7 +146,7 @@ jobs:
         run: |
           set -e
           for round in 1 2; do
-            for t in test-netns test-killswitch test-service-netns test-multihop-netns \
+            for t in test-guard test-netns test-killswitch test-service-netns test-multihop-netns \
                      test-admission-netns test-browser-netns test-directory \
                      test-node-installer test-client-installer test-anonymity-netns \
                      test-passes-netns test-refill-netns test-unit-sandbox-netns \

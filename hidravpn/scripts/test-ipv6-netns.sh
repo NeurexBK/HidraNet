@@ -55,7 +55,7 @@ cleanup() {
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /var/run/wireguard/hvpn0.sock /var/run/wireguard/hvx0.sock
   [ -z "${KEEP:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 SVC=""; for ns in $NSS; do ip netns del "$ns" 2>/dev/null; done
 rm -rf /etc/netns/h6-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json /etc/hidravpn/client.key /etc/hidravpn/circuit.json
 for b in hidravpn hidravpn-node hidravpn-service; do [ -x "$BIN/$b" ] || { echo "build first: cargo build --release"; exit 1; }; done

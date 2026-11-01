@@ -46,7 +46,7 @@ cleanup() {
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 cleanup
 WORK="$(mktemp -d /tmp/hidravpn-refill.XXXXXX)"
 for b in hidravpn hidravpn-node hidravpn-service hidravpn-sign hidravpn-issuer; do [ -x "$BIN/$b" ] || { echo "build first: cargo build --release --manifest-path hidravpn/Cargo.toml"; exit 1; }; done

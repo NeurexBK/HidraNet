@@ -40,7 +40,7 @@ pub struct NodeConfig {
     pub country: Option<String>,
     /// "manual": the operator admits by hand. "open": any client that asks
     /// on the admission port is admitted (rate-limited, capped). "pass": a
-    /// client that redeems a pass is. Anything else is taken as "manual".
+    /// client that redeems a pass is.
     #[serde(default = "default_admission")]
     pub admission: String,
     /// TCP port of the admission service (it also describes the node).
@@ -197,11 +197,6 @@ impl NodeConfig {
         dns: Vec<String>,
         out_interface: Option<String>,
     ) -> Result<Self> {
-        if !public_endpoint.is_ipv4() {
-            return Err(anyhow!(
-                "the endpoint {public_endpoint} is an IPv6 address; clients reach a node over IPv4 in this phase (an IPv6 endpoint would route their tunnel's own packets into the tunnel)"
-            ));
-        }
         let cfg = Self {
             name,
             private_key: Key::generate_private().to_base64(),
@@ -227,7 +222,20 @@ impl NodeConfig {
             forward_private_destinations: false,
             admission_relays: Vec::new(),
         };
-        let net = cfg.tunnel_network()?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// What `init` checks before it writes the settings, checked again each
+    /// time they are read: a hand edit the node cannot run on is refused.
+    fn validate(&self) -> Result<()> {
+        if !self.public_endpoint.is_ipv4() {
+            return Err(anyhow!(
+                "the endpoint {} is an IPv6 address; clients reach a node over IPv4 in this phase (an IPv6 endpoint would route their tunnel's own packets into the tunnel)",
+                self.public_endpoint
+            ));
+        }
+        let net = self.tunnel_network()?;
         // A client refuses an invite whose tunnel is not a private network
         // (its resolver would be an address on the open internet), so a node
         // is never made with one.
@@ -238,11 +246,29 @@ impl NodeConfig {
                 net.cidr
             ));
         }
-        for d in &cfg.dns {
+        for d in &self.dns {
             crate::dns::parse_upstream(d)?;
         }
-        cfg.tunnel_network6()?;
-        Ok(cfg)
+        if !["entry", "exit", "both"]
+            .iter()
+            .any(|r| self.role.eq_ignore_ascii_case(r))
+        {
+            return Err(anyhow!(
+                "the role must be entry, exit or both, not \"{}\"",
+                self.role
+            ));
+        }
+        if !["manual", "open", "pass"]
+            .iter()
+            .any(|a| self.admission.trim().eq_ignore_ascii_case(a))
+        {
+            return Err(anyhow!(
+                "admission must be manual, open or pass, not \"{}\"",
+                self.admission
+            ));
+        }
+        self.tunnel_network6()?;
+        Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -267,6 +293,7 @@ impl NodeConfig {
         toml::from_str::<StoredPassKeys>(s).context(
             "a [[pass_keys]] table holds a setting that is not a pass key's: every line below a [[pass_keys]] header belongs to that table, so move settings such as admission_relays above the first one",
         )?;
+        cfg.validate()?;
         Ok(cfg)
     }
 
@@ -690,6 +717,61 @@ mod tests {
             NodeConfig::from_toml(&moved).unwrap().admission_relays,
             vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
         );
+    }
+
+    #[test]
+    fn hand_edited_settings_are_checked_when_read() {
+        let cfg = NodeConfig::fresh(
+            "n".into(),
+            "192.0.2.4:51820".parse().unwrap(),
+            51820,
+            "10.77.0.0/16",
+            NodeConfig::default_dns(),
+            None,
+        )
+        .unwrap();
+        let written = toml::to_string_pretty(&cfg).unwrap();
+        NodeConfig::from_toml(&written).unwrap();
+        for (from, to, why) in [
+            (
+                "public_endpoint = \"192.0.2.4:51820\"",
+                "public_endpoint = \"[2001:db8::4]:51820\"",
+                "is an IPv6 address",
+            ),
+            (
+                "tunnel_cidr = \"10.77.0.0/16\"",
+                "tunnel_cidr = \"203.0.113.0/24\"",
+                "is not private",
+            ),
+            (
+                "\"https://dns.quad9.net/dns-query@9.9.9.9,149.112.112.112\"",
+                "\"https://dns.quad9.net/dns-query\"",
+                "write https://host/path@ip",
+            ),
+            ("role = \"both\"", "role = \"exti\"", "entry, exit or both"),
+            (
+                "role = \"both\"",
+                "role = \"entry \"",
+                "entry, exit or both",
+            ),
+            (
+                "admission = \"manual\"",
+                "admission = \"passes\"",
+                "manual, open or pass",
+            ),
+            ("ipv6 = \"auto\"", "ipv6 = \"yes\"", "\"auto\" or \"off\""),
+        ] {
+            let edited = written.replace(from, to);
+            assert_ne!(edited, written, "{from} is not in the settings");
+            let e = NodeConfig::from_toml(&edited).unwrap_err();
+            assert!(format!("{e:#}").contains(why), "{to}: {e:#}");
+        }
+        // Role and admission are read in any case.
+        let exit = written
+            .replace("role = \"both\"", "role = \"Exit\"")
+            .replace("admission = \"manual\"", "admission = \"Pass\"");
+        let back = NodeConfig::from_toml(&exit).unwrap();
+        assert!(back.admits_with_passes() && !back.is_entry());
     }
 
     #[test]

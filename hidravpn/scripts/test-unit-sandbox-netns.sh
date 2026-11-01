@@ -39,7 +39,7 @@ cleanup() {
   [ "${MADE_GROUP:-0}" = 1 ] && groupdel hidravpn 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 [ -e /run/NetworkManager ] && { echo "this machine runs NetworkManager; run the test elsewhere"; exit 1; }
 cleanup

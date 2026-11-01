@@ -87,6 +87,62 @@ echo "$OUT" | grep -qF -- "would run: /usr/local/bin/hidravpn-node --config $KEP
 OUT=$(HIDRAVPN_ETC="$KEPT" bash "$S" --dry-run --endpoint 203.0.113.10:51820 --name x 2>&1)
 echo "$OUT" | grep -q "keeping the existing" && ! echo "$OUT" | grep -qE "set-admission-relays|systemctl restart" && pass "without --admission-relay an existing node.toml is left as it is" || fail "existing node.toml changed: $(echo "$OUT" | grep -E 'node.toml|restart')"
 rm -rf "$KEPT"
+# The options a kept node.toml ignores are named, and the summary says what
+# the node is, not what the options asked for: from the record read by the
+# build about to be installed (never the installed binary), and nothing when
+# it is not built yet. A copy of the tree holds stand-ins for both binaries.
+T="$(mktemp -d)"; mkdir -p "$T/scripts" "$T/target/release"; cp "$S" "$T/scripts/"; : > "$T/node.toml"
+standin() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<NODE
+#!/bin/sh
+[ "\$3" = record ] || exit 1
+cat <<'J'
+{
+  "node_name": "$2",
+  "node_public_key": "AAAA",
+  "endpoint": "203.0.113.10:443",
+  "role": "entry",
+  "admission": "manual",
+  "admission_port": 51900,
+  "country": "NL",
+  "features": [
+    "sessions"
+  ]
+}
+J
+NODE
+  chmod 755 "$1"
+}
+standin "$T/old/hidravpn-node" old-x
+kept_run() { HIDRAVPN_ETC="$T" HIDRAVPN_PREFIX="$T/old" bash "$T/scripts/install-node-linux.sh" --dry-run --endpoint 203.0.113.10:51820 --name node-new --role exit --open-admission 2>&1; }
+OUT=$(kept_run)
+if echo "$OUT" | grep -qF "not applied, as only a new node takes them: --name --role --open-admission" && echo "$OUT" | grep -q "settings kept in $T/node.toml" \
+   && ! echo "$OUT" | grep -qE 'node-new|old-x|Role: |Admission: |nodes join --all'; then
+  pass "a kept node.toml and no new build to read it: the ignored options named, and no name, role or admission claimed"
+else
+  fail "kept, unread: $(echo "$OUT" | grep -E 'not applied|HidraVPN node|Role|record >|join')"
+fi
+printf '#!/bin/sh\necho "Error: the role must be entry, exit or both" >&2\nexit 1\n' > "$T/target/release/hidravpn-node"; chmod 755 "$T/target/release/hidravpn-node"
+OUT=$(kept_run)
+if echo "$OUT" | grep -qF "the new hidravpn-node cannot read $T/node.toml" && echo "$OUT" | grep -qF "Error: the role must be entry, exit or both" \
+   && echo "$OUT" | sed -n '/the new hidravpn-node cannot read/,/^>> installing the binary/p' | grep -qF "(a real run would stop here)" \
+   && echo "$OUT" | sed -n '/the new hidravpn-node cannot read/,$p' | grep -q '^>> installing the binary' \
+   && ! echo "$OUT" | grep -q old-x; then
+  pass "a kept node.toml the new build refuses: said, with the node's reason, before the installed binary is replaced"
+else
+  fail "kept, refused by the new build: $(echo "$OUT" | grep -E 'cannot read|role must|real run|^>> ')"
+fi
+standin "$T/target/release/hidravpn-node" entry-x
+OUT=$(kept_run)
+if echo "$OUT" | grep -qF 'HidraVPN node "entry-x" at 203.0.113.10:443.' && echo "$OUT" | grep -qF "Role: entry.  Admission: by hand." && echo "$OUT" | grep -qF "record > entry-x.json" \
+   && echo "$OUT" | grep -qF "UDP 443 (the tunnel) and TCP 51900 (admission" && ! echo "$OUT" | grep -qE 'node-new|old-x|51900,|nodes join --all' \
+   && echo "$OUT" | grep -qF "not applied: --endpoint 203.0.113.10:51820 (node.toml keeps 203.0.113.10:443, the address clients are given)"; then
+  pass "a kept node.toml: the summary and the firewall step follow the new build's reading of it"
+else
+  fail "kept, read: $(echo "$OUT" | grep -E 'HidraVPN node|Role|record >|join|UDP|51900')"
+fi
+rm -rf "$T"
 for relay in entrada-1 300.1.2.3 010.1.2.3 203.0.113 2001:db8::20 a:b; do
   OUT=$(bash "$S" --dry-run --endpoint 203.0.113.10:51820 --admission-relay "$relay" 2>&1); [ $? -eq 2 ] && echo "$OUT" | grep -q "IPv4 address" && pass "a relay that is not an IPv4 address, which init would refuse or never match, is refused before anything runs: $relay" || fail "relay $relay accepted: $(echo "$OUT" | grep 'init --endpoint')"
 done
