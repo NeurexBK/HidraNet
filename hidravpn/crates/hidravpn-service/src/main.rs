@@ -214,7 +214,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Status => client(async {
-            match ipc::call(ipc::Command::Status).await?.status {
+            match ipc::call_within(ipc::Command::Status, ipc::PROMPT_ANSWER)
+                .await?
+                .status
+            {
                 Some(s) => {
                     if s.connected {
                         println!(
@@ -398,7 +401,8 @@ fn answers_within(limit: std::time::Duration) -> bool {
     rt.block_on(async {
         let deadline = tokio::time::Instant::now() + limit;
         loop {
-            if matches!(ipc::call(ipc::Command::Ping).await, Ok(r) if r.ok) {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if matches!(ipc::call_within(ipc::Command::Ping, left).await, Ok(r) if r.ok) {
                 return true;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -460,7 +464,7 @@ fn init_logging() {
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             hidravpn_core::logging::directives(
                 std::env::var("RUST_LOG").ok().as_deref(),
-                "hidravpn_service=info",
+                "hidravpn_service=info,hidravpn_core=warn",
             ),
         ))
         .with_target(false);

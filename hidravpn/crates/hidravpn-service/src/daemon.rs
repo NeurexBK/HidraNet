@@ -1270,6 +1270,13 @@ pub fn save_pocket(path: &Path, pocket: &Pocket) -> Result<()> {
     write_private_atomic(path, pocket.to_json().as_bytes())
 }
 
+/// Where `write_private_atomic` writes `path` before moving it into place.
+pub fn tmp_beside(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".tmp");
+    PathBuf::from(s)
+}
+
 /// Writes a file only root reads, atomically: beside the old one, then
 /// renamed over it, so a reader never sees half a file and a crash leaves
 /// the old one in place.
@@ -1277,11 +1284,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let tmp = {
-        let mut s = path.as_os_str().to_owned();
-        s.push(".tmp");
-        std::path::PathBuf::from(s)
-    };
+    let tmp = tmp_beside(path);
     {
         use std::io::Write;
         let mut opts = std::fs::OpenOptions::new();

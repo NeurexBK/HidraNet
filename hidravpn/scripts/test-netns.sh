@@ -310,4 +310,39 @@ $N nft delete table inet hv_wire
 kill -INT $UP; for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
 grep -q "network restored" "$WORK/client2.log" && pass "and disconnected cleanly" || { tail -5 "$WORK/client2.log"; fail "disconnect without the kill switch"; }
 
+echo "── the tunnel's socket fails under a running client"
+# The tunnel ends for good: the client says why and keeps its kill switch on
+# until `hidravpn down`.
+$C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client3.log" 2>&1 & UP=$!; PIDS+=($UP)
+for i in $(seq 1 100); do grep -q "^connected" "$WORK/client3.log" && break; sleep 0.2; done
+$N nft add table inet hv_cut
+$N nft add chain inet hv_cut in '{ type filter hook input priority -300; policy accept; }'
+$N nft add rule inet hv_cut in iifname n-c udp dport 51820 reject with icmp type prot-unreachable
+for i in $(seq 1 20); do kill -0 $UP 2>/dev/null || break; $C curl -s --max-time 1 http://10.201.0.2/ >/dev/null 2>&1; done
+for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
+$N nft delete table inet hv_cut
+grep -q "tunnel stopped: reading the UDP socket" "$WORK/client3.log" && grep -q "the kill switch stays on" "$WORK/client3.log" && ! grep -q "network restored" "$WORK/client3.log" \
+  && $C nft list table inet hidravpn_ks >/dev/null 2>&1 \
+  && pass "the client says the tunnel stopped, and why, and keeps the kill switch on" || { tail -5 "$WORK/client3.log"; fail "a tunnel whose socket failed"; }
+$C "$BIN/hidravpn" down > "$WORK/down3.log" 2>&1
+grep -qx "kill switch lifted" "$WORK/down3.log" && ! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] \
+  && pass "down then lifts it and leaves no DNS of its own behind" || fail "after down: $(cat "$WORK/down3.log"), resolv.conf $(cat /etc/netns/hv-client/resolv.conf)"
+
+echo "── a run that died leaves its kill switch, and the next one keeps it"
+# Killed outright, a run cannot put the network back: its kill switch stays.
+# The next run must not lift it while it builds, even when it then fails.
+$C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client4.log" 2>&1 & UP=$!; PIDS+=($UP)
+for i in $(seq 1 100); do grep -q "^connected" "$WORK/client4.log" && break; sleep 0.2; done
+kill -9 $UP; wait $UP 2>/dev/null
+$C nft list table inet hidravpn_ks >/dev/null 2>&1 && pass "a run killed outright leaves its kill switch armed" || fail "no kill switch after the run was killed"
+# An invite that says the node admits openly: it is asked for a key for this
+# connection, and refuses, since it admits by hand.
+python3 -I -c 'import json,sys; i=json.load(open(sys.argv[1])); i["admission"]="open"; print(json.dumps(i))' "$WORK/invite.json" > "$WORK/open.json"
+OUT=$($C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/open.json" 2>&1); RC=$?
+[ $RC -ne 0 ] && echo "$OUT" | grep -q "did not admit this machine" && echo "$OUT" | grep -q "the kill switch stays on" && $C nft list table inet hidravpn_ks >/dev/null 2>&1 \
+  && pass "the next run, which cannot be built, keeps it armed and says so" || fail "the next run lifted the kill switch (exit $RC): $OUT"
+$C "$BIN/hidravpn" down > "$WORK/down4.log" 2>&1
+! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] \
+  && pass "down lifts it and puts the network back" || fail "after down: $(cat "$WORK/down4.log")"
+
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

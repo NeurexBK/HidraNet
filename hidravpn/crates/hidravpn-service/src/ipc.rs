@@ -1002,6 +1002,30 @@ impl std::fmt::Display for NotRunning {
 
 impl std::error::Error for NotRunning {}
 
+/// What to do about a service that runs but does not answer.
+#[cfg(windows)]
+const RESTART: &str = "restart it from an administrator terminal: Restart-Service HidraVPN";
+#[cfg(not(windows))]
+const RESTART: &str = "restart it: sudo systemctl restart hidravpn";
+
+/// How long a client waits for an answer the service gives at once (`Ping`,
+/// `Status`) before it says the service does not answer.
+pub const PROMPT_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `call`, given up after `limit`.
+pub async fn call_within(cmd: Command, limit: std::time::Duration) -> Result<Response> {
+    within(limit, call(cmd)).await
+}
+
+async fn within<T>(
+    limit: std::time::Duration,
+    answer: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(limit, answer)
+        .await
+        .map_err(|_| anyhow!("the HidraVPN service is running but does not answer; {RESTART}"))?
+}
+
 /// Sends one command to the running service and returns its answer. Sealed
 /// to the service's key when it has one, and then only an answer the
 /// service sealed is believed.
@@ -1099,7 +1123,7 @@ async fn open_pipe(
             }
             Err(e) => {
                 return Err(anyhow!(
-                    "the HidraVPN service is running but its control channel does not answer ({e}); restart it: Stop-ScheduledTask -TaskName HidraVPN, then Start-ScheduledTask -TaskName HidraVPN"
+                    "the HidraVPN service is running but its control channel does not answer ({e}); {RESTART}"
                 ));
             }
         }
@@ -1153,6 +1177,31 @@ mod tests {
         // And the wire form is unchanged: a plain string.
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains("\"pass_token\":\"account-secret\""), "{j}");
+    }
+
+    #[tokio::test]
+    async fn a_service_that_never_answers_is_given_up_on() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-ipc-mute-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("control.sock");
+        let _ = std::fs::remove_file(&sock);
+        // Never accepted: the connection waits in the backlog, as it does
+        // while every slot of a busy service is taken.
+        let _listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let started = std::time::Instant::now();
+        let e = within(
+            std::time::Duration::from_millis(300),
+            call_unix_at(&sock, "the-secret", Command::Ping),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("does not answer") && e.contains("restart it"),
+            "{e}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
     }
     use crate::daemon::Daemon;
 

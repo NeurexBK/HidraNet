@@ -17,9 +17,9 @@ pub fn control_socket() -> PathBuf {
     PathBuf::from("/run/hidravpn/control.sock")
 }
 
-/// Where the service on Windows keeps its warnings and errors: a scheduled
-/// task has no console, so without it they would go nowhere. Under the
-/// folder that only SYSTEM and administrators can read.
+/// Where the service on Windows keeps its warnings and errors: a service has
+/// no console, so without it they would go nowhere. Under the folder that
+/// only SYSTEM and administrators can read.
 #[cfg(windows)]
 pub fn service_log() -> PathBuf {
     program_data().join("service.log")

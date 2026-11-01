@@ -57,7 +57,8 @@ use hidravpn_service::daemon::{load_pocket, save_pocket};
     about = "HidraVPN client: one hop (Rápido) or two (Privado)"
 )]
 struct Cli {
-    /// Where this machine's master key is kept.
+    /// Where this machine's master key is kept. The service connects with
+    /// its own: `up` with another one needs --direct.
     #[arg(long, global = true)]
     key: Option<PathBuf>,
     /// Where the pocket of nodes is kept.
@@ -146,12 +147,14 @@ enum Cmd {
         /// IPv6 traffic bypasses the VPN.
         #[arg(long)]
         keep_ipv6: bool,
-        /// Name of the outer (or only) tunnel interface; the inner one of a
-        /// two-hop circuit takes the next number (hvpn0 → hvpn1).
-        #[arg(long, default_value = "hvpn0")]
+        /// Name of the outer (or only) tunnel interface, ending in 0; the
+        /// inner one of a two-hop circuit takes the next number (hvpn0 →
+        /// hvpn1). Only for a connection this process holds (--direct).
+        #[arg(long, default_value = DEFAULT_INTERFACE)]
         interface: String,
         /// Do not arm the kill switch (diagnosis only: without it, traffic can
-        /// leak to the open internet if the tunnel drops).
+        /// leak to the open internet if the tunnel drops). Only for a
+        /// connection this process holds (--direct).
         #[arg(long)]
         no_kill_switch: bool,
     },
@@ -159,7 +162,8 @@ enum Cmd {
     /// the service holds more than one), so the address the internet sees
     /// changes. Needs the service.
     NewIdentity,
-    /// Undo the routes and DNS of a connection that did not end cleanly.
+    /// Lift the kill switch and undo the routes and DNS of a connection that
+    /// did not end cleanly.
     Down,
     /// Show the mode and what it hides, the hops and their handshakes, the
     /// nodes and whether the kill switch is on.
@@ -280,6 +284,38 @@ enum Passes {
 
 fn default_key_path() -> PathBuf {
     paths::client_key()
+}
+
+const DEFAULT_INTERFACE: &str = "hvpn0";
+
+/// What `--interface` names the tunnels from: the inner one of two hops
+/// takes the next number, so the name has to end in 0.
+fn interface_base(name: &str) -> Result<String> {
+    match name.strip_suffix('0') {
+        Some(base) if !base.is_empty() => Ok(base.to_string()),
+        _ => Err(anyhow!(
+            "--interface must end in 0, such as hvpn0: the inner tunnel of two hops takes the next number"
+        )),
+    }
+}
+
+/// The first `up` flag given that only a connection held by this process
+/// can follow: the service connects with its own key, interface and kill
+/// switch.
+fn only_in_this_process(
+    key: Option<&Path>,
+    interface: &str,
+    no_kill_switch: bool,
+) -> Option<&'static str> {
+    if key.is_some_and(|k| k != default_key_path()) {
+        Some("--key")
+    } else if interface != DEFAULT_INTERFACE {
+        Some("--interface")
+    } else if no_kill_switch {
+        Some("--no-kill-switch")
+    } else {
+        None
+    }
 }
 
 fn load_or_create_key(path: &Path, create: bool) -> Result<ClientKey> {
@@ -884,6 +920,16 @@ async fn main() -> Result<()> {
             no_kill_switch,
             allow_same_operator,
         } => {
+            let interface_base = interface_base(&interface)?;
+            if let Some(flag) = only_in_this_process(cli.key.as_deref(), &interface, no_kill_switch)
+            {
+                if let Some(answer) = service_call(cli.direct, Command::Ping).await {
+                    answer?;
+                    return Err(anyhow!(
+                        "{flag} applies only to a connection this process holds; add --direct"
+                    ));
+                }
+            }
             // From the pocket the service reads, with no node named: the
             // service picks, as it does for the browser — which also lets a
             // member of the hidravpn group connect, and keeps the passes it
@@ -1036,10 +1082,7 @@ async fn main() -> Result<()> {
                             route_ipv6: !keep_ipv6,
                             allow_lan: false,
                             kill_switch: !no_kill_switch,
-                            interface_base: interface
-                                .strip_suffix('0')
-                                .unwrap_or(&interface)
-                                .to_string(),
+                            interface_base,
                         },
                         &pocket_path,
                     )
@@ -1080,11 +1123,19 @@ async fn main() -> Result<()> {
             }
             None => {
                 require_admin()?;
+                let armed = killswitch::is_active();
                 let _ = killswitch::remove();
                 match netcfg::load_plan()? {
                     None => {
                         netcfg::recover_dns();
-                        println!("nothing to undo")
+                        println!(
+                            "{}",
+                            if armed {
+                                "kill switch lifted"
+                            } else {
+                                "nothing to undo"
+                            }
+                        )
                     }
                     Some(plan) => {
                         netcfg::revert(&plan)?;
@@ -1206,9 +1257,13 @@ async fn service_call(direct: bool, cmd: Command) -> Option<Result<ipc::Response
         return None;
     }
     // A cheap reachability probe first, so "service down" is told apart from
-    // "command failed".
-    match ipc::call(Command::Ping).await {
-        Ok(r) if r.ok => Some(ipc::call(cmd).await),
+    // "command failed". Only what the service answers at once has a deadline:
+    // connecting and rotating take as long as the nodes do.
+    match ipc::call_within(Command::Ping, ipc::PROMPT_ANSWER).await {
+        Ok(r) if r.ok => Some(match cmd {
+            Command::Ping | Command::Status => ipc::call_within(cmd, ipc::PROMPT_ANSWER).await,
+            cmd => ipc::call(cmd).await,
+        }),
         // Only with no service at all does this process act on the network
         // itself. A service that is there but does not answer, answers
         // badly, or is not the service (an impostor) may hold the network:
@@ -1251,7 +1306,17 @@ async fn up(
             spec.exit.node_name, entry.node_name
         );
     }
-    let _ = killswitch::remove();
+    // A kill switch a run that died left armed stays armed while this circuit
+    // is built, held to its first hop: lifting it would let every program
+    // out in the clear for the requests and the proof of work.
+    let held = if opts.kill_switch && killswitch::is_active() {
+        let first_hop = spec.first_hop_endpoint()?;
+        killswitch::hold(&[first_hop]).context("could not hold the kill switch")?;
+        vec![first_hop]
+    } else {
+        let _ = killswitch::remove();
+        Vec::new()
+    };
     let built = async {
         // The pocket and the wallet are held while passes are taken from
         // the one and the invites they win go into the other.
@@ -1265,7 +1330,7 @@ async fn up(
             spec.entry.as_ref(),
             &key,
             &opts,
-            &[],
+            &held,
             &mut wallet,
             &mut won,
             &hidravpn_core::circuit::Cancel::never(),
@@ -1293,9 +1358,14 @@ async fn up(
     .await;
     let circuit = match built {
         Ok(c) => c,
-        Err(e) => {
+        Err(e) if held.is_empty() => {
             let _ = killswitch::remove();
             return Err(e);
+        }
+        Err(e) => {
+            return Err(anyhow!(
+                "{e:#}; the kill switch stays on: nothing leaves this machine until `hidravpn down`"
+            ));
         }
     };
     // Invites won with a pass that this circuit uses: their use is written
@@ -1347,8 +1417,7 @@ async fn up(
     // Report until Ctrl+C (or SIGTERM: a `kill`, a stopping service manager),
     // then put everything back. A tunnel process that died without restoring
     // the network would leave the kill switch armed and the machine offline.
-    let mut was_connected = false;
-    let mut waited = 0u32;
+    let mut progress = Progress::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -1363,17 +1432,20 @@ async fn up(
             _ = terminated => break Ok(()),
             _ = tick.tick() => {
                 let s = circuit.status();
-                if s.connected && !was_connected {
-                    was_connected = true;
+                let say = progress.tick(s.connected);
+                if say.connected {
                     eprintln!("connected");
-                } else if !s.connected {
-                    waited += 1;
-                    if waited == 15 {
-                        let pending: Vec<&str> = s.hops.iter().filter(|h| !h.tunnel.connected).map(|h| h.node_name.as_str()).collect();
+                }
+                if say.no_answer {
+                    let pending: Vec<&str> = s.hops.iter().filter(|h| !h.tunnel.connected).map(|h| h.node_name.as_str()).collect();
+                    if progress.was_connected {
+                        let last = s.exit().tunnel.last_handshake.map(|d| format!("{}s ago", d.as_secs())).unwrap_or_else(|| "none".into());
+                        eprintln!("\nno answer from {}; last handshake {last}", pending.join(" and "));
+                    } else {
                         eprintln!("no answer from {} after 15 s — is UDP {} open, and was this machine's key for that node admitted there? (hidravpn pubkey --node ...; for the exit of two hops admitted by hand, ... --behind)", pending.join(" and "), exit_port);
                     }
                 }
-                if was_connected && waited.is_multiple_of(5) {
+                if say.line {
                     let exit = s.exit();
                     let hs = exit.tunnel.last_handshake.map(|d| format!("{}s ago", d.as_secs())).unwrap_or_else(|| "none".into());
                     eprint!("\r  {}  handshake {}  up {}  down {}      ", if s.connected { "connected   " } else { "reconnecting" }, hs, fmt_bytes(exit.tunnel.tx_bytes), fmt_bytes(exit.tunnel.rx_bytes));
@@ -1387,7 +1459,119 @@ async fn up(
     if !pass_keys.is_empty() {
         let _ = hidravpn_service::passes::mark_used(pocket_path, &pass_keys).await;
     }
-    circuit.down().await.context("restoring the network")?;
+    // A tunnel that ended by itself is not a reason to go back on the open
+    // network: its kill switch stays until `hidravpn down`.
+    let keep = outcome.is_err() && circuit.kill_switch_armed();
+    let down = circuit
+        .down_with(!keep)
+        .await
+        .context("restoring the network");
+    if keep {
+        let stays = "the kill switch stays on: nothing leaves this machine until `hidravpn down`";
+        return Err(match down {
+            Ok(()) => anyhow!("the tunnel stopped; {stays}"),
+            Err(e) => anyhow!("{e:#}; {stays}"),
+        });
+    }
+    down?;
     eprintln!("network restored");
     outcome
+}
+
+/// What the foreground `up` says on each one-second tick: "connected" the
+/// first time, a hint after 15 s with no answer, and once connected the live
+/// line every five seconds.
+#[derive(Default)]
+struct Progress {
+    ticks: u32,
+    waited: u32,
+    was_connected: bool,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Say {
+    connected: bool,
+    no_answer: bool,
+    line: bool,
+}
+
+impl Progress {
+    fn tick(&mut self, connected: bool) -> Say {
+        self.ticks += 1;
+        let mut say = Say::default();
+        if connected {
+            say.connected = !self.was_connected;
+            self.was_connected = true;
+            self.waited = 0;
+        } else {
+            self.waited += 1;
+            say.no_answer = self.waited == 15;
+        }
+        say.line = self.was_connected && self.ticks.is_multiple_of(5);
+        say
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_live_line_shows_every_five_seconds_whenever_the_first_handshake_lands() {
+        for first in 0..8 {
+            let mut p = Progress::default();
+            let said: Vec<Say> = (0..60).map(|t| p.tick(t >= first)).collect();
+            let lines: Vec<usize> = (0..60).filter(|&t| said[t].line).collect();
+            assert!(lines.len() >= 11, "handshake at {first}: {lines:?}");
+            assert!(lines.windows(2).all(|w| w[1] - w[0] == 5), "{lines:?}");
+            assert_eq!(said.iter().filter(|s| s.connected).count(), 1);
+            assert!(said.iter().all(|s| !s.no_answer));
+        }
+    }
+
+    #[test]
+    fn no_answer_is_said_after_fifteen_seconds_and_again_after_a_drop() {
+        let mut p = Progress::default();
+        let quiet: Vec<Say> = (0..20).map(|_| p.tick(false)).collect();
+        let hints: Vec<usize> = (0..20).filter(|&t| quiet[t].no_answer).collect();
+        assert_eq!(hints, [14]);
+        assert!(quiet.iter().all(|s| !s.line && !s.connected));
+        assert!(p.tick(true).connected);
+        for _ in 0..10 {
+            assert!(!p.tick(true).connected);
+        }
+        let dropped: Vec<Say> = (0..15).map(|_| p.tick(false)).collect();
+        assert!(dropped[14].no_answer);
+        assert!(!p.tick(true).connected, "\"connected\" is said once");
+    }
+
+    #[test]
+    fn the_interface_name_ends_in_zero() {
+        assert_eq!(interface_base("hvpn0").unwrap(), "hvpn");
+        assert_eq!(interface_base("tun10").unwrap(), "tun1");
+        for bad in ["hvpn3", "tun", "wg1", "0", ""] {
+            let e = interface_base(bad).unwrap_err().to_string();
+            assert!(e.contains("must end in 0"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn flags_for_this_process_only_are_named() {
+        let other = Path::new("/tmp/other.key");
+        let default = default_key_path();
+        assert_eq!(only_in_this_process(None, "hvpn0", false), None);
+        assert_eq!(only_in_this_process(Some(&default), "hvpn0", false), None);
+        assert_eq!(
+            only_in_this_process(Some(other), "hvpn0", false),
+            Some("--key")
+        );
+        assert_eq!(
+            only_in_this_process(None, "tun10", false),
+            Some("--interface")
+        );
+        assert_eq!(
+            only_in_this_process(None, "hvpn0", true),
+            Some("--no-kill-switch")
+        );
+    }
 }

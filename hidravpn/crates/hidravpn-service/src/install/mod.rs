@@ -282,8 +282,9 @@ pub fn install(opts: &InstallOptions) -> Result<()> {
 
 /// Removes the service. With `purge`, also the installed programs and the
 /// data: the pocket of nodes, the machine's key, which nodes know this
-/// machine by, the passes, the account token and the tokens it replaced.
-/// Without it, a later install finds both where they were.
+/// machine by, the passes, the account token and the tokens it replaced, an
+/// open order and the automatic-passes setting. Without it, a later install
+/// finds both where they were.
 pub fn uninstall(purge: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -293,24 +294,15 @@ pub fn uninstall(purge: bool) -> Result<()> {
             // copy that says how goes.
             hidravpn_core::netcfg::recover_dns();
             let _ = std::fs::remove_file(installed_client());
-            // The client's files one by one, never the whole folder: a node
-            // on the same machine keeps its own settings there.
-            let _ = std::fs::remove_file(crate::paths::circuit_pocket());
-            let _ = std::fs::remove_file(crate::paths::client_key());
-            let _ = std::fs::remove_file(crate::paths::pass_wallet());
-            for kept in crate::passes::kept_tokens(&crate::paths::pass_token()) {
-                let _ = std::fs::remove_file(kept);
-            }
-            let _ = std::fs::remove_file(crate::paths::pass_token());
-            let pocket = crate::paths::circuit_pocket();
-            for name in ["hidravpn.lock", "resolv.conf.saved"] {
-                let _ = std::fs::remove_file(pocket.with_file_name(name));
-            }
-            if let Some(dir) = crate::paths::client_key().parent() {
-                let _ = std::fs::remove_dir(dir);
-            }
+            let files = remove_client_files(
+                &crate::paths::circuit_pocket(),
+                &crate::paths::client_key(),
+                &crate::paths::pass_wallet(),
+                &crate::paths::pass_token(),
+            );
             // Last: this may be the running executable, which Linux lets go.
             let _ = std::fs::remove_file(installed_binary());
+            files?;
         }
         Ok(())
     }
@@ -325,6 +317,53 @@ pub fn uninstall(purge: bool) -> Result<()> {
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         anyhow::bail!("removing the service is not built for this operating system yet")
+    }
+}
+
+/// Removes the client's files beside the pocket, and what a write cut short
+/// left of them, one by one, never the whole folder: a node on the same
+/// machine keeps its own settings there. The folder goes only once empty. A
+/// file that is there and cannot be removed is reported.
+#[cfg(any(target_os = "linux", test))]
+fn remove_client_files(
+    pocket: &std::path::Path,
+    key: &std::path::Path,
+    wallet: &std::path::Path,
+    token: &std::path::Path,
+) -> Result<()> {
+    let kept = crate::passes::kept_tokens(token);
+    let mut files = vec![
+        pocket.to_path_buf(),
+        key.to_path_buf(),
+        wallet.to_path_buf(),
+        token.to_path_buf(),
+        crate::passes::refill_path(pocket),
+        crate::passes::order_path(pocket),
+    ];
+    // The name the next replaced token would take may hold one cut short.
+    files.extend((0..=kept.len() as u32).map(|n| crate::passes::previous_token_path(token, n)));
+    files.extend(kept);
+    let mut all: Vec<PathBuf> = files
+        .iter()
+        .flat_map(|f| [f.clone(), crate::daemon::tmp_beside(f)])
+        .collect();
+    all.extend(["hidravpn.lock", "resolv.conf.saved"].map(|n| pocket.with_file_name(n)));
+    let mut left = Vec::new();
+    for f in &all {
+        match std::fs::remove_file(f) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                left.push(format!("{}: {e}", f.display()))
+            }
+            _ => {}
+        }
+    }
+    if let Some(dir) = key.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+    if left.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("could not remove {}", left.join("; "))
     }
 }
 
@@ -457,5 +496,54 @@ mod tests {
         // A missing source fails at once too.
         assert!(copy_when_free(&dir.join("missing"), &dst).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_purge_leaves_no_client_file_and_keeps_a_nodes_own() {
+        let dir = std::env::temp_dir().join(format!("hidravpn-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let client = [
+            "circuit.json",
+            "circuit.json.tmp",
+            "client.key",
+            "passes.json",
+            "passes.json.tmp",
+            "pass.token",
+            "pass.token.previous",
+            "pass.token.previous.1",
+            "pass.token.previous.2.tmp",
+            "refill.json",
+            "refill.json.tmp",
+            "order.json",
+            "order.json.tmp",
+            "hidravpn.lock",
+            "resolv.conf.saved",
+        ];
+        let purge = || {
+            remove_client_files(
+                &dir.join("circuit.json"),
+                &dir.join("client.key"),
+                &dir.join("passes.json"),
+                &dir.join("pass.token"),
+            )
+        };
+        for f in client.iter().chain(["node.toml"].iter()) {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        purge().unwrap();
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["node.toml"]);
+
+        // With no node beside it, the folder goes too.
+        std::fs::remove_file(dir.join("node.toml")).unwrap();
+        for f in client {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        purge().unwrap();
+        assert!(!dir.exists());
     }
 }
