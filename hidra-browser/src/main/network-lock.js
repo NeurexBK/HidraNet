@@ -62,12 +62,17 @@ const LOCAL_SCHEMES = new Set([
 
 class NetworkLock {
   // `proxyRules` is Tor's SOCKS port as Chromium proxy rules, the only route
-  // a session of this browser ever has.
-  constructor(proxyRules) {
+  // a session of this browser ever has. `refuse(url)`, when given, names
+  // requests that are cancelled whatever the lock's state: main.js passes
+  // the apps server's, which refuses the apps' addresses while this process
+  // does not hold them (apps-server.js). Electron keeps one onBeforeRequest
+  // listener per session, and the filter below is it.
+  constructor(proxyRules, { refuse = null } = {}) {
     if (!/^socks5:\/\/127\.0\.0\.1:\d+$/.test(String(proxyRules))) {
       throw new Error('the network lock needs Tor\'s SOCKS port on loopback, got ' + proxyRules);
     }
     this.proxyRules = proxyRules;
+    this.refuse = refuse;
     this.engaged = true;
     this.reason = 'the Tor connection is not ready yet';
     this.blockedCount = 0;
@@ -141,6 +146,10 @@ class NetworkLock {
     if (this._sessions.has(electronSession)) return this._sessions.get(electronSession);
 
     electronSession.webRequest.onBeforeRequest((details, callback) => {
+      if (this.refuse && this.refuse(details.url)) {
+        callback({ cancel: true });
+        return;
+      }
       if (!this.engaged || this.isLocal(details.url)) {
         callback({});
         return;

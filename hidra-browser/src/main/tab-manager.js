@@ -6,6 +6,7 @@ const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
 const { guardFingerprint } = require('./fingerprint-guard');
 const { APPS, ORIGINS, appOrigin, appOfUrl } = require('./app-origins');
+const { isAppsAddress } = require('./apps-server');
 
 // Trailing slash matters: without it, a sibling directory whose name merely
 // starts with "ui" would match the prefix too.
@@ -83,13 +84,28 @@ function vaultNamespaceOf(event) {
   return appNamespace(frame.url);
 }
 
+// What a vault call opens (main.js): the compartment above, and only while
+// the apps server holds every address of the apps' origins (apps-server.js).
+// Until it does, the page that asks may have been served by another program.
+function vaultCompartmentOf(event, appsServer) {
+  const ns = vaultNamespaceOf(event);
+  if (!ns) throw new Error('refused: only HidraNet apps have a vault compartment');
+  if (!appsServer || !appsServer.holds) {
+    throw new Error('refused: ' + (appsServer ? appsServer.reason() : 'the apps are off'));
+  }
+  return ns;
+}
+
 class TabManager {
   // `networkLock` filters every session made here and gives it its route
-  // (network-lock.js); a tab cannot be made without it.
-  constructor(parentWindow, networkLock) {
+  // (network-lock.js); a tab cannot be made without it. `appsServer` is what
+  // vouches for each response from an app's address (apps-server.js).
+  constructor(parentWindow, networkLock, appsServer) {
     if (!networkLock) throw new Error('tabs need the network lock: it is what routes them');
+    if (!appsServer) throw new Error('tabs need the apps server: it is what vouches for the apps');
     this.window = parentWindow;
     this.networkLock = networkLock;
+    this.appsServer = appsServer;
     this.tabs = new Map();
     this.activeTabId = null;
     this.nextId = 1;
@@ -98,6 +114,9 @@ class TabManager {
     // it cannot each claim a different one.
     this.appsSession = null;
     this.appsFingerprint = null;
+    // Settles once the service workers found in the apps' partition are gone
+    // (_appsSession).
+    this.appsCleared = null;
 
     // A BrowserView keeps whatever bounds it was given, so without this the
     // page stays at the size the window had when the tab opened: resize the
@@ -136,6 +155,9 @@ class TabManager {
       title: 'New Tab',
       url: first,
       loading: false,
+      // The address a filter refused, and the page shown in its place
+      // (_showInstead), while that page is on screen.
+      refused: null,
     };
 
     await this._attach(tabInfo, this._belongsInApps(this._resolve(first)));
@@ -162,8 +184,9 @@ class TabManager {
 
     // The session was put on Tor's route the moment it was made (the lock
     // does that in _secureSession, before this first await). Nothing that
-    // could load is created until the route is in place.
-    await this.networkLock.routed(tabSession);
+    // could load is created until the route is in place, nor, in the apps'
+    // partition, until the service workers found there are gone.
+    await Promise.all([this.networkLock.routed(tabSession), persistent && this.appsCleared]);
 
     if (tab.closed) {
       if (!persistent) this._drop(tabSession);
@@ -316,7 +339,10 @@ class TabManager {
 
     const navigated = (_event, navUrl) => {
       if (!live()) return;
-      tab.url = this._displayUrl(navUrl);
+      // The page shown in place of a refused address stands for it; any
+      // other page ends that.
+      if (tab.refused && navUrl !== tab.refused.page) tab.refused = null;
+      tab.url = this._displayUrl(tab.refused ? tab.refused.url : navUrl);
       this._notifyUI('tab:navigated', {
         tabId,
         url: tab.url,
@@ -330,11 +356,18 @@ class TabManager {
     // Cancelling in onBeforeRequest returns ERR_BLOCKED_BY_CLIENT (-20) and the
     // user saw a Chromium error screen with no explanation. Tell them why.
     view.webContents.on('did-fail-load', (_e, errorCode, _desc, failedUrl, isMainFrame) => {
-      if (!isMainFrame || errorCode !== -20) return;
+      if (!isMainFrame || errorCode !== -20 || !live()) return;
+      // Only the apps server stops an app's address (by its refusal in the
+      // lock's filter, or a response it did not send): say that, not that Tor
+      // is not ready.
+      if (isAppsAddress(failedUrl)) {
+        this._showAppsRefused(tab, view, failedUrl);
+        return;
+      }
       if (!this.networkLock || !this.networkLock.engaged) return;
       const reason = String(this.networkLock.reason || 'the anonymous connection is not ready')
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      view.webContents.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+      this._showInstead(tab, view, failedUrl,
         `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><style>
           body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
                display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
@@ -350,8 +383,7 @@ class TabManager {
           <p>Reason: ${reason}.</p>
           <p>Once the panel shows a confirmed exit IP, reload with
              <code>Ctrl+R</code>.</p>
-        </div></body></html>`
-      )).catch(() => {});
+        </div></body></html>`);
     });
 
     view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
@@ -360,6 +392,46 @@ class TabManager {
     });
 
     return view;
+  }
+
+  // Shows `html` in a tab in place of `failedUrl`, an address a filter
+  // refused, and of Chromium's error screen. The address bar keeps showing
+  // that address, and a reload tries it again: the page itself is a data:
+  // URL, and reloading that would only show the page again.
+  _showInstead(tab, view, failedUrl, html) {
+    const page = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+    tab.refused = { url: failedUrl, page };
+    view.webContents.loadURL(page).catch(() => {});
+  }
+
+  // An app's address refused by the apps server (apps-server.js).
+  _showAppsRefused(tab, view, failedUrl) {
+    const apps = this.appsServer;
+    const reason = String(apps.reason()).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const [title, next] = apps.state === 'off'
+      ? ['HidraNet\'s apps are off', `Close the program that uses port ${apps.port}, then restart HidraNet.`]
+      : apps.state === 'starting'
+        ? ['HidraNet\'s apps are not up yet', 'Reload in a few seconds with <code>Ctrl+R</code>.']
+        : ['This app did not open',
+          'Nothing it sent was shown. Reload with <code>Ctrl+R</code>, and restart HidraNet if this keeps happening.'];
+    this._showInstead(tab, view, failedUrl,
+      `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><style>
+        body{background:#06070d;color:#e9ecf5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+             display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
+        .box{max-width:460px}
+        h1{font-size:19px;font-weight:700;color:#00d4aa;margin:0 0 12px}
+        p{font-size:14px;line-height:1.6;color:#9aa3bd;margin:0 0 10px}
+        code{font-family:'SF Mono',Consolas,monospace;font-size:12px;color:#e9ecf5;
+             background:#10131f;border:1px solid #1c2133;border-radius:6px;padding:2px 6px}
+      </style></head><body><div class="box">
+        <h1>${title}</h1>
+        <p>Mail, chat, the forum, publishing, search and reviews are served by
+           HidraNet itself. They open only while this browser holds their port
+           on this computer, so that no other program can stand in for one of
+           them and be handed what it keeps.</p>
+        <p>Reason: ${reason}.</p>
+        <p>${next}</p>
+      </div></body></html>`);
   }
 
   closeTab(tabId) {
@@ -532,9 +604,14 @@ class TabManager {
 
   reload(tabId) {
     const tab = this.tabs.get(tabId);
-    if (tab) {
-      tab.view.webContents.reload();
+    if (!tab) return;
+    // From the page shown in place of a refused address, the address itself
+    // is tried again (_showInstead).
+    if (tab.refused && tab.view.webContents.getURL() === tab.refused.page) {
+      this.navigate(tabId, tab.refused.url);
+      return;
     }
+    tab.view.webContents.reload();
   }
 
   // Every tab session in use, for dropping their connections on a new
@@ -570,6 +647,14 @@ class TabManager {
     if (!this.appsSession) {
       this.appsSession = session.fromPartition(APPS_PARTITION, { cache: false });
       this._secureSession(this.appsSession, this._appsFingerprint());
+      // A service worker answers the pages of its origin itself, without a
+      // request: neither the lock's filter nor the apps server's token check
+      // sees them, and the page it serves on an app's origin would be handed
+      // the vault. The apps register none, and this session refuses their
+      // scripts (_secureSession), so one found here was left by whatever
+      // once answered on an app's origin, in an earlier run or version. It
+      // goes, with what it cached, before any app loads: _attach waits.
+      this.appsCleared = this.appsSession.clearStorageData({ storages: ['serviceworkers', 'cachestorage'] });
       // Chromium writes DOM storage to disk on a delay of several seconds,
       // batching changes. A browser that is killed inside that window —
       // crash, force quit, power loss — loses them, and for HidraMail the
@@ -612,6 +697,13 @@ class TabManager {
     tabSession.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = { ...details.requestHeaders };
 
+      // Chromium marks the fetch of a service worker's script with this
+      // header. None is registered in the apps' partition (_appsSession).
+      if (tabSession === this.appsSession && Object.keys(headers).some((k) => k.toLowerCase() === 'service-worker')) {
+        callback({ cancel: true });
+        return;
+      }
+
       // Chromium hands these over lowercase ("sec-ch-ua"), and delete is
       // case-sensitive — the old fixed-case deletes never matched a single
       // header, so the client hints went out on every request while the UI
@@ -645,6 +737,15 @@ class TabManager {
       }
 
       callback({ requestHeaders: headers });
+    });
+
+    // A response from an app's address is shown only if this browser's own
+    // apps server sent it, and its token is taken off first (apps-server.js).
+    // This is the only onHeadersReceived listener these sessions have, and
+    // Electron keeps one per session: anything else that needs the response
+    // headers has to go in here.
+    tabSession.webRequest.onHeadersReceived((details, callback) => {
+      callback(this.appsServer.vetResponse(details));
     });
 
     // Allowlist, not denylist. The previous blocklist let through everything that
@@ -832,6 +933,7 @@ module.exports = {
   wantsAppStorage,
   appNamespace,
   vaultNamespaceOf,
+  vaultCompartmentOf,
   APPS_PARTITION,
   UI_ROOT_URL,
 };

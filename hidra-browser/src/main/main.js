@@ -3,8 +3,9 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
-const { TabManager, vaultNamespaceOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
+const { TabManager, vaultCompartmentOf, appNamespace, UI_ROOT_URL } = require('./tab-manager');
 const appOrigins = require('./app-origins');
+const { AppsServer } = require('./apps-server');
 const { applyAppIcon, windowIcon } = require('./app-icon');
 const { VpnManager } = require('./vpn-manager');
 const { VpnInstaller, installable } = require('./vpn-installer');
@@ -219,13 +220,17 @@ let mainWindow = null;
 let tabManager = null;
 let proxyManager = null;
 let torManager = null;
-let chatServer = null;
+// The apps server, on every loopback address of the apps' port, or the apps
+// are off for this run (apps-server.js). Until it holds them all, no app's
+// address loads and no vault call is answered. Its error says why, for the
+// new tab page: a silent failure here costs chat, mail, forum and search
+// with no sign in the interface.
+const appsServer = new AppsServer();
 // Closed until Tor confirms it is carrying the traffic, and the one place
 // every session gets its route: Tor's SOCKS port, always. See network-lock.js.
-const networkLock = new NetworkLock(proxyRulesFor(SOCKS_PORT));
-// Whether the apps server actually got its port. A silent failure here
-// costs chat, mail, forum and search with no sign in the interface.
-let appsServer = { listening: false, error: null };
+// Its filter also refuses the apps' addresses while the apps server does not
+// hold them.
+const networkLock = new NetworkLock(proxyRulesFor(SOCKS_PORT), { refuse: (url) => appsServer.refuses(url) });
 
 // Where the apps keep what identifies you, under the system keychain. See
 // vault.js. Created once the app is ready, because safeStorage is not before.
@@ -633,15 +638,14 @@ async function searchAnyEngine(query, page, searchLang) {
 // for Web Crypto). The chat is fully client-side (MQTT relay + E2E in browser),
 // so it does NOT depend on the hidra-node engine — works even if Smart App
 // Control blocks the engine.
-function startChatServer(attempt) {
-  attempt = attempt || 0;
+function startChatServer() {
   const load = (f) => {
     try { return fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8'); }
     catch (e) { console.error('[srv] failed to load', f, e.message); return '<h1>' + f + ' not found</h1>'; }
   };
   // By app name (app-origins.js): each is served on its own origin.
   const pages = { chat: load('hidrachat.html'), publish: load('sitepub.html'), site: load('siteload.html'), mail: load('hidramail.html'), forum: load('forum.html'), donate: load('donate.html'), search: load('hidrasearch.html'), reviews: load('hidrareview.html') };
-  chatServer = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     if (!isTrustedRequest(req)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('forbidden');
@@ -807,30 +811,14 @@ function startChatServer(attempt) {
       'Referrer-Policy': 'no-referrer',
     });
     res.end(html);
-  });
-  chatServer.on('error', (e) => {
-    console.error('[srv] server error:', e.message);
+  };
 
-    // Another copy of the browser that is still shutting down holds the port
-    // for a few seconds. Retry before giving up, and record why if we do —
-    // otherwise the apps just read "Offline" forever with no explanation.
-    if (e.code === 'EADDRINUSE' && attempt < 5) {
-      appsServer = { listening: false, error: 'port ' + CHAT_PORT + ' busy, retrying' };
-      setTimeout(() => startChatServer(attempt + 1), 2000);
-      return;
-    }
-
-    appsServer = {
-      listening: false,
-      error: e.code === 'EADDRINUSE'
-        ? 'port ' + CHAT_PORT + ' is held by another program — close the other HidraNet window and restart'
-        : 'could not open port ' + CHAT_PORT + ': ' + e.message,
-    };
-  });
-
-  chatServer.listen(CHAT_PORT, '127.0.0.1', () => {
-    appsServer = { listening: true, error: null };
-    console.log('[srv] HidraNet apps at http://127.0.0.1:' + CHAT_PORT + ' (chat, /publish, /site)');
+  // A port held by another program is tried again for a while (a copy of
+  // the browser that is still shutting down), then the apps are off for this
+  // run, and appsServer.error says so.
+  appsServer.start(handle).then((up) => {
+    if (up) console.log('[srv] HidraNet apps on port ' + CHAT_PORT + ' at ' + appsServer.addresses().join(' and '));
+    else console.error('[srv] ' + appsServer.error);
   });
 }
 
@@ -891,7 +879,7 @@ app.whenReady().then(async () => {
   };
 
   mainWindow = createMainWindow();
-  tabManager = new TabManager(mainWindow, networkLock);
+  tabManager = new TabManager(mainWindow, networkLock, appsServer);
 
   setupIPC(tabManager, proxyManager);
 
@@ -943,7 +931,7 @@ function createMainWindow() {
   return win;
 }
 
-function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.webContents : null)) {
+function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.webContents : null), apps = appsServer) {
   // Every handler names the pages that call it, and refuses everything else
   // before it does anything (see ipc-guard.js). The browser's own bar is
   // browser.html in the main window; the other pages are tabs.
@@ -962,29 +950,33 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   };
 
   // The vault. Which compartment a page may open is decided here, from the
-  // URL of the frame that asked — never from anything the page sent. The
-  // preload only offers the bridge; this is what refuses.
+  // URL of the frame that asked — never from anything the page sent — and
+  // only while the apps server holds every address of the apps' origins
+  // (vaultCompartmentOf in tab-manager.js). The preload only offers the
+  // bridge; this is what refuses.
   const refused = () => new Error('refused: only HidraNet apps have a vault compartment');
 
   ipcMain.handle('vault:get', (event) => {
-    const ns = vaultNamespaceOf(event);
-    if (!ns) throw refused();
+    const ns = vaultCompartmentOf(event, apps);
     return vault.get(ns);
   });
 
   ipcMain.handle('vault:set', async (event, value) => {
-    const ns = vaultNamespaceOf(event);
-    if (!ns) throw refused();
+    const ns = vaultCompartmentOf(event, apps);
     await vault.set(ns, value);
     return true;
   });
 
   // Whether the keychain is protecting the data is not a secret, but it is
-  // still only for our own pages: the apps, and the new tab page's panel.
+  // still only for our own pages: the apps, while the apps server holds
+  // their addresses, and the new tab page's panel.
   ipcMain.handle('vault:status', (event) => {
     // Narrowed from "any page under src/ui" to the one that shows it.
     const url = event.senderFrame ? event.senderFrame.url : '';
-    if (!appNamespace(url) && senderPage(event, UI_ROOT_URL) !== 'newtab.html') throw refused();
+    if (senderPage(event, UI_ROOT_URL) !== 'newtab.html') {
+      if (!appNamespace(url)) throw refused();
+      if (!apps.holds) throw new Error('refused: ' + apps.reason());
+    }
     return vault.status();
   });
 
@@ -1128,18 +1120,21 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   // app show as "Offline" even while running. Probe from the main process.
   ipcMain.handle('apps:status', async (event) => {
     fromPages(event, ['newtab.html'], 'apps:status');
+    // The apps' port is asked only once this process holds it: until then
+    // whatever answers there is not the apps.
     const [chat, sevennine] = await Promise.all([
-      pingLocalPort(CHAT_PORT, '/'),
+      apps.holds && pingLocalPort(CHAT_PORT, '/'),
       pingLocalPort(SEVENNINE_PORT, '/'),
     ]);
-    // appsServer.error explains a chat/mail/forum outage the ping alone cannot:
-    // the port was taken, usually by a second copy of the browser.
+    // apps.error explains a chat/mail/forum outage the ping alone cannot:
+    // another program holds the port, and appsOff says the apps stay off for
+    // this run.
     // update: a newer build, this one below the minimum safe version, or no
     // signed record to confirm either, from the checksum table; null when
     // there is nothing to say.
     return {
-      chat, sevennine, hidrareview: chat, error: chat ? null : appsServer.error, about: buildInfo(),
-      update: updater().notice(),
+      chat, sevennine, hidrareview: chat, error: chat ? null : apps.error, appsOff: apps.state === 'off',
+      about: buildInfo(), update: updater().notice(),
     };
   });
 

@@ -59,7 +59,9 @@ Module._load = function (request, parent, isMain) {
 const { setupIPC } = require('../src/main/main.js');
 // The browser's own bar: browser.html in the main window's contents.
 const chrome = { mainFrame: { url: null } };
-setupIPC(spy('tabs'), spy('proxy'), () => chrome);
+// The apps server, holding the apps' addresses until the end of the test.
+const appsServer = { holds: true, state: 'listening', error: null, reason: () => 'the apps are up' };
+setupIPC(spy('tabs'), spy('proxy'), () => chrome, appsServer);
 
 // ── Senders ──────────────────────────────────────────────────────────────
 function from(url, { subframe = false, sender } = {}) {
@@ -180,6 +182,21 @@ async function refusesAll(channel, senders, args = []) {
     }
     check(`${ch} still answers ${allowed.join(', ')}`, turnedAway.length === 0, turnedAway.join('\n      '));
   }
+
+  // Another program holds the apps' port: the apps server is off for the
+  // run, and a page on an app's origin may not be ours. The apps are refused
+  // the vault like anyone else, before it is touched; the new tab page still
+  // reads its status.
+  Object.assign(appsServer, { holds: false, state: 'off', error: 'another program holds port 8090 on ::1, so the apps are off' });
+  appsServer.reason = () => appsServer.error;
+  for (const ch of ['vault:get', 'vault:set', 'vault:status']) {
+    const wrong = await refusesAll(ch, APPS, ARGS[ch] || []);
+    check(`${ch} refuses the apps while the apps server does not hold their addresses`, wrong.length === 0, wrong.join('\n      '));
+  }
+  const why = await outcome('vault:get', APPS['HidraMail on its origin']);
+  check('and says why', /^refused: another program holds port 8090/.test(why.error || ''), why.error);
+  const panel = await outcome('vault:status', page('newtab.html'));
+  check('vault:status still answers the new tab page', !panel.refused, panel.error);
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

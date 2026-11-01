@@ -188,8 +188,10 @@ research**.
 **Tor does not get past 0%.**
 Your network may be blocking Tor. Configure a bridge in the settings.
 
-**"Port 8090 is in use."**
-Another copy of the browser is open. Close it and restart.
+**The apps on the new tab page say "Off".**
+Another program holds port 8090, where the browser serves its own apps. They
+stay off until you close that program and restart HidraNet. The badge's
+tooltip says which address is taken.
 
 **A site blocks me.**
 Some sites block known exit nodes. Try **Switch circuit**.

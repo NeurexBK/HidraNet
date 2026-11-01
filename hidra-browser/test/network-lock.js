@@ -35,7 +35,7 @@ function fakeSession({ failFirst = 0, stuck = null } = {}) {
     writes: [],
     closed: 0,
     filters: 0,
-    webRequest: { onBeforeRequest() { s.filters++; } },
+    webRequest: { onBeforeRequest(fn) { s.filters++; s.filter = fn; } },
     async setProxy(config) {
       s.writes.push(config);
       if (failFirst > 0) { failFirst--; throw new Error('setProxy failed'); }
@@ -107,6 +107,28 @@ function fakeSession({ failFirst = 0, stuck = null } = {}) {
     check('so the lock stays shut, with the reason that shut it', late.engaged && late.getStatus().reason === 'Tor exited unexpectedly', JSON.stringify(late.getStatus()));
     check('a release with no generation is refused too', late.release() === false && late.engaged);
     check('the current generation still opens it', late.release(late.generation) && !late.engaged);
+  }
+
+  // The apps server's refusals go through the same filter, the one
+  // onBeforeRequest listener a session has, whatever the lock's state.
+  {
+    const refused = new Set(['http://mail.localhost:8090/']);
+    const gated = new NetworkLock(RULES, { refuse: (url) => refused.has(url) });
+    const e = fakeSession();
+    gated.protect(e);
+    const decide = (url) => new Promise((r) => e.filter({ url }, r));
+    check('with the lock shut, a refused apps address is cancelled', (await decide('http://mail.localhost:8090/')).cancel === true);
+    check('and another local address still goes through', !(await decide('http://chat.localhost:8090/')).cancel);
+    gated.release(gated.generation);
+    check('with the lock open, the refused address is still cancelled', (await decide('http://mail.localhost:8090/')).cancel === true);
+    check('and a website goes through', !(await decide('https://example.com/')).cancel);
+    check('a refusal is not counted as a request the lock blocked', gated.getStatus().blocked === 0, JSON.stringify(gated.getStatus()));
+    const plain = new NetworkLock(RULES);
+    const f = fakeSession();
+    plain.protect(f);
+    plain.release(plain.generation);
+    check('a lock given no refusals cancels nothing on its own once open',
+      !(await new Promise((r) => f.filter({ url: 'http://mail.localhost:8090/' }, r))).cancel);
   }
 
   // What Chromium may resolve by itself.

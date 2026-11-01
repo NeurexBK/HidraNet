@@ -24,6 +24,7 @@ const net = require('net');
 const { TabManager } = require('../src/main/tab-manager');
 const { NetworkLock } = require('../src/main/network-lock');
 const { proxyRulesFor } = require('../src/main/tor-manager');
+const { AppsServer } = require('../src/main/apps-server');
 
 const failures = [];
 const check = (name, ok, detail) => {
@@ -117,7 +118,9 @@ app.whenReady().then(async () => {
 
   const win = new BrowserWindow({ show: false, width: 900, height: 700 });
   await win.loadURL('data:text/html,<title>bar</title>');
-  const tabs = new TabManager(win, lock);
+  // An apps server that never starts: the app tab below is about its route,
+  // not its page, and loads nothing.
+  const tabs = new TabManager(win, lock, new AppsServer());
 
   // What Chromium says every session the browser owns would use, now.
   const routes = async () => {

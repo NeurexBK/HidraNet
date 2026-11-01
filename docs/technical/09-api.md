@@ -245,6 +245,18 @@ has nothing of another's: not its storage, not its routes. A request is
 answered only with one of these `Host`s, which stops DNS rebinding, and only
 from the same app's `Origin`.
 
+The server (`src/main/apps-server.js`) listens on `127.0.0.1:8090` and on
+`[::1]:8090`, with one handler: Chromium connects to `::1` first for a
+`.localhost` name. A system with no IPv6 loopback needs only the first. If
+another program holds either address, the apps are off for that run: the
+browser loads none of their addresses, answers no vault call, and the new tab
+page marks the apps off with the reason. Every response carries an
+`X-Hidra-Apps-Token` header, random for each run; the tabs drop a response
+from an app's address that does not carry it, and remove it from the ones
+they keep. A service worker would answer an app's pages without a request,
+so none is kept in the apps' partition: any found there is removed before
+the first app loads, and the partition refuses the script of a new one.
+
 | Origin | Description | Vault compartment |
 |---|---|---|
 | `http://chat.localhost:8090` | HidraChat | `chat` |

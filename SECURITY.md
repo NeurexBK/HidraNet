@@ -46,7 +46,10 @@ wrong is high.
   vault written through the operating system's keychain: the macOS Keychain,
   Windows DPAPI, GNOME Keyring or KWallet on Linux. The key is the OS's, tied
   to the user's login, and never passes through the browser. Each app opens
-  only its own compartment, decided from the page's own URL. Where a Linux
+  only its own compartment, decided from the page's own URL, and only while
+  the browser's own apps server holds the apps' port on every loopback
+  address (127.0.0.1, and ::1 where the system has one): if another program
+  holds either, the apps stay off for that run. Where a Linux
   system has no keyring, the data is written as it is and the mail settings
   and the privacy panel say so — Chromium's fixed fallback key is not called
   protection.

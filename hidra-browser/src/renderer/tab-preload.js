@@ -108,7 +108,11 @@ if (isInternalPage) {
 // This decides whether the bridge is offered; it is not what protects the
 // vault. The main process checks the sender of every call against the
 // frame's own URL, so a page that is not one of these gets a refusal even if
-// it somehow had the bridge.
+// it somehow had the bridge. It refuses the apps too while the browser's own
+// apps server does not hold their addresses (src/main/apps-server.js), and
+// the bridge is offered all the same: an app with no bridge would fall back
+// to localStorage and start a new identity, and one whose calls are refused
+// stops and says why (hidra-store.js).
 // Each app has an origin of its own (app-origins.js); these are the ones
 // that hold an identity, passed in by tab-manager.js.
 const APPS_FLAG = '--hidra-app-origins=';
