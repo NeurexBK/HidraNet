@@ -275,6 +275,23 @@ withdraws a node from every client that imports the list. Publish
 `hidra-browser/src/main/main.js`, `https://hidranet.org/vpn/nodes.json`), and
 anywhere else you like.
 
+With nodes that admit with a pass, the list also names the pass issuer, its
+keys and, when it sells passes, the wallet they are paid to:
+
+```
+hidravpn/scripts/make-node-list.sh --key list.key --out nodes.json \
+    --sequence 2 --issuer-url https://passes.example.org --pass-key pass-key.json \
+    --pay-wallet <the receiving wallet> hel-1.json ams-1.json ...
+```
+
+`--pay-wallet` is the issuer's own `--pay-wallet`; `--pay-mint` names the
+token when it is not HNET. A client buys passes only from a list that names
+the wallet, and refuses any answer of the issuer that asks for payment to
+another wallet or in another token. So the wallet changes only with a new
+list: restart the issuer with the new wallet and publish the list that
+names it at the same time. In between, clients refuse to buy, and nothing
+is paid anywhere else (`phase-7-payments.md`).
+
 ## What a client does with it
 
 In the browser: open HidraVPN, press **Get the maintainers' list**, press

@@ -28,7 +28,11 @@
 # two hours, and a lapsed order paid in time is credited by hand; the node
 # admits with a pass bought this way; the issuer's files keep hashes only;
 # and no log names the wallet, a transaction, an amount, a token or the
-# client.
+# client. The client buys only from a signed list that names the wallet:
+# packs or an order naming another wallet or token than the list are
+# refused and nothing is kept, and an open order the list no longer names
+# is neither to be paid nor claimed; the same list imported again names the
+# wallet to a pocket saved without it.
 #
 # Run as root:  hidravpn/scripts/test-pay-netns.sh
 set -u
@@ -44,6 +48,8 @@ export RUST_BACKTRACE=0
 export HIDRAVPN_PLAIN_HTTP_ISSUER=1
 WALLET=So11111111111111111111111111111111111111112
 MINT=Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump
+# A wallet and a token that are not the issuer's.
+ELSEWHERE=ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc
 ok=0; bad=0
 pass() { echo "ok    $1"; ok=$((ok + 1)); }
 fail() { echo "FAIL  $1"; bad=$((bad + 1)); }
@@ -129,16 +135,42 @@ for i in $(seq 1 100); do grep -q "DNS forwarder ready" "$WORK/node.log" && grep
 grep -q "admission service on TCP 51821 (with a pass" "$WORK/node.log" || { tail -5 "$WORK/node.log"; fail "node did not come up"; exit 1; }
 $N "$BIN/hidravpn-node" --config "$WORK/p.toml" record > "$WORK/rec.json" 2>/dev/null
 LISTPUB=$("$BIN/hidravpn-sign" keygen --out "$WORK/list.key" 2>/dev/null)
-HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes.json" --sequence 1 \
-  --issuer-url http://10.200.0.1:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec.json" > /dev/null 2>&1 || fail "make-node-list"
+# A list of sequence N, naming the issuer and what else is given.
+mklist() { local seq="$1"; shift; HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes-$seq.json" --sequence "$seq" \
+  --issuer-url http://10.200.0.1:8730 --pass-key "$WORK/pass-key.json" "$@" "$WORK/rec.json"; }
+importlist() { "$BIN/hidravpn" nodes import "$WORK/nodes-$1.json" --pubkey "$LISTPUB"; }
+OUT=$(mklist 1 --pay-wallet not-a-wallet 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "is not a Solana address" && [ ! -e "$WORK/nodes-1.json" ] && pass "make-node-list.sh refuses a wallet that is not an address" || fail "bad wallet: $OUT"
+OUT=$(mklist 1 --pay-wallet "$MINT" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "the mint itself" && pass "and a wallet that is the mint (HNET's, when no other is named)" || fail "wallet as mint: $OUT"
+OUT=$(mklist 1 --pay-mint "$MINT" 2>&1); OUT2=$(HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes-1.json" --sequence 1 --pay-wallet "$WALLET" "$WORK/rec.json" 2>&1)
+echo "$OUT" | grep -q "goes with --pay-wallet" && echo "$OUT2" | grep -q "goes with --issuer-url" && [ ! -e "$WORK/nodes-1.json" ] && pass "and a mint without a wallet, or a wallet without an issuer" || fail "mint alone: $OUT / wallet alone: $OUT2"
+mklist 1 > /dev/null 2>&1 || fail "make-node-list"
 mkdir -p /etc/hidravpn
 $C "$BIN/hidravpn" keygen >/dev/null 2>&1
-"$BIN/hidravpn" nodes import "$WORK/nodes.json" --pubkey "$LISTPUB" 2>&1 | grep -q "added 1 node(s)" || fail "import"
+importlist 1 2>&1 | grep -q "added 1 node(s)" || fail "import"
+
+# ── Bought only where the signed list says ──────────────────────────────────
+# A list that names no wallet, as every list made before lists named one.
+OUT=$($C "$BIN/hidravpn" passes buy 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "does not name the wallet passes are paid to; import a newer node list" && pass "a list that names no wallet: passes buy lists nothing, and says to import a newer list" || fail "no wallet, packs: $OUT"
+OUT=$($C "$BIN/hidravpn" passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "import a newer node list" && [ ! -e /etc/hidravpn/order.json ] && [ ! -e /etc/hidravpn/pass.token ] && ! grep -q "order opened" "$WORK/issuer.log" \
+  && pass "and buys nothing: no order, no token made, no quote asked" || fail "no wallet, buy: $OUT"
+mklist 2 --pay-wallet "$WALLET" --pay-mint "$MINT" > "$WORK/make.log" 2>&1 && importlist 2 > /dev/null 2>&1 \
+  && python3 -I -c "import json,sys; p=json.load(open(sys.argv[1]))['pass_issuer']; sys.exit(0 if (p['wallet'], p['mint']) == (sys.argv[2], sys.argv[3]) else 1)" "$WORK/nodes-2.json" "$WALLET" "$MINT" \
+  && pass "make-node-list.sh puts the wallet and the mint in the signed list ($(head -1 "$WORK/make.log" | sed 's/^.*; //'))" || fail "list with a wallet: $(cat "$WORK/make.log")"
 
 # ── An order ────────────────────────────────────────────────────────────────
-OUT=$($C "$BIN/hidravpn" passes buy 2>&1); echo "$OUT" | grep -q "10 passes for 50 HNET" && echo "$OUT" | grep -q "150 passes for 5.99 USD, 47217 HNET today" && echo "$OUT" | grep -q "today's rate: 0.00012686 USD for one HNET" && pass "passes buy, alone, lists the packs, the dollar one in today's HNET" || fail "list packs: $OUT"
+OUT=$($C "$BIN/hidravpn" passes buy 2>&1); echo "$OUT" | grep -q "paid in HNET sent to $WALLET:" && echo "$OUT" | grep -q "10 passes for 50 HNET" && echo "$OUT" | grep -q "150 passes for 5.99 USD, 47217 HNET today" && echo "$OUT" | grep -q "today's rate: 0.00012686 USD for one HNET" && pass "passes buy, alone, lists the packs, the dollar one in today's HNET" || fail "list packs: $OUT"
 OUT=$($C "$BIN/hidravpn" passes claim x 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no order is open" && pass "a claim with no order open is refused at home" || fail "claim without order: $OUT"
 OUT=$($C "$BIN/hidravpn" passes buy 7 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no pack of 7 passes" && echo "$OUT" | grep -q "a new pass account token was made" && [ ! -e /etc/hidravpn/order.json ] && pass "a pack the issuer does not sell: refused, no order (the token for purchases was made, and kept)" || fail "buy 7: $OUT"
+# The issuer asks for payment to its wallet, in its token. A machine whose
+# lists name another of either (a pocket and a token of its own, beside the
+# first): nothing to pay, nothing kept.
+HV2="$BIN/hidravpn --pocket $WORK/other/pocket.json"; mkdir -p "$WORK/other"
+mklist 3 --pay-wallet "$ELSEWHERE" > /dev/null 2>&1 && $HV2 nodes import "$WORK/nodes-3.json" --pubkey "$LISTPUB" > /dev/null 2>&1 || fail "list 3"
+OUT=$($C $HV2 passes buy 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "asks for payment to a wallet the signed node list does not name; pay it nothing" && ! echo "$OUT" | grep -q "$WALLET" && pass "packs that name another wallet than the signed list: refused, the wallet they name never shown" || fail "other wallet, packs: $OUT"
+OUT=$($C $HV2 passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "asks for payment to a wallet the signed node list does not name; pay it nothing. If the wallet changed, import a newer node list" && ! echo "$OUT" | grep -q "$WALLET" && [ ! -e "$WORK/other/order.json" ] \
+  && pass "a quote that names another wallet than the signed list: refused, no order kept" || fail "other wallet, buy: $OUT"
+mklist 4 --pay-wallet "$WALLET" --pay-mint "$ELSEWHERE" > /dev/null 2>&1 && $HV2 nodes import "$WORK/nodes-4.json" --pubkey "$LISTPUB" > /dev/null 2>&1 || fail "list 4"
+OUT=$($C $HV2 passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "asks for payment in a token the signed node list does not name; pay it nothing" && [ ! -e "$WORK/other/order.json" ] && pass "a quote in another token than the signed list names: refused, no order kept" || fail "other mint, buy: $OUT"
 OUT=$($C "$BIN/hidravpn" passes buy 10 2>&1); RC=$?
 AMOUNT=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount'])" 2>/dev/null)
 RAW=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])" 2>/dev/null)
@@ -151,8 +183,24 @@ LEFT=$(( $(date -u -d "$EXPIRES" +%s) - $(date +%s) ))
   && pass "the amount is the price plus a tag under 0.1 HNET; the order and the token are root's only" || fail "order file: raw=$RAW $(ls -l /etc/hidravpn)"
 TOKEN=$(cat /etc/hidravpn/pass.token)
 OUT=$($C "$BIN/hidravpn" passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "already open" && pass "a second buy with an order open says so (--replace makes a new one)" || fail "second buy: $OUT"
-OUT=$($C "$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "an order for 10 pass(es) is open, unclaimed: $AMOUNT HNET" && pass "passes list shows the open order" || fail "list: $OUT"
+OUT=$($C "$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "an order for 10 pass(es) is open, unclaimed: $AMOUNT HNET" && echo "$OUT" | grep -q "passes are bought with HNET sent to $WALLET" && pass "passes list shows the open order, and where the list says passes are paid" || fail "list: $OUT"
 grep -q "order opened for 10 pass(es)" "$WORK/issuer.log" && pass "the issuer logged the order as a count" || fail "issuer log: $(cat "$WORK/issuer.log")"
+# A newer list names another wallet: the open order is not to be paid, and
+# a claim for it is not sent; back to the issuer's wallet, it is as it was.
+mklist 6 --pay-wallet "$ELSEWHERE" > /dev/null 2>&1 && importlist 6 > /dev/null 2>&1 || fail "list 6"
+CLAIMS=$(grep -c "claim" "$WORK/issuer.log")
+OUT=$($C "$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "an order for 10 pass(es) is open, unclaimed, and not to be paid: it asks for payment to a wallet the signed node list does not name" && ! echo "$OUT" | grep -q "$AMOUNT" && pass "an open order the list no longer names: passes list says not to pay it" || fail "list, other wallet: $OUT"
+OUT=$($C "$BIN/hidravpn" passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not to be paid" && echo "$OUT" | grep -q "passes buy 10 --replace" && pass "so does passes buy, and how to make a new order" || fail "buy, other wallet: $OUT"
+OUT=$($C "$BIN/hidravpn" passes claim "$(python3 -I -c "print('1' * 64)")" 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "the open order is not claimed, and not to be paid" && [ "$(grep -c "claim" "$WORK/issuer.log")" = "$CLAIMS" ] && [ -e /etc/hidravpn/order.json ] \
+  && pass "and a claim for it is not sent" || fail "claim, other wallet: $OUT"
+mklist 7 --pay-wallet "$WALLET" > /dev/null 2>&1 && importlist 7 > /dev/null 2>&1 || fail "list 7"
+OUT=$($C "$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "an order for 10 pass(es) is open, unclaimed: $AMOUNT HNET" && pass "a list naming the issuer's wallet again: the order is to be paid" || fail "list, back: $OUT"
+# The pocket as a client that keeps no wallet (0.1.0) writes it, after it
+# read the same list: not to be paid until that list is imported again.
+python3 -I -c "import json,sys; p=json.load(open(sys.argv[1])); del p['pass_issuer']['wallet']; json.dump(p, open(sys.argv[1], 'w'))" /etc/hidravpn/circuit.json
+OUT=$($C "$BIN/hidravpn" passes list 2>&1); OUT2=$(importlist 7 2>&1); OUT3=$($C "$BIN/hidravpn" passes list 2>&1)
+echo "$OUT" | grep -q "the list names no wallet to buy passes with" && echo "$OUT" | grep -q "not to be paid" && echo "$OUT2" | grep -q "added 0 node(s)" && echo "$OUT3" | grep -q "an order for 10 pass(es) is open, unclaimed: $AMOUNT HNET" \
+  && pass "a pocket saved without the wallet, as 0.1.0 saves it: the order is not to be paid until the same list is imported again" || fail "same list again: $OUT / $OUT2 / $OUT3"
 
 # ── Claims that must fail ───────────────────────────────────────────────────
 sig() { python3 -I -c "

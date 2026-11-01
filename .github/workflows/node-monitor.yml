@@ -71,8 +71,10 @@ jobs:
             'hidravpn/crates/hidravpn-core/src/directory.rs' \
             'hidravpn/crates/hidravpn-core/src/http.rs' \
             'hidravpn/crates/hidravpn-core/src/pass.rs' \
+            'hidravpn/crates/hidravpn-core/src/payment.rs' \
             'hidravpn/crates/hidravpn-core/src/release.rs' \
             'hidravpn/crates/hidravpn-core/src/timefmt.rs' \
+            'hidravpn/crates/hidravpn-service/src/passes.rs' \
             'hidra-browser/src/main/main.js' \
             'hidra-browser/src/main/update-check.js'; then
             echo touched=false >> "$GITHUB_OUTPUT"

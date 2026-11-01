@@ -42,6 +42,9 @@ use serde::{Deserialize, Serialize};
 pub const HNET_MINT: &str = "Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump";
 /// HNET's decimals: one HNET is 1 000 000 raw units.
 pub const HNET_DECIMALS: u8 = 6;
+/// The most decimals an amount is read with: more than any token in use
+/// has, and 10^18 raw units still fit in a u64.
+pub const MAX_DECIMALS: u8 = 18;
 /// The random part of an amount: this many of the last digits.
 pub const TAG_DIGITS: u32 = 5;
 /// How long an order can be paid and claimed before any claim reached it,
@@ -160,9 +163,14 @@ pub fn amount_to_string(raw: u64, decimals: u8) -> String {
 }
 
 /// A decimal amount as raw units: "50", "50.5" or "50.004213" with 6
-/// decimals. More decimals than the token has, or anything that is not a
-/// number, is refused.
+/// decimals. More decimals than the token has, a token with more than
+/// `MAX_DECIMALS`, or anything that is not a number, is refused.
 pub fn amount_from_string(s: &str, decimals: u8) -> Result<u64> {
+    if decimals > MAX_DECIMALS {
+        return Err(anyhow!(
+            "a token with {decimals} decimals; no amount is read with more than {MAX_DECIMALS}"
+        ));
+    }
     let s = s.trim();
     let (whole, frac) = match s.split_once('.') {
         Some((w, f)) => (w, f),
@@ -726,6 +734,15 @@ mod tests {
                 amount_from_string(&amount_to_string(raw, 6), 6).unwrap(),
                 raw
             );
+        }
+        // Up to MAX_DECIMALS an amount is read; past it, nothing is.
+        assert_eq!(
+            amount_from_string("1", MAX_DECIMALS).unwrap(),
+            10u64.pow(u32::from(MAX_DECIMALS))
+        );
+        for decimals in [MAX_DECIMALS + 1, 20, u8::MAX] {
+            let e = amount_from_string("1", decimals).unwrap_err().to_string();
+            assert!(e.contains("decimals"), "{decimals}: {e}");
         }
     }
 

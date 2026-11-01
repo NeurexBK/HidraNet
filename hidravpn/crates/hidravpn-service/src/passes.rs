@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use hidravpn_core::admission::PassRefused;
+use hidravpn_core::directory::PassIssuer;
 use hidravpn_core::pass::{self, Wallet};
 use hidravpn_core::{Invite, NodeRecord, Pocket};
 
@@ -1131,13 +1132,15 @@ mod tests {
         let mut p = Pocket::default();
         let a = record("a", "pass");
         p.learn(a.clone()).unwrap();
-        p.pass_issuer = Some(hidravpn_core::directory::PassIssuer {
+        p.pass_issuer = Some(PassIssuer {
             url: "https://passes.example.org".into(),
             keys: vec![pass::PassKeyRecord {
                 id: "00".into(),
                 key: String::new(),
                 not_after: "2000-01-01T00:00:00Z".into(),
             }],
+            wallet: None,
+            mint: None,
         });
         let mut w = Wallet::default();
         for _ in 0..5 {
@@ -1247,6 +1250,189 @@ mod tests {
             assert!(!claim_refused(status, &body).contains(open), "{body}");
         }
     }
+
+    const WALLET: &str = "So11111111111111111111111111111111111111112";
+    const OTHER_WALLET: &str = "ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc";
+    const OTHER_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    fn selling(url: &str, wallet: Option<&str>, mint: Option<&str>) -> Pocket {
+        Pocket {
+            pass_issuer: Some(PassIssuer {
+                url: url.into(),
+                keys: Vec::new(),
+                wallet: wallet.map(String::from),
+                mint: mint.map(String::from),
+            }),
+            ..Pocket::default()
+        }
+    }
+
+    fn quote(wallet: &str, mint: &str, decimals: u8) -> hidravpn_core::payment::QuoteResponse {
+        hidravpn_core::payment::QuoteResponse {
+            passes: 10,
+            amount: "50.004213".into(),
+            amount_raw: 50_004_213,
+            decimals,
+            mint: mint.into(),
+            wallet: wallet.into(),
+            expires: "2026-11-01T12:00:00Z".into(),
+            usd: None,
+            rate: None,
+        }
+    }
+
+    #[test]
+    fn an_order_is_paid_only_to_the_wallet_and_in_the_token_the_signed_list_names() {
+        use hidravpn_core::payment::HNET_MINT;
+        let p = selling("https://passes.example.org", Some(WALLET), None);
+        let refused = |p: &Pocket, q| order_from_quote(p, q, 10).unwrap_err().to_string();
+
+        // The list's wallet, and HNET for a list that names no mint.
+        let o = order_from_quote(&p, quote(&format!(" {WALLET} "), HNET_MINT, 6), 10).unwrap();
+        assert_eq!((o.wallet.as_str(), o.mint.as_str()), (WALLET, HNET_MINT));
+        assert_eq!(o.issuer, "https://passes.example.org");
+        let told = describe_order(&o);
+        assert!(
+            told.contains(&format!("Send exactly 50.004213 HNET to\n  {WALLET}\n")),
+            "{told}"
+        );
+
+        // Another wallet, another token, decimals past any amount read: no
+        // order, and the person is told to pay nothing.
+        for (q, says) in [
+            (quote(OTHER_WALLET, HNET_MINT, 6), "to a wallet"),
+            (quote(WALLET, OTHER_MINT, 6), "in a token"),
+        ] {
+            let e = refused(&p, q);
+            assert!(
+                e.contains(says)
+                    && e.contains("signed node list does not name")
+                    && e.contains("pay it nothing")
+                    && e.contains("import a newer node list"),
+                "{e}"
+            );
+            assert!(!e.contains(OTHER_WALLET) && !e.contains(OTHER_MINT), "{e}");
+        }
+        for decimals in [19, 20, u8::MAX] {
+            let e = refused(&p, quote(WALLET, HNET_MINT, decimals));
+            assert!(
+                e.contains("decimals") && e.contains("pay it nothing"),
+                "{e}"
+            );
+        }
+        let mut q = quote(WALLET, HNET_MINT, 6);
+        q.amount_raw += 1;
+        assert!(refused(&p, q).contains("does not add up"));
+
+        // A list that names no wallet, or no issuer: nothing is bought, and
+        // the person is told to import a newer list.
+        let e = refused(
+            &selling("https://passes.example.org", None, None),
+            quote(WALLET, HNET_MINT, 6),
+        );
+        assert!(
+            e.contains("does not name the wallet") && e.contains("import a newer node list"),
+            "{e}"
+        );
+        assert!(selling_issuer(&Pocket::default())
+            .unwrap_err()
+            .to_string()
+            .contains("names no pass issuer"));
+
+        // A list that names another token: that one, labelled by its mint,
+        // and HNET is then refused like any other.
+        let p = selling("https://passes.example.org", Some(WALLET), Some(OTHER_MINT));
+        let o = order_from_quote(&p, quote(WALLET, OTHER_MINT, 6), 10).unwrap();
+        assert_eq!(o.mint, OTHER_MINT);
+        assert!(describe_order(&o).contains(&format!("50.004213 the token {OTHER_MINT} to")));
+        assert!(refused(&p, quote(WALLET, HNET_MINT, 6)).contains("in a token"));
+        assert_eq!(token_name(HNET_MINT), "HNET");
+
+        // The packs are held to the same: the wallet they say to pay.
+        assert!(check_answer(&p, WALLET, OTHER_MINT, 6).is_ok());
+        assert!(check_answer(&p, OTHER_WALLET, OTHER_MINT, 6).is_err());
+        assert!(check_answer(&p, WALLET, OTHER_MINT, 19).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_open_order_the_list_does_not_name_is_not_paid_nor_claimed() {
+        use hidravpn_core::payment::HNET_MINT;
+        let p = selling("http://127.0.0.1:9", Some(WALLET), None);
+        let mut o = order_from_quote(&p, quote(WALLET, HNET_MINT, 6), 10).unwrap();
+        check_order(&p, &o).unwrap();
+        // Under a newer list with another wallet, or another token, or
+        // under a list with none: not to be paid, and not claimed. Nothing
+        // is sent: the issuer here is a port nobody answers on.
+        let path = std::env::temp_dir()
+            .join(format!("hidravpn-order-{}", std::process::id()))
+            .join("pocket.json");
+        let sig = hidravpn_core::payment::base58_encode(&[7u8; 64]);
+        for (list, says) in [
+            (
+                selling("http://127.0.0.1:9", Some(OTHER_WALLET), None),
+                "to a wallet",
+            ),
+            (
+                selling("http://127.0.0.1:9", Some(WALLET), Some(OTHER_MINT)),
+                "in a token",
+            ),
+            (
+                selling("http://127.0.0.1:9", None, None),
+                "import a newer node list",
+            ),
+        ] {
+            let e = check_order(&list, &o).unwrap_err().to_string();
+            assert!(e.contains(says), "{e}");
+            let e = claim(&list, &path, &o, "token", &sig)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("not claimed") && e.contains(says), "{e}");
+        }
+        o.wallet = OTHER_WALLET.into();
+        let e = check_order(&p, &o).unwrap_err().to_string();
+        assert!(e.contains("passes buy 10 --replace"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn buy_keeps_no_order_the_signed_list_does_not_name() {
+        use hidravpn_core::payment::HNET_MINT;
+        use tokio::io::AsyncWriteExt;
+        // An issuer on this machine that answers each quote with the next
+        // of these.
+        let answers = vec![
+            quote(OTHER_WALLET, HNET_MINT, 6),
+            quote(WALLET, OTHER_MINT, 6),
+            quote(WALLET, HNET_MINT, 6),
+        ];
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        tokio::spawn(async move {
+            for q in answers {
+                let (mut s, _) = l.accept().await.unwrap();
+                hidravpn_core::admission::read_request(&mut s)
+                    .await
+                    .unwrap();
+                let body = serde_json::to_string(&q).unwrap();
+                s.write_all(&hidravpn_core::admission::http_response(200, &body))
+                    .await
+                    .unwrap();
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("hidravpn-buy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pocket.json");
+        let _ = std::fs::remove_file(order_path(&path));
+        let p = selling(&url, Some(WALLET), None);
+        for says in ["to a wallet", "in a token"] {
+            let e = buy(&p, &path, "token", 10).await.unwrap_err().to_string();
+            assert!(e.contains(says), "{e}");
+            assert!(!order_path(&path).exists(), "no order is kept");
+        }
+        let o = buy(&p, &path, "token", 10).await.unwrap();
+        assert_eq!(load_order(&path).unwrap(), Some(o));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---- buying passes with HNET (phase 7) ---------------------------------------------
@@ -1286,14 +1472,21 @@ pub fn load_order(pocket_path: &Path) -> Result<Option<Order>> {
     }
 }
 
-/// How an order reads to the person: what to send, where, by when, and
-/// what comes next.
-pub fn describe_order(o: &Order) -> String {
-    let token = if o.mint == hidravpn_core::payment::HNET_MINT {
+/// What a token is called to the person: HNET for HNET's mint, any other
+/// by its mint.
+pub fn token_name(mint: &str) -> String {
+    if mint == hidravpn_core::payment::HNET_MINT {
         "HNET".to_string()
     } else {
-        format!("the token {}", o.mint)
-    };
+        format!("the token {mint}")
+    }
+}
+
+/// How an order reads to the person: what to send, where, by when, and
+/// what comes next. The wallet and the token are the ones the signed list
+/// named when the order was made (`order_from_quote`).
+pub fn describe_order(o: &Order) -> String {
+    let token = token_name(&o.mint);
     let in_dollars = match (&o.usd, &o.rate) {
         (Some(usd), Some(rate)) => {
             format!(" ({usd} USD at {rate} USD for one {token}, fixed for this order)")
@@ -1311,6 +1504,100 @@ pub fn describe_order(o: &Order) -> String {
         wallet = o.wallet,
         expires = o.expires
     )
+}
+
+/// The pass issuer the pocket's list names, and the wallet that list says
+/// it is paid to. A purchase is paid to that wallet or not at all: from a
+/// list that names none (one made before lists named it), nothing is
+/// bought until a newer one is imported.
+pub fn selling_issuer(pocket: &Pocket) -> Result<(&PassIssuer, &str)> {
+    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
+        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
+    })?;
+    let wallet = issuer.pay_wallet().ok_or_else(|| {
+        anyhow!(
+            "the node list this machine holds does not name the wallet passes are paid to; import a newer node list"
+        )
+    })?;
+    Ok((issuer, wallet))
+}
+
+/// Where the issuer's answer (`/quote` or `/packs`) says to pay, against the
+/// signed list, before anyone is told to pay: the wallet and the token must
+/// be the list's, whatever the answer says, and the decimals no more than an
+/// amount is read with.
+fn check_answer<'a>(
+    pocket: &'a Pocket,
+    wallet: &str,
+    mint: &str,
+    decimals: u8,
+) -> Result<(&'a PassIssuer, &'a str)> {
+    let (issuer, listed) = selling_issuer(pocket)?;
+    if wallet.trim() != listed {
+        return Err(anyhow!(
+            "the pass issuer asks for payment to a wallet the signed node list does not name; pay it nothing. If the wallet changed, import a newer node list"
+        ));
+    }
+    if mint.trim() != issuer.pay_mint() {
+        return Err(anyhow!(
+            "the pass issuer asks for payment in a token the signed node list does not name; pay it nothing. If the token changed, import a newer node list"
+        ));
+    }
+    if decimals > hidravpn_core::payment::MAX_DECIMALS {
+        return Err(anyhow!(
+            "the pass issuer names a token with {decimals} decimals, more than an amount is read with; pay it nothing"
+        ));
+    }
+    Ok((issuer, listed))
+}
+
+/// The order an issuer's answer to a quote makes, checked before anyone is
+/// told to pay: where to pay is the signed list's (`check_answer`), the
+/// amount is written the way it is read back, the pack is the one asked
+/// for. The order keeps the list's wallet and mint, not the answer's.
+fn order_from_quote(
+    pocket: &Pocket,
+    q: hidravpn_core::payment::QuoteResponse,
+    passes: u32,
+) -> Result<Order> {
+    let (issuer, wallet) = check_answer(pocket, &q.wallet, &q.mint, q.decimals)?;
+    if hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
+        || q.passes != passes
+    {
+        return Err(anyhow!(
+            "the issuer's order does not add up; nothing to pay"
+        ));
+    }
+    Ok(Order {
+        passes: q.passes,
+        amount: q.amount,
+        amount_raw: q.amount_raw,
+        decimals: q.decimals,
+        mint: issuer.pay_mint().to_string(),
+        wallet: wallet.to_string(),
+        expires: q.expires,
+        issuer: issuer.url.clone(),
+        usd: q.usd,
+        rate: q.rate,
+    })
+}
+
+/// Whether the open order may be paid: only when it asks for payment to
+/// the wallet, and in the token, the signed node list names. An order kept
+/// from under an older list is not to be paid, nor claimed.
+pub fn check_order(pocket: &Pocket, o: &Order) -> Result<()> {
+    let (issuer, wallet) = selling_issuer(pocket)?;
+    let other = if o.wallet.trim() != wallet {
+        "to a wallet"
+    } else if o.mint.trim() != issuer.pay_mint() {
+        "in a token"
+    } else {
+        return Ok(());
+    };
+    Err(anyhow!(
+        "it asks for payment {other} the signed node list does not name; `hidravpn passes buy {} --replace` makes a new order",
+        o.passes
+    ))
 }
 
 /// The account token for purchases: the one kept, or a new one made and
@@ -1331,11 +1618,10 @@ pub fn token_for_purchase(token_path: &Path) -> Result<(String, bool)> {
     }
 }
 
-/// What the issuer sells.
+/// What the issuer sells, once its answer asks for payment where the
+/// signed list says.
 pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksResponse> {
-    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
-        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
-    })?;
+    let (issuer, _) = selling_issuer(pocket)?;
     let url = hidravpn_core::http::Url::parse(&issuer.url)
         .context("the pass issuer's address")?
         .with_path("/packs");
@@ -1343,16 +1629,17 @@ pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksRespo
     if status != 200 {
         return Err(anyhow!(refused("sells no passes", status, &answer)));
     }
-    serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")
+    let p: hidravpn_core::payment::PacksResponse =
+        serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
+    check_answer(pocket, &p.wallet, &p.mint, p.decimals)?;
+    Ok(p)
 }
 
 /// Opens an order for `passes` with the issuer the pocket's list names,
 /// for the account `token`, and keeps it beside the pocket.
 pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) -> Result<Order> {
     use sha2::Digest;
-    let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
-        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
-    })?;
+    let (issuer, _) = selling_issuer(pocket)?;
     let url = hidravpn_core::http::Url::parse(&issuer.url)
         .context("the pass issuer's address")?
         .with_path("/quote");
@@ -1369,29 +1656,7 @@ pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) 
     }
     let q: hidravpn_core::payment::QuoteResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
-    // Checked before anyone is told to pay: the amount is what the issuer
-    // says, written the way it is read back; the wallet is an address.
-    hidravpn_core::payment::check_address(&q.wallet)
-        .context("the issuer named a receiving wallet that is not one")?;
-    if hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
-        || q.passes != passes
-    {
-        return Err(anyhow!(
-            "the issuer's order does not add up; nothing to pay"
-        ));
-    }
-    let order = Order {
-        passes: q.passes,
-        amount: q.amount,
-        amount_raw: q.amount_raw,
-        decimals: q.decimals,
-        mint: q.mint,
-        wallet: q.wallet,
-        expires: q.expires,
-        issuer: issuer.url.clone(),
-        usd: q.usd,
-        rate: q.rate,
-    };
+    let order = order_from_quote(pocket, q, passes)?;
     crate::daemon::write_private_atomic(
         &order_path(pocket_path),
         serde_json::to_string_pretty(&order)?.as_bytes(),
@@ -1419,13 +1684,18 @@ pub enum Claimed {
     },
 }
 
-/// Claims the open order with the transaction that paid it.
+/// Claims the open order with the transaction that paid it. An order the
+/// signed list does not stand behind (`check_order`) is not claimed: a
+/// claim carries the account token.
 pub async fn claim(
+    pocket: &Pocket,
     pocket_path: &Path,
     order: &Order,
     token: &str,
     signature: &str,
 ) -> Result<Claimed> {
+    check_order(pocket, order)
+        .map_err(|e| anyhow!("the open order is not claimed, and not to be paid: {e}"))?;
     let signature = hidravpn_core::payment::check_signature(signature)?;
     let url = hidravpn_core::http::Url::parse(&order.issuer)
         .context("the pass issuer's address")?
