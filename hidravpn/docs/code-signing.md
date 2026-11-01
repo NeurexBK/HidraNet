@@ -107,7 +107,31 @@ scripts already downloaded that zip while testing):
 
 The Authenticode signature proves *who built it*; the project's Ed25519
 signature proves *the maintainer released it*. Its secret key lives **offline**
-and never enters CI, so this step is by hand, after the release appears:
+and never enters CI, so this step is by hand, after the release appears.
+
+Whatever the release key signs, it vouches for. Two rules follow:
+
+- **Hashes for a manifest come only from an attested build.** Until SignPath
+  is on, a release ships the files in the `hidravpn-windows-unsigned`
+  artifact. Take them from the "HidraVPN build" run of a push to `main` (or of
+  the release tag) at the commit you release, and check each one before it
+  goes into a manifest:
+
+  ```
+  gh attestation verify hidravpn-service.exe --repo NeurexBK/HidraNet --signer-workflow NeurexBK/HidraNet/.github/workflows/hidravpn-build.yml
+  ```
+
+  It has to pass, and the run it names has to be that push. A pull request's
+  run, or one started with Run workflow, makes no attestation: never take
+  files from one.
+- **The `hidravpn-sign` that reads the key is one you built** on the machine
+  that holds it, from a commit you reviewed
+  (`cargo build --release --locked --manifest-path hidravpn/Cargo.toml -p hidravpn-sign`).
+  The `hidravpn-sign.exe` in the artifact and the release zip is there for
+  users to verify downloads; signing with it would hand the key to whatever
+  that CI run built.
+
+Then:
 
 ```
 hidravpn-sign verify ...              # (optional) check the zip's hashes first

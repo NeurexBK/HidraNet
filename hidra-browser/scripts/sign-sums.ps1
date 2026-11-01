@@ -13,10 +13,12 @@
 # root, in PowerShell:
 #
 #   .\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key
-#   .\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key -Sign C:\HidraVPN\hidravpn-sign.exe
+#   .\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key -Sign .\hidravpn\target\release\hidravpn-sign.exe
 #
-# Any hidravpn-sign works: the label is added here, not by the tool. The key
-# file is only read by hidravpn-sign; it is never copied, printed or kept.
+# The label is added here, not by the tool, so any version of hidravpn-sign
+# works. Use one you built on this PC from a commit you reviewed, never the
+# hidravpn-sign.exe from the CI artifact: the key is read only by
+# hidravpn-sign, and it is never copied, printed or kept.
 # Then commit landing/SHA256SUMS.txt and landing/SHA256SUMS.txt.sig together.
 
 param(
