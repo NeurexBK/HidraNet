@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "generated": "2026-10-30T16:04:14Z",
-  "sequence": 2026103001,
+  "generated": "2026-11-01T00:57:52Z",
+  "sequence": 2026110101,
   "expires": "2026-12-15T00:00:00Z",
   "note": "HidraNet official node list",
   "nodes": [
@@ -55,6 +55,7 @@
         "key": "MIIBUjA9BgkqhkiG9w0BAQowMKANMAsGCWCGSAFlAwQCAqEaMBgGCSqGSIb3DQEBCDALBglghkgBZQMEAgKiAwIBMAOCAQ8AMIIBCgKCAQEAvvsR7pjHLnHhhW3f8RZPDrSh0p0qt5oL/o7KKPEyYbRX8k7+YXqG6plLw/iGcH5T+in4NEapm6sJshgD1ZX7AXOJEQP9NMetAs2Rc2bL8Yy0bnafN9tF0V05kNUbqai0j32jqeWjT3ttZGC5T63kV1NvV41xCE+rB9+iAQfOqCJkEcdsO29tR5HiiEAonW20q4nsvEBu6lqHgcv5ogex0+naNt5ana+UHUoPgpCa2dyPXMlO5w4LA53KdmTUI4pHEo1lQPQRQni5Zf+axL//zbRM+Da59nRJ0xU1LvUpZ7rznNmjXO13R5JCqkdoBkiXWMPxBdiyzosGME9SVOM36QIDAQAB",
         "not_after": "2026-12-15T00:00:00Z"
       }
-    ]
+    ],
+    "wallet": "GGuVeMEr63oG6ihd5gqFUCKBBgV4g3rZx886aQToFgFM"
   }
 }
