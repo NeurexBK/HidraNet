@@ -165,5 +165,18 @@ const mail = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'hidramail.
 check(/navigator\.locks\.request\(\s*'hidramail-mailbox'/.test(mail) && /runMailbox\(async function init/.test(mail),
   'HidraMail runs its mailbox in one tab at a time');
 
+// ── A site's key is kept where the publisher keeps it ────────────────────
+//
+// SevenNine's page is a website tab, whose storage goes when the tab closes.
+// A site's signing key kept there is lost with the tab, and the next publish
+// of that site makes a new address. Publishing is the Sites app's job: it
+// keeps the key in the vault.
+
+const newtab = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'newtab.html'), 'utf8');
+check(!/hidra-site\.js|sevennine-publish/.test(tabManagerSrc)
+  && !fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'sevennine-publish.js')),
+  'nothing that signs sites is run inside a website tab');
+check(new RegExp(`data-url="${A('publish')}/"`).test(newtab), 'the new tab page opens the Sites app to publish');
+
 console.log(failed ? `\n${failed} check(s) failed` : '\napps keep their storage, websites keep none');
 process.exit(failed ? 1 : 0);

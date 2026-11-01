@@ -51,4 +51,4 @@ app.whenReady().then(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(failed ? `\n${failed} check(s) failed` : '\nthe vault works against the real safeStorage');
   app.exit(failed ? 1 : 0);
-});
+}).catch((e) => { console.error(e); app.exit(2); });

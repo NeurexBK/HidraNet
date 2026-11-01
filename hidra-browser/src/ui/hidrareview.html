@@ -393,8 +393,8 @@ border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.55;margin-bo
       <textarea id="n-menu" maxlength="600" placeholder="Long-form writing&#10;No images&#10;Archive going back two years"></textarea>
 
       <label id="n-photos-l">Screenshots</label>
-      <div class="drop" id="n-drop">Click to choose images — they are downscaled before publishing</div>
-      <input type="file" id="n-files" accept="image/*" multiple style="display:none">
+      <div class="drop" id="n-drop">Click to choose screenshots</div>
+      <input type="file" id="n-files" accept="image/jpeg,image/png" multiple style="display:none">
       <div class="thumbs" id="n-thumbs"></div>
 
       <div style="margin-top:16px;display:flex;gap:8px">
@@ -532,9 +532,14 @@ var $ = function (id) { return document.getElementById(id); };
 var MQTT_BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 
 // The broker refuses large payloads, so each photo goes on its own topic
-// and is downscaled before it leaves here.
+// and has to fit as it is (see readPhoto).
 var MAX_PHOTO_BYTES = 170000;
 var MAX_PHOTOS = 6;
+// The largest file whose data URL fits in MAX_PHOTO_BYTES.
+var MAX_PHOTO_FILE = Math.floor((MAX_PHOTO_BYTES - 'data:image/jpeg;base64,'.length) / 4) * 3;
+var PHOTO_LIMIT = 'JPEG or PNG, up to ' + Math.floor(MAX_PHOTO_FILE / 1024) + ' KB each';
+// Files larger than this are not read at all.
+var MAX_PHOTO_READ = 1024 * 1024;
 
 // Confirmed business badge. The payment is verified on-chain
 // for every customer — we never take a message that says "I am verified"
@@ -744,38 +749,133 @@ function safeUrl(u) {
 
 // ───────── fotos ─────────
 
+// A camera writes its make, serial number, the time and often the place into
+// the file, and a listing publishes the file as it is. These keep what a
+// decoder needs and drop the rest, including anything after the image's end.
+function photoError() { return new Error('file is not a valid image'); }
+function joinBytes(parts) {
+  var n = 0, at = 0;
+  parts.forEach(function (p) { n += p.length; });
+  var out = new Uint8Array(n);
+  parts.forEach(function (p) { out.set(p, at); at += p.length; });
+  return out;
+}
+function latin(b, at, n) { return String.fromCharCode.apply(null, b.subarray(at, at + n)); }
+// The Exif orientation (1 to 8) in the APP1 segment b[start..end), or 0.
+function exifOrientation(b, start, end) {
+  var t = start + 10;
+  if (end - t < 8 || latin(b, start + 4, 6) !== 'Exif\0\0') return 0;
+  var le = b[t] === 0x49;
+  var u16 = function (k) { return k < t || k + 2 > end ? -1 : le ? b[k] | (b[k + 1] << 8) : (b[k] << 8) | b[k + 1]; };
+  var ifd = t + (le ? u16(t + 4) + u16(t + 6) * 65536 : u16(t + 4) * 65536 + u16(t + 6));
+  for (var k = 0, n = u16(ifd); k < n; k++) {
+    var e = ifd + 2 + 12 * k;
+    if (e + 12 > end) return 0;
+    if (u16(e) === 0x0112 && u16(e + 2) === 3) { var o = u16(e + 8); return o >= 1 && o <= 8 ? o : 0; }
+  }
+  return 0;
+}
+// An APP1 segment that holds the orientation and nothing else.
+function orientationSegment(o) {
+  return Uint8Array.of(0xff, 0xe1, 0, 34, 0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8,
+    0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, o, 0, 0, 0, 0, 0, 0);
+}
+// JPEG: drops every APPn segment and comment, but keeps the orientation and
+// the 12 bytes of APP14 "Adobe" that say how the colours are coded.
+function cleanJpeg(b) {
+  if (b[0] !== 0xff || b[1] !== 0xd8) throw photoError();
+  var out = [b.subarray(0, 2)], i = 2;
+  while (i + 1 < b.length) {
+    if (b[i] !== 0xff) throw photoError();
+    var m = b[i + 1];
+    if (m === 0xff) { i++; continue; }
+    if (m === 0xd9) { out.push(b.subarray(i, i + 2)); return joinBytes(out); }
+    if (m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { out.push(b.subarray(i, i + 2)); i += 2; continue; }
+    if (i + 3 >= b.length) throw photoError();
+    var end = i + 2 + ((b[i + 2] << 8) | b[i + 3]);
+    if (end < i + 4 || end > b.length) throw photoError();
+    if (m === 0xee && end - i >= 16 && latin(b, i + 4, 5) === 'Adobe') {
+      out.push(Uint8Array.of(0xff, 0xee, 0, 14), b.subarray(i + 4, i + 16));
+    } else if (m === 0xe1) {
+      var o = exifOrientation(b, i, end);
+      if (o > 1) out.push(orientationSegment(o));
+    } else if ((m < 0xe0 || m > 0xef) && m !== 0xfe) {
+      out.push(b.subarray(i, end));
+    }
+    i = end;
+    if (m === 0xda) {
+      // The scan runs to the next marker that is not a stuffed zero or a
+      // restart, fill bytes before either included.
+      var j = i;
+      while (j + 1 < b.length) {
+        if (b[j] === 0xff) {
+          var k = j + 1;
+          while (k < b.length && b[k] === 0xff) k++;
+          if (k < b.length && b[k] !== 0 && (b[k] < 0xd0 || b[k] > 0xd7)) break;
+          j = k;
+        }
+        j++;
+      }
+      out.push(b.subarray(i, j));
+      i = j;
+    }
+  }
+  throw photoError();
+}
+// PNG: the image, its colour and animation chunks; text, time, Exif and
+// profiles go. A colour chunk of the wrong size goes too.
+var PNG_KEEP = { IHDR: 0, PLTE: 0, tRNS: 0, IDAT: 0, acTL: 0, fcTL: 0, fdAT: 0, gAMA: 4, cHRM: 32, sRGB: 1, sBIT: -4 };
+var PNG_END = Uint8Array.of(0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82);
+function cleanPng(b) {
+  var sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (var k = 0; k < 8; k++) if (b[k] !== sig[k]) throw photoError();
+  var out = [b.subarray(0, 8)], i = 8;
+  while (i + 12 <= b.length) {
+    var len = ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+    var end = i + 12 + len, type = latin(b, i + 4, 4);
+    if (end > b.length) throw photoError();
+    if (type === 'IEND') { out.push(PNG_END); return joinBytes(out); }
+    var size = Object.prototype.hasOwnProperty.call(PNG_KEEP, type) ? PNG_KEEP[type] : null;
+    if (size === 0 || (size > 0 && len === size) || (size < 0 && len >= 1 && len <= -size)) out.push(b.subarray(i, end));
+    i = end;
+  }
+  throw photoError();
+}
+function cleanPhoto(bytes, type) {
+  if (type === 'image/jpeg') return cleanJpeg(bytes);
+  if (type === 'image/png') return cleanPng(bytes);
+  throw new Error('use a JPEG or PNG image');
+}
+
 /**
- * Shrinks the image until it fits the broker limit. Drops quality first and,
- * and if it still does not fit, the resolution — a phone photo is 3-6 MB and
- * would never pass as it is.
+ * Reads an image and takes its metadata out. The browser refuses to read a
+ * canvas back (main.js), so nothing here can re-encode a photo to make it
+ * smaller.
  */
-function shrink(file) {
+function readPhoto(file) {
+  var tooLarge = function (n) {
+    return new Error(Math.ceil(n / 1024) + ' KB is too large; the limit is ' +
+      Math.floor(MAX_PHOTO_FILE / 1024) + ' KB. Make it smaller and try again.');
+  };
   return new Promise(function (resolve, reject) {
+    if (!/^image\/(jpeg|png)$/.test(file.type)) return reject(new Error('use a JPEG or PNG image'));
+    if (file.size > MAX_PHOTO_READ) return reject(tooLarge(file.size));
     var reader = new FileReader();
     reader.onerror = function () { reject(new Error('could not read the file')); };
     reader.onload = function () {
+      // The name may say JPEG while the bytes are PNG, or the other way round.
+      var raw = new Uint8Array(reader.result), type = raw[0] === 0x89 ? 'image/png' : 'image/jpeg';
+      var bytes;
+      try { bytes = cleanPhoto(raw, type); } catch (e) { return reject(e); }
+      if (bytes.length > MAX_PHOTO_FILE) return reject(tooLarge(bytes.length));
+      var data = 'data:' + type + ';base64,' + b64e(bytes);
+      if (data.length > MAX_PHOTO_BYTES || !PIC_RE.test(data)) return reject(photoError());
       var img = new Image();
-      img.onerror = function () { reject(new Error('file is not a valid image')); };
-      img.onload = function () {
-        var side = 1000;
-        for (var attempt = 0; attempt < 5; attempt++) {
-          var scale = Math.min(1, side / Math.max(img.width, img.height));
-          var w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-          var c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, 0, 0, w, h);
-
-          for (var q = 0.72; q >= 0.4; q -= 0.12) {
-            var data = c.toDataURL('image/jpeg', q);
-            if (data.length <= MAX_PHOTO_BYTES) return resolve(data);
-          }
-          side = Math.round(side * 0.75);
-        }
-        reject(new Error('image too large even after resizing'));
-      };
-      img.src = reader.result;
+      img.onerror = function () { reject(photoError()); };
+      img.onload = function () { resolve(data); };
+      img.src = data;
     };
-    reader.readAsDataURL(file);
+    reader.readAsArrayBuffer(file);
   });
 }
 
@@ -797,9 +897,9 @@ $('n-files').addEventListener('change', async function () {
   this.value = '';
   for (var i = 0; i < files.length; i++) {
     if (state.draft.length >= MAX_PHOTOS) { say('n-msg', 'Maximum of ' + MAX_PHOTOS + ' photos.', 'err'); break; }
-    say('n-msg', 'A reduzir ' + files[i].name + '…', 'work');
+    say('n-msg', 'Reading ' + files[i].name + '…', 'work');
     try {
-      state.draft.push(await shrink(files[i]));
+      state.draft.push(await readPhoto(files[i]));
       renderThumbs();
       $('n-msg').className = 'msg';
     } catch (e) {
@@ -1548,9 +1648,7 @@ function setKind(kind) {
   $('n-menu-l').textContent = isSite
     ? 'What you will find there — one per line' : 'Specialities — one per line';
   $('n-photos-l').textContent = isSite ? 'Screenshots' : 'Photos';
-  $('n-drop').textContent = isSite
-    ? 'Click to choose screenshots — they are downscaled before publishing'
-    : 'Click to choose photos — they are downscaled before publishing';
+  $('n-drop').textContent = (isSite ? 'Click to choose screenshots — ' : 'Click to choose photos — ') + PHOTO_LIMIT;
   if (!state.editSlug) {
     $('n-title').textContent = isSite ? 'List a .hidra site' : 'List a place';
   }

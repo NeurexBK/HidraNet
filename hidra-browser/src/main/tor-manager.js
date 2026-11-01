@@ -36,6 +36,7 @@ class TorManager {
     this._starting = null;
     // When the running Tor reached 100%: what the panel's uptime counts from.
     this.readyAt = null;
+    this.bootstrapTimeoutMs = 120000;
     // Set by the main process. Called when Tor dies without us having
     // asked — the moment traffic stops being protected and the kill
     // switch has to close again.
@@ -233,8 +234,9 @@ class TorManager {
     this.exitIp = null;
 
     return new Promise((resolve) => {
+      let proc;
       try {
-        this.process = spawn(torPath, args, {
+        proc = spawn(torPath, args, {
           cwd: path.dirname(torPath),
           stdio: ['ignore', 'pipe', 'pipe'],
           env: this._env(torPath),
@@ -245,6 +247,8 @@ class TorManager {
         this.process = null;
         return resolve({ ok: false, error: this.lastError });
       }
+      this.process = proc;
+      this._stopping = false;
 
       let settled = false;
       let logTail = '';
@@ -256,17 +260,21 @@ class TorManager {
         resolve(result);
       };
 
-      const timer = setTimeout(() => {
+      // A Tor left running here would reach 100% later, behind a lock that
+      // stays shut; it is killed before the start reports the failure.
+      const timer = setTimeout(async () => {
         this.state = 'failed';
-        this.lastError = `Tor did not finish bootstrapping in 120s (stalled at ${this.bootstrapPercent}%)`;
-        finish({ ok: false, error: this.lastError });
-      }, 120000);
+        this.lastError = `Tor did not finish bootstrapping in ${Math.round(this.bootstrapTimeoutMs / 1000)}s (stalled at ${this.bootstrapPercent}%)`;
+        const error = this.lastError;
+        await this._kill(proc);
+        finish({ ok: false, error });
+      }, this.bootstrapTimeoutMs);
 
       const readLine = (line) => {
         logTail = (logTail + line + '\n').slice(-1000);
 
         const m = line.match(/Bootstrapped (\d+)%(?:\s*\(([^)]*)\))?/);
-        if (m) {
+        if (m && this.process === proc && this.state === 'starting') {
           this.bootstrapPercent = parseInt(m[1], 10);
           const summary = m[2] || '';
           if (typeof onProgress === 'function') {
@@ -299,18 +307,20 @@ class TorManager {
         });
       };
 
-      attach(this.process.stdout);
-      attach(this.process.stderr);
+      attach(proc.stdout);
+      attach(proc.stderr);
 
-      this.process.on('error', (err) => {
+      proc.on('error', (err) => {
+        if (this.process !== proc) return;
         this.state = 'failed';
         this.lastError = err.message;
         this.process = null;
         finish({ ok: false, error: this.lastError });
       });
 
-      this.process.on('close', (code) => {
+      proc.on('close', (code) => {
         console.log('[tor] process exited, code', code);
+        if (this.process !== proc) return;
         this.process = null;
 
         // A stop() we asked for is not a failure — without this the panel showed
@@ -421,7 +431,11 @@ class TorManager {
 
     // Wait for the port to actually be released, otherwise pressing Connect
     // right after Disconnect hits "port 9052 is already in use".
-    await new Promise((resolve) => {
+    await this._kill(proc);
+  }
+
+  _kill(proc) {
+    return new Promise((resolve) => {
       let settled = false;
       const done = () => { if (!settled) { settled = true; resolve(); } };
       proc.once('close', done);

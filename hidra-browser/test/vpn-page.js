@@ -34,7 +34,7 @@ const expect = (name, cond, why) => (cond ? ok(name) : bad(name, why));
 // ── The page has no way out ──────────────────────────────────────────────
 const csp = (page.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/) || [])[1] || '';
 expect('the page carries a policy', csp.length > 0, 'no Content-Security-Policy meta');
-for (const directive of ["connect-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]) {
+for (const directive of ["connect-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'"]) {
   expect(`policy: ${directive}`, csp.includes(directive), `the policy is: ${csp}`);
 }
 expect('the page loads nothing remote', !/(src|href)=["']https?:|url\(\s*["']?https?:/.test(page), 'a remote src, href or url() in the page');

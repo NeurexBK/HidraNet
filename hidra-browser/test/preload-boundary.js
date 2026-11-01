@@ -125,4 +125,4 @@ app.whenReady().then(async () => {
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failures ? `\n${failures} case(s) wrong` : '\nall cases correct');
   app.exit(failures ? 1 : 0);
-});
+}).catch((e) => { console.error(e); app.exit(2); });

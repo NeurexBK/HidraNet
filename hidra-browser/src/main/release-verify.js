@@ -13,8 +13,7 @@
 // `hidravpn-sign keygen` on an offline machine. The secret half never touches
 // a build machine, a server or this repository.
 //
-// Until the founders have generated that key, the constant is empty — and with
-// no key, nothing verifies. That is deliberate: a browser that accepted
+// With no key, nothing verifies. That is deliberate: a browser that accepted
 // unsigned files "for now" would be a browser that accepts unsigned files.
 
 'use strict';

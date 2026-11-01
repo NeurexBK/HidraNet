@@ -23,6 +23,10 @@ const os = require('os');
 const path = require('path');
 
 const PAGE = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'hidrasearch.html'));
+// What the browser's search API reads (main.js, /search/api).
+const MAIN = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.js'), 'utf8');
+const apiBlock = (MAIN.match(/p === '\/search\/api'[\s\S]{0,800}/) || [''])[0];
+const SERVED = [...apiBlock.matchAll(/params\.get\('(\w+)'\)/g)].map((m) => m[1]);
 
 const PWN = 'window.__pwned=(window.__pwned||0)+1';
 const QUERIES = [
@@ -51,6 +55,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // answer to a search chosen by the test.
 let answer = 'empty';
 const asked = [];
+const sent = new Set();
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/') {
@@ -63,6 +68,7 @@ const server = http.createServer((req, res) => {
   }
   if (u.pathname === '/search/api') {
     asked.push(u.searchParams.get('q'));
+    for (const k of u.searchParams.keys()) sent.add(k);
     if (answer === 'error') { res.writeHead(502); return res.end(); }
     const results = answer === 'hostile' ? RESULTS : [];
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -173,6 +179,20 @@ app.whenReady().then(async () => {
   check('only the page\'s own elements when the search failed', err.bad.length === 0, err.bad.join(' | '));
   check('the other engines are offered the query as written',
     err.links.length === 3 && err.links[0] === 'https://duckduckgo.com/?q=' + encodeURIComponent(q), JSON.stringify(err.links));
+
+  // A choice the page offers has to reach the server as something it reads.
+  // Every button beside the results is pressed in turn.
+  answer = 'hostile';
+  await win.loadURL(base + '?q=' + encodeURIComponent('ordinary words'));
+  await settle();
+  const buttons = await run("document.querySelectorAll('.results-body button').length");
+  for (let i = 0; i < buttons; i++) {
+    await run(`document.querySelectorAll('.results-body button')[${i}].click(); 1`);
+    await settle();
+  }
+  check('the search API\'s parameters are found in main.js', SERVED.includes('q'), JSON.stringify(SERVED));
+  check('the page asks the search API only for what it reads', [...sent].every((k) => SERVED.includes(k)),
+    `sent ${JSON.stringify([...sent])}, main.js reads ${JSON.stringify(SERVED)}`);
 
   win.destroy();
   server.close();

@@ -164,4 +164,4 @@ app.whenReady().then(async () => {
   const failed = out.filter((l) => l.startsWith('FAIL')).length;
   console.log(failed ? `\n${failed} case(s) wrong` : '\nall cases correct');
   app.exit(failed ? 1 : 0);
-});
+}).catch((e) => { console.error(e); app.exit(2); });

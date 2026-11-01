@@ -559,6 +559,17 @@
             <span class="app-desc">.hidra site builder</span>
             <span class="app-badge" id="sevennine-badge">Offline</span>
           </a>
+          <a class="app-shortcut" href="#" id="app-publish" data-url="http://publish.localhost:8090/">
+            <div class="app-icon" style="background: linear-gradient(135deg, #0d4a6b, #00a888); color: #e0fff8;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>
+              </svg>
+            </div>
+            <span class="app-name">Publish</span>
+            <span class="app-desc">Put a SevenNine site on the network</span>
+            <span class="app-badge online" id="publish-badge">Ready</span>
+          </a>
           <a class="app-shortcut" href="#" id="app-hidrareview" data-url="http://reviews.localhost:8090/">
             <div class="app-icon" style="background: linear-gradient(135deg, #ffaa33, #ff7043); border-color: rgba(255, 170, 51, 0.3);">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1098,7 +1109,7 @@
       // the app when the real cause was another program holding the port: the
       // badge says the apps are off, and its tooltip says why.
       var chatOk = status.chat;
-      [['chat-badge', 'Online'], ['mail-badge', 'Ready'], ['forum-badge', 'Ready']].forEach(function (b) {
+      [['chat-badge', 'Online'], ['mail-badge', 'Ready'], ['forum-badge', 'Ready'], ['publish-badge', 'Ready']].forEach(function (b) {
         var badge = document.getElementById(b[0]);
         if (!badge) return;
         if (chatOk) {
@@ -1244,7 +1255,7 @@
             title.textContent = 'Could not connect';
             title.style.color = 'var(--danger)';
             var desc = document.getElementById('connect-desc');
-            desc.textContent = (result && result.msg) || 'Could not start hidra-node — check that the binary exists';
+            desc.textContent = (result && result.msg) || 'Could not start Tor';
           }
         } else {
           updateConnectUI('disconnected');
@@ -1277,7 +1288,7 @@
           var status = await window.hidra.proxy.status();
           if (status) {
             connected = status.connected;
-            mode = status.mode || (connected ? 'local' : 'disconnected');
+            mode = status.mode || 'disconnected';
             tor = status.tor || null;
             connectedSince = connected && tor && tor.readyAt ? tor.readyAt : null;
             // Only while connected: the address the last connection left
@@ -1306,14 +1317,9 @@
       // claim "HidraNet connected" while nothing was actually connected.
       detectApps();
 
-      if (connected && (mode === 'tor' || mode === 'full')) {
+      if (mode === 'tor') {
         dot.className = 'dot connected';
         text.textContent = 'Connected — traffic is anonymous (Tor)';
-        text.style.color = '#00d4aa';
-        if (!isConnecting) updateConnectUI('connected');
-      } else if (connected) {
-        dot.className = 'dot connected';
-        text.textContent = 'Connected — local mode';
         text.style.color = '#00d4aa';
         if (!isConnecting) updateConnectUI('connected');
       } else if (mode === 'connecting') {

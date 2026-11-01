@@ -158,17 +158,18 @@ async function refreshProxyStatus() {
   const status = await window.hidra.proxy.status();
 
   const panelStatus = document.getElementById('panel-status');
-  if (status.connected && (status.mode === 'tor' || status.mode === 'full')) {
+  if (status.mode === 'tor') {
     const exit = status.tor && status.tor.exitIp;
     panelStatus.textContent = exit ? `Anonymous — ${exit}` : 'Anonymous (Tor)';
     panelStatus.style.color = '#00d4aa';
     proxyDot.className = 'connected';
     proxyLabel.textContent = 'Tor: Anonymous';
-  } else if (status.connected) {
-    panelStatus.textContent = 'Connected — Local';
-    panelStatus.style.color = '#00d4aa';
-    proxyDot.className = 'connected';
-    proxyLabel.textContent = 'Local mode';
+  } else if (status.mode === 'connecting') {
+    const pct = (status.tor && status.tor.bootstrapPercent) || 0;
+    panelStatus.textContent = `Connecting to Tor — ${pct}%`;
+    panelStatus.style.color = '';
+    proxyDot.className = '';
+    proxyLabel.textContent = 'Tor: connecting';
   } else {
     panelStatus.textContent = 'Disconnected';
     panelStatus.style.color = '#ff4466';
