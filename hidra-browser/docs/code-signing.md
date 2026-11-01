@@ -69,7 +69,7 @@ The first time only, also set `SUMS_SIGNED = true` in
 ```
 git pull
 node hidra-browser\scripts\update-sums.js <folder with the four zips> <commit> --minimum 1.1.0   # only when the packages change
-.\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key -Sign C:\HidraVPN\hidravpn-sign.exe
+.\hidra-browser\scripts\sign-sums.ps1 -Key E:\hidravpn-release.key -Sign .\hidravpn\target\release\hidravpn-sign.exe
 node hidra-browser\scripts\verify-sums.js
 git add landing\SHA256SUMS.txt landing\SHA256SUMS.txt.sig
 git commit -m "landing: sign SHA256SUMS.txt"
@@ -78,10 +78,13 @@ git commit -m "landing: sign SHA256SUMS.txt"
 `sign-sums.ps1` shows the file's SHA-256 and the three record lines and asks
 before signing; it refuses a key inside the repository, CRLF line endings
 (`.gitattributes` keeps the file LF) and a `valid-until` that has passed or is
-more than 400 days away. Any `hidravpn-sign` will do: the script adds the
-label itself, signs, checks the result against the public key in
-`release-verify.js`, writes `landing/SHA256SUMS.txt.sig` and deletes its
-temporary copy. The key file is only read by `hidravpn-sign`.
+more than 400 days away. The script adds the label itself, signs, checks the
+result against the public key in `release-verify.js`, writes
+`landing/SHA256SUMS.txt.sig` and deletes its temporary copy. The key file is
+only read by `hidravpn-sign`, so use one you built on that PC from a commit
+you reviewed (`cargo build --release --locked --manifest-path
+hidravpn\Cargo.toml -p hidravpn-sign`), never the `hidravpn-sign.exe` from
+the CI artifact.
 
 Before signing, read the whole table, not only the record: `update-sums.js`
 rewrites the title, the record and the rows, and refuses packages that do not

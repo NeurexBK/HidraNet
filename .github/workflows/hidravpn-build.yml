@@ -42,7 +42,7 @@ jobs:
     outputs:
       touched: ${{ steps.diff.outputs.touched }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 2
@@ -76,13 +76,13 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.touched != 'false' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: hidravpn
       - name: format
@@ -112,14 +112,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: hidravpn
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: tools the suites use
@@ -167,38 +167,44 @@ jobs:
     # The run-time checks stay with scripts/windows/*.ps1, on a real PC.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: hidravpn
       - name: tests
         run: cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-service -p hidravpn
 
+  # What this job uploads is what a release ships and what the release
+  # manifest's hashes are taken from. So it builds from nothing an earlier
+  # run left behind: no Rust cache, a fixed compiler, and the dependencies
+  # exactly as Cargo.lock has them.
   build-windows:
     name: build Windows executables
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.touched != 'false' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           targets: x86_64-pc-windows-gnu
       - name: MinGW cross toolchain
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: hidravpn
       - name: build the client, the service and the release verifier
         run: >
-          cargo build --release
+          cargo build --release --locked
           --manifest-path hidravpn/Cargo.toml
           --target x86_64-pc-windows-gnu
           -p hidravpn -p hidravpn-service -p hidravpn-sign
@@ -210,8 +216,17 @@ jobs:
           cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn.exe dist/
           cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn-service.exe dist/
           cp hidravpn/target/x86_64-pc-windows-gnu/release/hidravpn-sign.exe dist/
+      # A signed statement of which workflow, commit and run made these
+      # files, for `gh attestation verify` before their hashes go into a
+      # manifest (hidravpn/docs/code-signing.md). Only pushes to main and
+      # release tags get one: nothing built for a pull request is published.
+      - name: attest where the files came from
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/hidravpn-v'))
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hidravpn-windows-unsigned
           path: dist/
@@ -234,7 +249,7 @@ jobs:
       # The exact action version and the *-slug values come from the SignPath
       # project you register; SignPath gives you the snippet to paste here.
       - name: submit the build for signing
-        uses: signpath/github-action-submit-signing-request@v1
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1.3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -244,7 +259,7 @@ jobs:
           github-artifact-id: ${{ needs.build-windows.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: signed
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hidravpn-windows-signed
           path: signed/
@@ -267,10 +282,10 @@ jobs:
       WINTUN_SHA256: ${{ vars.WINTUN_SHA256 }}
       WINTUN_SHA256_DEFAULT: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hidravpn-windows-signed
           path: signed
@@ -305,7 +320,7 @@ jobs:
           echo "ZIP=${out}.zip" >> "$GITHUB_ENV"
           echo "SUMS=SHA256SUMS-${tag}.txt" >> "$GITHUB_ENV"
       - name: publish the GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: HidraVPN ${{ github.ref_name }} (Windows)
           files: |
