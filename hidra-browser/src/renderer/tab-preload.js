@@ -1,6 +1,6 @@
 // Tab preload — exposes limited HidraNet API to internal pages only.
-// Fingerprint injection happens via executeJavaScript from the main process,
-// not through the preload, to ensure it runs before any page scripts.
+// The fingerprint is not set here: the main process puts it in place over the
+// DevTools protocol before page scripts run (fingerprint-guard.js).
 
 const { contextBridge, ipcRenderer } = require('electron');
 

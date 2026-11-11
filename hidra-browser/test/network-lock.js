@@ -15,9 +15,8 @@
 
 'use strict';
 
-const { execFileSync } = require('child_process');
-const path = require('path');
-const { NetworkLock, HOST_RESOLVER_RULES } = require('../src/main/network-lock');
+const { NetworkLock, HOST_RESOLVER_RULES, connectionMode } = require('../src/main/network-lock');
+const { mainSwitches } = require('./lib/main-switches');
 
 let passed = 0;
 let failed = 0;
@@ -131,37 +130,22 @@ function fakeSession({ failFirst = 0, stuck = null } = {}) {
       !(await new Promise((r) => f.filter({ url: 'http://mail.localhost:8090/' }, r))).cancel);
   }
 
+  // What the toolbar and the new tab page are told.
+  check('Tor at 100% behind a shut lock is not shown as anonymous', connectionMode('ready', true, false) === 'disconnected');
+  check('Tor at 100% while the connect still checks the routes is connecting', connectionMode('ready', true, true) === 'connecting');
+  check('Tor at 100% with the lock open is anonymous', connectionMode('ready', false, false) === 'tor');
+  check('Tor bootstrapping is connecting, not off', connectionMode('starting', true, false) === 'connecting');
+  check('Tor stopped or failed is disconnected', connectionMode('stopped', true, false) === 'disconnected' && connectionMode('failed', true, false) === 'disconnected');
+
   // What Chromium may resolve by itself.
   check('Chromium resolves nothing but this machine\'s names', HOST_RESOLVER_RULES === 'MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE *.localhost, EXCLUDE 127.0.0.1, EXCLUDE ::1', HOST_RESOLVER_RULES);
 
-  // main.js, loaded in a process of its own with a stand-in Electron whose app
-  // never becomes ready: every switch it records was appended before ready.
-  // Anything else main.js touches at load answers with another stand-in.
-  const loader = `
-    const Module = require('module');
-    const switches = [];
-    const stand = (name) => new Proxy(function () {}, {
-      get: (t, k) => {
-        if (k === 'then') return undefined;
-        if (name === 'app.commandLine' && k === 'appendSwitch') return (...a) => { switches.push(a); };
-        if (name === 'app' && k === 'whenReady') return () => new Promise(() => {});
-        if (name === 'app' && k === 'requestSingleInstanceLock') return () => false;
-        return stand(name + '.' + String(k));
-      },
-      apply: () => stand(name + '()'),
-      construct: () => stand(name),
-    });
-    const electron = new Proxy({}, { get: (t, k) => stand(String(k)) });
-    const load = Module._load;
-    Module._load = function (request) { return request === 'electron' ? electron : load.apply(this, arguments); };
-    require(process.argv[1]);
-    process.stdout.write('\\nswitches ' + JSON.stringify(switches) + '\\n');
-    process.exit(0);`;
+  // main.js gives Chromium its switches before the app is ready: one appended
+  // later does nothing (see lib/main-switches.js).
   let switches = null;
   let loadError = '';
   try {
-    const out = execFileSync(process.execPath, ['-e', loader, path.join(__dirname, '..', 'src', 'main', 'main.js')], { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] });
-    switches = JSON.parse(/^switches (.*)$/m.exec(out)[1]);
+    switches = mainSwitches();
   } catch (e) {
     loadError = String(e.stderr || e.message).slice(0, 400);
   }

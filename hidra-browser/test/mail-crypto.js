@@ -117,4 +117,4 @@ function say(ok, msg){ log.push((ok ? 'ok    ' : 'FAIL  ') + msg); }
 
   fs.rmSync(tmp, { recursive: true, force: true });
   app.exit(title === 'PASSED' ? 0 : 1);
-});
+}).catch((e) => { console.error(e); app.exit(2); });

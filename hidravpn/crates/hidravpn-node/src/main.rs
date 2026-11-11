@@ -416,9 +416,13 @@ mod node {
             }
             Cmd::DnsCheck { name, dns } => {
                 let upstreams = if dns.is_empty() {
-                    NodeConfig::load(&cli.config)
-                        .map(|c| c.dns)
-                        .unwrap_or_else(|_| NodeConfig::default_dns())
+                    // Settings that are there but refused are not a reason
+                    // to check other upstreams instead.
+                    match NodeConfig::load(&cli.config) {
+                        Ok(c) => c.dns,
+                        Err(_) if !cli.config.exists() => NodeConfig::default_dns(),
+                        Err(e) => return Err(e),
+                    }
                 } else {
                     dns
                 };
@@ -571,18 +575,52 @@ mod node {
             }
             None => None,
         };
-        let forwarding_was_on = crate::nat::enable_forwarding()?;
-        let mut dev = crate::wg::bring_up(&cfg, &net, net6).await?;
+        // Only a node that takes passes needs the list; one that admits
+        // openly or by hand never reads it, so a damaged file cannot stop it.
+        // A pass node with a list it cannot read refuses to start: going on
+        // without it would let every pass already spent be spent again.
+        let mut spent = if cfg.admits_with_passes() {
+            crate::leases::SpentPasses::load().context(
+                "the list of spent passes cannot be read; refusing to take passes without it",
+            )?
+        } else {
+            crate::leases::SpentPasses::default()
+        };
+        if cfg.admits_with_passes() {
+            info!(
+                "admission with passes: {} issuer key(s) trusted, {} spent pass(es) remembered",
+                cfg.pass_keys.len(),
+                spent.len()
+            );
+        }
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+        let mut host = HostState {
+            forwarding_was_on: crate::nat::enable_forwarding()?,
+            forwarding6: None,
+            nat: false,
+            dev: None,
+        };
+        let dev = host
+            .dev
+            .insert(crate::wg::bring_up(&cfg, &net, net6).await?);
         info!(
             "tunnel interface {} up ({} WireGuard), listening on UDP {}",
             cfg.interface,
             dev.backend_name(),
             cfg.listen_port
         );
-        let mut forwarding6 = match dev.ipv6() {
-            Some(_) => Some(crate::nat::enable_forwarding6(&out_if)?),
-            None => None,
-        };
+        let dns_addr = SocketAddr::new(IpAddr::V4(net.node_ip), 53);
+        let forwarder = crate::dns::bind(dns_addr, &cfg.dns).await?;
+        // How many upstreams, not which: no address goes into a log.
+        info!(
+            "DNS forwarder on port {} ({} upstream(s))",
+            dns_addr.port(),
+            cfg.dns.len()
+        );
+        if dev.ipv6().is_some() {
+            host.forwarding6 = Some(crate::nat::enable_forwarding6(&out_if)?);
+        }
         let mut cidr6 = dev.ipv6().map(|n| n.cidr());
         let firewall = crate::nat::Policy {
             role: &cfg.role,
@@ -602,12 +640,13 @@ mod node {
             }
             warn!("IPv6 translation could not be set up ({e:#}); clients get IPv4 only");
             dev.drop_ipv6();
-            if let Some(f) = forwarding6.take() {
+            if let Some(f) = host.forwarding6.take() {
                 let _ = crate::nat::restore_forwarding6(&f);
             }
             cidr6 = None;
             crate::nat::apply(&cfg.interface, &out_if, &net.cidr, &firewall, None)?;
         }
+        host.nat = true;
         info!(
             "forwarding and NAT set through {out_if} (role: {}; IPv6 for clients: {}; private destinations: {})",
             cfg.role,
@@ -630,14 +669,7 @@ mod node {
         // work a session costs rises as the table fills.
         let held = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(leases.len()));
 
-        let dns_addr = SocketAddr::new(IpAddr::V4(net.node_ip), 53);
-        let mut dns = tokio::spawn(crate::dns::serve(dns_addr, cfg.dns.clone()));
-        // How many upstreams, not which: no address goes into a log.
-        info!(
-            "DNS forwarder on port {} ({} upstream(s))",
-            dns_addr.port(),
-            cfg.dns.len()
-        );
+        let mut dns = tokio::spawn(crate::dns::serve(forwarder));
 
         // The admission service: describes the node always, admits when
         // open or for a pass.
@@ -692,24 +724,6 @@ mod node {
             session: session_secs,
             pass: pass_idle_secs,
         };
-        // Only a node that takes passes needs the list; one that admits
-        // openly or by hand never reads it, so a damaged file cannot stop it.
-        // A pass node with a list it cannot read refuses to start: going on
-        // without it would let every pass already spent be spent again.
-        let mut spent = if cfg.admits_with_passes() {
-            crate::leases::SpentPasses::load().context(
-                "the list of spent passes cannot be read; refusing to take passes without it",
-            )?
-        } else {
-            crate::leases::SpentPasses::default()
-        };
-        if cfg.admits_with_passes() {
-            info!(
-                "admission with passes: {} issuer key(s) trusted, {} spent pass(es) remembered",
-                cfg.pass_keys.len(),
-                spent.len()
-            );
-        }
         // At most a quarter of an hour between checks, so a lease that never
         // came (leases::NEVER_CAME_SECS) is gone soon after it lapses, and a
         // quarter of the shortest window, so a key made for one connection
@@ -726,12 +740,19 @@ mod node {
         let mut reaper = tokio::time::interval(period);
         reaper.tick().await; // the first tick is immediate; skip it
 
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut failure = None;
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
                 _ = term.recv() => break,
-                r = &mut dns => { if let Err(e) = r { warn!("DNS forwarder stopped: {e}"); } break; },
+                r = &mut dns => {
+                    failure = Some(match r {
+                        Ok(Err(e)) => e,
+                        Ok(Ok(())) => anyhow!("the DNS forwarder stopped"),
+                        Err(e) => anyhow!("the DNS forwarder task: {e}"),
+                    });
+                    break;
+                },
                 r = &mut admission => {
                     // The tunnel outlives the admission service: without it
                     // the node admits nobody new, which is better than
@@ -799,7 +820,7 @@ mod node {
                         };
                         match admitted {
                             Ok(invite) => Ok(invite),
-                            Err(undo) => Err(undo_admission(undo, req.pass.as_ref(), &mut spent, &dev)),
+                            Err(undo) => Err(undo_admission(undo, req.pass.as_ref(), &mut spent, dev)),
                         }
                     };
                     // The admission side stopped waiting meanwhile: its client
@@ -810,7 +831,7 @@ mod node {
                                 Undo::Admitted(req.public_key.clone(), "no one was waiting".into()),
                                 req.pass.as_ref(),
                                 &mut spent,
-                                &dev,
+                                dev,
                             );
                         }
                     }
@@ -874,19 +895,38 @@ mod node {
                 warn!("saving leases at shutdown: {e}");
             }
         }
-        if let Err(e) = crate::nat::remove() {
-            warn!("removing NAT rules: {e}");
-        }
-        if let Err(e) = crate::nat::restore_forwarding(forwarding_was_on) {
-            warn!("restoring IPv4 forwarding: {e}");
-        }
-        if let Some(f) = &forwarding6 {
-            if let Err(e) = crate::nat::restore_forwarding6(f) {
-                warn!("restoring IPv6 forwarding: {e}");
+        drop(host);
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// What `run` changed on the host, put back when it is dropped, so that
+    /// a node that fails to start, or stops, leaves the host as it found it.
+    struct HostState {
+        forwarding_was_on: bool,
+        forwarding6: Option<crate::nat::Forwarding6>,
+        nat: bool,
+        dev: Option<crate::wg::WgDevice>,
+    }
+
+    impl Drop for HostState {
+        fn drop(&mut self) {
+            if self.nat {
+                if let Err(e) = crate::nat::remove() {
+                    warn!("removing NAT rules: {e}");
+                }
+            }
+            if let Err(e) = crate::nat::restore_forwarding(self.forwarding_was_on) {
+                warn!("restoring IPv4 forwarding: {e}");
+            }
+            if let Some(f) = &self.forwarding6 {
+                if let Err(e) = crate::nat::restore_forwarding6(f) {
+                    warn!("restoring IPv6 forwarding: {e}");
+                }
+            }
+            if let Some(dev) = self.dev.take() {
+                dev.tear_down();
             }
         }
-        dev.tear_down();
-        Ok(())
     }
 }
 

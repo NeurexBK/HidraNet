@@ -74,10 +74,10 @@ async function buildArch(arch) {
   // every build (lib/electron.js).
   var zipCache = await electronZip('linux', arch, path.join(DIST, 'electron-cache'));
 
-  console.log('  Lendo ZIP ...');
+  console.log('  Reading ZIP ...');
   var srcBuf     = fs.readFileSync(zipCache);
   var srcEntries = readZip(srcBuf);
-  console.log('  ' + srcEntries.length + ' entradas lidas.');
+  console.log('  ' + srcEntries.length + ' entries read.');
 
   // Top-level folder name in the output zip
   var PREFIX = APP_DISPLAY + '-Linux-' + arch + '/';
@@ -108,7 +108,7 @@ async function buildArch(arch) {
   }
 
   // ── Add app source ────────────────────────────────────────────────────────
-  console.log('  Adicionando fonte do app ...');
+  console.log('  Adding the app source ...');
   var resPfx = PREFIX + 'resources/';
   outEntries.push(mkDir(resPfx + 'app'));
   outEntries.push(mkFile(
@@ -181,10 +181,10 @@ async function buildArch(arch) {
     '                                          — The HidraNet team',
     ''
   ].join('\n');
-  outEntries.push(mkFile(PREFIX + 'LEIA-ME.txt', Buffer.from(readme, 'utf8')));
+  outEntries.push(mkFile(PREFIX + 'README-Linux.txt', Buffer.from(readme, 'utf8')));
 
   // ── Write ZIP ─────────────────────────────────────────────────────────────
-  console.log('  Escrevendo ZIP (' + outEntries.length + ' entradas) ...');
+  console.log('  Writing ZIP (' + outEntries.length + ' entries) ...');
   var outBuf  = writeZip(outEntries);
   var outName = 'HidraNet-Browser-' + VERSION + '-Linux-' + arch + '.zip';
   var outPath = writePackage(OUT_DIR, outName, outBuf);

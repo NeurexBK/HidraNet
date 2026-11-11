@@ -14,8 +14,8 @@
 //! under `removed` is struck from the pocket. A list newer than the one held
 //! (a higher `sequence`) also brings up to date what the pocket holds about
 //! a node that kept its key — its endpoint, operator, role, contact,
-//! admission — known or admitted, so a node that moves servers is followed
-//! without anyone rotating its key.
+//! admission, features — known or admitted, so a node that moves servers or
+//! is updated is followed without anyone rotating its key.
 //!
 //! ```json
 //! { "version": 1,
@@ -773,6 +773,28 @@ mod tests {
         // What the node's admission gave stays.
         assert_eq!(pocket.entries[0].client_address, "10.77.0.2/16");
         assert_eq!(pocket.list_sequence, 4);
+    }
+
+    #[test]
+    fn a_newer_list_brings_a_known_node_its_new_features() {
+        let mut dir = directory();
+        dir.nodes.truncate(1);
+        let mut pocket = Pocket::default();
+        dir.merge_into(&mut pocket);
+        let (exits, outdated) = pocket.rapido_exits();
+        assert!(exits.is_empty());
+        assert_eq!(outdated, 1, "an open node without sessions is passed over");
+
+        // The node was updated, and the next list says so.
+        dir.sequence += 1;
+        dir.nodes[0].features = vec![features::SESSIONS.into()];
+        let m = dir.merge_into(&mut pocket);
+        assert_eq!(m.updated, vec![("node-1".into(), "features".into())]);
+        assert_eq!(pocket.known[0].features, vec![features::SESSIONS]);
+        let (exits, outdated) = pocket.rapido_exits();
+        assert_eq!(outdated, 0);
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].node_name, "node-1");
     }
 
     #[test]

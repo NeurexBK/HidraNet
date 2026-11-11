@@ -31,7 +31,7 @@ cleanup() {
          /run/hidravpn/netcfg.json /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /etc/hidravpn/client.key /etc/hidravpn/resolv.conf.saved
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 cleanup
 WORK="$(mktemp -d /tmp/hidravpn-svc.XXXXXX)"
 
@@ -76,7 +76,8 @@ $N "$BIN/hidravpn-node" --config "$WORK/node.toml" admit --name laptop --pubkey 
 grep -q '"client_address": "10.77.0.2/16"' "$WORK/invite.json" && pass "client admitted" || { cat "$WORK/invite.json"; fail "admit"; }
 
 # ── Start the daemon in the client namespace ────────────────────────────────
-$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
+# The same log levels as the unit install writes.
+$C env RUST_LOG=hidravpn_service=info,hidravpn_core=warn "$BIN/hidravpn-service" run > "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
 for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
 [ -S /run/hidravpn/control.sock ] && pass "the service is up and its control channel is listening" || { cat "$WORK/svc.log"; fail "the service did not start"; exit 1; }
 
@@ -104,6 +105,14 @@ $C "$BIN/hidravpn-service" status > "$WORK/st-key.log" 2>&1; RC=$?
 [ $RC -ne 0 ] && grep -q "something other than the HidraVPN service" "$WORK/st-key.log" && ! grep -q "not connected" "$WORK/st-key.log" \
   && pass "an answer that does not open under the service's key is not believed" || { cat "$WORK/st-key.log"; fail "the command line believed an answer it could not open"; }
 cp -p "$WORK/control.pub" /run/hidravpn/control.pub
+
+# What only a connection held by the command line itself can follow is
+# refused while the service answers, not silently dropped.
+for flag in "--key $WORK/other.key" "--interface tun10" "--no-kill-switch"; do
+  OUT=$($C "$BIN/hidravpn" up $flag "$WORK/invite.json" 2>&1); RC=$?
+  [ $RC -ne 0 ] && echo "$OUT" | grep -q -- "${flag%% *} applies only to a connection this process holds; add --direct" && ! $C ip link show hvpn0 >/dev/null 2>&1 \
+    && pass "up ${flag%% *} with the service running is refused and connects nothing" || fail "up ${flag%% *} (exit $RC): $OUT"
+done
 
 # ── Up ──────────────────────────────────────────────────────────────────────
 $C "$BIN/hidravpn-service" up "$WORK/invite.json" > "$WORK/up.log" 2>&1 && pass "service connected" || { cat "$WORK/up.log" "$WORK/svc.log"; fail "service up"; }
@@ -143,6 +152,22 @@ $C ip -4 route | grep -q "hvpn0" && fail "routes to hvpn0 remain" || pass "tunne
 [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] && pass "resolv.conf restored" || fail "resolv.conf not restored"
 $C ip link show hvpn0 >/dev/null 2>&1 && fail "hvpn0 still exists" || pass "tunnel interface gone"
 $C curl -s --max-time 3 http://10.201.0.2/ >/dev/null 2>&1 && fail "still reaching the internet after down" || pass "after down the client is back to its own network"
+
+# ── The tunnel's socket fails under the service ────────────────────────────
+# Its tasks end: status says so at once, not minutes later, and the service
+# log says why.
+$C "$BIN/hidravpn-service" up "$WORK/invite.json" > "$WORK/up2.log" 2>&1 || { cat "$WORK/up2.log"; fail "service up again"; }
+for i in $(seq 1 50); do $C "$BIN/hidravpn-service" status 2>&1 | grep -q "connected through" && break; sleep 0.2; done
+$N nft add table inet hv_cut
+$N nft add chain inet hv_cut in '{ type filter hook input priority -300; policy accept; }'
+$N nft add rule inet hv_cut in iifname n-c udp dport 51820 reject with icmp type prot-unreachable
+for i in $(seq 1 20); do grep -q "tunnel stopped" "$WORK/svc.log" && break; $C curl -s --max-time 1 http://10.201.0.2/ >/dev/null 2>&1; done
+$N nft delete table inet hv_cut
+$C "$BIN/hidravpn-service" status > "$WORK/st3.log" 2>&1
+grep -q "^connecting:" "$WORK/st3.log" && grep -q "tunnel stopped: reading the UDP socket" "$WORK/svc.log" \
+  && pass "a tunnel whose socket failed reads as not connected, and the log says why" || { cat "$WORK/st3.log"; tail -3 "$WORK/svc.log"; fail "a dead tunnel still reads as connected"; }
+$C "$BIN/hidravpn-service" down > "$WORK/down2.log" 2>&1 && ! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] \
+  && pass "down then puts the network back" || { cat "$WORK/down2.log"; fail "down after the tunnel stopped"; }
 
 # ── Clean shutdown of the daemon ────────────────────────────────────────────
 kill -INT $SVC; for i in $(seq 1 25); do kill -0 $SVC 2>/dev/null || break; sleep 0.2; done

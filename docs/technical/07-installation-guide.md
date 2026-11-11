@@ -228,6 +228,15 @@ losing control of it.
 ./hidra-node --config /path/config.toml
 ```
 
+`--proxy` builds its circuits only through `[[relays]]` entries on other machines
+that carry a `noise_pubkey`, and refuses to start with fewer than three.
+`./hidra-node --proxy --local-test-network` runs three relays inside the process
+instead, for testing: the traffic leaves from your own machine, so it does not
+hide your IP.
+
+A hidden service (`--server`) serves one client at a time. The next waits up
+to 10 seconds for its turn, then is told the service is busy.
+
 Diagnostics:
 
 ```bash

@@ -686,31 +686,10 @@ async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     manager: Arc<SiteManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut buf = vec![0u8; 1024 * 512]; // 512KB request limit
-    let mut total = 0usize;
-
-    // Read until we have headers + full body based on Content-Length
-    loop {
-        if total >= buf.len() { break; }
-        let n = stream.read(&mut buf[total..]).await?;
-        if n == 0 { break; }
-        total += n;
-
-        if let Some(hdr_end) = find_bytes(&buf[..total], b"\r\n\r\n") {
-            let hdr_str = String::from_utf8_lossy(&buf[..hdr_end]);
-            let content_length = hdr_str.lines()
-                .find(|l| l.to_lowercase().starts_with("content-length:"))
-                .and_then(|l| l.split(':').nth(1))
-                .and_then(|v| v.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            let needed = hdr_end + 4 + content_length;
-            if total >= needed { break; }
-        }
-    }
-
-    if total == 0 { return Ok(()); }
-
-    let raw = &buf[..total];
+    let Some((buf, too_large)) = read_request(&mut stream).await? else {
+        return Ok(());
+    };
+    let raw = &buf[..];
     let request = String::from_utf8_lossy(raw);
 
     // Every reply used to carry `Access-Control-Allow-Origin: *`, which let a
@@ -740,6 +719,18 @@ async fn handle_connection(
         }
     };
     let allowed_origin = allowed_origin.as_deref();
+
+    if too_large {
+        let resp = ApiResponse {
+            ok: false,
+            msg: Some("Request too large (max 12 MB)".into()),
+            site: None,
+            sites: None,
+        };
+        send_json(&mut stream, 413, &resp, allowed_origin).await;
+        discard_rest(&mut stream).await;
+        return Ok(());
+    }
 
     let first_line = request.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
@@ -940,6 +931,70 @@ async fn handle_connection(
     Ok(())
 }
 
+/// The most a request may carry, head and body. Well above the 5 MB a site may
+/// hold: a publish sends each page twice, as HTML and as the editor's blocks,
+/// JSON-escaped.
+const MAX_REQUEST: usize = 12_000_000;
+
+/// Reads one request, its body to the length `Content-Length` gives. The flag
+/// is set, and only the head read, when that would pass `MAX_REQUEST`. `None`
+/// when the client closed before the request was complete.
+async fn read_request(
+    stream: &mut tokio::net::TcpStream,
+) -> std::io::Result<Option<(Vec<u8>, bool)>> {
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let head_end = loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let from = buf.len().saturating_sub(3);
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(i) = find_bytes(&buf[from..], b"\r\n\r\n") {
+            break from + i + 4;
+        }
+        if buf.len() > MAX_REQUEST {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "request head too large",
+            ));
+        }
+    };
+    let content_length = String::from_utf8_lossy(&buf[..head_end])
+        .lines()
+        .find(|l| l.to_lowercase().starts_with("content-length:"))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    if content_length > MAX_REQUEST.saturating_sub(head_end) {
+        buf.truncate(head_end);
+        return Ok(Some((buf, true)));
+    }
+    let needed = head_end + content_length;
+    while buf.len() < needed {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    buf.truncate(needed);
+    Ok(Some((buf, false)))
+}
+
+/// Stops sending, then reads and drops what the client still sends, for a few
+/// seconds at most. Closing with its body unread would reset the connection,
+/// and the client could lose the answer before reading it.
+async fn discard_rest(stream: &mut tokio::net::TcpStream) {
+    let _ = stream.shutdown().await;
+    let mut sink = vec![0u8; 64 * 1024];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while matches!(stream.read(&mut sink).await, Ok(n) if n > 0) {}
+    })
+    .await;
+}
+
 fn extract_body(request: &str) -> String {
     if let Some(idx) = request.find("\r\n\r\n") {
         request[idx + 4..].to_string()
@@ -979,7 +1034,12 @@ fn extract_multipart(request: &str, raw: &[u8]) -> (Option<String>, Option<Vec<u
 
 fn parse_multipart_body(body: &[u8], boundary: &str) -> (Option<String>, Option<Vec<u8>>) {
     let boundary_bytes = boundary.as_bytes();
-    let parts: Vec<&[u8]> = split_bytes(body, boundary_bytes);
+    // Without its closing delimiter the body was cut short, and its last part
+    // would be taken for the whole file.
+    let Some(end) = find_bytes(body, format!("{boundary}--").as_bytes()) else {
+        return (None, None);
+    };
+    let parts: Vec<&[u8]> = split_bytes(&body[..end], boundary_bytes);
 
     for part in parts {
         if part.len() < 10 { continue; }
@@ -1064,6 +1124,7 @@ async fn send_response(
         204 => "No Content",
         400 => "Bad Request",
         404 => "Not Found",
+        413 => "Payload Too Large",
         500 => "Internal Server Error",
         _ => "OK",
     };
@@ -1798,8 +1859,12 @@ async function publishSite() {
     try {
       const res = await fetch(API + '/api/upload/' + currentSite, { method: 'POST', body: formData });
       const data = await res.json();
-      if (data.ok && data.site) lastSite = data.site;
-      uploaded++;
+      if (data.ok) {
+        if (data.site) lastSite = data.site;
+        uploaded++;
+      } else {
+        showMsg('create-msg', 'Could not upload ' + file.name + ': ' + (data.msg || res.status), 'error');
+      }
     } catch (e) {
       showMsg('create-msg', 'Could not upload ' + file.name + ': ' + e.message, 'error');
     }
@@ -1813,7 +1878,7 @@ async function publishSite() {
   btn.disabled = false;
   btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg> Publish to HidraNet';
 
-  showSuccess(currentSite);
+  if (uploaded > 0) showSuccess(currentSite);
   loadSites();
 
   setTimeout(() => { prog.classList.add('hidden'); }, 3000);
@@ -2590,5 +2655,146 @@ mod name_tests {
         for ok in ["blog", "my-site", "a_b", "x1"] {
             assert!(site_name_ok(ok));
         }
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    const BOUNDARY: &str = "----sevenninetest";
+
+    /// A server on a scratch directory holding one site, "blog".
+    async fn server(tag: &str) -> (SocketAddr, PathBuf) {
+        let base = std::env::temp_dir().join(format!("sevennine-req-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mgr = Arc::new(SiteManager::new(&base, addr.port()));
+        mgr.create_site("blog").await.unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(handle_connection_pub(stream, mgr.clone()));
+            }
+        });
+        (addr, base)
+    }
+
+    /// Sends `request`, or only its first `send` bytes before closing, and
+    /// returns the whole answer.
+    async fn exchange(addr: SocketAddr, request: Vec<u8>, send: usize) -> String {
+        let (mut rd, mut wr) = tokio::net::TcpStream::connect(addr)
+            .await
+            .unwrap()
+            .into_split();
+        tokio::spawn(async move {
+            let _ = wr.write_all(&request[..send]).await;
+            let _ = wr.shutdown().await;
+        });
+        let mut answer = Vec::new();
+        rd.read_to_end(&mut answer).await.unwrap();
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    fn post(addr: SocketAddr, path: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+        let mut req = format!(
+            "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        req.extend_from_slice(body);
+        req
+    }
+
+    fn multipart(name: &str, data: &[u8], closed: bool) -> Vec<u8> {
+        let mut body = format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        if closed {
+            body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        }
+        body
+    }
+
+    fn upload(addr: SocketAddr, body: &[u8]) -> Vec<u8> {
+        post(
+            addr,
+            "/api/upload/blog",
+            &format!("multipart/form-data; boundary={BOUNDARY}"),
+            body,
+        )
+    }
+
+    fn image(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[tokio::test]
+    async fn an_upload_over_half_a_megabyte_is_stored_whole() {
+        let (addr, base) = server("big-upload").await;
+        let data = image(819_200);
+        let req = upload(addr, &multipart("photo.jpg", &data, true));
+        let answer = exchange(addr, req.clone(), req.len()).await;
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+        assert!(answer.contains(r#""ok":true"#), "{answer}");
+        let stored = std::fs::read(base.join("sites/blog/photo.jpg")).unwrap();
+        assert_eq!(stored, data);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_publish_over_half_a_megabyte_is_published() {
+        let (addr, base) = server("big-publish").await;
+        let html = format!("<html><body>{}</body></html>", "a\"b<p>".repeat(100_000));
+        let files = serde_json::json!([{ "path": "index.html", "html": html }]);
+        let body = serde_json::json!({ "source": {}, "files": files }).to_string();
+        let req = post(
+            addr,
+            "/api/publish/blog",
+            "application/json",
+            body.as_bytes(),
+        );
+        assert!(req.len() > 600_000);
+        let answer = exchange(addr, req.clone(), req.len()).await;
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+        let published = std::fs::read_to_string(base.join("sites/blog/index.html")).unwrap();
+        assert_eq!(published, html);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_limit_is_refused_with_413() {
+        let (addr, base) = server("too-large").await;
+        let req = upload(addr, &multipart("huge.bin", &image(MAX_REQUEST), true));
+        let answer = exchange(addr, req.clone(), req.len()).await;
+        let status = answer.lines().next().unwrap_or("");
+        assert_eq!(status, "HTTP/1.1 413 Payload Too Large", "{answer}");
+        assert!(answer.contains(r#""ok":false"#), "{answer}");
+        assert!(!base.join("sites/blog/huge.bin").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn an_upload_cut_short_is_not_stored() {
+        let (addr, base) = server("cut-short").await;
+        let data = image(300_000);
+
+        // The connection closes before the body Content-Length announced.
+        let req = upload(addr, &multipart("partial.jpg", &data, true));
+        let answer = exchange(addr, req.clone(), req.len() / 2).await;
+        assert_eq!(answer, "");
+        assert!(!base.join("sites/blog/partial.jpg").exists());
+
+        // The request is whole, but its body has no closing boundary.
+        let req = upload(addr, &multipart("unclosed.jpg", &data, false));
+        let answer = exchange(addr, req.clone(), req.len()).await;
+        assert!(answer.starts_with("HTTP/1.1 400 Bad Request"), "{answer}");
+        assert!(!base.join("sites/blog/unclosed.jpg").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

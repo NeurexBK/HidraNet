@@ -28,6 +28,7 @@ const SEVENNINE_PORT = 8084;
 class ProxyManager {
   constructor() {
     this.sevenNineProcess = null;
+    this.readyTimeoutMs = 20000;
   }
 
   sevenNineRunning() {
@@ -87,9 +88,14 @@ class ProxyManager {
         });
       }, 300);
 
-      const readyTimeout = setTimeout(() => {
-        finish({ ok: false, error: `SevenNine did not open port ${port} in time` });
-      }, 20000);
+      // Stopped before the start reports the failure: a child left registered
+      // here would make the next start answer "already running".
+      const readyTimeout = setTimeout(async () => {
+        settled = true;
+        clearInterval(readyPoll);
+        if (this[field] === proc) await this._stopEngineApp(field);
+        resolve({ ok: false, error: `SevenNine did not open port ${port} in time` });
+      }, this.readyTimeoutMs);
 
       proc.stdout.on('data', (d) => console.log('[' + label + ']', d.toString().trimEnd()));
       proc.stderr.on('data', (d) => {
@@ -98,12 +104,12 @@ class ProxyManager {
       });
 
       proc.on('error', (err) => {
-        this[field] = null;
+        if (this[field] === proc) this[field] = null;
         finish({ ok: false, error: err.message });
       });
 
       proc.on('close', (code) => {
-        this[field] = null;
+        if (this[field] === proc) this[field] = null;
         finish({ ok: false, error: this._explainExit(stderrTail, code) });
       });
     });

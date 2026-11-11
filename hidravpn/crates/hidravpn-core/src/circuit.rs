@@ -281,12 +281,15 @@ struct Hop {
 
 impl Hop {
     fn status(&self) -> HopStatus {
+        let mut tunnel = self.tunnel.status();
+        // Its tasks ended: nothing is forwarded, however recent the handshake.
+        tunnel.connected &= !self.finished();
         HopStatus {
             role: self.role,
             node_name: self.invite.node_name.clone(),
             endpoint: self.invite.endpoint.clone(),
             interface: self.interface.clone(),
-            tunnel: self.tunnel.status(),
+            tunnel,
         }
     }
 
@@ -1128,7 +1131,9 @@ fn ipv4_peer(a: SocketAddr) -> Result<SocketAddrV4> {
 fn spawn_runner(tunnel: &Arc<Tunnel>) -> JoinHandle<()> {
     let t = tunnel.clone();
     tokio::spawn(async move {
-        let _ = t.run().await;
+        if let Err(e) = t.run().await {
+            tracing::warn!("tunnel stopped: {e:#}");
+        }
     })
 }
 

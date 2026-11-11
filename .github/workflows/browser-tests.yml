@@ -112,7 +112,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect network-lock build-pins release-base release-notes release-runtime update-check; do
+          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect sevennine-start network-lock build-pins release-base release-notes release-runtime update-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -141,7 +141,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-server-electron update-notice-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-server-electron update-notice-electron connection-status-electron review-photos-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

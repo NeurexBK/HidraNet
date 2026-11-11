@@ -292,7 +292,10 @@ const decide = (t, current, opts = {}) => {
     const text = fs.readFileSync(SUMS, 'utf8');
     assert.ok(!/is the one we published/.test(text), 'still claims the checksum proves the file is the one we published');
     assert.ok(/same maintainers/.test(text) && /does not\s+prove who built the file/.test(text), 'the caveat is missing');
-    assert.ok(/Electron 33\.4\.11/.test(text) && /Tor 15\.0\.22/.test(text), 'the 1.0.0 runtime is not disclosed');
+    // update-sums.js leaves the signer free to drop this section.
+    if (/^KNOWN PROBLEMS WITH THE 1\.0\.0 PACKAGES$/m.test(text)) {
+      assert.ok(/Electron 33\.4\.11/.test(text) && /Tor 15\.0\.22/.test(text), 'the 1.0.0 runtime is not disclosed');
+    }
   });
 
   // ── The CI gate ─────────────────────────────────────────────────────────
@@ -385,13 +388,16 @@ const decide = (t, current, opts = {}) => {
     "require(" + JSON.stringify(path.join(ROOT, 'scripts', 'update-sums.js')) + ");", '',
   ].join('\n'));
 
+  // The 1.0.0 table as published, so this keeps working once the live one
+  // lists a later release.
+  const SUMS_1_0_0 = path.join(__dirname, 'fixtures', 'SHA256SUMS-1.0.0.txt');
   await check('update-sums.js writes the new version and its record, and never gives a published version other files', async () => {
     // Run only a writer that can be pointed at a copy: one that cannot would
     // rewrite the real landing/SHA256SUMS.txt with this test's fixtures.
     const writer = fs.readFileSync(path.join(ROOT, 'scripts', 'update-sums.js'), 'utf8');
     assert.ok(/process\.env\.HIDRA_SUMS_FILE/.test(writer), 'update-sums.js writes only landing/SHA256SUMS.txt; not running it');
     const sums = path.join(tmp, 'landing-SHA256SUMS.txt');
-    fs.copyFileSync(SUMS, sums);
+    fs.copyFileSync(SUMS_1_0_0, sums);
     fs.writeFileSync(sums + '.sig', 'old');
     const zips = path.join(tmp, 'zips');
     fs.mkdirSync(zips);

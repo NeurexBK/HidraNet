@@ -16,11 +16,12 @@
   it takes to connect is on one screen.
 
   The policy below leaves the page no way out: it talks to nothing
-  (connect-src 'none'), loads nothing remote, cannot be framed and submits
-  nothing. The one thing it can do is call window.hidra.vpn, which the main
-  process only offers to this page.
+  (connect-src 'none'), loads nothing remote and submits nothing. The one
+  thing it can do is call window.hidra.vpn, which the main process answers
+  only for the main frame of a tab on this page, so a framed copy gets
+  nothing.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HidraVPN</title>
@@ -546,7 +547,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   // Whether this system draws flags: Windows has no flag glyphs and shows
   // the two letters instead, which next to the letters themselves read twice.
   // A flag is drawn in colour; the letters are drawn in the fill colour only.
-  // The browser's canvas noise moves a channel by one, far under the margin.
+  // Where reading a canvas back is refused (main.js), this is false and only
+  // the letters show.
   var FLAGS = (function () {
     try {
       var c = document.createElement('canvas');

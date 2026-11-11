@@ -74,6 +74,28 @@ for (const { claim, evidence, where, source } of UNCONDITIONAL) {
   else bad(claim, 'the panel claims it, but nothing in ' + where + ' does it');
 }
 
+// ── The toolbar panel ────────────────────────────────────────────────────
+//
+// A website tab gets a fingerprint and an in-memory partition of its own. The
+// apps share one fingerprint and a partition kept on disk, so a claim about
+// every tab, or about nothing being kept, is false for them.
+
+const toolbar = fs.readFileSync(path.join(UI, 'browser.html'), 'utf8');
+const panelInfo = ((toolbar.match(/<div class="panel-info">([\s\S]*?)<\/div>/) || [])[1] || '').replace(/\s+/g, ' ').trim();
+const appsKept = /const APPS_PARTITION = 'persist:/.test(tabManager);
+const appsShareFingerprint = /persistent \? this\._appsFingerprint\(\)/.test(tabManager);
+if (!panelInfo) {
+  bad('toolbar panel', 'could not find its text in browser.html');
+} else if (appsKept && /no data persists|nothing (is )?(kept|stored|persists)/i.test(panelInfo)) {
+  bad('toolbar panel', `says "${panelInfo}", but the apps keep their data on disk`);
+} else if (appsShareFingerprint && /\b(each|every) tab\b/i.test(panelInfo) && !/websites?\b[^.]*\b(each|every) tab/i.test(panelInfo)) {
+  bad('toolbar panel', `says "${panelInfo}", but the apps' tabs share one fingerprint`);
+} else if (appsKept && !/apps?\b[^.]*\bkeep/i.test(panelInfo)) {
+  bad('toolbar panel', 'does not say that the apps keep their data');
+} else {
+  ok('toolbar panel: per-tab fingerprint and storage for websites, kept data for the apps');
+}
+
 // ── DNS: no name reaches this machine's resolver ─────────────────────────
 //
 // The badge used to follow the connection: "Active" while routed, "Not

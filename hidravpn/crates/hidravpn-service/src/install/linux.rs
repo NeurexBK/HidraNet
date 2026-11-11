@@ -29,7 +29,7 @@ RestartSec=3
 RuntimeDirectory=hidravpn
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
-Environment=RUST_LOG=hidravpn_service=info
+Environment=RUST_LOG=hidravpn_service=info,hidravpn_core=warn
 # The tunnel interface, routes, nftables and DNS need these; CAP_CHOWN hands
 # the control socket and token to the hidravpn group. Nothing more.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_DAC_OVERRIDE CAP_CHOWN

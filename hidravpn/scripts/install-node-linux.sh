@@ -46,6 +46,8 @@ ETC="${HIDRAVPN_ETC:-/etc/hidravpn}"
 UNIT="${HIDRAVPN_UNIT:-/etc/systemd/system/hidravpn-node.service}"
 
 ENDPOINT=""; NAME=""; OUT_IF=""; DRY=0; DNS=(); ROLE="both"; OPERATOR=""; CONTACT=""; COUNTRY=""; TUNNEL=""; OPEN=0; PASS=0; ADM_PORT=51821; RELAYS=()
+# The options given that only a new node takes: a kept node.toml ignores them.
+FOR_INIT=()
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" | sed 's/^# \{0,1\}//'; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -65,10 +67,11 @@ while [ $# -gt 0 ]; do
         --idle-days) IDLE_DAYS="$2" ;;
         --admission-relay) RELAYS+=("$2") ;;
       esac
+      case "$1" in --endpoint|--admission-relay) ;; *) FOR_INIT+=("$1") ;; esac
       shift 2 ;;
-    --open-admission) OPEN=1; shift ;;
-    --pass-admission) PASS=1; shift ;;
-    --dns) shift; while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do DNS+=("$1"); shift; done ;;
+    --open-admission) OPEN=1; FOR_INIT+=("$1"); shift ;;
+    --pass-admission) PASS=1; FOR_INIT+=("$1"); shift ;;
+    --dns) FOR_INIT+=("$1"); shift; while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do DNS+=("$1"); shift; done ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -115,6 +118,7 @@ done
 # Not the hostname: the name goes into every client's screen and into any
 # published list, and a hostname is one more thing about the server.
 [ -n "$NAME" ] || NAME="node-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+ADMISSION=manual; [ "$OPEN" = 1 ] && ADMISSION=open; [ "$PASS" = 1 ] && ADMISSION=pass
 
 if [ "$DRY" = 1 ]; then
   run() { printf 'would run: %s\n' "$*"; }
@@ -168,6 +172,24 @@ if [ ! -x "$BIN/hidravpn-node" ]; then
   fi
 fi
 
+# A dry run without root cannot see into the settings directory a run made.
+KEPT=0; [ -f "$ETC/node.toml" ] && KEPT=1
+if [ "$KEPT" = 0 ] && [ "$DRY" = 1 ] && [ -d "$ETC" ] && [ ! -x "$ETC" ]; then
+  echo "   cannot look inside $ETC without root: run the dry run with sudo to see what the node keeps"
+  KEPT=1
+fi
+
+# A kept node.toml is read by the build about to be installed, while the
+# installed binary is still in place: settings the new one refuses stop here.
+REC=""
+if [ -f "$ETC/node.toml" ] && [ -r "$ETC/node.toml" ] && [ -x "$BIN/hidravpn-node" ] \
+   && ! REC="$("$BIN/hidravpn-node" --config "$ETC/node.toml" record 2>/dev/null)"; then
+  REC=""
+  echo "the new hidravpn-node cannot read $ETC/node.toml; fix what it says and run this again:" >&2
+  "$BIN/hidravpn-node" --config "$ETC/node.toml" record >/dev/null || true
+  if [ "$DRY" = 1 ]; then echo "   (a real run would stop here)"; else exit 1; fi
+fi
+
 step "installing the binary to $PREFIX/hidravpn-node"
 run install -d -m 0755 "$PREFIX"
 run install -m 0755 "$BIN/hidravpn-node" "$PREFIX/hidravpn-node"
@@ -175,7 +197,8 @@ run install -m 0755 "$BIN/hidravpn-node" "$PREFIX/hidravpn-node"
 step "the node's key and settings in $ETC/node.toml"
 run install -d -m 0700 "$ETC"
 RESTART=0
-if [ -f "$ETC/node.toml" ]; then
+FW_NOTE=""
+if [ "$KEPT" = 1 ]; then
   echo "   keeping the existing $ETC/node.toml (the node keeps its key; admitted clients live in /var/lib/hidravpn/peers.json and survive reboots)"
   # The relays, unlike the rest, are written into it: an exit updated to
   # take them would otherwise run with none, and a line added to the file
@@ -183,6 +206,19 @@ if [ -f "$ETC/node.toml" ]; then
   if [ ${#RELAYS[@]} -gt 0 ]; then
     run "$PREFIX/hidravpn-node" --config "$ETC/node.toml" set-admission-relays "${RELAYS[@]}"
     RESTART=1
+  fi
+  [ ${#FOR_INIT[@]} -gt 0 ] && echo "   not applied, as only a new node takes them: ${FOR_INIT[*]}"
+  # What follows says what the kept settings say, not the options. A dry run
+  # may not be able to read them (no root, no binary yet): it names nothing.
+  kept() { printf '%s\n' "$REC" | sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p"; }
+  NAME="$(kept node_name)"; ROLE="$(kept role | tr '[:upper:]' '[:lower:]')"; ADMISSION="$(kept admission)"; OUT_IF=""
+  if [ -n "$REC" ]; then
+    K="$(kept endpoint)"
+    [ "$K" = "$ENDPOINT" ] || echo "   not applied: --endpoint $ENDPOINT (node.toml keeps $K, the address clients are given)"
+    ENDPOINT="$K"; PORT="${ENDPOINT##*:}"
+    ADM_PORT="$(kept admission_port)"; [ -n "$ADM_PORT" ] || ADM_PORT=51821
+  else
+    FW_NOTE=" (the ports of the options: node.toml may say others)"
   fi
 else
   INIT=("$PREFIX/hidravpn-node" --config "$ETC/node.toml" init --endpoint "$ENDPOINT" --port "$PORT" --name "$NAME" --out-interface "$OUT_IF" --role "$ROLE" --admission-port "$ADM_PORT")
@@ -212,7 +248,7 @@ run systemctl enable --now hidravpn-node
 # A node already running reads its settings only when it starts.
 [ "$RESTART" = 1 ] && run systemctl restart hidravpn-node
 
-step "the firewall: UDP $PORT (the tunnel) and TCP $ADM_PORT (admission and the node's record) must reach this node; SSH stays as it is"
+step "the firewall: UDP $PORT (the tunnel) and TCP $ADM_PORT (admission and the node's record) must reach this node$FW_NOTE; SSH stays as it is"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
   run ufw allow "$PORT/udp" comment "HidraVPN node"
   run ufw allow "$ADM_PORT/tcp" comment "HidraVPN admission"
@@ -249,18 +285,29 @@ else
   NODE_PUB='<printed by: hidravpn-node pubkey>'
 fi
 
+case "$ADMISSION" in
+  open) ADMITS="open (any client that asks is admitted, rate-limited)" ;;
+  pass) ADMITS="with a pass (add the issuer's key: hidravpn-node pass-key add <record.json>, then restart)" ;;
+  *) ADMITS="by hand" ;;
+esac
+if [ -n "$NAME" ]; then
+  ABOUT="HidraVPN node \"$NAME\" at $ENDPOINT${OUT_IF:+ (traffic leaves by $OUT_IF)}.
+Role: $ROLE.  Admission: $ADMITS."
+else
+  ABOUT="HidraVPN node with the settings kept in $ETC/node.toml (hidravpn-node record shows its name, role and admission)."
+fi
+
 cat <<EOT
 
 ────────────────────────────────────────────────────────────────────────
-HidraVPN node "$NAME" at $ENDPOINT (traffic leaves by $OUT_IF).
-Role: $ROLE.  Admission: $([ "$OPEN" = 1 ] && echo "open (any client that asks is admitted, rate-limited)" || { [ "$PASS" = 1 ] && echo "with a pass (add the issuer's key: hidravpn-node pass-key add <record.json>, then restart)"; } || echo "by hand").
+$ABOUT
 
 Node public key:  $NODE_PUB
 
-Its record, for the node list:   hidravpn-node record > $NAME.json
+Its record, for the node list:   hidravpn-node record > ${NAME:-<its name>}.json
 (send that file to whoever makes the list; scripts/make-node-list.sh signs it in)
 
-$([ "$OPEN" = 1 ] && { [ "$ROLE" = entry ] && echo "Clients that know this node (from the list) ask it for a key for each connection as they connect; an entry gives no lasting lease, so there is nothing to join. To admit a client by hand, the person running it does:" || echo "Clients that know this node (from the list, or hidravpn nodes discover $ENDPOINT) are admitted with: sudo hidravpn nodes join --all"; } || echo "To admit a client by hand, the person running it does:")
+$([ "$ADMISSION" = open ] && { [ "$ROLE" = entry ] && echo "Clients that know this node (from the list) ask it for a key for each connection as they connect; an entry gives no lasting lease, so there is nothing to join. To admit a client by hand, the person running it does:" || echo "Clients that know this node (from the list, or hidravpn nodes discover $ENDPOINT) are admitted with: sudo hidravpn nodes join --all"; } || echo "To admit a client by hand, the person running it does:")
   1. installs the client (hidravpn/scripts/install-linux.sh or the Windows build)
   2. runs            hidravpn pubkey --node '$NODE_PUB'      and sends you what it prints
 You then run:

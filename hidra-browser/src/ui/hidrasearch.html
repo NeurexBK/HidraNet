@@ -127,18 +127,6 @@ a:hover{color:var(--link-hover)}
   font-size:10px;color:var(--accent);letter-spacing:0.3px;
 }
 
-.tabs{display:flex;gap:2px;margin-bottom:22px}
-.tab-btn{
-  padding:6px 16px;background:none;border:1px solid transparent;
-  border-radius:14px;color:var(--text3);font-size:13px;
-  cursor:pointer;font-family:inherit;transition:all .2s;
-}
-.tab-btn:hover{color:var(--text2);border-color:var(--border2)}
-.tab-btn.active{
-  background:rgba(0,212,170,.1);color:var(--accent);
-  border-color:rgba(0,212,170,.3);
-}
-
 /* ── Loading ── */
 .loading{display:none;text-align:center;padding:80px 20px}
 .loading.active{display:block}
@@ -285,12 +273,6 @@ a:hover{color:var(--link-hover)}
 
   <div class="results-body">
     <div class="results-meta" id="resultsMeta"></div>
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="all">All</button>
-      <button class="tab-btn" data-tab="news">News</button>
-      <button class="tab-btn" data-tab="images">Images</button>
-      <button class="tab-btn" data-tab="hidra">.hidra network</button>
-    </div>
     <div class="loading" id="loading">
       <div class="spin"></div>
       <div class="loading-label">Searching anonymously…</div>
@@ -322,7 +304,6 @@ a:hover{color:var(--link-hover)}
 const API_BASE = location.origin;
 let currentQuery = '';
 let currentPage = 1;
-let currentTab = 'all';
 let isLoading = false;
 let currentPrefs = { theme: 'teal', searchLang: 'all' };
 
@@ -373,16 +354,6 @@ document.getElementById('topBtn').addEventListener('click', function() {
 });
 document.getElementById('topLogo').addEventListener('click', goHome);
 
-// ── Tab wiring ──
-document.querySelectorAll('.tab-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
-    this.classList.add('active');
-    currentTab = this.dataset.tab;
-    if (currentQuery) doSearch(currentQuery, 1);
-  });
-});
-
 // ── Pagination ──
 document.getElementById('prevBtn').addEventListener('click', function() {
   if (currentPage > 1) doSearch(currentQuery, currentPage - 1);
@@ -418,7 +389,6 @@ function doSearch(q, page) {
   isLoading = true;
 
   var url = API_BASE + '/search/api?q=' + encodeURIComponent(q) + '&p=' + currentPage;
-  if (currentTab !== 'all') url += '&tab=' + currentTab;
   if (currentPrefs.searchLang && currentPrefs.searchLang !== 'all') {
     url += '&lang=' + encodeURIComponent(currentPrefs.searchLang);
   }

@@ -46,7 +46,7 @@ cleanup() {
   [ "$MADE_GROUP" = 1 ] && groupdel hidravpn 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 cleanup
 WORK="$(mktemp -d /tmp/hidravpn-browser.XXXXXX)"
 chmod 755 "$WORK"

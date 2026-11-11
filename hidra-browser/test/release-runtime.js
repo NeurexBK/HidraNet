@@ -64,7 +64,7 @@ function linuxPackage({ prefix = '', bin = GOOD_ENGINE, drop = [], swap = {}, ad
     ['resources/app/package.json', '{}'], ['resources/app/src/main/main.js', 'main'], ['resources/app/build.json', '{}'],
     ['resources/bin/tor/libevent-2.1.so.7', LIBEVENT],
     ...Object.entries(torFiles).map(([n, d]) => ['resources/bin/tor/' + n, d]),
-    ['start.sh', '#!/bin/sh', 0o755], ['LEIA-ME.txt', 'readme'],
+    ['start.sh', '#!/bin/sh', 0o755], ['README-Linux.txt', 'readme'],
     ...add,
   ].filter(([n]) => !drop.includes(n)).map(([n, d, m]) => [prefix + n, n in swap ? swap[n] : d, m]);
   return zipOf(files);

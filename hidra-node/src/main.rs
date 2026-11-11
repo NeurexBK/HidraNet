@@ -169,6 +169,13 @@ struct Cli {
     #[arg(long)]
     proxy: bool,
 
+    #[arg(
+        long,
+        requires = "proxy",
+        help = "With --proxy: run the three relays in this process. Traffic exits from this machine, so it does not hide your IP"
+    )]
+    local_test_network: bool,
+
     #[arg(long)]
     server: bool,
 
@@ -247,7 +254,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } else if cli.server {
         run_server_mode(&app_cfg, network_secret, signing_key).await?;
     } else if cli.proxy {
-        run_proxy_mode(&app_cfg, network_secret, signing_key).await?;
+        run_proxy_mode(
+            &app_cfg,
+            cli.local_test_network,
+            network_secret,
+            signing_key,
+        )
+        .await?;
     } else if let Some(ref payload) = cli.send {
         run_send_mode(&app_cfg, network_secret, signing_key, payload, cli.dht_discover)
             .await?;
@@ -896,16 +909,51 @@ async fn read_local(local: &mut Option<tokio::net::TcpStream>, buf: &mut [u8]) -
     }
 }
 
+/// The configured relays a proxy builds its circuits through: those on another
+/// machine whose key is pinned. An exit on this machine would connect from the
+/// user's own address.
+fn proxy_relays(
+    configured: &[config::RelayInfo],
+) -> std::result::Result<Vec<relay::registry::RelayEntry>, Box<dyn std::error::Error>> {
+    let usable: Vec<_> = relay::registry::load_relay_list(configured)?
+        .into_iter()
+        .filter(|r| !r.noise_pubkey_b64.trim().is_empty())
+        .filter(|r| {
+            let ip = r.addr.ip().to_canonical();
+            !ip.is_loopback() && !ip.is_unspecified()
+        })
+        .collect();
+    if usable.len() < 3 {
+        return Err(format!(
+            "--proxy needs 3 relays with a noise_pubkey on other machines in [[relays]], found {} \
+             (--local-test-network runs them here, without hiding your IP)",
+            usable.len()
+        )
+        .into());
+    }
+    Ok(usable)
+}
+
 async fn run_proxy_mode(
     app_cfg: &config::AppConfig,
+    local_test_network: bool,
     _network_secret: StaticSecret,
     _signing_key: SigningKey,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     info!("=== HidraNet Proxy Mode ===");
-    info!("spawning local relay nodes for onion routing...");
 
-    let local_relays = spawn_local_relays().await?;
-    let relay_addrs: Vec<SocketAddr> = local_relays.iter().map(|r| r.addr).collect();
+    let static_relays = if local_test_network {
+        info!("spawning local relay nodes for onion routing...");
+        let local = spawn_local_relays().await?;
+        warn!(
+            "local test network: every relay runs in this process and traffic exits \
+             from this machine. This proxy does not hide your IP."
+        );
+        local
+    } else {
+        proxy_relays(&app_cfg.relays)?
+    };
+    let relay_addrs: Vec<SocketAddr> = static_relays.iter().map(|r| r.addr).collect();
 
     let proxy_addr: SocketAddr =
         format!("{}:{}", app_cfg.proxy.listen_addr, app_cfg.proxy.port).parse()?;
@@ -928,28 +976,6 @@ async fn run_proxy_mode(
         .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
-
-    let mut config_relays = relay::registry::load_relay_list(&app_cfg.relays).unwrap_or_default();
-
-    for lr in &local_relays {
-        // A config entry with an empty key is a placeholder for a relay this
-        // node runs; replace it with the keyed local relay so it can serve as
-        // a hop (circuits are built only through relays whose key we know). An
-        // entry that already carries a key was pinned on purpose — keep it.
-        match config_relays.iter_mut().find(|r| r.addr == lr.addr) {
-            Some(existing) if existing.noise_pubkey_b64.trim().is_empty() => {
-                *existing = lr.clone();
-            }
-            Some(_) => {}
-            None => config_relays.push(lr.clone()),
-        }
-    }
-
-    let static_relays = if config_relays.len() >= 3 {
-        config_relays
-    } else {
-        local_relays.clone()
-    };
 
     let mut proxy_secret_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut proxy_secret_bytes);
@@ -1503,5 +1529,68 @@ mod tests {
         let mut buf = [0u8; 32];
         security::hardening::secure_random_bytes(&mut buf);
         assert_ne!(buf, [0u8; 32]);
+    }
+
+    fn relay_info(addr: &str, key: &str) -> config::RelayInfo {
+        config::RelayInfo {
+            name: "r".into(),
+            addr: addr.into(),
+            noise_pubkey: key.into(),
+        }
+    }
+
+    #[test]
+    fn the_proxy_uses_only_keyed_relays_on_other_machines() {
+        let configured = [
+            relay_info("192.0.2.1:9150", "a2V5MQ=="),
+            relay_info("127.0.0.1:7001", "a2V5Mg=="),
+            relay_info("198.51.100.2:9150", "a2V5Mw=="),
+            relay_info("[::1]:7002", "a2V5NA=="),
+            relay_info("[::ffff:127.0.0.1]:7003", "a2V5NQ=="),
+            relay_info("0.0.0.0:7004", "a2V5Ng=="),
+            relay_info("203.0.113.3:9150", "a2V5Nw=="),
+            relay_info("192.0.2.4:9150", ""),
+        ];
+        let chosen: Vec<String> = proxy_relays(&configured)
+            .unwrap()
+            .iter()
+            .map(|r| r.addr.to_string())
+            .collect();
+        assert_eq!(
+            chosen,
+            ["192.0.2.1:9150", "198.51.100.2:9150", "203.0.113.3:9150"]
+        );
+    }
+
+    #[test]
+    fn the_proxy_refuses_relays_that_would_not_hide_the_ip() {
+        // The shipped config.toml: three placeholders on this machine.
+        let shipped = [
+            relay_info("127.0.0.1:7001", ""),
+            relay_info("127.0.0.1:7002", ""),
+            relay_info("127.0.0.1:7003", ""),
+        ];
+        let err = proxy_relays(&shipped).unwrap_err().to_string();
+        assert!(err.contains("found 0"), "{err}");
+
+        let keyed_here = [
+            relay_info("127.0.0.1:7001", "a2V5MQ=="),
+            relay_info("127.0.0.2:7002", "a2V5Mg=="),
+            relay_info("192.0.2.1:9150", "a2V5Mw=="),
+        ];
+        let err = proxy_relays(&keyed_here).unwrap_err().to_string();
+        assert!(err.contains("found 1"), "{err}");
+    }
+
+    #[test]
+    fn the_proxy_refuses_a_relay_entry_it_cannot_read() {
+        let configured = [
+            relay_info("192.0.2.1:9150", "a2V5MQ=="),
+            relay_info("198.51.100.2:9150", "a2V5Mg=="),
+            relay_info("203.0.113.3:9150", "a2V5Mw=="),
+            relay_info("relay.example:9150", "a2V5NA=="),
+        ];
+        let err = proxy_relays(&configured).unwrap_err().to_string();
+        assert!(err.contains("invalid relay addr"), "{err}");
     }
 }

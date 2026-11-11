@@ -13,7 +13,7 @@
 // This runs the real TorManager against a stand-in for the tor binary that
 // behaves as tor does where it matters here: it opens its SOCKS port, climbs
 // to 100% over a couple of seconds, and refuses to start on a data directory
-// another tor holds.
+// another tor holds. A second one stalls at 5% for longer than a start waits.
 //
 //   node hidra-browser/test/tor-connect.js
 
@@ -35,8 +35,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hidra-tor-'));
 const FAKE = path.join(tmp, 'tor');
+const STALLED = path.join(tmp, 'tor-stalled');
 const SPAWNS = path.join(tmp, 'spawns.log');
-fs.writeFileSync(FAKE, `#!${process.execPath}
+// A tor that prints `steps` ([ms, line] each) once its SOCKS port is open.
+const writeFake = (file, steps) => fs.writeFileSync(file, `#!${process.execPath}
 'use strict';
 const fs = require('fs'), net = require('net'), path = require('path');
 const a = process.argv.slice(2);
@@ -56,12 +58,20 @@ const srv = net.createServer((s) => s.destroy());
 srv.on('error', (e) => { console.log('[err] Could not bind to 127.0.0.1:' + port + ': ' + e.code); bye(); });
 srv.listen(port, '127.0.0.1', () => {
   console.log('[notice] Opened Socks listener connection (ready) on 127.0.0.1:' + port);
-  console.log('[notice] Bootstrapped 0% (starting): Starting');
-  setTimeout(() => console.log('[notice] Bootstrapped 50% (loading_descriptors): Loading relay descriptors'), 800);
-  setTimeout(() => console.log('[notice] Bootstrapped 100% (done): Done'), 1600);
+  for (const [ms, line] of ${JSON.stringify(steps)}) setTimeout(() => console.log(line), ms);
 });
 setInterval(() => {}, 1 << 30);
 `, { mode: 0o755 });
+writeFake(FAKE, [
+  [0, '[notice] Bootstrapped 0% (starting): Starting'],
+  [800, '[notice] Bootstrapped 50% (loading_descriptors): Loading relay descriptors'],
+  [1600, '[notice] Bootstrapped 100% (done): Done'],
+]);
+// Stuck at 5% for longer than the start waits, then done after all.
+writeFake(STALLED, [
+  [0, '[notice] Bootstrapped 5% (conn): Connecting to a relay'],
+  [1500, '[notice] Bootstrapped 100% (done): Done'],
+]);
 
 function freePort() {
   return new Promise((resolve) => {
@@ -70,9 +80,11 @@ function freePort() {
   });
 }
 
-function spawns() {
-  try { return fs.readFileSync(SPAWNS, 'utf8').trim().split('\n').filter(Boolean).length; } catch (e) { return 0; }
+function spawned() {
+  try { return fs.readFileSync(SPAWNS, 'utf8').trim().split('\n').filter(Boolean).map(Number); } catch (e) { return []; }
 }
+const spawns = () => spawned().length;
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
 
 async function manager() {
   const tm = new TorManager(await freePort(), await freePort());
@@ -133,6 +145,29 @@ async function manager() {
     check('the state is stopped, not failed', tm.getStatus().state === 'stopped', JSON.stringify(tm.getStatus()));
     const again = await tm.start(data);
     check('Connect afterwards starts a fresh tor', again.ok && tm.getStatus().state === 'ready' && spawns() === 2, JSON.stringify(again) + ` ${spawns()} started`);
+    await tm.stop();
+  }
+
+  // ── A bootstrap that stalls past the timeout ──
+  // On a slow or censored network this is an ordinary event. The tor that
+  // was waited for must be gone, not left to reach 100% behind the lock.
+  {
+    fs.rmSync(SPAWNS, { force: true });
+    const tm = await manager();
+    tm.findBinary = () => STALLED;
+    tm.bootstrapTimeoutMs = 600;
+    const data = fs.mkdtempSync(path.join(tmp, 'ud-'));
+    const r = await tm.start(data);
+    const [pid] = spawned();
+    check('a stalled bootstrap is reported as failed', !r.ok && /did not finish bootstrapping .*stalled at 5%/.test(r.error || '') && tm.getStatus().state === 'failed', JSON.stringify(r));
+    check('and the stalled tor is no longer running', pid && !alive(pid), `pid ${pid} still running`);
+    check('and its port is free again', await tm._portFree());
+    await sleep(2000);                      // past the moment it would have reached 100%
+    check('it does not turn ready later', tm.getStatus().state === 'failed' && !tm.isRunning(), JSON.stringify(tm.getStatus()));
+    tm.findBinary = () => FAKE;
+    tm.bootstrapTimeoutMs = 120000;
+    const again = await tm.start(data);
+    check('Connect afterwards starts a fresh tor', again.ok && !again.alreadyRunning && tm.getStatus().state === 'ready' && spawns() === 2, JSON.stringify(again) + ` ${spawns()} started`);
     await tm.stop();
   }
 

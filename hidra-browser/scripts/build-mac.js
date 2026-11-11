@@ -69,10 +69,10 @@ async function buildArch(arch) {
   // every build (lib/electron.js).
   const zipCache = await electronZip('darwin', arch, path.join(DIST, 'electron-cache'));
 
-  console.log('  Lendo ZIP ...');
+  console.log('  Reading ZIP ...');
   const srcBuf     = fs.readFileSync(zipCache);
   const srcEntries = readZip(srcBuf);
-  console.log('  ' + srcEntries.length + ' entradas lidas.');
+  console.log('  ' + srcEntries.length + ' entries read.');
 
   const ePfx   = 'Electron.app/';
   const hPfx   = APP_NAME + '.app/';
@@ -134,7 +134,7 @@ async function buildArch(arch) {
                        : '  [!!] HidraNet icon NOT in the bundle — it shows Electron\'s');
 
   // ── Add our app source ────────────────────────────────────────────────────
-  console.log('  Adicionando fonte do app ...');
+  console.log('  Adding the app source ...');
   var resPfx = hPfx + 'Contents/Resources/';
 
   outEntries.push(mkDir(resPfx + 'app'));

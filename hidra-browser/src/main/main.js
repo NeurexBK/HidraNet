@@ -16,7 +16,7 @@ const { UpdateCheck, STATE_FILE: UPDATE_STATE_FILE } = require('./update-check')
 const { VaultStore } = require('./vault');
 const { ProxyManager, LOOPBACK_ONLY } = require('./proxy-manager');
 const { TorManager, SOCKS_PORT, proxyRulesFor } = require('./tor-manager');
-const { NetworkLock, HOST_RESOLVER_RULES } = require('./network-lock');
+const { NetworkLock, HOST_RESOLVER_RULES, connectionMode } = require('./network-lock');
 const { FingerprintEngine } = require('../fingerprint/engine');
 
 const CHAT_PORT = 8090;
@@ -518,8 +518,7 @@ const DDG_REGIONS = {
   uk: 'ua-uk', ca: 'ct-ca',
 };
 
-// httpsPost defaults to a hardcoded pt-BR Accept-Language, which contradicted
-// whichever region the user actually asked for.
+// httpsPost asks for en-US; a search in another region asks in its language.
 function acceptLanguageFor(lang) {
   if (!lang || lang === 'all') return 'en-US,en;q=0.9';
   const base = lang.split('-')[0];
@@ -1023,15 +1022,16 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
   ipcMain.handle('proxy:status', (event) => {
     fromChromeOr(event, ['newtab.html'], 'proxy:status');
     const tor = torManager.getStatus();
-    const connected = tor.state === 'ready';
+    const lock = networkLock.getStatus();
+    const mode = connectionMode(tor.state, lock.engaged, connecting !== null);
 
     return {
       // The one route every session has, whatever the state.
       proxy: `127.0.0.1:${tor.socksPort}`,
-      connected,
-      mode: connected ? 'tor' : (tor.state === 'starting' ? 'connecting' : 'disconnected'),
+      connected: mode === 'tor',
+      mode,
       tor,
-      lock: networkLock.getStatus(),
+      lock,
     };
   });
 

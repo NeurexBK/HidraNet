@@ -63,7 +63,7 @@ cleanup() {
          /etc/hidravpn/order.json /var/run/wireguard/hvp0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 cleanup
 WORK="$(mktemp -d /tmp/hidravpn-pay.XXXXXX)"
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }

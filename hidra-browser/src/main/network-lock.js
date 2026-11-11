@@ -207,4 +207,12 @@ class NetworkLock {
   }
 }
 
-module.exports = { NetworkLock, HOST_RESOLVER_RULES };
+// The one connection state the toolbar and the new tab page show. Tor at 100%
+// is not enough: until the lock opens, nothing a tab asks for goes out.
+function connectionMode(torState, lockEngaged, connectInProgress) {
+  if (torState === 'ready' && !lockEngaged) return 'tor';
+  if (torState === 'starting' || connectInProgress) return 'connecting';
+  return 'disconnected';
+}
+
+module.exports = { NetworkLock, HOST_RESOLVER_RULES, connectionMode };

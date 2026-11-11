@@ -38,7 +38,7 @@ cleanup() {
   rm -rf /etc/netns/hv-client /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /run/hidravpn/netcfg.json /var/run/wireguard/hvpn0.sock
   rm -rf "$WORK"
 }
-trap cleanup EXIT
+trap 'cleanup; guard_done' EXIT
 # What an interrupted run may have left: its namespaces and its files.
 for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
 rm -rf /etc/netns/hv-client /run/hidravpn/peers.json /var/lib/hidravpn/peers.json /run/hidravpn/netcfg.json /var/run/wireguard/hvpn0.sock
@@ -309,5 +309,67 @@ own_address "no kill switch" sent "the system sends it into the tunnel"
 $N nft delete table inet hv_wire
 kill -INT $UP; for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
 grep -q "network restored" "$WORK/client2.log" && pass "and disconnected cleanly" || { tail -5 "$WORK/client2.log"; fail "disconnect without the kill switch"; }
+
+echo "── the tunnel's socket fails under a running client"
+# The tunnel ends for good: the client says why and keeps its kill switch on
+# until `hidravpn down`.
+$C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client3.log" 2>&1 & UP=$!; PIDS+=($UP)
+for i in $(seq 1 100); do grep -q "^connected" "$WORK/client3.log" && break; sleep 0.2; done
+$N nft add table inet hv_cut
+$N nft add chain inet hv_cut in '{ type filter hook input priority -300; policy accept; }'
+$N nft add rule inet hv_cut in iifname n-c udp dport 51820 reject with icmp type prot-unreachable
+for i in $(seq 1 20); do kill -0 $UP 2>/dev/null || break; $C curl -s --max-time 1 http://10.201.0.2/ >/dev/null 2>&1; done
+for i in $(seq 1 50); do kill -0 $UP 2>/dev/null || break; sleep 0.2; done
+$N nft delete table inet hv_cut
+grep -q "tunnel stopped: reading the UDP socket" "$WORK/client3.log" && grep -q "the kill switch stays on" "$WORK/client3.log" && ! grep -q "network restored" "$WORK/client3.log" \
+  && $C nft list table inet hidravpn_ks >/dev/null 2>&1 \
+  && pass "the client says the tunnel stopped, and why, and keeps the kill switch on" || { tail -5 "$WORK/client3.log"; fail "a tunnel whose socket failed"; }
+$C "$BIN/hidravpn" down > "$WORK/down3.log" 2>&1
+grep -qx "kill switch lifted" "$WORK/down3.log" && ! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] \
+  && pass "down then lifts it and leaves no DNS of its own behind" || fail "after down: $(cat "$WORK/down3.log"), resolv.conf $(cat /etc/netns/hv-client/resolv.conf)"
+
+echo "── a run that died leaves its kill switch, and the next one keeps it"
+# Killed outright, a run cannot put the network back: its kill switch stays.
+# The next run must not lift it while it builds, even when it then fails.
+$C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/invite.json" > "$WORK/client4.log" 2>&1 & UP=$!; PIDS+=($UP)
+for i in $(seq 1 100); do grep -q "^connected" "$WORK/client4.log" && break; sleep 0.2; done
+kill -9 $UP; wait $UP 2>/dev/null
+$C nft list table inet hidravpn_ks >/dev/null 2>&1 && pass "a run killed outright leaves its kill switch armed" || fail "no kill switch after the run was killed"
+# An invite that says the node admits openly: it is asked for a key for this
+# connection, and refuses, since it admits by hand.
+python3 -I -c 'import json,sys; i=json.load(open(sys.argv[1])); i["admission"]="open"; print(json.dumps(i))' "$WORK/invite.json" > "$WORK/open.json"
+OUT=$($C "$BIN/hidravpn" --key "$WORK/client.key" up "$WORK/open.json" 2>&1); RC=$?
+[ $RC -ne 0 ] && echo "$OUT" | grep -q "did not admit this machine" && echo "$OUT" | grep -q "the kill switch stays on" && $C nft list table inet hidravpn_ks >/dev/null 2>&1 \
+  && pass "the next run, which cannot be built, keeps it armed and says so" || fail "the next run lifted the kill switch (exit $RC): $OUT"
+$C "$BIN/hidravpn" down > "$WORK/down4.log" 2>&1
+! $C nft list table inet hidravpn_ks >/dev/null 2>&1 && [ "$(cat /etc/netns/hv-client/resolv.conf)" = "$ORIG_RESOLV" ] \
+  && pass "down lifts it and puts the network back" || fail "after down: $(cat "$WORK/down4.log")"
+
+echo "── a node that cannot start leaves the host as it found it"
+kill -INT $NODE_PID; for i in $(seq 1 25); do kill -0 $NODE_PID 2>/dev/null || break; sleep 0.2; done
+# Each start fails at a different step: before the host is touched, after
+# NAT is set, and binding DNS. Each must say why, exit with an error, and
+# leave forwarding off, no NAT table and no tunnel interface.
+start_fails() {  # what, what the log says, settings, run directory
+  $N sysctl -qw net.ipv4.ip_forward=0
+  $N env HIDRAVPN_RUN_DIR="$4" timeout 15 "$BIN/hidravpn-node" --config "$3" run > "$WORK/fail.log" 2>&1; local rc=$?
+  if [ $rc -ne 0 ] && [ $rc -ne 124 ] && grep -q "$2" "$WORK/fail.log" && [ "$($N cat /proc/sys/net/ipv4/ip_forward)" = 0 ] \
+     && ! $N nft list table inet hidravpn >/dev/null 2>&1 && ! $N ip link show hvpn0 >/dev/null 2>&1 && [ ! -e /var/run/wireguard/hvpn0.sock ]; then
+    pass "$1: the node says why, exits with $rc, and puts forwarding, NAT and its interface back"
+  else
+    cat "$WORK/fail.log"
+    fail "$1: exit $rc, forwarding $($N cat /proc/sys/net/ipv4/ip_forward), tables: $($N nft list tables | tr '\n' ' ')"
+  fi
+}
+sed 's/^admission = "manual"$/admission = "pass"/' "$WORK/node.toml" > "$WORK/pass.toml"
+mkdir -p "$WORK/bad-spent" "$WORK/bad-leases" "$WORK/run-dns"
+echo "not json" > "$WORK/bad-spent/spent.json"; echo "not json" > "$WORK/bad-leases/peers.json"
+start_fails "a pass node whose spent list cannot be read" "refusing to take passes" "$WORK/pass.toml" "$WORK/bad-spent"
+start_fails "a leases file that cannot be read" "the leases file is unreadable" "$WORK/node.toml" "$WORK/bad-leases"
+# Port 53 held on every address, as a resolver on the wildcard address holds it.
+$N python3 -I -c "import socket, time; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('0.0.0.0', 53)); time.sleep(60)" & HOLD=$!; PIDS+=("$HOLD")
+for i in $(seq 1 25); do $N ss -Hlun 'sport = :53' | grep -q . && break; sleep 0.2; done
+start_fails "port 53 already taken" "binding DNS on 10.77.0.1:53" "$WORK/node.toml" "$WORK/run-dns"
+kill $HOLD 2>/dev/null; wait $HOLD 2>/dev/null
 
 echo; echo "$ok passed, $bad failed"; [ $bad -eq 0 ]

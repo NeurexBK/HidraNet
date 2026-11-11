@@ -344,12 +344,13 @@ fn ends(packet: &[u8]) -> Option<(IpAddr, IpAddr)> {
 }
 
 /// An error a connected UDP socket hands back for an ICMP error about an
-/// earlier datagram: passing, not fatal.
+/// earlier datagram: passing, not fatal. Windows reports a port unreachable
+/// as a reset (WSAECONNRESET), which a UDP socket on Linux never returns.
 fn passing(e: &std::io::Error) -> bool {
     use std::io::ErrorKind::*;
     matches!(
         e.kind(),
-        ConnectionRefused | HostUnreachable | NetworkUnreachable
+        ConnectionRefused | ConnectionReset | HostUnreachable | NetworkUnreachable
     )
 }
 
@@ -472,5 +473,24 @@ mod tests {
         let mut odd = v4([10, 77, 0, 1], [10, 77, 0, 2]);
         odd[0] = 0x55;
         assert!(!addressed_to(&odd, &own));
+    }
+
+    #[test]
+    fn an_icmp_error_about_an_earlier_datagram_does_not_end_the_tunnel() {
+        use std::io::{Error, ErrorKind::*};
+        for kind in [
+            ConnectionRefused,
+            ConnectionReset,
+            HostUnreachable,
+            NetworkUnreachable,
+        ] {
+            assert!(passing(&Error::from(kind)), "{kind:?}");
+        }
+        // What recv returns on Windows while the node restarts.
+        #[cfg(windows)]
+        assert!(passing(&Error::from_raw_os_error(10054)));
+        for kind in [PermissionDenied, BrokenPipe, NotConnected, InvalidInput] {
+            assert!(!passing(&Error::from(kind)), "{kind:?}");
+        }
     }
 }

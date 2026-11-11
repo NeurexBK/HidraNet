@@ -1,6 +1,5 @@
 const { BrowserView, session } = require('electron');
 const path = require('path');
-const fs = require('fs');
 const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { FingerprintEngine } = require('../fingerprint/engine');
@@ -272,9 +271,7 @@ class TabManager {
     // proxy. The injected page deletes window.RTCPeerConnection, but that runs
     // late, and a fresh iframe hands back a clean window — protection written
     // in JavaScript is bypassable. This policy acts in the Chromium network
-    // stack, where it is not. The switches 'disable-features=WebRTC' and
-    // '--disable-webrtc' in main.js correspond to nothing real in Chromium;
-    // this is the measure that works.
+    // stack, where it is not.
     try {
       view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     } catch (e) {
@@ -283,12 +280,7 @@ class TabManager {
 
     this._bindShortcuts(view, tabId);
 
-    // Inject the "Publish to the network" feature into the SevenNine page (no engine rebuild)
     view.webContents.on('did-finish-load', () => {
-      try {
-        const u = view.webContents.getURL();
-        if (u.includes('127.0.0.1:8084')) this._injectSevenNinePublish(view);
-      } catch (e) {}
       // An app writes its identity right after it loads (HidraMail generates
       // the address on first open). Get that to disk sooner than the cycle
       // above would, so the window in which a crash loses it is as small as
@@ -803,16 +795,6 @@ class TabManager {
       const script = FingerprintEngine.buildInjectionScript(fingerprint);
       view.webContents.executeJavaScript(script).catch(() => {});
     });
-  }
-
-  _injectSevenNinePublish(view) {
-    try {
-      // hidra-site.js first: it is what signs a site, so the publish script
-      // makes sites the viewer can check, the same as the Sites app does.
-      const code = fs.readFileSync(path.join(__dirname, '..', 'ui', 'hidra-site.js'), 'utf8')
-        + '\n;\n' + fs.readFileSync(path.join(__dirname, '..', 'renderer', 'sevennine-publish.js'), 'utf8');
-      view.webContents.executeJavaScript(code).catch(() => {});
-    } catch (e) {}
   }
 
   // A load decided after the navigation started, once a lookup came back. It

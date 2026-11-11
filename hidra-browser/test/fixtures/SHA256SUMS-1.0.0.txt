@@ -1,0 +1,242 @@
+HidraNet Browser 1.0.0 — SHA-256 checksums
+==========================================
+
+Verify before running.
+
+  macOS / Linux:   shasum -a 256 <file>
+  Windows:         Get-FileHash .\<file> -Algorithm SHA256
+
+If the value does not match the table below, do not run the file.
+
+What a match tells you: that your file is the file this table lists, and
+nothing more. The table is published by the same maintainers, from the
+same repository and accounts, as the files themselves: someone who could
+replace the files could replace this table to match them. It does not
+prove who built the file.
+
+
+SIGNED RECORD
+-----------------------------------------------------------------------
+
+The browser (1.1.0 and later) reads these three lines to tell you when a
+newer build is out, or when yours has known security problems. It only
+tells you; it never downloads or installs anything.
+
+  latest-version:        1.0.0
+  minimum-safe-version:  1.0.0
+  valid-until:           2027-04-30
+
+It believes them only when SHA256SUMS.txt.sig, beside this file, is an
+Ed25519 signature of this whole file made offline with the HidraNet
+release key, the key that also signs HidraVPN. Its public half is built
+into the browser and into HidraVPN, and published at hidranet.org/vpn/:
+
+  denZsjS2YtKOo4LRIGGTaKuHIWDFigChoLa71o0jBq8=
+
+The signature covers the label "hidranet-browser-sums-v1", a zero byte,
+then this file, so it cannot be passed off as the signature of anything
+else that key signs. To check it yourself with hidravpn-sign:
+
+  { printf 'hidranet-browser-sums-v1\0'; cat SHA256SUMS.txt; } > sums.msg
+  cp SHA256SUMS.txt.sig sums.msg.sig
+  hidravpn-sign verify --pubkey <the key above> sums.msg
+
+For a first download, a key read from this site is only as trustworthy as
+the site. For a browser already installed, the key is built in: whoever
+controls this site cannot make it believe a record the maintainers did
+not sign. They can still take the record away or serve an older one. The
+browser keeps the newest record it has verified and believes it until
+its valid-until, and after that says it cannot confirm it is up to date.
+Until the maintainers publish the first signature there is no .sig, and
+a browser that has never verified a record shows no notice.
+
+
+KNOWN PROBLEMS WITH THE 1.0.0 PACKAGES
+-----------------------------------------------------------------------
+
+The 1.0.0 Linux package runs Electron 33.4.11 (Chromium 130), which no
+longer receives security fixes, and Tor 15.0.22. The 1.0.0 Windows and
+macOS packages were made the same way; assume the same of them. The
+source they were refreshed from names Electron 44.9.3 and Tor 15.0.26,
+but the runtime and Tor were carried over from an older package without
+being checked against those pins. They are rebuilt from scratch, on the
+pinned Electron and Tor, under a new version number: the 1.0.0 names are
+never given other files.
+
+Every 1.0.0 package also has two leaks, fixed in the next version. A
+page can make the system look up the names it hints at (DNS prefetch)
+through the system's own resolver, outside Tor: the site can learn which
+resolver you use, and your network can see those names. And a tab opened
+while Tor is still connecting can load without Tor, or through any other
+program listening on port 9050 of this machine.
+
+Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
+22 October 2026 also lack some or all of the security fixes listed below,
+among them the bridge that let any downloaded .html file turn Tor off
+and the engine API that answered any website. Replace them. None of
+the 1.0.0 copies checks for updates, so they cannot learn of this
+themselves.
+
+
+ON THE RELEASE PAGE NOW
+-----------------------------------------------------------------------
+
+9c067cbdb0050a2e4b93f871065444fd7c2105ac5fa2291a18132ad2578f3dd8  HidraNet-Browser-1.0.0-macOS-arm64.zip
+b85f2339e353823310b76e5912a1b8ff5d4f6a437849e2d97f95570e189c014a  HidraNet-Browser-1.0.0-macOS-x64.zip
+c1cce02007a6fa0eb1ad278c379244710dbf37f1e9522ea89ada24252ebb71bb  HidraNet-Browser-1.0.0-Linux-x64.zip
+d140f2fa40e978223e2a5c65021ac4ce6774a14b5e19a2cd6bdf72a1cf26af43  HidraNet-Browser-1.0.0-Windows-x64.zip
+
+  macOS arm64    108,961,089 bytes  (103.9 MiB)
+  macOS x64      113,391,570 bytes  (108.1 MiB)
+  Linux x64      113,332,721 bytes  (108.1 MiB)
+  Windows x64    130,236,628 bytes  (124.2 MiB)
+
+  Built from commit 423f0ce. Published 2026-10-22; these are the hashes and
+  sizes GitHub reports for the four files on the release page, and the ones
+  the release description lists. docs/release-base-provenance.md records how
+  the four files were checked against that commit.
+
+What changed from the first packages, published in September:
+
+  SECURITY — these are the reason to replace the published packages, not
+  the cosmetics further down:
+
+  - the transport handshake is post-quantum, and this is the release where
+    that became true rather than merely implemented. Every relay-to-relay
+    connection now runs Noise_XXhfs_25519+MLKEM1024_ChaChaPoly_BLAKE3: an
+    ML-KEM-1024 encapsulation beside the X25519 one, with the secret mixed
+    in before the static key is encrypted. Until now the ML-KEM code
+    existed and no handshake ever reached it. Hybrid on purpose — a break
+    of either primitive leaves the other standing
+  - the ML-KEM implementation is FIPS 203 (`ml-kem`), not pqc_kyber. That
+    crate is unmaintained with no fixed release, and on the AVX2 path —
+    which is every desktop — it skips Fujisaki-Okamoto implicit rejection,
+    so a chosen-ciphertext attacker recovers the decapsulation key
+    (RUSTSEC-2026-0290); its division timings also leak the secret
+    (RUSTSEC-2023-0079). Both are compiled into the engine, which only the
+    Windows package ships, and that binary is rebuilt here rather than
+    carried over
+  - HidraMail signs messages. Before, `from` was a string the sender
+    chose and nothing checked it: anyone could look up your published key
+    and send you mail under someone else's name
+  - the privileged browser API is no longer handed to every file:// page.
+    Any .html you downloaded and opened could call proxy.disconnect() and
+    turn Tor off
+  - the app pages carry a Content-Security-Policy; the page that holds
+    your mail keys had none
+  - the engine's local HTTP services bind loopback and refuse requests
+    that did not come from this machine. They answered any website with
+    Access-Control-Allow-Origin: *, which exposed the relays of your live
+    circuit, your LAN address and your searches, and let a page send mail
+    in your name
+  - the chat room passphrase is checked with Argon2id instead of being
+    accepted and discarded, and is no longer a constant compiled into the
+    binary
+  - the analytics dashboard no longer loads Chart.js from a CDN
+
+  ADDED 9–10 OCTOBER — the reason to replace the packages again:
+
+  - every page that speaks MQTT could send but never receive. The client
+    runs its keepalive in a Worker loaded from a blob: URL, and no page
+    declared worker-src, so the policy fell back to script-src, Chromium
+    refused the Worker, and the rejection killed the connect handler
+    before it subscribed. Mail, chat, forum, reviews, site publish and
+    site load: sending worked, which is why it survived
+  - HidraMail proves who sent a message. `from` used to be a string the
+    sender chose, so anyone who looked up your published key could arrive
+    as your bank. An identity is now an ECDH and an ECDSA key with the
+    address derived from both, and the signature covers the whole
+    envelope including the recipient. A sender that cannot be proven is
+    dropped rather than displayed
+  - the anonymity panel stops claiming what it is not doing. Five of its
+    badges describe things every tab gets either way; "DNS Leak
+    Protection: Active" was hardcoded and only true while traffic goes
+    through the engine. Disconnected, this machine resolves names itself,
+    and the badge now says so
+  - relays are shown by fingerprint, not by a masked address. A /16 with
+    the port kept leaves few candidates, and the one it narrows down is
+    the guard — the address that identifies the user
+  - the engine keeps peer addresses and exit destinations out of its log.
+    A relay saw who connected, the next hop, and at the exit the hostname
+    and port asked for, all beside a circuit id, with the shipped config
+    at level = "debug". Scrubbed now, under a key made at startup and
+    never written down. This ships in the Windows package and to anyone
+    running a relay built from source
+  - secret keys are created 0600 at open(2) in a 0700 directory, and
+    HIDRA_KEY_PASSPHRASE seals them with Argon2id and XChaCha20-Poly1305.
+    The .hidra service key had no mode set at all — 0644, readable by
+    every account on the machine, and that key *is* the service
+  - the status API no longer hands out the IP addresses of the live
+    circuit, and the circuit view needs a token from a file a web page
+    cannot read
+  - a client binds the DHT to an ephemeral port. On a fixed one, sweeping
+    the internet for it returns a list of this network's users by IP
+
+  ADDED 10 OCTOBER:
+
+  - an exit relay was writing the payload it had just decrypted into its
+    log, beside a circuit id. Not who the user is — what they said. Ping
+    and Pong bodies went the same way, and those arrive from a peer, so
+    anyone could write into an operator's log. Lengths now, never content
+  - HidraMail logged the recipient of every message sent and the sender
+    of every message received, with the shared message id beside each, so
+    a log from both ends joined the two. HidraChat logged the nickname and
+    room id next to an address it had carefully scrubbed. All scrubbed now
+  - the product is in English — all of it this time. The engine's pages
+    had been missed entirely, because they are HTML inside Rust string
+    literals: the whole SevenNine site builder, the analytics dashboard,
+    every connection status. So had dates and times, which were formatted
+    with a Portuguese locale under labels that read English, and strings
+    translated word by word into neither language ("Text do button",
+    "URL da image"). A lint now fails the build on any of it
+
+  Linux: the bundled Tor is dynamically linked against libevent, which
+  most distributions do not install by default. It was not in the
+  package, so Tor died at startup and the browser opened with nothing
+  connecting. The library now ships beside it.
+
+  - the privacy and security fixes that landed after the release was cut
+    (network kill switch, no third-party hosts called from any app page,
+    no location or persistent id in the presence beacons)
+  - macOS: the launcher now signs the bundled Tor separately and before
+    the app, which codesign --deep does not do; without it the app opens
+    and nothing connects
+  - macOS: the bundle identifies itself as net.hidra.browser instead of
+    com.github.Electron
+  - Linux and Windows: paths inside the archive use forward slashes, and
+    Unix permissions are restored — the published ones were zipped on
+    Windows, so hidranet and tor extracted without the execute bit
+  - every interface in English: the browser's pages, the apps the engine
+    serves, the launchers and the README
+  - the engine's HidraChat no longer loads mqtt.js from a CDN — that page
+    does the end-to-end encryption, and a script fetched from someone
+    else's host could read messages before they are encrypted
+  - a bug fixed: the node beacon never connected, because two calls to a
+    function that had been removed threw before it started
+  - support goes to an $HNET wallet on Solana, replacing the Bitcoin address
+
+-----------------------------------------------------------------------
+
+NONE OF THESE BUILDS ARE SIGNED OR NOTARISED
+
+There is no Apple Developer ID and no Windows code-signing certificate
+behind this release. The app is unsigned — not signed badly, not signed
+with something expired: unsigned. On Apple Silicon the kernel will not
+load unsigned arm64 code, and macOS reports that as
+
+    "HidraNet.app is damaged and can't be opened."
+
+The download is not corrupt. Sign it locally and it opens:
+
+    xattr -cr HidraNet.app
+    codesign --force --sign - HidraNet.app/Contents/Resources/bin/tor/tor
+    codesign --force --deep --sign - HidraNet.app
+    open HidraNet.app
+
+Tor is signed first and on its own because --deep does not descend into
+Resources/. Skip that line and the app opens but cannot connect.
+
+A matching checksum tells you that the file is the one the table lists.
+It does not tell you that the maintainers built it (see the top of this
+file), nor that an operating system will accept it without complaint.
+See README-macOS.txt inside the macOS ZIP.

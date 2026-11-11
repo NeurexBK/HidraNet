@@ -153,6 +153,7 @@ impl Pocket {
                 ("admission", k.admission != record.admission),
                 ("admission port", k.admission_port != record.admission_port),
                 ("country", k.country != record.country),
+                ("features", k.features != record.features),
             ];
             changed.extend(
                 fields
@@ -160,9 +161,7 @@ impl Pocket {
                     .filter(|(_, differs)| *differs)
                     .map(|(name, _)| name.to_string()),
             );
-            if !changed.is_empty() {
-                *k = record.clone();
-            }
+            *k = record.clone();
             return changed;
         }
         if !self.iter().any(|(_, i)| i.node_public_key.trim() == key) {

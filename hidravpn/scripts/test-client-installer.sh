@@ -106,15 +106,17 @@ OUT=$(/usr/local/bin/hidravpn-service uninstall 2>&1); RC=$?
   && pass "without --purge the key, the nodes and the programs stay" || fail "plain uninstall removed too much"
 
 "$W/dl/hidravpn-service" install --client "$W/dl/hidravpn" >/dev/null 2>&1
-# Passes, the account token, the ones it replaced and the lock: a purge
-# takes them too.
+# Passes, the account token, the ones it replaced, an open order, the
+# automatic-passes setting and the lock: a purge takes them too.
 echo '{"passes":[]}' > /etc/hidravpn/passes.json; echo token > /etc/hidravpn/pass.token; : > /etc/hidravpn/hidravpn.lock
 echo old-token > /etc/hidravpn/pass.token.previous; echo older-token > /etc/hidravpn/pass.token.previous.1
+echo '{"amount":"1"}' > /etc/hidravpn/order.json; echo '{"amount":"1"}' > /etc/hidravpn/order.json.tmp
+echo '{"enabled":false}' > /etc/hidravpn/refill.json
 OUT=$(/usr/local/bin/hidravpn-service uninstall --purge 2>&1); RC=$?
 [ $RC = 0 ] && pass "uninstall --purge succeeds ($(echo "$OUT" | tail -1))" || fail "purge: $OUT"
 [ ! -e $KEY ] && [ ! -e /etc/hidravpn/circuit.json ] && [ ! -e /usr/local/bin/hidravpn ] && [ ! -e /usr/local/bin/hidravpn-service ] && [ ! -e /etc/systemd/system/hidravpn.service ] \
   && pass "--purge removes the programs, the nodes and the key" || fail "left behind: $(ls /usr/local/bin/hidravpn* /etc/hidravpn 2>&1)"
-[ ! -e /etc/hidravpn ] && pass "--purge leaves no passes, no account token and no folder behind" || fail "left in /etc/hidravpn: $(ls -A /etc/hidravpn 2>&1)"
+[ ! -e /etc/hidravpn ] && pass "--purge leaves no passes, no account token, no order and no folder behind" || fail "left in /etc/hidravpn: $(ls -A /etc/hidravpn 2>&1)"
 
 # ── The whole chain the browser runs: a manifest made by the script, signed
 # by hidravpn-sign, read and checked by the browser's installer, which then
