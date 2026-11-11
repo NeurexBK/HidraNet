@@ -21,4 +21,11 @@ ignore = [
     # or sees input at run time. It arrives through tun-rs's netlink stack;
     # it leaves when that does.
     "RUSTSEC-2024-0436",
+
+    # pin-utils is unmaintained (RUSTSEC-2026-0441). Two small macros for
+    # pinning futures, finished and unchanged for years, with no reported
+    # flaw. It arrives through nix 0.25, which netlink-request pins for
+    # wireguard-control, the node's kernel WireGuard; the newest
+    # wireguard-control still pins it. It leaves when that moves on.
+    "RUSTSEC-2026-0441",
 ]

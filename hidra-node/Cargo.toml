@@ -28,7 +28,7 @@ bytes = "1"
 tokio-tungstenite = "0.24"
 sha1 = "0.10"
 http = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 # FIPS 203 ML-KEM. Replaces pqc_kyber 0.7.1, which is unmaintained
 # (RUSTSEC-2026-0289) and carries two unfixable highs: RUSTSEC-2026-0290, whose
