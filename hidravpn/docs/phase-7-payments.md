@@ -76,13 +76,19 @@ from `make-node-list.sh --pay-wallet ADDR [--pay-mint MINT]`). The client:
 - refuses a `/packs` or `/quote` answer that asks for payment to another
   wallet, or in another token (HNET's mint, when the list names none), and
   keeps no order then. It never shows the wallet such an answer named;
-- refuses an answer whose token has more than 18 decimals;
+- refuses an answer whose token has more than 18 decimals, and one that
+  reads HNET with other decimals than HNET's 6;
 - keeps and shows the list's wallet and token in the order, never the
   answer's;
 - treats an open order that the list it now holds does not stand behind
-  (another wallet or token, after a newer list) as not to be paid:
-  `passes list` and `passes buy` say so, `passes claim` sends nothing, and
-  `passes buy N --replace` makes a new order.
+  (another wallet, token or issuer, after a newer list, or HNET in other
+  decimals) as not to be paid: `passes list` and `passes buy` say so,
+  `passes claim` sends nothing, and `passes buy N --replace` makes a new
+  order. A claim goes only to the issuer the list names;
+- keeps in the order the SHA-256 of the account token it was opened for,
+  and claims it with that token, whether it is the one kept now or one a
+  newer token replaced; with none of them, it sends nothing and says the
+  order must be claimed with that token.
 
 The issuer's `--pay-wallet` and `--pay-mint` and the list must agree. To
 change the wallet, restart the issuer with the new one and publish the list
@@ -202,7 +208,11 @@ operator's risk, as is the rate moving while an order is open.
   answer does not carry the new time, so the client goes on showing the
   quote's; when a claim is turned away only for now (not final on chain
   yet, or too many claims just then), `hidravpn passes claim` says the order
-  normally stays open up to 24 hours from when it was made. The room for
+  normally stays open up to 24 hours from when it was made. Only the
+  issuer's own too-many-tries reason (`payment::TOO_MANY_TRIES`, which the
+  issuer and the client share) says an order takes no more claims; any
+  other 429, a proxy's rate limit included, is "busy", and the client says
+  to try the same claim again in a minute. The room for
   held orders is 4 000 at once, and anyone can fill it with orders of
   their own; when it is full, an order keeps its two hours. That is a
   convenience, not what keeps a payment: a payment made before its order
@@ -593,7 +603,7 @@ sudo hidravpn passes buy 10 --replace        # a new order, leaving the open one
 ## How to check it
 
 ```
-hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 100 checks
+hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 102 checks
 cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer -p hidravpn-service
 ```
 
@@ -645,8 +655,8 @@ issuer nothing, said to be unpaid it is replaced by an order to the list's
 wallet and issuer on this machine's token whatever wallet, issuer or token
 the request names, a transaction not final yet and one of 5.99 HNET are
 each answered in the service's words with the order kept, the exact amount
-is credited and closes it, and no answer or log of the service repeats the
-token, a signature, the wallet or the amount.
+is credited and closes it; no answer repeats the token or a signature, and
+the service's log names no token, transaction, wallet or amount.
 
 Unit tests cover the rest: base58 against known vectors; amounts written
 and read back with every decimal, and none read with more than 18; a list
