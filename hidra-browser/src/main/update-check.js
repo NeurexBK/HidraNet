@@ -49,7 +49,7 @@ const SIG_MAX_BYTES = 4096;
 // made after it knows there must be one. scripts/verify-sums.js refuses a
 // signed table while this still says false, so the release that follows the
 // first signature carries true.
-const SUMS_SIGNED = false;
+const SUMS_SIGNED = true;
 
 // Where this browser keeps the most it has verified, in its data folder.
 const STATE_FILE = 'hidranet-update.json';
