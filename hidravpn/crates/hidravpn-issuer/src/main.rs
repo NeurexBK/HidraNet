@@ -591,7 +591,7 @@ impl Issuer {
         let (left, prepaid) = match charged {
             Ok(Ok(Ok(left))) => left,
             Ok(Ok(Err(Refused::UnknownToken))) => {
-                return (403, refusal("that is not an account token here"))
+                return (403, refusal(hidravpn_core::pass::NOT_AN_ACCOUNT))
             }
             Ok(Ok(Err(Refused::Disabled))) => {
                 return (
@@ -608,12 +608,7 @@ impl Issuer {
                 )
             }
             Ok(Ok(Err(Refused::Balance { left }))) => {
-                return (
-                    402,
-                    refusal(format!(
-                        "this account has {left} pass(es) left, not {n}; `hidravpn passes buy` adds more"
-                    )),
-                )
+                return (402, refusal(hidravpn_core::pass::too_few_left(left, n)))
             }
             Ok(Err(e)) => {
                 warn!("accounts: {e:#}");
@@ -1083,11 +1078,11 @@ fn no_order() -> (u16, String) {
     )
 }
 
+/// The one 429 to a claim that means the order can no longer be claimed:
+/// the client tells it from every other 429 by this reason
+/// (`payment::TOO_MANY_TRIES`).
 fn too_many_tries() -> (u16, String) {
-    (
-        429,
-        refusal("this order was tried too many times; make a new one with `hidravpn passes buy`"),
-    )
+    (429, refusal(payment::TOO_MANY_TRIES))
 }
 
 // ---- passes for sale ---------------------------------------------------------------
@@ -1832,12 +1827,8 @@ impl Full {
                 503,
                 refusal("the issuer has as many orders open as it takes; try again later"),
             ),
-            Full::Account => (
-                429,
-                refusal(format!(
-                    "this account already has {MAX_OPEN_PER_ACCOUNT} orders open; pay and claim one, or wait for them to lapse"
-                )),
-            ),
+            // The client tells this 429 from "busy" by its reason.
+            Full::Account => (429, refusal(payment::TOO_MANY_ORDERS)),
         }
     }
 }
@@ -4032,7 +4023,17 @@ mod tests {
             if i < MAX_OPEN_PER_ACCOUNT {
                 assert_eq!(st, 200, "{why}");
             } else {
-                assert!(st == 429 && why.contains("orders open"), "{st} {why}");
+                // The reason the client tells from "busy" (TOO_MANY_ORDERS),
+                // which names the limit.
+                assert_eq!(
+                    (st, why.as_str()),
+                    (429, refusal(payment::TOO_MANY_ORDERS).as_str())
+                );
+                assert!(
+                    payment::TOO_MANY_ORDERS
+                        .contains(&format!("already has {MAX_OPEN_PER_ACCOUNT} orders open")),
+                    "{why}"
+                );
             }
         }
         // The buyer's claim goes through at once, and a new buyer's quote.

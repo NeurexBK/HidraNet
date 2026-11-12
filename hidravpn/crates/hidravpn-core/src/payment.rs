@@ -62,6 +62,18 @@ pub const ORDER_LIFETIME: i64 = 24 * 3600;
 /// the order is still open.
 pub const CLAIM_PACED: &str = "this token made many claims just now; try again in a few seconds";
 pub const CLAIMS_BUSY: &str = "too many claims at once; try again in a moment";
+/// What the issuer answers (429) a claim on an order tried as often as it
+/// may be: that order can no longer be claimed. The only 429 that says so;
+/// any other one (the issuer's pacing, its buckets, or a proxy's rate limit
+/// in front of it) means only "not now", and the client checks the same
+/// signature again later.
+pub const TOO_MANY_TRIES: &str =
+    "this order was tried too many times; make a new one with `hidravpn passes buy`";
+/// What the issuer answers (429) a quote for an account with as many orders
+/// open as it may have: no order opens until one is paid or lapses. Any
+/// other 429 to a quote means only "busy".
+pub const TOO_MANY_ORDERS: &str =
+    "this account already has 5 orders open; pay and claim one, or wait for them to lapse";
 /// A transaction may carry a block time this much before the order was made
 /// (clocks differ) and still pay it.
 pub const CLOCK_SLACK: i64 = 300;
