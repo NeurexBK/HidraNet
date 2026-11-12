@@ -1584,9 +1584,13 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   var CHECKOUT_PRIVADO = 'Not while connected in privado: an order or a check of a payment carries this computer\'s pass account, and would leave through the exit. Disconnect, or connect in rapido, then buy.';
   var NO_PASSES_YET = 'No passes on this computer\'s account yet. Buy passes with HNET below, then press Get 10 passes per node.';
   var NOT_PAYABLE_STOP = 'Do not pay this order: the signed node list does not stand behind it. If you have not paid it, tick the box below and choose a package for a new order. If you already paid it, keep the transaction signature for the issuer\'s operator.';
+  var MAYBE_CREDITED = 'No order is open on this computer. If you just paid, it may already be credited: press Get 10 passes per node before buying again, and do not pay again.';
   var PAST_DEADLINE_STOP = 'This order\'s deadline has passed: do not pay it. If you paid it before the deadline, check that transaction below; if you did not, tick the box and choose a package.';
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var checkoutBusy = false;
+  // The order (amount and deadline) already asked about again once its
+  // deadline passed on this page's clock.
+  var checkoutReasked = '';
   var checkoutOrder = null;
   // The state the service last gave ("awaiting_payment", "past_deadline"...).
   var checkoutState = '';
@@ -1651,11 +1655,16 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
         : 'This order does not say by when to pay it: do not pay it. If you paid it, check that transaction below; if you did not, tick the box and choose a package.';
       if (checkoutState === 'awaiting_payment') {
         // The service said to pay it, and the deadline has passed since:
-        // its words go, and it is asked again, so the page says what the
-        // service says.
-        checkoutState = 'past_deadline';
-        message('', '', 'checkout-msg');
-        refreshCheckout();
+        // it is asked again, once for this order, so the page says what
+        // the service says. Once only: a service that still says to pay
+        // it is not asked every second (the pay box stays hidden here).
+        var key = String(o.amount_raw || '') + '|' + String(o.expires || '');
+        if (checkoutReasked !== key && !checkoutBusy && !busy) {
+          checkoutReasked = key;
+          checkoutState = 'past_deadline';
+          message('', '', 'checkout-msg');
+          refreshCheckout();
+        }
       }
       return;
     }
@@ -1737,7 +1746,13 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     if (twoHops(lastStatus)) { message('err', CHECKOUT_PRIVADO, 'checkout-msg'); return; }
     var replace = Boolean(checkoutOrder) && $('checkout-unpaid').checked;
     if (checkoutOrder && !replace) {
-      message('note', 'An order is open below. Pay it, or check the transaction that paid it. To replace it, first tick "I have not paid this order".', 'checkout-msg');
+      var tick = ' To replace it, first tick "I have not paid this order".';
+      var said = !checkoutOrder.payable || checkoutState === 'not_payable'
+        ? 'Do not pay the order below. If you already paid it, keep the transaction signature for the issuer\'s operator.' + tick
+        : checkoutState === 'past_deadline' || !payNow()
+          ? 'The order below is past its deadline: do not pay it. If you paid it in time, check that transaction below.' + tick
+          : 'An order is open below. Pay it, or check the transaction that paid it.' + tick;
+      message('note', said, 'checkout-msg');
       return;
     }
     // The order said to be unpaid is named by its amount: the service
@@ -1775,7 +1790,12 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       // stood behind). Read again, and drawn from what the service says,
       // the claim's words kept.
       if (r && !(r.ok && r.checkout && r.checkout.state === 'confirmed') && !checkoutUnsupported) {
-        checkoutRequest({ action: 'status' }, '', true);
+        checkoutRequest({ action: 'status' }, '', true).then(function (s) {
+          // No order kept here any more, or no answer at all: the claim
+          // may have been credited all the same. Never a prompt to pay.
+          var kept = s && s.ok && s.checkout && s.checkout.order;
+          if (!kept && !checkoutUnsupported) message('note', MAYBE_CREDITED, 'checkout-msg');
+        });
       }
     });
   });

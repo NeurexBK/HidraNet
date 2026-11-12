@@ -301,6 +301,9 @@ app.whenReady().then(async () => {
   expect('out of privado, nothing says privado where buying is', await js(`document.getElementById('checkout-privado').hidden`));
   status = { state: 'connected', report: report(2) };
   await until(`document.querySelector('#checkout-packs button').disabled && document.getElementById('checkout-claim').disabled && document.getElementById('checkout-load').disabled`, 6000);
+  expect('connected in privado, Show packages is off', await js(`document.getElementById('checkout-load').disabled`));
+  expect('connected in privado, the packages are off', await js(`Array.prototype.every.call(document.querySelectorAll('#checkout-packs button'), function (b) { return b.disabled; })`));
+  expect('connected in privado, Check payment is off', await js(`document.getElementById('checkout-claim').disabled`));
   before = asked.length;
   await js(`document.querySelectorAll('#checkout-packs button').forEach(function (b) { b.click(); }); document.getElementById('checkout-claim').click(); document.getElementById('checkout-load').click(); true`);
   await new Promise((r) => setTimeout(r, 300));
@@ -311,7 +314,18 @@ app.whenReady().then(async () => {
   expect('and the page says why where buying is, not only in a tooltip', /^Not while connected in privado: /.test(privadoNote), privadoNote);
   status = { state: 'connected', report: report(1) };
   await until(`!document.querySelector('#checkout-packs button').disabled && !document.getElementById('checkout-claim').disabled && !document.getElementById('checkout-load').disabled`, 6000);
-  expect('in rapido they are on again, and the note is gone', !(await js(`document.getElementById('checkout-claim').disabled`)) && (await js(`document.getElementById('checkout-privado').hidden`)));
+  expect('in rapido they are on again, and the note is gone', !(await js(`document.getElementById('checkout-claim').disabled`)) && !(await js(`document.getElementById('checkout-load').disabled`)) && (await js(`document.getElementById('checkout-privado').hidden`)));
+
+  // ── A service that still says to pay an order past its deadline ──────
+  // The page hides the amount and asks again once, not every second.
+  const STALE = Object.assign({}, TEN, { expires: '2020-01-01T00:00:00Z', amount_raw: '50004213' });
+  answer = () => ({ ok: true, checkout: { state: 'awaiting_payment', order: STALE, message: 'Pay it', token: 'HNET' } });
+  const sinceStale = asked.length;
+  await click('checkout-load');
+  await new Promise((r) => setTimeout(r, 3500));
+  const reasked = asked.slice(sinceStale).filter((a) => a && a.action === 'status').length;
+  expect('an order past its deadline is asked about again at most once, not every second', reasked <= 1, String(reasked));
+  expect('and its amount is not shown to pay', !(await shown('checkout-pay')));
 
   // ── A service older than checkout ────────────────────────────────────
   status = { state: 'disconnected', report: Object.assign(report(0), { version: '0.1.2' }) };
