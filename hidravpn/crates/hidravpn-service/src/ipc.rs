@@ -310,6 +310,11 @@ pub struct Response {
     /// The answer to `checkout`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<crate::checkout::View>,
+    /// With an error the browser acts on, a name for it that does not
+    /// change with its words: "no_passes" (`get_passes`: this machine keeps
+    /// no account token, or the issuer holds no passes for it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 impl Response {
@@ -322,6 +327,7 @@ impl Response {
             nodes: None,
             refill: None,
             checkout: None,
+            code: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -333,6 +339,7 @@ impl Response {
             nodes: None,
             refill: None,
             checkout: None,
+            code: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -344,6 +351,7 @@ impl Response {
             nodes: None,
             refill: None,
             checkout: None,
+            code: None,
         }
     }
     pub fn noting(mut self, note: impl Into<String>) -> Self {
@@ -359,6 +367,7 @@ impl Response {
             nodes: Some(nodes),
             refill: None,
             checkout: None,
+            code: None,
         }
     }
 }

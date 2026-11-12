@@ -677,7 +677,12 @@ async fn main() -> Result<()> {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
                         })?;
                     let pocket = load_pocket(&pocket_path)?;
-                    let token = hidravpn_service::passes::read_token(&token_beside(&pocket_path))?;
+                    // The token the order was opened for, wherever it is
+                    // kept now.
+                    let token = hidravpn_service::passes::token_for_order(
+                        &token_beside(&pocket_path),
+                        &order,
+                    )?;
                     use hidravpn_service::passes::Claimed;
                     match hidravpn_service::passes::claim(
                         &pocket,

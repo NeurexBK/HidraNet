@@ -245,7 +245,15 @@ impl Daemon {
                 .await
             {
                 Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => {
+                    let mut r = Response::err(format!("{e:#}"));
+                    // No passes to be had on this machine's account: the
+                    // page says to buy some, by this code.
+                    if e.is::<hidravpn_core::pass::AccountEmpty>() {
+                        r.code = Some("no_passes".into());
+                    }
+                    r
+                }
             },
             Command::SetPassToken { .. } if !privileged => Response::err(
                 "keeping the pass account token needs root (an administrator on Windows), as `up` with an invite does: the token holds the account's passes, bought ones too, and the next purchase goes on it. `sudo hidravpn passes token <file>` keeps one (on Windows, `hidravpn passes token <file>` in a terminal run as administrator).",
@@ -633,7 +641,15 @@ impl Daemon {
             return Err(anyhow!("{}", crate::passes::NOT_THROUGH_TWO_HOPS));
         }
         let pocket = load_pocket(&self.pocket_path)?;
-        let token = crate::passes::read_token(&self.token_path())?;
+        let token_path = self.token_path();
+        let token = crate::passes::read_token(&token_path).map_err(|e| {
+            // No token kept at all: no account, so no passes on it yet.
+            if token_path.exists() {
+                e
+            } else {
+                anyhow::Error::new(hidravpn_core::pass::AccountEmpty(format!("{e:#}")))
+            }
+        })?;
         let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
         let line = crate::passes::get_passes(&pocket, &mut wallet, &token, name, count).await?;
         crate::passes::save_wallet(&self.wallet_path(), &wallet)?;

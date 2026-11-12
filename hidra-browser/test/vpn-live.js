@@ -4,7 +4,8 @@
 //
 //   node vpn-live.js <step>        step: before | not-the-service |
 //                                        connect-privado-refused | connect-rapido |
-//                                        status | identity | down | after
+//                                        status | identity | down | refill-off |
+//                                        checkout | after
 //
 // Prints one line of JSON with what it saw, and exits non-zero on anything
 // unexpected, so the shell script can judge each step and check the network
@@ -102,6 +103,20 @@ function done(extra) {
       const again = await vpn.refill(true);
       if (!again.ok || again.refill.enabled !== true) fail('automatic passes did not switch back on', again);
       done({ before: before.refill.enabled, off: r.refill.enabled, on: again.refill.enabled });
+      break;
+    }
+    case 'checkout': {
+      // Buying passes, as the page asks: the order kept, then the
+      // packages, then an order. This pocket's list names no pass issuer:
+      // the service says so in its own words, whatever the page puts in,
+      // and makes no order and no account token.
+      const s = await vpn.checkout({ action: 'status' });
+      if (!s.ok || !s.checkout || s.checkout.state !== 'idle' || s.checkout.order) fail('status: expected no order kept', s);
+      const p = await vpn.checkout({ action: 'packs', wallet: 'ExYv4idyqxmuodpoZtxyGxeTGi6oYrqFAshAgCsRissc', issuer: 'http://10.201.0.2:9' });
+      if (p.ok || !/names no pass issuer/.test(p.error || '')) fail('packs: the service did not say the list names no issuer', p);
+      const b = await vpn.checkout({ action: 'buy', passes: 10 });
+      if (b.ok || !/names no pass issuer/.test(b.error || '')) fail('buy: the service did not say the list names no issuer', b);
+      done({ state: s.checkout.state, packs: p.error });
       break;
     }
     case 'after': {
