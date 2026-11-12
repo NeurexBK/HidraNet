@@ -172,7 +172,9 @@ const BUSY: &str = "The pass issuer is busy right now. Check the same signature 
 const UNAVAILABLE: &str = "The payment could not be confirmed right now: the pass issuer could not be reached, or could not ask the chain. Your order is kept. Check the same signature again in a few minutes. Do not pay again.";
 const KEPT: &str = "Your order is kept on this computer. Do not pay again before you have checked that transaction in your wallet: the amount, the token and the receiving wallet.";
 const NO_ORDER_THERE: &str = "The pass issuer has no open order for this computer's account: it lapsed, or was never made. Do not pay this order. If you paid it before it lapsed, keep the transaction's signature: the issuer's operator can still credit it by hand for a few days.";
-const TRIED_TOO_OFTEN: &str = "This order was checked too many times, and the pass issuer takes no more claims for it. Do not pay it. If you paid it, keep the transaction's signature for the issuer's operator; if you did not, replace it with a new order.";
+/// The issuer counts tries over all the token's open orders, not one: a new
+/// order is turned away the same way until the open ones lapse.
+const TRIED_TOO_OFTEN: &str = "Payments were checked too many times for this computer's pass account, and the pass issuer takes no more checks from it until its open orders lapse, up to a day from now. Do not pay this order or a new one before then. If you already paid, keep the transaction's signature: the issuer's operator can credit it by hand.";
 const PACKS_FAILED: &str = "The pass issuer could not be asked what it sells right now. Nothing was paid; try again later.";
 const QUOTE_FAILED: &str =
     "The pass issuer could not open an order right now. Nothing was paid; try again later.";
@@ -984,7 +986,7 @@ mod tests {
                 429,
                 refusal(hidravpn_core::payment::TOO_MANY_TRIES),
                 "rejected",
-                "checked too many times",
+                "Do not pay this order or a new one",
             ),
             // A proxy's rate limit in front of the issuer, with its own
             // words or none, and a 429 of words this program does not

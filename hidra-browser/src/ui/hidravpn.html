@@ -1791,6 +1791,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       // the claim's words kept.
       if (r && !(r.ok && r.checkout && r.checkout.state === 'confirmed') && !checkoutUnsupported) {
         checkoutRequest({ action: 'status' }, '', true).then(function (s) {
+          // Not asked (another action was running): the claim's words stay.
+          if (s === null) return;
           // No order kept here any more, or no answer at all: the claim
           // may have been credited all the same. Never a prompt to pay.
           var kept = s && s.ok && s.checkout && s.checkout.order;
