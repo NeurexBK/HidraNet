@@ -589,7 +589,7 @@ sudo hidravpn passes buy 10 --replace        # a new order, leaving the open one
 ## How to check it
 
 ```
-hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 89 checks
+hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 100 checks
 cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer -p hidravpn-service
 ```
 
@@ -634,7 +634,15 @@ as text or a form is refused (415) and opens nothing; a lapsed order is
 listed by `order lapsed`, and `order credit` credits it to the order's own
 token for a payment made while it was open, and refuses a payment made
 after, another amount, and the same transaction twice; and the issuer's
-files and logs hold no token, transaction, amount, wallet or client.
+files and logs hold no token, transaction, amount, wallet or client. The
+browser's checkout through the service, last: the order the command line
+left open is shown, a package asked for meanwhile answers it and asks the
+issuer nothing, said to be unpaid it is replaced by an order to the list's
+wallet and issuer on this machine's token whatever wallet, issuer or token
+the request names, a transaction not final yet and one of 5.99 HNET are
+each answered in the service's words with the order kept, the exact amount
+is credited and closes it, and no answer or log of the service repeats the
+token, a signature, the wallet or the amount.
 
 Unit tests cover the rest: base58 against known vectors; amounts written
 and read back with every decimal, and none read with more than 18; a list

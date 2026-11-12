@@ -1567,11 +1567,13 @@ pub fn describe_order(o: &Order) -> String {
 /// bought until a newer one is imported.
 pub fn selling_issuer(pocket: &Pocket) -> Result<(&PassIssuer, &str)> {
     let issuer = pocket.pass_issuer.as_ref().ok_or_else(|| {
-        anyhow!("the node list this machine holds names no pass issuer; import a newer list")
+        PayRefused::error(
+            "the node list this machine holds names no pass issuer; import a newer list",
+        )
     })?;
     let wallet = issuer.pay_wallet().ok_or_else(|| {
-        anyhow!(
-            "the node list this machine holds does not name the wallet passes are paid to; import a newer node list"
+        PayRefused::error(
+            "the node list this machine holds does not name the wallet passes are paid to; import a newer node list",
         )
     })?;
     Ok((issuer, wallet))
@@ -1589,19 +1591,19 @@ fn check_answer<'a>(
 ) -> Result<(&'a PassIssuer, &'a str)> {
     let (issuer, listed) = selling_issuer(pocket)?;
     if wallet.trim() != listed {
-        return Err(anyhow!(
-            "the pass issuer asks for payment to a wallet the signed node list does not name; pay it nothing. If the wallet changed, import a newer node list"
+        return Err(PayRefused::error(
+            "the pass issuer asks for payment to a wallet the signed node list does not name; pay it nothing. If the wallet changed, import a newer node list",
         ));
     }
     if mint.trim() != issuer.pay_mint() {
-        return Err(anyhow!(
-            "the pass issuer asks for payment in a token the signed node list does not name; pay it nothing. If the token changed, import a newer node list"
+        return Err(PayRefused::error(
+            "the pass issuer asks for payment in a token the signed node list does not name; pay it nothing. If the token changed, import a newer node list",
         ));
     }
     if decimals > hidravpn_core::payment::MAX_DECIMALS {
-        return Err(anyhow!(
+        return Err(PayRefused::error(format!(
             "the pass issuer names a token with {decimals} decimals, more than an amount is read with; pay it nothing"
-        ));
+        )));
     }
     Ok((issuer, listed))
 }
@@ -1619,8 +1621,8 @@ fn order_from_quote(
     if hidravpn_core::payment::amount_from_string(&q.amount, q.decimals)? != q.amount_raw
         || q.passes != passes
     {
-        return Err(anyhow!(
-            "the issuer's order does not add up; nothing to pay"
+        return Err(PayRefused::error(
+            "the issuer's order does not add up; nothing to pay",
         ));
     }
     Ok(Order {
@@ -1682,7 +1684,11 @@ pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksRespo
         .with_path("/packs");
     let (status, answer) = hidravpn_core::http::call(&url, "GET", "").await?;
     if status != 200 {
-        return Err(anyhow!(refused("sells no passes", status, &answer)));
+        return Err(IssuerRefused::error(
+            status,
+            &answer,
+            refused("sells no passes", status, &answer),
+        ));
     }
     let p: hidravpn_core::payment::PacksResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
@@ -1693,6 +1699,18 @@ pub async fn packs(pocket: &Pocket) -> Result<hidravpn_core::payment::PacksRespo
 /// Opens an order for `passes` with the issuer the pocket's list names,
 /// for the account `token`, and keeps it beside the pocket.
 pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) -> Result<Order> {
+    buy_checked(pocket, pocket_path, token, passes, |_| Ok(())).await
+}
+
+/// `buy`, with what the caller also holds the order to (`validate`), said
+/// before the order is written: an order it refuses replaces none kept.
+pub(crate) async fn buy_checked(
+    pocket: &Pocket,
+    pocket_path: &Path,
+    token: &str,
+    passes: u32,
+    validate: impl FnOnce(&Order) -> Result<()>,
+) -> Result<Order> {
     use sha2::Digest;
     let (issuer, _) = selling_issuer(pocket)?;
     let url = hidravpn_core::http::Url::parse(&issuer.url)
@@ -1707,11 +1725,16 @@ pub async fn buy(pocket: &Pocket, pocket_path: &Path, token: &str, passes: u32) 
     })?;
     let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
     if status != 200 {
-        return Err(anyhow!(refused("did not open the order", status, &answer)));
+        return Err(IssuerRefused::error(
+            status,
+            &answer,
+            refused("did not open the order", status, &answer),
+        ));
     }
     let q: hidravpn_core::payment::QuoteResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
     let order = order_from_quote(pocket, q, passes)?;
+    validate(&order)?;
     crate::daemon::write_private_atomic(
         &order_path(pocket_path),
         serde_json::to_string_pretty(&order)?.as_bytes(),
@@ -1762,7 +1785,11 @@ pub async fn claim(
     })?;
     let (status, answer) = hidravpn_core::http::call(&url, "POST", &body).await?;
     if status != 200 {
-        return Err(anyhow!(claim_refused(status, &answer)));
+        return Err(IssuerRefused::error(
+            status,
+            &answer,
+            claim_refused(status, &answer),
+        ));
     }
     let c: hidravpn_core::payment::ClaimResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
@@ -1818,6 +1845,62 @@ fn claim_refused(status: u16, answer: &str) -> String {
         ORDER_LIFETIME / 3600
     )
 }
+
+/// A refusal worked out on this machine, from the signed node list, before
+/// anything is paid: the wallet or the token the issuer asks for is not the
+/// list's, the list names none, or the issuer's order does not add up. Its
+/// text is this program's own, never the issuer's, so the browser's
+/// checkout may show it as it is (`checkout`).
+#[derive(Debug)]
+pub struct PayRefused(String);
+
+impl PayRefused {
+    pub(crate) fn error(text: impl Into<String>) -> anyhow::Error {
+        anyhow::Error::new(Self(text.into()))
+    }
+}
+
+impl std::fmt::Display for PayRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PayRefused {}
+
+/// The pass issuer answered a request for packs, an order or a claim with
+/// an error status. Said as before (`refused`, `claim_refused`); the status
+/// and the reason the issuer gave are kept apart for the browser's checkout,
+/// which only compares that reason with the ones this program knows and
+/// never repeats the issuer's words.
+#[derive(Debug)]
+pub struct IssuerRefused {
+    pub status: u16,
+    /// The `error` of the issuer's answer, empty when it gave none.
+    pub reason: String,
+    said: String,
+}
+
+impl IssuerRefused {
+    fn error(status: u16, answer: &str, said: String) -> anyhow::Error {
+        let reason = serde_json::from_str::<hidravpn_core::admission::Refusal>(answer)
+            .map(|r| r.error)
+            .unwrap_or_default();
+        anyhow::Error::new(Self {
+            status,
+            reason,
+            said,
+        })
+    }
+}
+
+impl std::fmt::Display for IssuerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.said)
+    }
+}
+
+impl std::error::Error for IssuerRefused {}
 
 fn refused(what: &str, status: u16, answer: &str) -> String {
     let why = serde_json::from_str::<hidravpn_core::admission::Refusal>(answer)

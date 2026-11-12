@@ -260,6 +260,14 @@ impl Daemon {
                 }),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Command::Checkout { action } => match self.checkout(action).await {
+                Ok(view) => {
+                    let mut resp = Response::ok();
+                    resp.checkout = Some(view);
+                    resp
+                }
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Command::Refill {
                 enabled,
                 low,
@@ -631,6 +639,27 @@ impl Daemon {
         crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         tracing::info!("passes fetched from the issuer");
         Ok((pocket, line))
+    }
+
+    /// Buying passes from the browser (`checkout::execute`), under the
+    /// pocket's locks as every change beside the pocket, so it never runs
+    /// alongside the command line's `passes buy` or `claim`. Any account
+    /// that may drive the service may buy, as with `get_passes`: what is
+    /// bought goes on the account this machine keeps, and the token never
+    /// leaves the service. An order or a claim is not sent while two hops
+    /// are up (`checkout::refused_now`), asked under the locks, where no
+    /// circuit is being built. What it answers is the checkout's own words,
+    /// never the issuer's.
+    async fn checkout(&self, action: crate::checkout::Action) -> Result<crate::checkout::View> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        crate::checkout::refused_now(&action, self.two_hops_up().await)?;
+        let pocket = load_pocket(&self.pocket_path)?;
+        let view = crate::checkout::execute(&pocket, &self.pocket_path, action).await?;
+        if view.state == "confirmed" {
+            tracing::info!("an order paid from the browser was credited");
+        }
+        Ok(view)
     }
 
     /// Whether two hops are up. Asked under the pocket's locks, where no

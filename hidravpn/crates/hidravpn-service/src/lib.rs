@@ -1,6 +1,7 @@
 //! The HidraVPN background service, as a library so both its own binary and
 //! the client command line can use the control channel.
 
+pub mod checkout;
 pub mod daemon;
 pub mod install;
 pub mod ipc;

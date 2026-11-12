@@ -19,8 +19,9 @@
 # with auto off nothing is fetched; while disconnected nothing is fetched
 # even when low; with two hops up nothing is fetched either, by itself or by
 # hand, since it would leave through the exit, whether the service or the
-# command line holds them; and no log names the client's address or the
-# token.
+# command line holds them, and the browser's checkout sends no order and no
+# claim then (it reads the order kept and the packs), while in rapido it
+# does; and no log names the client's address or the token.
 #
 # Run as root:  hidravpn/scripts/test-refill-netns.sh
 set -u
@@ -42,7 +43,7 @@ cleanup() {
   for ns in hv-client hv-node hv-inet hv-e hv-x; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /etc/hidravpn/refill.json /var/run/wireguard/hvp0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock
+         /etc/hidravpn/refill.json /etc/hidravpn/order.json /var/run/wireguard/hvp0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
@@ -206,6 +207,17 @@ BEFORE=$(count_of node-x); sleep 6
 R=$(svc '{"cmd":"get_passes","count":1}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes asked of the service by hand are refused while two hops are up, and say why" || fail "get_passes in privado: $R"
 OUT=$($C "$BIN/hidravpn" passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and so are they from the command line" || fail "passes get in privado: $OUT"
+# The browser's checkout: an order and a claim carry the account, and are
+# refused before anything else is looked at (this list names no wallet,
+# which would be the answer otherwise); reading the order kept, and the
+# packs, which carry no account, are not.
+R=$(svc '{"cmd":"checkout","action":"buy","passes":10,"replace_unpaid":true}'); R2=$(svc '{"cmd":"checkout","action":"claim","signature":"5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up: the request carries the pass account token" && echo "$R2" | grep -q '"ok":false' && echo "$R2" | grep -q "not while two hops (privado) are up" \
+  && [ ! -e /etc/hidravpn/order.json ] && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] \
+  && pass "an order or a claim from the browser's checkout is refused by the service while two hops are up, with the command line's reason" || fail "checkout in privado: $R / $R2"
+R=$(svc '{"cmd":"checkout","action":"status"}'); R2=$(svc '{"cmd":"checkout","action":"packs"}')
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q '"state":"idle"' && ! echo "$R2" | grep -q "not while two hops" && echo "$R2" | grep -q "does not name the wallet passes are paid to" \
+  && pass "reading the order kept, and the packs, are not refused in privado" || fail "checkout status/packs in privado: $R / $R2"
 OUT=$($C "$BIN/hidravpn" --direct passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and with --direct too: the service is still asked whether two hops are up" || fail "--direct passes get in privado: $OUT"
 OUT=$("$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "never in privado" && pass "passes list says automatic passes never go through two hops" || fail "list: $OUT"
 # Joining node-x now would redeem a pass through node-x itself, the exit,
@@ -242,6 +254,9 @@ cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "rapido after privado: $R"
 for _ in $(seq 1 20); do [ "$(count_of node-p)" = 10 ] && break; sleep 1; done
 [ "$(count_of node-p)" = 10 ] && pass "back in one hop, node-p is topped up to 10" || fail "top-up after privado: $(count_of node-p)"
+R=$(svc '{"cmd":"checkout","action":"buy","passes":10}')
+echo "$R" | grep -q '"ok":false' && ! echo "$R" | grep -q "not while two hops" && echo "$R" | grep -q "does not name the wallet passes are paid to; import a newer node list" && [ ! -e /etc/hidravpn/order.json ] \
+  && pass "in rapido an order from the browser goes ahead to the list's issuer (this list names no wallet, so nothing is bought, and it says why)" || fail "checkout in rapido: $R"
 # In one hop a join goes ahead: node-x, known again from the list, gets a
 # pass (its two went on the two-hop connections) and is joined with it,
 # redeemed from this machine (through node-p, not behind an entry), and

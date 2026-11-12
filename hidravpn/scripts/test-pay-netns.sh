@@ -32,7 +32,11 @@
 # packs or an order naming another wallet or token than the list are
 # refused and nothing is kept, and an open order the list no longer names
 # is neither to be paid nor claimed; the same list imported again names the
-# wallet to a pocket saved without it.
+# wallet to a pocket saved without it. The browser's checkout through the
+# service shows the order kept, answers it rather than opening another,
+# replaces it only on the word that it is unpaid, pays only the list's
+# wallet whatever the request names, says in its own words why a claim was
+# not taken while keeping the order, and repeats no token or signature.
 #
 # Run as root:  hidravpn/scripts/test-pay-netns.sh
 set -u
@@ -60,7 +64,7 @@ cleanup() {
   for ns in hv-client hv-node hv-inet; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /etc/hidravpn/order.json /var/run/wireguard/hvp0.sock
+         /etc/hidravpn/order.json /run/hidravpn/control.pub /var/run/wireguard/hvp0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 trap 'cleanup; guard_done' EXIT
@@ -309,6 +313,78 @@ OUT=$($C "$BIN/hidravpn" passes buy 150 2>&1); echo "$OUT" | grep -qx "  47217\.
   && [ "$(echo "$OUT" | grep -n "^  47217" | cut -d: -f1)" -lt "$(echo "$OUT" | grep -n "5.99 USD" | cut -d: -f1)" ] && ! echo "$OUT" | grep "47217" | grep -q "USD" \
   && pass "an order in dollars says the HNET amount alone on its line, then the dollars and the rate as a reference not to be typed into the wallet" || fail "buy 150: $OUT"
 grep -q '"usd": "5.99"' /etc/hidravpn/order.json && grep -q '"rate": "0.00012686"' /etc/hidravpn/order.json && pass "the order file keeps the dollars and the rate" || fail "order file: $(cat /etc/hidravpn/order.json)"
+
+# ── The same purchase from the browser's VPN page, through the service ──────
+# The page talks to the service (`checkout`): an action, a pack, its word
+# that an open order is unpaid, a transaction's signature. The service asks
+# the issuer the list names, pays to the wallet the list names, keeps the
+# token to itself, and answers in its own words.
+$C env RUST_LOG=hidravpn_service=info "$BIN/hidravpn-service" run >> "$WORK/svc.log" 2>&1 & SVC=$!; PIDS+=($SVC)
+for i in $(seq 1 50); do [ -S /run/hidravpn/control.sock ] && break; sleep 0.2; done
+svc() { python3 -I - "$1" <<'PY' | tee -a "$WORK/answers.log"
+import socket, sys, json
+tok = open('/run/hidravpn/control.token').read().strip()
+req = json.loads(sys.argv[1]); req['token'] = tok
+s = socket.socket(socket.AF_UNIX); s.settimeout(60); s.connect('/run/hidravpn/control.sock'); s.sendall((json.dumps(req) + '\n').encode())
+buf = b''
+while True:
+    c = s.recv(65536)
+    if not c: break
+    buf += c
+    if b'\n' in buf: break
+print(buf.decode().strip())
+PY
+}
+# A field of the answer's checkout, by a path of keys.
+field() { python3 -I -c "import json,sys; v=json.loads(sys.argv[1]).get('checkout') or {}
+for k in sys.argv[2].split('.'):
+    v = v.get(k) if isinstance(v, dict) else None
+print('' if v is None else v)" "$1" "$2"; }
+# A claim, again while the issuer says it is busy (the floods above emptied
+# its buckets), as the page tells the person to do.
+claim() { local r; for _ in $(seq 1 15); do r=$(svc "{\"cmd\":\"checkout\",\"action\":\"claim\",\"signature\":\"$1\"}"); [ "$(field "$r" state)" = busy ] || break; sleep 2; done; echo "$r"; }
+AMOUNT150=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount'])")
+R=$(svc '{"cmd":"checkout","action":"status"}')
+[ "$(field "$R" state)" = awaiting_payment ] && [ "$(field "$R" order.amount)" = "$AMOUNT150" ] && [ "$(field "$R" order.wallet)" = "$WALLET" ] && [ "$(field "$R" order.token)" = HNET ] \
+  && [ "$(field "$R" order.usd)" = 5.99 ] && [ "$(field "$R" order.rate)" = 0.00012686 ] && [ "$(field "$R" order.payable)" = True ] \
+  && pass "checkout: the service shows the order the command line left open, to be paid, the dollars apart as a reference" || fail "checkout status: $R"
+OPENED=$(grep -c "order opened" "$WORK/issuer.log")
+R=$(svc '{"cmd":"checkout","action":"buy","passes":10}')
+[ "$(field "$R" order.amount)" = "$AMOUNT150" ] && echo "$R" | grep -q "An order is already open" && [ "$(grep -c "order opened" "$WORK/issuer.log")" = "$OPENED" ] \
+  && pass "checkout: a package asked for with an order open answers that order, and asks the issuer nothing" || fail "checkout buy, open: $R"
+R=$(svc '{"cmd":"checkout","action":"packs"}')
+echo "$R" | grep -q '{"passes":150,"price":"47217","usd":"5.99"}' && echo "$R" | grep -q '{"passes":10,"price":"50"}' && [ "$(field "$R" token)" = HNET ] && [ "$(field "$R" order.amount)" = "$AMOUNT150" ] \
+  && pass "checkout: the packages, in HNET, the dollar one's price apart" || fail "checkout packs: $R"
+R=$(svc "{\"cmd\":\"checkout\",\"action\":\"buy\",\"passes\":10,\"replace_unpaid\":true,\"wallet\":\"$ELSEWHERE\",\"recipient\":\"$ELSEWHERE\",\"mint\":\"$ELSEWHERE\",\"issuer\":\"http://10.200.0.2:9\",\"url\":\"http://10.200.0.2:9\",\"amount\":\"5.99\",\"pass_token\":\"page-token\"}")
+RAW3=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])")
+[ "$(field "$R" state)" = awaiting_payment ] && [ "$(field "$R" order.wallet)" = "$WALLET" ] && [ "$(field "$R" order.passes)" = 10 ] && [ "$RAW3" -gt 50000000 ] && [ "$RAW3" -lt 50100000 ] \
+  && [ "$(grep -c "order opened" "$WORK/issuer.log")" = "$((OPENED + 1))" ] && [ "$(cat /etc/hidravpn/pass.token)" = "$TOKEN" ] && ! echo "$R" | grep -q "$ELSEWHERE" \
+  && grep -q "\"wallet\": \"$WALLET\"" /etc/hidravpn/order.json && grep -q '"issuer": "http://10.200.0.1:8730"' /etc/hidravpn/order.json \
+  && pass "checkout: said to be unpaid, it is replaced by an order to the list's wallet, from the list's issuer, on this machine's account, whatever wallet, issuer or token the request names" || fail "checkout replace: $R"
+python3 -I - "$LEDGER" "$RAW3" "$(date +%s)" "$(sig 13)" "$(sig 14)" <<'PY'
+import json, sys
+p, raw, now, s13, s14 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+d = json.load(open(p)); d[s13] = {"amount": 5990000, "time": now + 1, "ok": True}; d[s14] = {"amount": raw, "time": now + 1, "ok": True}
+json.dump(d, open(p, "w"))
+PY
+R=$(claim "$(sig 12)")
+[ "$(field "$R" state)" = pending ] && echo "$R" | grep -q "check the same signature again. Do not pay again" && [ -e /etc/hidravpn/order.json ] \
+  && pass "checkout: a transaction the chain has not finalized: wait and check again, do not pay again, the order kept" || fail "checkout claim, not yet: $R"
+R=$(claim "$(sig 13)")
+[ "$(field "$R" state)" = rejected ] && echo "$R" | grep -q "paid another amount than this order" && echo "$R" | grep -q "a dollar figure, or a rounded amount, does not pay the order" && echo "$R" | grep -q "Do not pay again" \
+  && [ "$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])")" = "$RAW3" ] \
+  && pass "checkout: 5.99 sent instead of the amount: refused, said so in the service's words, the order kept" || fail "checkout claim, 5.99: $R"
+R=$(claim "$(sig 14)")
+[ "$(field "$R" state)" = confirmed ] && [ "$(field "$R" credited)" = 10 ] && [ "$(field "$R" balance)" = 47 ] && [ -z "$(field "$R" order)" ] && [ ! -e /etc/hidravpn/order.json ] \
+  && grep -q "an order paid from the browser was credited" "$WORK/svc.log" \
+  && pass "checkout: the exact amount: 10 passes credited, 47 in all, the order closed" || fail "checkout claim: $R"
+R=$(claim "$(sig 14)")
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "No order is open on this computer" && pass "checkout: with no order open, a claim is refused at home" || fail "checkout claim, none: $R"
+R=$(svc '{"cmd":"checkout","action":"buy","passes":0}'); R2=$(svc '{"cmd":"checkout","action":"pay","to":"x"}')
+echo "$R" | grep -q '"ok":false' && echo "$R2" | grep -q '"ok":false' && [ ! -e /etc/hidravpn/order.json ] && pass "checkout: no pack, or an action it does not know: refused, nothing opened" || fail "checkout bad: $R $R2"
+grep -qF -e "$TOKEN" -e "$(sig 12)" -e "$(sig 13)" -e "$(sig 14)" -e "page-token" "$WORK/answers.log" && fail "a checkout answer repeats the token or a signature" || pass "checkout: no answer repeats the token or a signature"
+grep -qF -e "$TOKEN" -e "$(sig 13)" -e "$(sig 14)" -e "$WALLET" -e "$RAW3" "$WORK/svc.log" && fail "the service's log names the token, a transaction, the wallet or an amount" || pass "checkout: the service's log names no token, transaction, wallet or amount"
+kill "$SVC"; wait "$SVC" 2>/dev/null
 
 # ── A flood of quotes is slowed ─────────────────────────────────────────────
 CODES=$(for i in $(seq 1 40); do $C curl -s -o /dev/null -w '%{http_code}\n' --max-time 5 -X POST -H 'Content-Type: application/json' -d "{\"token_sha256\":\"$(printf "flood-%s" "$i" | sha256sum | cut -d' ' -f1)\",\"passes\":10}" http://10.200.0.1:8730/quote; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
