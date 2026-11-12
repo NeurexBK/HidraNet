@@ -453,7 +453,8 @@ class VpnManager {
   }
 
   // Buying passes with HNET. The page names an action and, for an order,
-  // the pack (and the person's word that an open order is unpaid), for a
+  // the pack (and the person's word that the open order on screen is
+  // unpaid, naming it by its amount in raw units, digits only), for a
   // claim the transaction's signature: only those cross to the service,
   // built afresh here, so nothing else the page puts in (a wallet, a mint,
   // an issuer, a price, a token) ever does. The service pays to the wallet
@@ -469,7 +470,10 @@ class VpnManager {
         return { ok: false, error: 'Choose one of the packages.' };
       }
       cmd.passes = input.passes;
-      cmd.replace_unpaid = input.replace_unpaid === true;
+      // Anything else is no word that an order is unpaid: none is replaced.
+      if (typeof input.replace_unpaid === 'string' && /^[0-9]{1,20}$/.test(input.replace_unpaid)) {
+        cmd.replace_unpaid = input.replace_unpaid;
+      }
     }
     if (action === 'claim') {
       const signature = typeof input.signature === 'string' ? input.signature.trim() : '';

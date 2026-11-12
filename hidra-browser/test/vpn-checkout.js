@@ -1,8 +1,9 @@
 // Buying passes from the VPN page: what crosses from the page to the
 // service (vpn-manager.js `checkout`), and what an older service answers.
 //
-// The page may name an action, a pack (with the person's word that an open
-// order is unpaid) and a transaction's signature, and nothing else: a
+// The page may name an action, a pack (with the person's word that the open
+// order on screen is unpaid, naming it by its amount in raw units) and a
+// transaction's signature, and nothing else: a
 // wallet, a mint, an issuer, a price or an account token it puts in never
 // reaches the service. Bad input is refused before anything is sent. A
 // service from before checkout answers "unknown variant", which comes back
@@ -63,10 +64,14 @@ const SIG = '5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo'.padEnd(87, '1');
     assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'status' });
     await m.checkout({ action: 'packs', ...extra });
     assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'packs' });
-    await m.checkout({ action: 'buy', passes: 150, replace_unpaid: 'true', ...extra });
-    assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'buy', passes: 150, replace_unpaid: false });
-    await m.checkout({ action: 'buy', passes: 150, replace_unpaid: true, ...extra });
-    assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'buy', passes: 150, replace_unpaid: true });
+    // The word that the order on screen is unpaid names it by its amount,
+    // digits only; anything else is no such word, and replaces nothing.
+    for (const notOne of ['true', true, 149563032846, '', ' 149563032846', '1.5', '-1', '1'.repeat(21), ['1'], { raw: '1' }]) {
+      await m.checkout({ action: 'buy', passes: 150, replace_unpaid: notOne, ...extra });
+      assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'buy', passes: 150 }, JSON.stringify(notOne));
+    }
+    await m.checkout({ action: 'buy', passes: 150, replace_unpaid: '149563032846', ...extra });
+    assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'buy', passes: 150, replace_unpaid: '149563032846' });
     await m.checkout({ action: 'claim', signature: '  ' + SIG + '\n', passes: 150, replace_unpaid: true, ...extra });
     assert.deepStrictEqual(seen.pop(), { cmd: 'checkout', action: 'claim', signature: SIG });
     assert.strictEqual(seen.length, 0);

@@ -132,18 +132,18 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
 .sub-h{font-size:13px;font-weight:650;margin:20px 0 6px;color:var(--text-primary)}
 #checkout-packs{display:grid;gap:8px;margin:0 0 10px}
 .btn.pack{height:auto;min-height:44px;padding:8px 12px;flex-direction:column;align-items:flex-start;gap:2px;white-space:normal;text-align:left}
-.pack-main{font-size:13px;font-weight:650}
+.pack-main{font-size:13px;font-weight:650;overflow-wrap:anywhere}
 .pack-ref{font-size:11px;font-weight:500;color:var(--text-muted)}
 .order{margin-top:4px;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border-light);border-radius:10px}
 .pay-head{font-size:12px;font-weight:650;color:var(--text-secondary);margin-bottom:8px}
 .pay-label{font-size:12px;color:var(--text-secondary);margin-bottom:4px}
 .pay-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .pay-amount{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text-primary);user-select:all;overflow-wrap:anywhere}
-.pay-unit{font-size:15px;font-weight:650;color:var(--accent)}
+.pay-unit{font-size:15px;font-weight:650;color:var(--accent);overflow-wrap:anywhere}
 .pay-wallet{font-family:var(--mono);font-size:12px;color:var(--text-primary);user-select:all;overflow-wrap:anywhere;flex:1;min-width:0}
 .btn.copy{height:28px;font-size:12px;padding:0 10px}
 .pay-warn{margin:8px 0;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.5;color:var(--warning);border:1px solid rgba(255,170,51,.4);background:rgba(255,170,51,.08)}
-.pay-ref{font-size:11px;line-height:1.5;color:var(--text-muted);margin-top:6px}
+.pay-ref{font-size:11px;line-height:1.5;color:var(--text-muted);margin-top:6px;overflow-wrap:anywhere}
 .sig-label{display:block;margin-top:14px}
 #checkout-signature{height:36px;width:100%;background:var(--bg-card);border:1px solid var(--border-light);border-radius:8px;padding:0 12px;color:var(--text-primary);outline:0;margin:6px 0 10px;font-family:var(--mono);font-size:12px}
 #checkout-signature:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
@@ -462,8 +462,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       <label class="switch"><input type="checkbox" id="auto-passes" disabled><span class="track"><span class="knob"></span></span><span class="switch-text"><b>Top passes up by themselves.</b> <span id="auto-passes-line">When a node runs low, the service asks for more, only while connected in rapido: the issuer then sees the node you use at that moment, not this machine. Never in privado: the request would leave through the exit, and the issuer, run by the same maintainers as the exits, could tie your two-hop session to the account. Get passes before you connect in privado. It spends the account's quota.</span></span></label>
       <div class="msg" id="passes-msg" aria-live="polite"></div>
       <h4 class="sub-h" id="checkout-title">Buy passes with HNET</h4>
-      <p class="help">Choose a package, send the exact amount of HNET from your own Solana wallet, then paste the transaction's signature here. This page never asks for your wallet's secret words and never sends money: you pay from your wallet. The passes go on this computer's pass account; then Get 10 passes per node. Payments on Solana are public, and the pass issuer sees where the request comes from and can tie the payment to this computer's pass account. Not while connected in privado.</p>
+      <p class="help">Choose a package, send the exact amount of <span id="checkout-help-token">HNET</span> from your own Solana wallet, then paste the transaction's signature here. This page never asks for your wallet's secret words and never sends money: you pay from your wallet. The passes go on this computer's pass account; then Get 10 passes per node. Payments on Solana are public, and the pass issuer sees where the request comes from and can tie the payment to this computer's pass account. Not while connected in privado.</p>
       <div class="row"><button class="btn" id="checkout-load" disabled>Show packages</button></div>
+      <p class="pay-warn" id="checkout-privado" hidden></p>
       <div id="checkout-packs"></div>
       <div class="order" id="checkout-order" hidden>
         <div class="pay-head" id="checkout-what"></div>
@@ -1433,6 +1434,8 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       $('btn-update').style.display = 'none';
       updateKnown = false;
       outdated = false;
+      // The service that did not know checkout is gone: ask the new one.
+      checkoutUnsupported = false;
     } else if (r && r.cancelled) {
       message('err', r.error || 'Cancelled; nothing was installed.', msgId);
     } else if (r && r.installed) {
@@ -1443,12 +1446,14 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       $('btn-update').style.display = 'none';
       updateKnown = false;
       outdated = false;
+      checkoutUnsupported = false;
       renderDot();
     } else {
       message('err', (r && r.error) || 'Nothing was installed.', msgId);
     }
     await refresh();
     await refreshNodes();
+    if (r && (r.ok || r.installed)) refreshCheckout();
   }
   $('btn-install').addEventListener('click', function () {
     installOrUpdate('install-msg', 'Fetching the signed release and checking it. Your system will then ask for administrator rights, once.');
@@ -1557,6 +1562,10 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       clearHeroError();
       message('note', r.note || 'Passes received.', 'passes-msg');
       renderNodes(r);
+    } else if (r && r.code === 'no_passes') {
+      // No account token here, or none of its passes left: said by the
+      // service's code, not its words.
+      message('err', NO_PASSES_YET, 'passes-msg');
     } else {
       message('err', (r && r.error) ? withHint(r.error, r.hint) : 'Could not get passes.', 'passes-msg');
     }
@@ -1573,26 +1582,56 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
   // unpaid. The person pays from their own wallet: this page sends no money.
   var CHECKOUT_OLD = 'Buying passes on this page needs a newer HidraVPN: the service installed on this computer does not know it. Update HidraVPN: Settings, Service, Check for an update. Nothing was paid.';
   var CHECKOUT_PRIVADO = 'Not while connected in privado: an order or a check of a payment carries this computer\'s pass account, and would leave through the exit. Disconnect, or connect in rapido, then buy.';
+  var NO_PASSES_YET = 'No passes on this computer\'s account yet. Buy passes with HNET below, then press Get 10 passes per node.';
+  var NOT_PAYABLE_STOP = 'Do not pay this order: the signed node list does not stand behind it. If you have not paid it, tick the box below and choose a package for a new order. If you already paid it, keep the transaction signature for the issuer\'s operator.';
+  var PAST_DEADLINE_STOP = 'This order\'s deadline has passed: do not pay it. If you paid it before the deadline, check that transaction below; if you did not, tick the box and choose a package.';
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var checkoutBusy = false;
   var checkoutOrder = null;
+  // The state the service last gave ("awaiting_payment", "past_deadline"...).
+  var checkoutState = '';
   var checkoutToken = 'HNET';
   // Set when the service answers that it does not know checkout; cleared
   // by any answer that shows it does.
   var checkoutUnsupported = false;
 
   function tokenWord(t) { return t === 'HNET' || !t ? 'HNET' : t; }
+  // What packs are paid in, as the service names it, in the heading and
+  // the help.
+  function setCheckoutToken(t) {
+    checkoutToken = tokenWord(t);
+    $('checkout-title').textContent = 'Buy passes with ' + checkoutToken;
+    $('checkout-help-token').textContent = checkoutToken;
+  }
+  // An order to be paid now: the service gave its amount, and its deadline
+  // is ahead (checkoutExpiry).
+  function payNow() {
+    return Boolean(checkoutOrder && checkoutOrder.payable && checkoutOrder.amount && !$('checkout-pay').hidden);
+  }
   function syncCheckout() {
     // Only once the service answers: nothing to ask of one not there.
     var off = busy || checkoutBusy || checkoutUnsupported || !api || !api.checkout || !(lastStatus && lastStatus.report);
     var privado = twoHops(lastStatus);
-    $('checkout-load').disabled = off;
+    $('checkout-load').disabled = off || privado;
+    $('checkout-load').title = privado ? 'Not while connected in privado' : '';
+    // Said where buying is, not only on the buttons.
+    $('checkout-privado').hidden = !privado;
+    $('checkout-privado').textContent = privado ? CHECKOUT_PRIVADO : '';
     $('checkout-packs').querySelectorAll('button').forEach(function (b) {
       b.disabled = off || privado;
       b.title = privado ? 'Not while connected in privado' : '';
     });
     $('checkout-claim').disabled = off || privado || !(checkoutOrder && checkoutOrder.payable);
     $('checkout-claim').title = privado ? 'Not while connected in privado: check the payment while disconnected or in rapido' : '';
-    ['checkout-copy-amount', 'checkout-copy-wallet'].forEach(function (id) { $(id).disabled = !(checkoutOrder && checkoutOrder.payable); });
+    ['checkout-copy-amount', 'checkout-copy-wallet'].forEach(function (id) { $(id).disabled = !payNow(); });
+  }
+  function hhmm(h, m) { return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m; }
+  // "Pay before 14:05 on 3 Nov 2026, your time (13:05 UTC)": to the
+  // minute, rounded down, so never later than the deadline.
+  function deadlineText(ms) {
+    var d = new Date(ms);
+    return 'Pay before ' + hhmm(d.getHours(), d.getMinutes()) + ' on ' + d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear()
+      + ', your time (' + hhmm(d.getUTCHours(), d.getUTCMinutes()) + ' UTC). After that, do not pay it.';
   }
   // The deadline, every second: past it, the order is not to be paid.
   function checkoutExpiry() {
@@ -1601,22 +1640,34 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     var stop = $('checkout-stop');
     if (!o || !o.payable) { box.textContent = ''; return; }
     var deadline = Date.parse(o.expires || '');
-    var past = !Number.isFinite(deadline) || Date.now() >= deadline;
+    // Past it by this clock, or by the service's (it gave no amount).
+    var past = !Number.isFinite(deadline) || Date.now() >= deadline || !o.amount;
     $('checkout-pay').hidden = past;
     stop.hidden = !past;
     if (past) {
+      box.textContent = '';
       stop.textContent = Number.isFinite(deadline)
-        ? 'This order\'s deadline has passed: do not pay it now. If you paid it before the deadline, check that transaction below; if you did not, tick the box below and choose a package for a new order.'
-        : 'This order does not say by when to pay it: do not pay it. Tick the box below and choose a package for a new order.';
+        ? PAST_DEADLINE_STOP
+        : 'This order does not say by when to pay it: do not pay it. If you paid it, check that transaction below; if you did not, tick the box and choose a package.';
+      if (checkoutState === 'awaiting_payment') {
+        // The service said to pay it, and the deadline has passed since:
+        // its words go, and it is asked again, so the page says what the
+        // service says.
+        checkoutState = 'past_deadline';
+        message('', '', 'checkout-msg');
+        refreshCheckout();
+      }
       return;
     }
-    box.textContent = 'Pay before ' + new Date(deadline).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) + ' (' + o.expires + ' UTC). After that, do not pay it.';
+    box.textContent = deadlineText(deadline);
   }
   function renderCheckout(view) {
     var o = view.order || null;
     checkoutOrder = o;
+    checkoutState = view.state || '';
     $('checkout-order').hidden = !o;
     $('checkout-unpaid').checked = false;
+    if (view.token) setCheckoutToken(view.token);
     if (o) {
       var t = tokenWord(o.token);
       $('checkout-what').textContent = 'Order for ' + o.passes + ' passes';
@@ -1630,11 +1681,10 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       $('checkout-mint').textContent = 'Token mint: ' + o.mint + '.';
       $('checkout-pay').hidden = !o.payable;
       $('checkout-stop').hidden = o.payable;
-      $('checkout-stop').textContent = o.payable ? '' : 'Do not pay this order: the signed node list does not stand behind it. If you have not paid it, tick the box below and choose a package for a new order.';
+      $('checkout-stop').textContent = o.payable ? '' : NOT_PAYABLE_STOP;
     }
     checkoutExpiry();
     if (view.packs) {
-      checkoutToken = tokenWord(view.token);
       var box = $('checkout-packs');
       box.replaceChildren();
       if (!view.packs.length) box.appendChild(el('p', 'empty', 'The pass issuer sells no package right now. Try again later.'));
@@ -1650,7 +1700,10 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     }
     if (view.state === 'confirmed') $('checkout-signature').value = '';
   }
-  async function checkoutRequest(input, pending) {
+  // Asks the service, and draws what it answers. `quiet`: a reading again
+  // that leaves the message as it is, and with no answer leaves no order
+  // on screen to pay.
+  async function checkoutRequest(input, pending, quiet) {
     if (!api || !api.checkout || checkoutBusy || busy) return null;
     checkoutBusy = true;
     syncCheckout();
@@ -1663,12 +1716,14 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       checkoutUnsupported = false;
       renderCheckout(r.checkout);
       var v = r.checkout;
-      var bad = ['rejected', 'unavailable', 'not_payable', 'earlier_order'].indexOf(v.state) !== -1;
-      message(v.message ? (bad ? 'err' : 'note') : '', v.message || '', 'checkout-msg');
+      var bad = ['rejected', 'unavailable', 'not_payable', 'past_deadline', 'earlier_order'].indexOf(v.state) !== -1;
+      if (!quiet) message(v.message ? (bad ? 'err' : 'note') : '', v.message || '', 'checkout-msg');
     } else if (r && (r.older === true || r.ok)) {
       // A service from before checkout: it does not know the command.
       checkoutUnsupported = true;
       message('err', CHECKOUT_OLD, 'checkout-msg');
+    } else if (quiet) {
+      renderCheckout({ state: 'idle' });
     } else {
       message('err', (r && r.error) ? withHint(r.error, r.hint) : 'The service did not answer. Nothing was paid.', 'checkout-msg');
     }
@@ -1685,7 +1740,9 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
       message('note', 'An order is open below. Pay it, or check the transaction that paid it. To replace it, first tick "I have not paid this order".', 'checkout-msg');
       return;
     }
-    checkoutRequest({ action: 'buy', passes: n, replace_unpaid: replace }, 'Asking the pass issuer for an order. Nothing is paid until you pay from your wallet.');
+    // The order said to be unpaid is named by its amount: the service
+    // replaces the order it keeps only if it is this one.
+    checkoutRequest({ action: 'buy', passes: n, replace_unpaid: replace ? String(checkoutOrder.amount_raw || '') : '' }, 'Asking the pass issuer for an order. Nothing is paid until you pay from your wallet.');
   }
   // Copies the amount or the wallet as they are, and nothing else: no
   // token name, no dollars.
@@ -1699,19 +1756,28 @@ code{font-family:var(--mono);font-size:.95em;background:rgba(255,255,255,.06);pa
     byHand();
   }
   $('checkout-copy-amount').addEventListener('click', function () {
-    if (checkoutOrder && checkoutOrder.payable) copyField('checkout-copy-amount', checkoutOrder.amount);
+    if (payNow()) copyField('checkout-copy-amount', checkoutOrder.amount);
   });
   $('checkout-copy-wallet').addEventListener('click', function () {
-    if (checkoutOrder && checkoutOrder.payable) copyField('checkout-copy-wallet', checkoutOrder.wallet);
+    if (payNow()) copyField('checkout-copy-wallet', checkoutOrder.wallet);
   });
   $('checkout-load').addEventListener('click', function () {
+    if (twoHops(lastStatus)) { message('err', CHECKOUT_PRIVADO, 'checkout-msg'); return; }
     checkoutRequest({ action: 'packs' }, 'Asking the pass issuer what it sells.');
   });
   $('checkout-claim').addEventListener('click', function () {
     if (twoHops(lastStatus)) { message('err', CHECKOUT_PRIVADO, 'checkout-msg'); return; }
     var sig = $('checkout-signature').value.trim();
     if (!sig) { message('err', 'Paste the transaction signature from your wallet first.', 'checkout-msg'); return; }
-    checkoutRequest({ action: 'claim', signature: sig }, 'Checking the payment with the pass issuer. This can take up to a minute.');
+    checkoutRequest({ action: 'claim', signature: sig }, 'Checking the payment with the pass issuer. This can take up to a minute.').then(function (r) {
+      // A claim that failed, or whose answer was lost: the order on screen
+      // may not be the one kept any more (claimed meanwhile, or no longer
+      // stood behind). Read again, and drawn from what the service says,
+      // the claim's words kept.
+      if (r && !(r.ok && r.checkout && r.checkout.state === 'confirmed') && !checkoutUnsupported) {
+        checkoutRequest({ action: 'status' }, '', true);
+      }
+    });
   });
   setInterval(checkoutExpiry, 1000);
 

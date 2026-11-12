@@ -114,11 +114,12 @@ expect('the page asks for no passes while two hops are up or being built, whatev
   const keys = asks.flatMap((a) => [...a.matchAll(/([a-z_]+):/g)].map((k) => k[1]));
   expect('the page asks checkout for an action, a pack, the person\'s word and a signature, and nothing else',
     asks.length >= 4 && keys.every((k) => ['action', 'passes', 'replace_unpaid', 'signature'].includes(k))
-      && /checkoutRequest\(\{ action: 'buy', passes: n, replace_unpaid: replace \}/.test(page)
+      && /checkoutRequest\(\{ action: 'buy', passes: n, replace_unpaid: replace \? String\(checkoutOrder\.amount_raw \|\| ''\) : '' \}/.test(page)
       && (page.match(/api\.checkout\(/g) || []).length === 1 && /r = await api\.checkout\(input\);/.test(page),
     `checkout is asked with: ${asks.join(' | ')}`);
   expect('the module sends checkout only what it builds itself, and the bridge only passes it on',
-    /const cmd = \{ cmd: 'checkout', action \};/.test(manager) && /cmd\.replace_unpaid = input\.replace_unpaid === true;/.test(manager)
+    /const cmd = \{ cmd: 'checkout', action \};/.test(manager)
+      && /if \(typeof input\.replace_unpaid === 'string' && \/\^\[0-9\]\{1,20\}\$\/\.test\(input\.replace_unpaid\)\) \{\s*cmd\.replace_unpaid = input\.replace_unpaid;/.test(manager)
       && /checkout: \(input\) => ipcRenderer\.invoke\('vpn:checkout', input\),/.test(preload)
       && /ipcMain\.handle\('vpn:checkout', \(event, input\) => \{\s*vpnOnlyOurs\(event\);\s*return vpnManager\.checkout\(input\);/.test(main),
     'vpn-manager.js forwards the page\'s object, or the bridge or the handler is missing');
@@ -149,7 +150,8 @@ expect('the page asks for no passes while two hops are up or being built, whatev
       && /checkoutUnsupported = true;\s*message\('err', CHECKOUT_OLD, 'checkout-msg'\);/.test(page),
     'an older service would break the page, or the page does not say where to update');
   expect('the deadline is said, and an order past it is not shown to be paid',
-    /'Pay before ' \+ new Date\(deadline\)\.toLocaleString\('en-GB'/.test(page) && /\$\('checkout-pay'\)\.hidden = past;/.test(page),
+    /return 'Pay before ' \+ hhmm\(d\.getHours\(\), d\.getMinutes\(\)\) \+ ' on ' \+ d\.getDate\(\)/.test(page) && /', your time \(' \+ hhmm\(d\.getUTCHours\(\), d\.getUTCMinutes\(\)\) \+ ' UTC\)/.test(page)
+      && /\$\('checkout-pay'\)\.hidden = past;/.test(page) && /var past = !Number\.isFinite\(deadline\) \|\| Date\.now\(\) >= deadline \|\| !o\.amount;/.test(page),
     'no deadline, or an order past it still offered for payment');
 }
 {
