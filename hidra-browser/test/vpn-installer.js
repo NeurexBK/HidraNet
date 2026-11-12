@@ -618,6 +618,28 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     assert.ok(!(await inst.install(approved)).ok && ran.length === 0);
   });
 
+  await check('this browser installs nothing older than 0.1.2, the first release with the service\'s fixes', async () => {
+    // MIN_VERSION is raised on main, in the commit that signs the table and
+    // sets SUMS_SIGNED, once the 0.1.2 manifest is on the site; the browser
+    // packages are built from that commit (scripts/launch-check.js says why).
+    // The launch branch goes on top of it, so this fails on that branch
+    // until it is rebased there.
+    assert.ok(compareVersions(MIN_VERSION, '0.1.2') >= 0,
+      'MIN_VERSION is ' + MIN_VERSION + ': rebase this branch onto the commit that raises it');
+    // 0.1.0 and 0.1.1 stay validly signed forever, and 0.1.0's manifest has
+    // no sequence, so a profile that has never accepted one would take it:
+    // only the floor turns them away.
+    for (const old of ['0.1.0', '0.1.1']) {
+      const { inst, ran } = rig({ text: manifest({ version: old }) });
+      const c = await inst.checkRelease();
+      assert.ok(!c.ok && c.error.includes(`release ${old} is older than ${MIN_VERSION}, the oldest this browser installs`), c.error);
+      assert.ok(!(await inst.install({ version: old, digest: sha(Buffer.from(manifest({ version: old }), 'utf8')) })).ok && ran.length === 0);
+    }
+    const { inst } = rig({ text: manifest({ version: MIN_VERSION }) });
+    const c = await inst.checkRelease();
+    assert.strictEqual(c.ok, true, c.error);
+  });
+
   await check('the published manifest is accepted; the 0.1.0 one, from before sequence and expiry, as sequence 0', async () => {
     const dir = path.join(__dirname, '..', '..', 'landing', 'vpn', 'release');
     const text = fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8');
@@ -627,7 +649,9 @@ function rig({ text = manifest(), sig, files = FILES, platform = 'linux', runCod
     const { inst } = rig({ text, sig, now: () => Date.parse(parsed.generated) });
     inst.publicKey = RELEASE_PUBLIC_KEY;
     const c = await inst.checkRelease();
-    assert.strictEqual(c.ok, true, c.error);
+    // A browser built from this tree must be able to install what the site
+    // serves: MIN_VERSION goes up only with (or after) the release's manifest.
+    assert.strictEqual(c.ok, true, c.error + ' (landing/vpn/release/manifest.json must be a release this browser installs)');
     assert.strictEqual(c.digest, sha(Buffer.from(text, 'utf8')));
     if (parsed.sequence === undefined) {
       assert.deepStrictEqual([c.version, c.expires, parseManifest(text).sequence], ['0.1.0', null, 0], JSON.stringify(c));

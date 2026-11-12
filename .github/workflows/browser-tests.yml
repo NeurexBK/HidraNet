@@ -20,8 +20,9 @@
 # port on 127.0.0.1 and ::1, and never from a service worker (apps-server
 # checks its bind and token logic on their own). The release checks run
 # here too: what a package must run (release-runtime), the update notice and
-# the signed record it reads (update-check and update-notice-electron), and,
-# in a job of its own, the signature of landing/SHA256SUMS.txt.
+# the signed record it reads (update-check and update-notice-electron), the
+# launch-day readiness check against its fixtures (launch-check), and, in a
+# job of its own, the signature of landing/SHA256SUMS.txt.
 name: Browser tests
 
 on:
@@ -112,7 +113,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect sevennine-start network-lock build-pins release-base release-notes release-runtime update-check; do
+          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect sevennine-start network-lock build-pins release-base release-notes release-runtime update-check launch-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
