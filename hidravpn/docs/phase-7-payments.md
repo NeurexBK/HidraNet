@@ -104,7 +104,11 @@ base is the mint. Give `--pay-price-url` more than once for redundancy:
 each refresh tries the feeds in order and takes the first that answers, so
 one being down does not stop dollar-priced sales (they must all speak the
 same shape). `GET /packs` tells the HNET of the moment and the rate,
-and the client shows both ("150 passes for 5.99 USD, 47217 HNET today").
+and the client shows the HNET first and the dollars on the next line, as a
+reference only ("150 passes for 47217 HNET today", then "priced at 5.99
+USD: a reference only, not the amount to send"). An order prints the amount
+to send on a line of its own, digits only, and the dollars after it, not to
+be typed into the wallet.
 
 A feed is a thing to be careful with: one that lies or glitches would sell
 passes for nothing. So:

@@ -1293,9 +1293,43 @@ mod tests {
         assert_eq!(o.issuer, "https://passes.example.org");
         let told = describe_order(&o);
         assert!(
-            told.contains(&format!("Send exactly 50.004213 HNET to\n  {WALLET}\n")),
+            told.contains(&format!(
+                "Send exactly this amount of HNET, every decimal:\n  50.004213\nto this wallet, from any Solana wallet, by 2026-11-01T12:00:00Z (UTC):\n  {WALLET}\n"
+            )),
             "{told}"
         );
+        // The amount alone on its line, digits only, so it is copied whole.
+        assert!(told.lines().any(|l| l == "  50.004213"), "{told}");
+        assert!(
+            told.contains("choose HNET as what you send, not dollars"),
+            "{told}"
+        );
+        // No dollars without a dollar pack; with one, after the amount, as
+        // a reference that is not to be typed into the wallet.
+        assert!(!told.contains("USD"), "{told}");
+        let mut in_usd = o.clone();
+        in_usd.usd = Some("5.99".into());
+        in_usd.rate = Some("0.00012686".into());
+        let told = describe_order(&in_usd);
+        let (amount_at, usd_at) = (
+            told.find("  50.004213\n").unwrap(),
+            told.find("5.99 USD").unwrap(),
+        );
+        assert!(amount_at < usd_at, "{told}");
+        assert!(
+            told.contains("For reference only: 5.99 USD at 0.00012686 USD for one HNET, fixed for this order. Do not type 5.99 into the wallet."),
+            "{told}"
+        );
+        assert!(
+            !told
+                .lines()
+                .any(|l| l.contains("50.004213") && l.contains("USD")),
+            "{told}"
+        );
+        // A pack's listed price, without the zeros after its last decimal.
+        assert_eq!(price_to_string(50_000_000, 6), "50");
+        assert_eq!(price_to_string(47_217_500_000, 6), "47217.5");
+        assert_eq!(price_to_string(100, 0), "100");
 
         // Another wallet, another token, decimals past any amount read: no
         // order, and the person is told to pay nothing.
@@ -1344,7 +1378,9 @@ mod tests {
         let p = selling("https://passes.example.org", Some(WALLET), Some(OTHER_MINT));
         let o = order_from_quote(&p, quote(WALLET, OTHER_MINT, 6), 10).unwrap();
         assert_eq!(o.mint, OTHER_MINT);
-        assert!(describe_order(&o).contains(&format!("50.004213 the token {OTHER_MINT} to")));
+        assert!(describe_order(&o).contains(&format!(
+            "Send exactly this amount of the token {OTHER_MINT}, every decimal:\n  50.004213\n"
+        )));
         assert!(refused(&p, quote(WALLET, HNET_MINT, 6)).contains("in a token"));
         assert_eq!(token_name(HNET_MINT), "HNET");
 
@@ -1482,20 +1518,39 @@ pub fn token_name(mint: &str) -> String {
     }
 }
 
+/// A pack's price as it is listed: the amount without the zeros after its
+/// last decimal ("50", "47217.5"). Not an amount to send: an order adds a
+/// tag to it, and says that amount whole (`describe_order`).
+pub fn price_to_string(raw: u64, decimals: u8) -> String {
+    let s = hidravpn_core::payment::amount_to_string(raw, decimals);
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
 /// How an order reads to the person: what to send, where, by when, and
 /// what comes next. The wallet and the token are the ones the signed list
-/// named when the order was made (`order_from_quote`).
+/// named when the order was made (`order_from_quote`). The amount is on a
+/// line of its own, digits only, so it is copied whole; a pack priced in
+/// dollars says the dollars after it, as a reference only: a buyer once
+/// typed the dollar price into the wallet instead of the amount.
 pub fn describe_order(o: &Order) -> String {
     let token = token_name(&o.mint);
     let in_dollars = match (&o.usd, &o.rate) {
-        (Some(usd), Some(rate)) => {
-            format!(" ({usd} USD at {rate} USD for one {token}, fixed for this order)")
-        }
+        (Some(usd), Some(rate)) => format!(
+            "For reference only: {usd} USD at {rate} USD for one {token}, fixed for this order. \
+             Do not type {usd} into the wallet.\n"
+        ),
         _ => String::new(),
     };
     format!(
-        "Send exactly {amount} {token}{in_dollars} to\n  {wallet}\nfrom any Solana wallet, by {expires} (UTC).\n\
+        "Send exactly this amount of {token}, every decimal:\n  {amount}\n\
+         to this wallet, from any Solana wallet, by {expires} (UTC):\n  {wallet}\n\
          The amount must match to the last digit: it is what tells your payment apart.\n\
+         In the wallet, choose {token} as what you send, not dollars.\n\
+         {in_dollars}\
          Then, by the same time: hidravpn passes claim <transaction signature>\n\
          (the signature is in the wallet's transaction details, or on a Solana explorer).\n\
          Payments on Solana are public. To keep this one apart from the rest of what you do,\n\

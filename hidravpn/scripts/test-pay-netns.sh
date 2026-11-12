@@ -158,7 +158,10 @@ mklist 2 --pay-wallet "$WALLET" --pay-mint "$MINT" > "$WORK/make.log" 2>&1 && im
   && pass "make-node-list.sh puts the wallet and the mint in the signed list ($(head -1 "$WORK/make.log" | sed 's/^.*; //'))" || fail "list with a wallet: $(cat "$WORK/make.log")"
 
 # ── An order ────────────────────────────────────────────────────────────────
-OUT=$($C "$BIN/hidravpn" passes buy 2>&1); echo "$OUT" | grep -q "paid in HNET sent to $WALLET:" && echo "$OUT" | grep -q "10 passes for 50 HNET" && echo "$OUT" | grep -q "150 passes for 5.99 USD, 47217 HNET today" && echo "$OUT" | grep -q "today's rate: 0.00012686 USD for one HNET" && pass "passes buy, alone, lists the packs, the dollar one in today's HNET" || fail "list packs: $OUT"
+OUT=$($C "$BIN/hidravpn" passes buy 2>&1); echo "$OUT" | grep -q "paid in HNET sent to $WALLET:" && echo "$OUT" | grep -q "10 passes for 50 HNET" && echo "$OUT" | grep -q "150 passes for 47217 HNET today" \
+  && echo "$OUT" | grep -A1 "150 passes for 47217 HNET today" | tail -1 | grep -q "^ *priced at 5.99 USD: a reference only, not the amount to send$" && ! echo "$OUT" | grep "HNET" | grep -q "USD," \
+  && echo "$OUT" | grep -q "today's rate: 0.00012686 USD for one HNET" && echo "$OUT" | grep -q "send that amount of HNET, every decimal, never a dollar figure" \
+  && pass "passes buy, alone, lists the packs, the dollar one in today's HNET, its dollars on a line after it as a reference only" || fail "list packs: $OUT"
 OUT=$($C "$BIN/hidravpn" passes claim x 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no order is open" && pass "a claim with no order open is refused at home" || fail "claim without order: $OUT"
 OUT=$($C "$BIN/hidravpn" passes buy 7 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "no pack of 7 passes" && echo "$OUT" | grep -q "a new pass account token was made" && [ ! -e /etc/hidravpn/order.json ] && pass "a pack the issuer does not sell: refused, no order (the token for purchases was made, and kept)" || fail "buy 7: $OUT"
 # The issuer asks for payment to its wallet, in its token. A machine whose
@@ -174,7 +177,7 @@ OUT=$($C $HV2 passes buy 10 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "asks f
 OUT=$($C "$BIN/hidravpn" passes buy 10 2>&1); RC=$?
 AMOUNT=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount'])" 2>/dev/null)
 RAW=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['amount_raw'])" 2>/dev/null)
-[ $RC = 0 ] && ! echo "$OUT" | grep -q "token was made" && echo "$OUT" | grep -q "Send exactly $AMOUNT HNET to" && echo "$OUT" | grep -q "$WALLET" \
+[ $RC = 0 ] && ! echo "$OUT" | grep -q "token was made" && echo "$OUT" | grep -q "^Send exactly this amount of HNET, every decimal:$" && echo "$OUT" | grep -qx "  $AMOUNT" && echo "$OUT" | grep -qx "  $WALLET" \
   && pass "passes buy 10: an order open on the kept token, the amount and the wallet told ($AMOUNT HNET)" || fail "buy: $OUT"
 EXPIRES=$(python3 -I -c "import json; print(json.load(open('/etc/hidravpn/order.json'))['expires'])" 2>/dev/null)
 LEFT=$(( $(date -u -d "$EXPIRES" +%s) - $(date +%s) ))
@@ -302,7 +305,9 @@ CODE=$($C curl -s -o "$WORK/c.json" -w '%{http_code}' --max-time 10 -X POST -H '
 [ "$CODE" = 200 ] && grep -q '"balance":37,"amount_raw":'"$RAW2"',"already_claimed":true' "$WORK/c.json" && pass "the same claim again: already claimed, the balance as it was" || fail "idempotent: $CODE $(cat "$WORK/c.json")"
 
 # ── An order in dollars ─────────────────────────────────────────────────────
-OUT=$($C "$BIN/hidravpn" passes buy 150 2>&1); echo "$OUT" | grep -q "Send exactly 47217.0[0-9]* HNET (5.99 USD at 0.00012686 USD for one HNET, fixed for this order)" && pass "an order in dollars says the HNET amount, the dollars and the rate" || fail "buy 150: $OUT"
+OUT=$($C "$BIN/hidravpn" passes buy 150 2>&1); echo "$OUT" | grep -qx "  47217\.0[0-9]*" && echo "$OUT" | grep -q "^For reference only: 5.99 USD at 0.00012686 USD for one HNET, fixed for this order. Do not type 5.99 into the wallet.$" \
+  && [ "$(echo "$OUT" | grep -n "^  47217" | cut -d: -f1)" -lt "$(echo "$OUT" | grep -n "5.99 USD" | cut -d: -f1)" ] && ! echo "$OUT" | grep "47217" | grep -q "USD" \
+  && pass "an order in dollars says the HNET amount alone on its line, then the dollars and the rate as a reference not to be typed into the wallet" || fail "buy 150: $OUT"
 grep -q '"usd": "5.99"' /etc/hidravpn/order.json && grep -q '"rate": "0.00012686"' /etc/hidravpn/order.json && pass "the order file keeps the dollars and the rate" || fail "order file: $(cat /etc/hidravpn/order.json)"
 
 # ── A flood of quotes is slowed ─────────────────────────────────────────────
