@@ -47,8 +47,6 @@ controls this site cannot make it believe a record the maintainers did
 not sign. They can still take the record away or serve an older one. The
 browser keeps the newest record it has verified and believes it until
 its valid-until, and after that says it cannot confirm it is up to date.
-Until the maintainers publish the first signature there is no .sig, and
-a browser that has never verified a record shows no notice.
 
 
 KNOWN PROBLEMS WITH THE 1.0.0 PACKAGES
@@ -59,11 +57,11 @@ longer receives security fixes, and Tor 15.0.22. The 1.0.0 Windows and
 macOS packages were made the same way; assume the same of them. The
 source they were refreshed from names Electron 44.9.3 and Tor 15.0.26,
 but the runtime and Tor were carried over from an older package without
-being checked against those pins. They are rebuilt from scratch, on the
-pinned Electron and Tor, under a new version number: the 1.0.0 names are
-never given other files.
+being checked against those pins. 1.1.0, listed below, is that rebuild:
+made from scratch on the pinned Electron and Tor, under a new version
+number, so the 1.0.0 names are never given other files.
 
-Every 1.0.0 package also has two leaks, fixed in the next version. A
+Every 1.0.0 package also has two leaks, fixed in 1.1.0. A
 page can make the system look up the names it hints at (DNS prefetch)
 through the system's own resolver, outside Tor: the site can learn which
 resolver you use, and your network can see those names. And a tab opened
@@ -71,11 +69,11 @@ while Tor is still connecting can load without Tor, or through any other
 program listening on port 9050 of this machine.
 
 Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
-22 October 2026 also lack some or all of the security fixes listed below,
-among them the bridge that let any downloaded .html file turn Tor off
-and the engine API that answered any website. Replace them. None of
-the 1.0.0 copies checks for updates, so they cannot learn of this
-themselves.
+22 October 2026 also lack some or all of the security fixes made since
+the first packages, among them the bridge that let any downloaded .html
+file turn Tor off and the engine API that answered any website. Replace
+every copy of 1.0.0 with 1.1.0. None of the 1.0.0 copies checks for
+updates, so they cannot learn of this themselves.
 
 
 ON THE RELEASE PAGE NOW
