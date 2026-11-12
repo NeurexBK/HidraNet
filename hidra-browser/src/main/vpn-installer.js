@@ -61,8 +61,10 @@ const MAX_FILES = 8;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 // The oldest release this browser installs, whatever is signed: raised when
-// a release fixes a security problem, so nothing older can be offered again.
-const MIN_VERSION = '0.1.2';
+// a release fixes a security problem, so nothing older can be offered again,
+// or adds what this browser's pages need (0.1.3: buying passes on the VPN
+// page). It is the release the site serves (scripts/launch-check.js).
+const MIN_VERSION = '0.1.3';
 // The only date shape a manifest's expiry takes (make-release-manifest.sh),
 // the same as the node list's.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
