@@ -85,7 +85,7 @@ expect('the full VPN bridge goes to hidravpn.html only, the new tab page gets th
 expect('the preload offers vpn inside the internal-page branch only', internalStart !== -1 && appsStart !== -1 && preload.indexOf('vpnBridge ? { vpn: vpnBridge }') > internalStart && preload.indexOf('vpnBridge ? { vpn: vpnBridge }') < appsStart, 'the bridge is offered outside the internal-page branch');
 expect('the apps branch does not offer vpn', !preload.slice(appsStart).includes('vpn:'), 'vpn appears after the apps branch starts');
 const handlers = [...main.matchAll(/ipcMain\.handle\('vpn:([a-z-]+)', (?:async )?\((event[^)]*)\) => \{\s*vpnOnlyOurs\(event\);/g)].map((m) => m[1]).sort();
-expect('every vpn handler but the status checks for the VPN page before anything else', handlers.join() === ['check-release', 'connect', 'disconnect', 'fetch-list', 'get-passes', 'import-nodes', 'install', 'leak-test', 'new-identity', 'nodes', 'refill', 'set-pass-token', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
+expect('every vpn handler but the status checks for the VPN page before anything else', handlers.join() === ['check-release', 'checkout', 'connect', 'disconnect', 'fetch-list', 'get-passes', 'import-nodes', 'install', 'leak-test', 'new-identity', 'nodes', 'refill', 'set-pass-token', 'uninstall', 'verify-file'].sort().join(), `gated handlers: ${handlers.join(', ') || 'none'}`);
 expect('the status is read by the VPN page or the new tab page, nothing else', /ipcMain\.handle\('vpn:status', \(event\) => \{\s*if \(!isVpnPage\(event\)\) requirePage\(event, UI_ROOT_URL, \['newtab\.html'\], 'the VPN status'\);/.test(main), 'vpn:status is not gated on the two pages');
 const ungated = [...main.matchAll(/ipcMain\.handle\('vpn:[a-z-]+'/g)].length;
 expect('no vpn handler is without the check', ungated === handlers.length + 1, `${ungated} handlers, ${handlers.length + 1} gated`);
@@ -95,7 +95,7 @@ expect('the check wants the main frame, not a frame inside a page', /frame !== e
 
 // ── The main process never hands the renderer a key ──────────────────────
 const manager = read(ROOT, 'src', 'main', 'vpn-manager.js');
-expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes', 'get_passes', 'set_pass_token', 'refill'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: '(up|join)'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
+expect('the browser sends only the service\'s commands', ['status', 'connect', 'down', 'new_identity', 'nodes', 'import_nodes', 'get_passes', 'set_pass_token', 'refill', 'checkout'].every((c) => manager.includes(`cmd: '${c}'`)) && !/cmd: '(up|join)'/.test(manager), 'the browser sends an "up" with invites, or lacks a command');
 expect('the fetched list is sent to the service unverified by the browser, with its .sig, from one fixed address', /VPN_LIST_URL \+ '\.sig'/.test(main) && /const VPN_LIST_URL = 'https:\/\//.test(main) && /importNodesFromTexts\(list, signature\)/.test(main), 'the fetch handler does not pass the signature through, or the URL is not fixed');
 expect('the page says when one operator runs both hops', /One operator runs both hops/.test(page) && /same_operator === true/.test(page), 'no one-operator warning driven from status.same_operator');
 expect('the page fetches the list and never joins a node: open nodes are asked for a fresh key on every connection', /id="btn-fetch"/.test(page) && /api\.fetchList\(\)/.test(page) && !/api\.join\(/.test(page) && !/btn-join/.test(page), 'the fetch button is missing, or the page still joins nodes (a lasting lease a node could recognise)');
@@ -107,6 +107,51 @@ expect('the page asks for no passes while two hops are up or being built, whatev
     && /\$\('btn-passes'\)\.disabled = busy \|\| !hasPassNode \|\| twoHops\(lastStatus\);/.test(page)
     && /if \(!api \|\| busy \|\| twoHops\(lastStatus\)\) return;/.test(page),
   'Get passes stays on offer in privado, leaving the account token to the service alone');
+{
+  // Buying passes: the page names an action, a pack and a signature, never
+  // where to pay, what in, how much, whom to ask or with which account.
+  const asks = [...page.matchAll(/checkoutRequest\(\{([^}]*)\}/g)].map((m) => m[1]);
+  const keys = asks.flatMap((a) => [...a.matchAll(/([a-z_]+):/g)].map((k) => k[1]));
+  expect('the page asks checkout for an action, a pack, the person\'s word and a signature, and nothing else',
+    asks.length >= 4 && keys.every((k) => ['action', 'passes', 'replace_unpaid', 'signature'].includes(k))
+      && /checkoutRequest\(\{ action: 'buy', passes: n, replace_unpaid: replace \}/.test(page)
+      && (page.match(/api\.checkout\(/g) || []).length === 1 && /r = await api\.checkout\(input\);/.test(page),
+    `checkout is asked with: ${asks.join(' | ')}`);
+  expect('the module sends checkout only what it builds itself, and the bridge only passes it on',
+    /const cmd = \{ cmd: 'checkout', action \};/.test(manager) && /cmd\.replace_unpaid = input\.replace_unpaid === true;/.test(manager)
+      && /checkout: \(input\) => ipcRenderer\.invoke\('vpn:checkout', input\),/.test(preload)
+      && /ipcMain\.handle\('vpn:checkout', \(event, input\) => \{\s*vpnOnlyOurs\(event\);\s*return vpnManager\.checkout\(input\);/.test(main),
+    'vpn-manager.js forwards the page\'s object, or the bridge or the handler is missing');
+  expect('an order reads "Send exactly", the amount on its own with its own Copy, then the wallet with its own',
+    /<div class="pay-label">Send exactly<\/div>\s*<div class="pay-row"><span class="pay-amount" id="checkout-amount"><\/span><span class="pay-unit" id="checkout-unit">HNET<\/span><button class="btn copy" id="checkout-copy-amount" type="button">Copy<\/button><\/div>/.test(page)
+      && /id="checkout-wallet"><\/span><button class="btn copy" id="checkout-copy-wallet" type="button">Copy<\/button>/.test(page)
+      && /copyField\('checkout-copy-amount', checkoutOrder\.amount\)/.test(page) && /copyField\('checkout-copy-wallet', checkoutOrder\.wallet\)/.test(page),
+    'the amount, the wallet or their Copy buttons are not as they should be');
+  const warn = (page.match(/\$\('checkout-warn'\)\.textContent = '([^;]+);/) || [])[1] || '';
+  expect('the order says the amount must match to the last digit, to choose HNET and not dollars, and that dollars are only a reference never typed in',
+    /must match to the last digit/.test(warn) && /as what you send, not dollars/.test(warn) && /only a reference: never type it into your wallet/.test(warn)
+      && /Not the amount to send/.test(page),
+    `the warning is: ${warn}`);
+  expect('the dollars come after the amount, smaller',
+    page.indexOf('id="checkout-ref"') > page.indexOf('id="checkout-amount"') && page.indexOf('id="checkout-ref"') > page.indexOf('id="checkout-warn"')
+      && /\.pay-ref\{font-size:11px/.test(page) && /\.pay-amount\{[^}]*font-size:20px/.test(page),
+    'the dollar line is before the amount, or not smaller');
+  expect('an open order is replaced only on the person\'s word that it is unpaid',
+    /var replace = Boolean\(checkoutOrder\) && \$\('checkout-unpaid'\)\.checked;/.test(page) && /if \(checkoutOrder && !replace\) \{/.test(page)
+      && /<input type="checkbox" id="checkout-unpaid">/.test(page),
+    'a package replaces an open order without the box, or the box starts ticked');
+  expect('no order and no claim while two hops are up, whatever the service would do',
+    /function buyPack\(n\) \{\s*if \(twoHops\(lastStatus\)\) \{/.test(page) && /\$\('checkout-claim'\)\.addEventListener\('click', function \(\) \{\s*if \(twoHops\(lastStatus\)\) \{/.test(page)
+      && /\$\('checkout-claim'\)\.disabled = off \|\| privado/.test(page) && /b\.disabled = off \|\| privado;/.test(page),
+    'the page would ask for an order or a claim in privado');
+  expect('a service older than checkout: the page says to update HidraVPN from Settings and offers nothing',
+    /var CHECKOUT_OLD = '[^']*Update HidraVPN: Settings, Service, Check for an update\./.test(page) && /\} else if \(r && \(r\.older === true \|\| r\.ok\)\) \{/.test(page)
+      && /checkoutUnsupported = true;\s*message\('err', CHECKOUT_OLD, 'checkout-msg'\);/.test(page),
+    'an older service would break the page, or the page does not say where to update');
+  expect('the deadline is said, and an order past it is not shown to be paid',
+    /'Pay before ' \+ new Date\(deadline\)\.toLocaleString\('en-GB'/.test(page) && /\$\('checkout-pay'\)\.hidden = past;/.test(page),
+    'no deadline, or an order past it still offered for payment');
+}
 {
   // A service older than this page tops passes up through two hops: the
   // page may say "never in privado" only of one whose status says so.

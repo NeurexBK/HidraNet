@@ -151,7 +151,12 @@ const NOT_THE_SERVICE_HINT =
   'Nothing readable was sent to it. Restart the HidraVPN service, or this computer; if this comes back, ' +
   'another program on this computer is holding the service\'s channel.';
 
-const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes']);
+const SLOW_COMMANDS = new Set(['connect', 'new_identity', 'join', 'get_passes', 'import_nodes', 'checkout']);
+
+// What the VPN page may ask of checkout, and what a Solana transaction
+// signature looks like (base58, 64 bytes): anything else is refused here.
+const CHECKOUT_ACTIONS = ['status', 'packs', 'buy', 'claim'];
+const SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
 
 class VpnManager {
   constructor(options = {}) {
@@ -445,6 +450,35 @@ class VpnManager {
   // nothing, only read. The answer carries the setting as `refill`.
   async refill(enabled) {
     return this._command(typeof enabled === 'boolean' ? { cmd: 'refill', enabled } : { cmd: 'refill' });
+  }
+
+  // Buying passes with HNET. The page names an action and, for an order,
+  // the pack (and the person's word that an open order is unpaid), for a
+  // claim the transaction's signature: only those cross to the service,
+  // built afresh here, so nothing else the page puts in (a wallet, a mint,
+  // an issuer, a price, a token) ever does. The service pays to the wallet
+  // the signed list names, asks the issuer that list names, and keeps the
+  // account token to itself. The answer carries `checkout`; a service older
+  // than this answers `older` (it does not know the command).
+  async checkout(input) {
+    const action = input && typeof input === 'object' ? input.action : undefined;
+    if (!CHECKOUT_ACTIONS.includes(action)) return { ok: false, error: 'That is not a request this page makes.' };
+    const cmd = { cmd: 'checkout', action };
+    if (action === 'buy') {
+      if (!Number.isInteger(input.passes) || input.passes <= 0 || input.passes > 0xffffffff) {
+        return { ok: false, error: 'Choose one of the packages.' };
+      }
+      cmd.passes = input.passes;
+      cmd.replace_unpaid = input.replace_unpaid === true;
+    }
+    if (action === 'claim') {
+      const signature = typeof input.signature === 'string' ? input.signature.trim() : '';
+      if (!SIGNATURE.test(signature)) {
+        return { ok: false, error: 'Paste the whole transaction signature from your wallet: 64 to 88 letters and digits.' };
+      }
+      cmd.signature = signature;
+    }
+    return this._command(cmd);
   }
 
   async _command(cmd) {

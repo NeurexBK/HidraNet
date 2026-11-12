@@ -18,7 +18,9 @@
 # resolver, and apps-server-electron, which proves the apps open, and the
 # vault answers them, only while the browser's own apps server holds their
 # port on 127.0.0.1 and ::1, and never from a service worker (apps-server
-# checks its bind and token logic on their own). The release checks run
+# checks its bind and token logic on their own). Buying passes from the VPN
+# page is checked twice: what crosses to the service (vpn-checkout) and
+# what the page shows (vpn-checkout-electron). The release checks run
 # here too: what a package must run (release-runtime), the update notice and
 # the signed record it reads (update-check and update-notice-electron), the
 # launch-day readiness check against its fixtures (launch-check), and, in a
@@ -113,7 +115,7 @@ jobs:
       - name: tests that need only node
         run: |
           set -e
-          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-installer vpn-leaktest release-verify ipc-senders tor-connect sevennine-start network-lock build-pins release-base release-notes release-runtime update-check launch-check; do
+          for t in anonymity-claims privacy-policy app-storage apps-server chat-crypto display-url english-only forum-crypto forum-registrar mqtt-worker-csp vault vpn-manager vpn-page vpn-checkout vpn-installer vpn-leaktest release-verify ipc-senders tor-connect sevennine-start network-lock build-pins release-base release-notes release-runtime update-check launch-check; do
             echo "::group::$t"
             node "test/$t.js"
             echo "::endgroup::"
@@ -142,7 +144,7 @@ jobs:
       - name: tests that need Electron
         run: |
           set -e
-          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-server-electron update-notice-electron connection-status-electron review-photos-electron apps-e2e; do
+          for t in mail-crypto preload-boundary review-directory vault-electron chat-color mail-injection forum-injection search-injection review-injection landing-review-injection site-signing review-signing tab-session-electron fingerprint-electron tor-route-electron dns-prefetch-electron apps-server-electron update-notice-electron connection-status-electron vpn-checkout-electron review-photos-electron apps-e2e; do
             echo "::group::$t"
             xvfb-run -a ./node_modules/.bin/electron --no-sandbox "test/$t.js"
             echo "::endgroup::"

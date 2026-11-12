@@ -497,7 +497,11 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
   over TLS, checked only to add up and to match the pack asked for. The
   person sees the amount before paying. A quote signed under a key the list
   names would fix the amount too; it is not in this phase.
-- **The browser has no button for it yet**: the command line only.
+- **The browser buys through the service** from HidraVPN 0.1.3 and HidraNet
+  Browser 1.1.1 (Settings, Passes, "Buy passes with HNET"): the same order,
+  checks and account, with the wallet and the issuer taken from the signed
+  list, never from the page (`browser-checkout-review.md`). A 0.1.2 service
+  answers that it does not know the command, and the page says to update.
 - **The public RPC is rate-limited** and run by someone else; an operator
   who sells in earnest runs or rents RPCs and gives `--pay-rpc` (one or,
   for the quorum below, several).
