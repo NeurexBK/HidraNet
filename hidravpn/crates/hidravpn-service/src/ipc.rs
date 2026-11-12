@@ -142,6 +142,17 @@ pub enum Command {
     /// answer never repeats it.
     /// (`pass_token`, not `token`: that name is the control token's.)
     SetPassToken { pass_token: Secret },
+    /// Buying passes with HNET from the browser (`checkout.rs`): read the
+    /// order kept, list the packs, open an order, claim it with the
+    /// transaction that paid it. The wallet and the token paid are the
+    /// signed list's, the issuer the pocket's list names: nothing in the
+    /// request names any of them, or the account, whose token stays in the
+    /// service. The answer carries where it stands as `checkout`. An order
+    /// or a claim is refused while two hops are up, as `get_passes` is.
+    Checkout {
+        #[serde(flatten)]
+        action: crate::checkout::Action,
+    },
     /// Automatic passes (phase 6): what is given is changed, the rest kept;
     /// with nothing given, only read. The answer carries the setting as
     /// `refill` and says it as `note`.
@@ -296,6 +307,14 @@ pub struct Response {
     /// The answer to `refill`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refill: Option<crate::passes::Refill>,
+    /// The answer to `checkout`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<crate::checkout::View>,
+    /// With an error the browser acts on, a name for it that does not
+    /// change with its words: "no_passes" (`get_passes`: this machine keeps
+    /// no account token, or the issuer holds no passes for it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 impl Response {
@@ -307,6 +326,8 @@ impl Response {
             note: None,
             nodes: None,
             refill: None,
+            checkout: None,
+            code: None,
         }
     }
     pub fn with_status(s: StatusReport) -> Self {
@@ -317,6 +338,8 @@ impl Response {
             note: None,
             nodes: None,
             refill: None,
+            checkout: None,
+            code: None,
         }
     }
     pub fn err(msg: impl Into<String>) -> Self {
@@ -327,6 +350,8 @@ impl Response {
             note: None,
             nodes: None,
             refill: None,
+            checkout: None,
+            code: None,
         }
     }
     pub fn noting(mut self, note: impl Into<String>) -> Self {
@@ -341,6 +366,8 @@ impl Response {
             note: None,
             nodes: Some(nodes),
             refill: None,
+            checkout: None,
+            code: None,
         }
     }
 }

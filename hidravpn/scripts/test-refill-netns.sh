@@ -19,7 +19,10 @@
 # with auto off nothing is fetched; while disconnected nothing is fetched
 # even when low; with two hops up nothing is fetched either, by itself or by
 # hand, since it would leave through the exit, whether the service or the
-# command line holds them; and no log names the client's address or the
+# command line holds them, and the browser's checkout sends no order, no
+# claim and no request for the packs then (it reads the order kept), while
+# in rapido an order from it opens, at the list's issuer, to the list's
+# wallet, through the tunnel; and no log names the client's address or the
 # token.
 #
 # Run as root:  hidravpn/scripts/test-refill-netns.sh
@@ -32,6 +35,8 @@ C="ip netns exec hv-client"; N="ip netns exec hv-node"; I="ip netns exec hv-inet
 PIDS=()
 export RUST_BACKTRACE=0
 export HIDRAVPN_PLAIN_HTTP_ISSUER=1
+# The wallet the issuer sells to, which the second list names.
+WALLET=So11111111111111111111111111111111111111112
 ok=0; bad=0
 pass() { echo "ok    $1"; ok=$((ok + 1)); }
 fail() { echo "FAIL  $1"; bad=$((bad + 1)); }
@@ -42,7 +47,7 @@ cleanup() {
   for ns in hv-client hv-node hv-inet hv-e hv-x; do ip netns del "$ns" 2>/dev/null; done
   rm -rf /etc/netns/hv-client /run/hidravpn/control.sock /run/hidravpn/control.token /run/hidravpn/netcfg.json \
          /etc/hidravpn/client.key /etc/hidravpn/circuit.json /etc/hidravpn/passes.json /etc/hidravpn/pass.token \
-         /etc/hidravpn/refill.json /var/run/wireguard/hvp0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock
+         /etc/hidravpn/refill.json /etc/hidravpn/order.json /var/run/wireguard/hvp0.sock /var/run/wireguard/hve0.sock /var/run/wireguard/hvx0.sock
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
@@ -68,10 +73,10 @@ $I python3 -I "$HERE/test/dns-stub.py" 10.201.0.2 > "$WORK/dns.log" 2>&1 & PIDS+
 sleep 1
 
 # ── The issuer, on the internet side ────────────────────────────────────────
-ISS="$BIN/hidravpn-issuer --accounts $WORK/accounts.json"
+ISS="$BIN/hidravpn-issuer --accounts $WORK/accounts.json --orders $WORK/orders.json"
 $ISS keygen --out "$WORK/issuer-key.json" --days 30 > "$WORK/pass-key.json" 2>/dev/null || { fail "issuer keygen"; exit 1; }
 TOKEN=$($ISS account add --name someone --quota 40 2>/dev/null)
-$I $ISS run --key "$WORK/issuer-key.json" --listen 10.201.0.2:8730 --plain-http-public > "$WORK/issuer.log" 2>&1 & PIDS+=($!)
+$I $ISS run --key "$WORK/issuer-key.json" --listen 10.201.0.2:8730 --plain-http-public --pay-wallet "$WALLET" --pay-pack 10=50 > "$WORK/issuer.log" 2>&1 & PIDS+=($!)
 for i in $(seq 1 50); do grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" && break; sleep 0.2; done
 grep -q "pass issuer on TCP 8730" "$WORK/issuer.log" && pass "the issuer is up, on the internet side" || { cat "$WORK/issuer.log"; fail "issuer"; exit 1; }
 
@@ -180,7 +185,7 @@ for i in $(seq 1 100); do grep -q "admission service on" "$WORK/node-e.log" && g
 $E "$BIN/hidravpn-node" --config "$WORK/e.toml" record > "$WORK/rec-e.json" 2>/dev/null
 $X "$BIN/hidravpn-node" --config "$WORK/x.toml" record > "$WORK/rec-x.json" 2>/dev/null
 HIDRAVPN_SIGN="$BIN/hidravpn-sign" bash "$HERE/make-node-list.sh" --key "$WORK/list.key" --out "$WORK/nodes2.json" --sequence 2 \
-  --issuer-url http://10.201.0.2:8730 --pass-key "$WORK/pass-key.json" "$WORK/rec.json" "$WORK/rec-e.json" "$WORK/rec-x.json" > /dev/null 2>&1
+  --issuer-url http://10.201.0.2:8730 --pass-key "$WORK/pass-key.json" --pay-wallet "$WALLET" "$WORK/rec.json" "$WORK/rec-e.json" "$WORK/rec-x.json" > /dev/null 2>&1
 OUT=$("$BIN/hidravpn" nodes import "$WORK/nodes2.json" --pubkey "$LISTPUB" 2>&1); echo "$OUT" | grep -q "added 2 node(s)" || fail "import with node-e and node-x: $OUT"
 # node-x's first passes through the side door, disconnected.
 $C ip link set c-i up; $C ip route add 10.201.0.2/32 via 10.209.0.1 2>/dev/null
@@ -206,6 +211,18 @@ BEFORE=$(count_of node-x); sleep 6
 R=$(svc '{"cmd":"get_passes","count":1}')
 echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "passes asked of the service by hand are refused while two hops are up, and say why" || fail "get_passes in privado: $R"
 OUT=$($C "$BIN/hidravpn" passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and so are they from the command line" || fail "passes get in privado: $OUT"
+# The browser's checkout: an order and a claim carry the account, and are
+# refused, though this list names the wallet and the issuer sells, so an
+# order would open otherwise; so are the packs, as buying goes no further.
+# Reading the order kept, which asks nothing of anyone, is not.
+QUOTED_BEFORE=$(grep -c "order opened" "$WORK/issuer.log")
+R=$(svc '{"cmd":"checkout","action":"buy","passes":10}'); R2=$(svc '{"cmd":"checkout","action":"claim","signature":"5VERv8NMvzbJMEkV8xnrLkEaWRtSz2CosKDYVCJjrRo"}')
+echo "$R" | grep -q '"ok":false' && echo "$R" | grep -q "not while two hops (privado) are up: the request carries the pass account token" && echo "$R2" | grep -q '"ok":false' && echo "$R2" | grep -q "not while two hops (privado) are up" \
+  && [ ! -e /etc/hidravpn/order.json ] && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && [ "$(grep -c "order opened" "$WORK/issuer.log")" = "$QUOTED_BEFORE" ] \
+  && pass "an order or a claim from the browser's checkout is refused by the service while two hops are up, with the command line's reason, though the list names a wallet" || fail "checkout in privado: $R / $R2"
+R=$(svc '{"cmd":"checkout","action":"status"}'); R2=$(svc '{"cmd":"checkout","action":"packs"}')
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q '"state":"idle"' && echo "$R2" | grep -q '"ok":false' && echo "$R2" | grep -q "not while two hops (privado) are up: passes are bought while disconnected or connected in rapido" \
+  && pass "in privado the packs are refused too, and reading the order kept is not" || fail "checkout status/packs in privado: $R / $R2"
 OUT=$($C "$BIN/hidravpn" --direct passes get --count 1 2>&1); [ $? -ne 0 ] && echo "$OUT" | grep -q "not while two hops (privado) are up" && [ "$(grep -c "issued" "$WORK/issuer.log")" = "$ISSUED_BEFORE" ] && pass "and with --direct too: the service is still asked whether two hops are up" || fail "--direct passes get in privado: $OUT"
 OUT=$("$BIN/hidravpn" passes list 2>&1); echo "$OUT" | grep -q "never in privado" && pass "passes list says automatic passes never go through two hops" || fail "list: $OUT"
 # Joining node-x now would redeem a pass through node-x itself, the exit,
@@ -242,6 +259,15 @@ cp "$WORK/pocket-with-node-p.json" /etc/hidravpn/circuit.json
 R=$(svc '{"cmd":"connect","mode":"rapido"}'); connected || fail "rapido after privado: $R"
 for _ in $(seq 1 20); do [ "$(count_of node-p)" = 10 ] && break; sleep 1; done
 [ "$(count_of node-p)" = 10 ] && pass "back in one hop, node-p is topped up to 10" || fail "top-up after privado: $(count_of node-p)"
+# In one hop an order from the browser opens: at the list's issuer, to the
+# list's wallet, through the tunnel (the side door is shut), and is kept.
+QUOTED_BEFORE=$(grep -c "order opened" "$WORK/issuer.log")
+R=$(svc '{"cmd":"checkout","action":"buy","passes":10}')
+ORDER_ISSUER=$(python3 -I -c "import json; o = json.load(open('/etc/hidravpn/order.json')); print(o['issuer'], o['wallet'], o['passes'])" 2>/dev/null)
+echo "$R" | grep -q '"ok":true' && echo "$R" | grep -q '"state":"awaiting_payment"' && echo "$R" | grep -q "\"wallet\":\"$WALLET\"" \
+  && [ "$(grep -c "order opened for 10 pass(es)" "$WORK/issuer.log")" = "$((QUOTED_BEFORE + 1))" ] && [ "$ORDER_ISSUER" = "http://10.201.0.2:8730 $WALLET 10" ] \
+  && [ "$(stat -c %a /etc/hidravpn/order.json)" = 600 ] && $C ip link show c-i | grep -q "state DOWN" \
+  && pass "in rapido an order from the browser opens at the list's issuer, to the list's wallet, through the tunnel, and is kept root-only" || fail "checkout in rapido: $R ($ORDER_ISSUER)"
 # In one hop a join goes ahead: node-x, known again from the list, gets a
 # pass (its two went on the two-hop connections) and is joined with it,
 # redeemed from this machine (through node-p, not behind an entry), and

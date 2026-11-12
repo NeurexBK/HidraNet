@@ -611,18 +611,18 @@ async fn main() -> Result<()> {
                         let token_name = hidravpn_service::passes::token_name(issuer.pay_mint());
                         let p = hidravpn_service::passes::packs(&pocket).await?;
                         println!("passes for sale, paid in {token_name} sent to {wallet}:");
+                        // The price in the token first, on its own line;
+                        // a dollar price after it, as a reference only: it
+                        // is never what goes into the wallet.
                         for k in &p.packs {
                             let amount =
-                                hidravpn_core::payment::amount_to_string(k.price_raw, p.decimals)
-                                    .trim_end_matches('0')
-                                    .trim_end_matches('.')
-                                    .to_string();
+                                hidravpn_service::passes::price_to_string(k.price_raw, p.decimals);
                             match k.usd_cents {
                                 Some(c) => println!(
-                                    "  {:>5} passes for {} USD, {amount} {token_name} today   (hidravpn passes buy {})",
+                                    "  {:>5} passes for {amount} {token_name} today   (hidravpn passes buy {})\n          priced at {} USD: a reference only, not the amount to send",
+                                    k.passes,
                                     k.passes,
                                     hidravpn_core::payment::usd_to_string(c),
-                                    k.passes
                                 ),
                                 None => println!(
                                     "  {:>5} passes for {amount} {token_name}   (hidravpn passes buy {})",
@@ -633,6 +633,7 @@ async fn main() -> Result<()> {
                         if let Some(r) = &p.rate {
                             println!("today's rate: {r} USD for one {token_name}; an order fixes the amount for as long as it is open");
                         }
+                        println!("an order says the exact amount to send, a little above the price: send that amount of {token_name}, every decimal, never a dollar figure");
                         println!("a pass is one connection through a node that admits with one");
                         return Ok(());
                     };
@@ -676,7 +677,12 @@ async fn main() -> Result<()> {
                             anyhow!("no order is open; `hidravpn passes buy` makes one")
                         })?;
                     let pocket = load_pocket(&pocket_path)?;
-                    let token = hidravpn_service::passes::read_token(&token_beside(&pocket_path))?;
+                    // The token the order was opened for, wherever it is
+                    // kept now.
+                    let token = hidravpn_service::passes::token_for_order(
+                        &token_beside(&pocket_path),
+                        &order,
+                    )?;
                     use hidravpn_service::passes::Claimed;
                     match hidravpn_service::passes::claim(
                         &pocket,

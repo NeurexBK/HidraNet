@@ -1266,6 +1266,14 @@ function setupIPC(tabs, proxy, chromeContents = () => (mainWindow ? mainWindow.w
     vpnOnlyOurs(event);
     return vpnManager.refill(typeof enabled === 'boolean' ? enabled : undefined);
   });
+  // Buying passes with HNET: the page picks a pack, asks for an order, and
+  // hands back the transaction's signature. vpnManager.checkout passes on
+  // only those fields; the service pays to the wallet the signed list
+  // names, and the person pays from their own wallet, never the browser.
+  ipcMain.handle('vpn:checkout', (event, input) => {
+    vpnOnlyOurs(event);
+    return vpnManager.checkout(input);
+  });
   // Checks a downloaded release file against FILE.sig with the release key
   // this build embeds. With no key embedded it says so and accepts nothing.
   ipcMain.handle('vpn:verify-file', async (event) => {

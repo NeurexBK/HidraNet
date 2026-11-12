@@ -76,13 +76,19 @@ from `make-node-list.sh --pay-wallet ADDR [--pay-mint MINT]`). The client:
 - refuses a `/packs` or `/quote` answer that asks for payment to another
   wallet, or in another token (HNET's mint, when the list names none), and
   keeps no order then. It never shows the wallet such an answer named;
-- refuses an answer whose token has more than 18 decimals;
+- refuses an answer whose token has more than 18 decimals, and one that
+  reads HNET with other decimals than HNET's 6;
 - keeps and shows the list's wallet and token in the order, never the
   answer's;
 - treats an open order that the list it now holds does not stand behind
-  (another wallet or token, after a newer list) as not to be paid:
-  `passes list` and `passes buy` say so, `passes claim` sends nothing, and
-  `passes buy N --replace` makes a new order.
+  (another wallet, token or issuer, after a newer list, or HNET in other
+  decimals) as not to be paid: `passes list` and `passes buy` say so,
+  `passes claim` sends nothing, and `passes buy N --replace` makes a new
+  order. A claim goes only to the issuer the list names;
+- keeps in the order the SHA-256 of the account token it was opened for,
+  and claims it with that token, whether it is the one kept now or one a
+  newer token replaced; with none of them, it sends nothing and says the
+  order must be claimed with that token.
 
 The issuer's `--pay-wallet` and `--pay-mint` and the list must agree. To
 change the wallet, restart the issuer with the new one and publish the list
@@ -104,7 +110,11 @@ base is the mint. Give `--pay-price-url` more than once for redundancy:
 each refresh tries the feeds in order and takes the first that answers, so
 one being down does not stop dollar-priced sales (they must all speak the
 same shape). `GET /packs` tells the HNET of the moment and the rate,
-and the client shows both ("150 passes for 5.99 USD, 47217 HNET today").
+and the client shows the HNET first and the dollars on the next line, as a
+reference only ("150 passes for 47217 HNET today", then "priced at 5.99
+USD: a reference only, not the amount to send"). An order prints the amount
+to send on a line of its own, digits only, and the dollars after it, not to
+be typed into the wallet.
 
 A feed is a thing to be careful with: one that lies or glitches would sell
 passes for nothing. So:
@@ -198,7 +208,11 @@ operator's risk, as is the rate moving while an order is open.
   answer does not carry the new time, so the client goes on showing the
   quote's; when a claim is turned away only for now (not final on chain
   yet, or too many claims just then), `hidravpn passes claim` says the order
-  normally stays open up to 24 hours from when it was made. The room for
+  normally stays open up to 24 hours from when it was made. Only the
+  issuer's own too-many-tries reason (`payment::TOO_MANY_TRIES`, which the
+  issuer and the client share) says an order takes no more claims; any
+  other 429, a proxy's rate limit included, is "busy", and the client says
+  to try the same claim again in a minute. The room for
   held orders is 4 000 at once, and anyone can fill it with orders of
   their own; when it is full, an order keeps its two hours. That is a
   convenience, not what keeps a payment: a payment made before its order
@@ -493,7 +507,11 @@ hidravpn-issuer order lapsed`; the default paths are the unit's).
   over TLS, checked only to add up and to match the pack asked for. The
   person sees the amount before paying. A quote signed under a key the list
   names would fix the amount too; it is not in this phase.
-- **The browser has no button for it yet**: the command line only.
+- **The browser buys through the service** from HidraVPN 0.1.3 and HidraNet
+  Browser 1.1.1 (Settings, Passes, "Buy passes with HNET"): the same order,
+  checks and account, with the wallet and the issuer taken from the signed
+  list, never from the page (`browser-checkout-review.md`). A 0.1.2 service
+  answers that it does not know the command, and the page says to update.
 - **The public RPC is rate-limited** and run by someone else; an operator
   who sells in earnest runs or rents RPCs and gives `--pay-rpc` (one or,
   for the quorum below, several).
@@ -585,7 +603,7 @@ sudo hidravpn passes buy 10 --replace        # a new order, leaving the open one
 ## How to check it
 
 ```
-hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 89 checks
+hidravpn/scripts/test-pay-netns.sh         # an issuer selling, a stand-in chain and feed, a client: 102 checks
 cargo test --manifest-path hidravpn/Cargo.toml -p hidravpn-core -p hidravpn-issuer -p hidravpn-service
 ```
 
@@ -630,7 +648,15 @@ as text or a form is refused (415) and opens nothing; a lapsed order is
 listed by `order lapsed`, and `order credit` credits it to the order's own
 token for a payment made while it was open, and refuses a payment made
 after, another amount, and the same transaction twice; and the issuer's
-files and logs hold no token, transaction, amount, wallet or client.
+files and logs hold no token, transaction, amount, wallet or client. The
+browser's checkout through the service, last: the order the command line
+left open is shown, a package asked for meanwhile answers it and asks the
+issuer nothing, said to be unpaid it is replaced by an order to the list's
+wallet and issuer on this machine's token whatever wallet, issuer or token
+the request names, a transaction not final yet and one of 5.99 HNET are
+each answered in the service's words with the order kept, the exact amount
+is credited and closes it; no answer repeats the token or a signature, and
+the service's log names no token, transaction, wallet or amount.
 
 Unit tests cover the rest: base58 against known vectors; amounts written
 and read back with every decimal, and none read with more than 18; a list

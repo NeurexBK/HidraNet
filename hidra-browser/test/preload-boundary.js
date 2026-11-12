@@ -85,7 +85,7 @@ app.whenReady().then(async () => {
   const FULL = ['apps', 'prefs', 'proxy', 'sevennine', 'tor', 'vault', 'vpn'];
   // The VPN goes to its own page; the new tab page reads the status for its
   // badge; every other page of ours gets no VPN at all.
-  const VPN_ALL = ['checkRelease', 'connect', 'disconnect', 'fetchList', 'getPasses', 'importNodes', 'install',
+  const VPN_ALL = ['checkRelease', 'checkout', 'connect', 'disconnect', 'fetchList', 'getPasses', 'importNodes', 'install',
     'leakTest', 'newIdentity', 'nodes', 'refill', 'setPassToken', 'status', 'uninstall', 'verifyFile'];
   const full = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === 'status';
   const vpnPage = (s) => s && s.keys.join() === FULL.join() && s.vault.join() === 'status' && s.vpn.join() === VPN_ALL.join();

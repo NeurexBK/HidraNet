@@ -245,7 +245,15 @@ impl Daemon {
                 .await
             {
                 Ok((pocket, line)) => Response::with_nodes(self.reports(&pocket)).noting(line),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => {
+                    let mut r = Response::err(format!("{e:#}"));
+                    // No passes to be had on this machine's account: the
+                    // page says to buy some, by this code.
+                    if e.is::<hidravpn_core::pass::AccountEmpty>() {
+                        r.code = Some("no_passes".into());
+                    }
+                    r
+                }
             },
             Command::SetPassToken { .. } if !privileged => Response::err(
                 "keeping the pass account token needs root (an administrator on Windows), as `up` with an invite does: the token holds the account's passes, bought ones too, and the next purchase goes on it. `sudo hidravpn passes token <file>` keeps one (on Windows, `hidravpn passes token <file>` in a terminal run as administrator).",
@@ -258,6 +266,14 @@ impl Daemon {
                     ),
                     None => "the account token is kept on this machine, readable by root only".to_string(),
                 }),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Command::Checkout { action } => match self.checkout(action).await {
+                Ok(view) => {
+                    let mut resp = Response::ok();
+                    resp.checkout = Some(view);
+                    resp
+                }
                 Err(e) => Response::err(format!("{e:#}")),
             },
             Command::Refill {
@@ -625,12 +641,41 @@ impl Daemon {
             return Err(anyhow!("{}", crate::passes::NOT_THROUGH_TWO_HOPS));
         }
         let pocket = load_pocket(&self.pocket_path)?;
-        let token = crate::passes::read_token(&self.token_path())?;
+        let token_path = self.token_path();
+        let token = crate::passes::read_token(&token_path).map_err(|e| {
+            // No token kept at all: no account, so no passes on it yet.
+            if token_path.exists() {
+                e
+            } else {
+                anyhow::Error::new(hidravpn_core::pass::AccountEmpty(format!("{e:#}")))
+            }
+        })?;
         let mut wallet = crate::passes::load_wallet(&self.wallet_path())?;
         let line = crate::passes::get_passes(&pocket, &mut wallet, &token, name, count).await?;
         crate::passes::save_wallet(&self.wallet_path(), &wallet)?;
         tracing::info!("passes fetched from the issuer");
         Ok((pocket, line))
+    }
+
+    /// Buying passes from the browser (`checkout::execute`), under the
+    /// pocket's locks as every change beside the pocket, so it never runs
+    /// alongside the command line's `passes buy` or `claim`. Any account
+    /// that may drive the service may buy, as with `get_passes`: what is
+    /// bought goes on the account this machine keeps, and the token never
+    /// leaves the service. An order or a claim is not sent while two hops
+    /// are up (`checkout::refused_now`), asked under the locks, where no
+    /// circuit is being built. What it answers is the checkout's own words,
+    /// never the issuer's.
+    async fn checkout(&self, action: crate::checkout::Action) -> Result<crate::checkout::View> {
+        let _one_at_a_time = self.pocket_lock.lock().await;
+        let _file = crate::passes::lock_beside(&self.pocket_path).await?;
+        crate::checkout::refused_now(&action, self.two_hops_up().await)?;
+        let pocket = load_pocket(&self.pocket_path)?;
+        let view = crate::checkout::execute(&pocket, &self.pocket_path, action).await?;
+        if view.state == "confirmed" {
+            tracing::info!("an order paid from the browser was credited");
+        }
+        Ok(view)
     }
 
     /// Whether two hops are up. Asked under the pocket's locks, where no

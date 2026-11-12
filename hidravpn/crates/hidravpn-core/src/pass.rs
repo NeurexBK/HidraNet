@@ -44,6 +44,33 @@ pub const DOMAIN: &[u8] = b"HidraVPN pass v1\0";
 pub const MAX_PER_REQUEST: usize = 16;
 /// The size of an issuer key, in bits.
 pub const KEY_BITS: usize = 2048;
+/// What the issuer answers (403) a token it holds no account for. A token
+/// made for a purchase becomes an account only once a payment is credited
+/// to it.
+pub const NOT_AN_ACCOUNT: &str = "that is not an account token here";
+
+/// What the issuer answers (402) a prepaid account with fewer passes left
+/// than a request asks for.
+pub fn too_few_left(left: u32, asked: u32) -> String {
+    format!("this account has {left} pass(es) left, not {asked}; `hidravpn passes buy` adds more")
+}
+
+/// The issuer holds no passes for this account: it knows no account by
+/// that token (`NOT_AN_ACCOUNT`), or none is left on it
+/// (`too_few_left(0, _)`). Said as any refusal of the issuer's is; kept
+/// apart so the service can tell the browser to buy some, by a code
+/// rather than by these words. Also made by the service for a machine that
+/// keeps no account token at all.
+#[derive(Debug)]
+pub struct AccountEmpty(pub String);
+
+impl std::fmt::Display for AccountEmpty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AccountEmpty {}
 
 const KEY_ID_DOMAIN: &[u8] = b"HidraVPN pass key id v1\0";
 const SPENT_DOMAIN: &[u8] = b"HidraVPN spent pass v1\0";
@@ -541,7 +568,14 @@ async fn fetch_one(
         let why = serde_json::from_str::<crate::admission::Refusal>(&answer)
             .map(|r| r.error)
             .unwrap_or_else(|_| answer.trim().chars().take(200).collect());
-        return Err(anyhow!("the pass issuer refused ({status}): {why}"));
+        let said = format!("the pass issuer refused ({status}): {why}");
+        let empty = (status == 403 && why == NOT_AN_ACCOUNT)
+            || (status == 402 && why == too_few_left(0, chunk.len() as u32));
+        return Err(if empty {
+            anyhow::Error::new(AccountEmpty(said))
+        } else {
+            anyhow!(said)
+        });
     }
     let resp: IssueResponse =
         serde_json::from_str(&answer).context("the pass issuer's answer is unreadable")?;
@@ -713,6 +747,48 @@ mod tests {
         let mut r = good;
         r.signature = "short".into();
         assert!(r.verify(&keys, &n, NOW).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_account_with_no_passes_is_told_apart_from_other_refusals() {
+        use tokio::io::AsyncWriteExt;
+        // An issuer on this machine that answers each request with the next
+        // of these: no account by that token, none left, some left but too
+        // few, today's quota spent.
+        let answers = [
+            (403, crate::admission::refusal(NOT_AN_ACCOUNT)),
+            (402, crate::admission::refusal(too_few_left(0, 2))),
+            (402, crate::admission::refusal(too_few_left(1, 2))),
+            (
+                429,
+                crate::admission::refusal("today's quota is reached for that many"),
+            ),
+        ];
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let served = answers.clone();
+        tokio::spawn(async move {
+            for (status, body) in served {
+                let (mut s, _) = l.accept().await.unwrap();
+                crate::admission::read_request(&mut s).await.unwrap();
+                s.write_all(&crate::admission::http_response(status, &body))
+                    .await
+                    .unwrap();
+            }
+        });
+        let nodes = [node(), node()];
+        for (i, empty) in [true, true, false, false].into_iter().enumerate() {
+            let e = fetch(&url, "t", &record("2099-01-01T00:00:00Z"), &nodes, &|| true)
+                .await
+                .unwrap_err();
+            assert_eq!(e.is::<AccountEmpty>(), empty, "{i}: {e:#}");
+            // Said as before, whichever it is.
+            assert!(
+                e.to_string()
+                    .starts_with(&format!("the pass issuer refused ({}): ", answers[i].0)),
+                "{e}"
+            );
+        }
     }
 
     #[test]
