@@ -1,4 +1,4 @@
-HidraNet Browser 1.1.0 — SHA-256 checksums
+HidraNet Browser 1.1.1 — SHA-256 checksums
 ==========================================
 
 Verify before running.
@@ -22,7 +22,7 @@ The browser (1.1.0 and later) reads these three lines to tell you when a
 newer build is out, or when yours has known security problems. It only
 tells you; it never downloads or installs anything.
 
-  latest-version:        1.1.0
+  latest-version:        1.1.1
   minimum-safe-version:  1.1.0
   valid-until:           2027-05-11
 
@@ -57,9 +57,10 @@ longer receives security fixes, and Tor 15.0.22. The 1.0.0 Windows and
 macOS packages were made the same way; assume the same of them. The
 source they were refreshed from names Electron 44.9.3 and Tor 15.0.26,
 but the runtime and Tor were carried over from an older package without
-being checked against those pins. 1.1.0, listed below, is that rebuild:
-made from scratch on the pinned Electron and Tor, under a new version
-number, so the 1.0.0 names are never given other files.
+being checked against those pins. 1.1.0 was that rebuild, and 1.1.1,
+listed below, follows it: both made from scratch on the pinned Electron
+and Tor, each under a new version number, so the 1.0.0 names are never
+given other files.
 
 Every 1.0.0 package also has two leaks, fixed in 1.1.0. A
 page can make the system look up the names it hints at (DNS prefetch)
@@ -72,28 +73,28 @@ Every copy of 1.0.0 calls itself 1.0.0. Copies downloaded before
 22 October 2026 also lack some or all of the security fixes made since
 the first packages, among them the bridge that let any downloaded .html
 file turn Tor off and the engine API that answered any website. Replace
-every copy of 1.0.0 with 1.1.0. None of the 1.0.0 copies checks for
+every copy of 1.0.0 with 1.1.1. None of the 1.0.0 copies checks for
 updates, so they cannot learn of this themselves.
 
 
 ON THE RELEASE PAGE NOW
 -----------------------------------------------------------------------
 
-551f4fafaad518e8b4e1b56a2a0e988d5058b870b6ad750593395dc0dfac6cf6  HidraNet-Browser-1.1.0-macOS-arm64.zip
-6afb90ae16661c8ed2ff28a8208b6764cc0121c9b3414c51e4a73b6ad245a642  HidraNet-Browser-1.1.0-macOS-x64.zip
-3de9dd6ba8610a05339464dab97d35c099f0df3e4270199969338148881dd4e9  HidraNet-Browser-1.1.0-Linux-x64.zip
-c32fce3111bffd05faea3afb66dea79a068c3ed9eeeb35cc0e0baafa0be0de09  HidraNet-Browser-1.1.0-Windows-x64.zip
+ece37775d30e4009ed286f9b473e12726eb11ed95d8b8140bc6e0c928fa9ea9f  HidraNet-Browser-1.1.1-macOS-arm64.zip
+142789be3783ee659bed9c3af8f1b8b56e2b34e64bcdef03440a81ea4b571282  HidraNet-Browser-1.1.1-macOS-x64.zip
+671a697a1fdb7a69ed33dd5ded5e22b2d160b5501f97e34f7331303112f29968  HidraNet-Browser-1.1.1-Linux-x64.zip
+7bd9ade083658f967e5d5f2355328ff2e696e811988e3a3550eda3e1e26b3d8e  HidraNet-Browser-1.1.1-Windows-x64.zip
 
-  macOS arm64    139,946,871 bytes  (133.5 MiB)
-  macOS x64      143,559,344 bytes  (136.9 MiB)
-  Linux x64      130,323,962 bytes  (124.3 MiB)
-  Windows x64    173,948,777 bytes  (165.9 MiB)
+  macOS arm64    139,952,933 bytes  (133.5 MiB)
+  macOS x64      143,565,407 bytes  (136.9 MiB)
+  Linux x64      130,330,022 bytes  (124.3 MiB)
+  Windows x64    173,954,837 bytes  (165.9 MiB)
 
-  Built from commit f9301b7. These are the hashes and sizes of the four
-  files built from it, the ones the release v1.1.0 publishes and its
+  Built from commit 17135b9. These are the hashes and sizes of the four
+  files built from it, the ones the release v1.1.1 publishes and its
   description lists.
 
-What changed in 1.1.0: the release notes on the tag v1.1.0 list it.
+What changed in 1.1.1: the release notes on the tag v1.1.1 list it.
 
 -----------------------------------------------------------------------
 

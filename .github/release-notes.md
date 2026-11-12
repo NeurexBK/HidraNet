@@ -16,6 +16,7 @@ From 1.1.0 the browser tells you, on the new tab page, when a newer version is o
 - HidraChat: the same password is the same room, end-to-end encrypted. Leaving the password empty opens a new private room with a strong password to pass on.
 - The forum and `.hidra` sites work between people on different networks.
 - Support the project in $HNET from the Donate page.
+- Buy HidraVPN passes with HNET from the VPN page: Settings, Passes, Buy passes with HNET. It needs HidraVPN 0.1.3, which the same page installs. Send exactly the HNET amount the order shows, not the dollar price.
 - Linux: the browser's sandbox stays on. On Ubuntu 23.10 and later, `start.sh` sets up the helper the sandbox needs and asks once for your password to do it.
 
 ## Running it
