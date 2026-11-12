@@ -22,10 +22,15 @@ ignore = [
     # it leaves when that does.
     "RUSTSEC-2024-0436",
 
-    # pin-utils is unmaintained (RUSTSEC-2026-0441). Two small macros for
-    # pinning futures, finished and unchanged for years, with no reported
-    # flaw. It arrives through nix 0.25, which netlink-request pins for
-    # wireguard-control, the node's kernel WireGuard; the newest
-    # wireguard-control still pins it. It leaves when that moves on.
+    # pin-utils is unmaintained (RUSTSEC-2026-0441), an informational
+    # advisory with no flaw reported. Only hidravpn-node on Linux links it;
+    # the client, the service, the signer and the issuer do not, on Linux or
+    # Windows (cargo tree -i pin-utils). It comes from nix 0.25, whose
+    # default "aio" feature turns it on and which expands two of its macros
+    # only in nix::sys::aio. netlink-request asks for nix 0.25 with its
+    # defaults and uses nothing from it but unistd::sysconf, and
+    # wireguard-control, which the node uses for WireGuard, needs
+    # netlink-request on Linux. The newest releases of both still do. It
+    # leaves when netlink-request moves to a nix without "aio" by default.
     "RUSTSEC-2026-0441",
 ]
