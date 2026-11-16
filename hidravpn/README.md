@@ -1,8 +1,9 @@
 # HidraVPN
 
 The decentralised VPN of the HidraNet network: nodes a client is admitted to,
-run by whoever runs them (today, the maintainers), no accounts, protecting the
-whole machine. Who runs the first nodes, and what
+run by whoever runs them (today, the maintainers), no sign-up, protecting the
+whole machine, paid with passes bought in HNET (see "Paying for it" below).
+For Windows x64 and Linux x64. Who runs the first nodes, and what
 operators are promised, is written down in the
 [network bootstrap plan](../docs/business/16-network-bootstrap.md); nothing is
 promised there that does not exist yet.
@@ -12,8 +13,9 @@ Developed in phases; each phase is a working, testable step. See
 switch), `docs/phase-3.md` (two hops, two modes, a new identity),
 `docs/phase-4.md` (the VPN in the browser — installed, updated and removed
 from it, a leak test, the route by country — a signed node list, a node in one
-command), `docs/phase-5.md` (passes: accountable admission that no one can
-link to its use, a fresh key every connection), `docs/phase-6.md` (passes
+command), `docs/phase-5.md` (passes: accountable admission, signed blind so
+a pass tells neither the issuer its node nor the node its account; a fresh
+key every connection), `docs/phase-6.md` (passes
 that top themselves up) and `docs/phase-7-payments.md` (passes bought with
 HNET) for what exists now and how to run it.
 
@@ -24,8 +26,10 @@ mail, chat, forum and relay engine, which it does not change.
 
 Only what the code proves, and the test scripts check:
 
-- **Nodes run by different people.** An entry and an exit are two ordinary
-  nodes; you choose which, invite by invite, or from your own pocket of nodes.
+- **Nodes anyone can run.** An entry and an exit are two ordinary nodes; you
+  choose which, invite by invite, or from your own pocket of nodes. Today the
+  maintainers run every node on the signed list, so two hops are refused
+  unless you allow one operator on both.
 - **A different identity for every node, and for every connection at the
   exit.** A node reached from your address is shown a key derived for it
   from your one master key; no two nodes see the same key, and none sees the
@@ -47,8 +51,10 @@ Only what the code proves, and the test scripts check:
   between two circuits. A test proves a request to the open network is
   blocked while connected, another that a connection opened before the VPN
   is cut off, and another that nothing gets out while a circuit is rebuilt.
-- **Nothing recorded.** No node or service log names an address, a name
-  looked up or a byte of traffic; the tests grep the logs for them.
+- **No addresses or traffic in the logs.** No node or service log names an
+  address, a name looked up or a byte of traffic; the tests grep the logs for
+  them. What the issuer keeps about purchases is in
+  `docs/phase-7-payments.md` ("What stays off the record").
 - **The browser asks, the service decides.** The HidraNet Browser's VPN page
   drives the service without ever holding an invite or a key: the service
   picks the nodes from the pocket, and the page shows only what the service
@@ -59,24 +65,80 @@ Only what the code proves, and the test scripts check:
   list nobody signed goes nowhere. A node that admits openly then admits
   this machine when it asks (the client asks by itself); one that admits by
   hand needs its operator, and the client says whom to ask.
-- **Admission nobody can link to its use.** A node can admit with a pass
+- **Admission by blind-signed passes.** A node can admit with a pass
   instead: signed blind by an issuer that counts passes against an account,
   so who may use the network is decided, while the issuer never learns which
-  node a pass is for and the node never learns whose it was. Every
+  node a pass is for and the node never learns whose it was. Someone who
+  watches both the issuer and a node can still compare times, and today the
+  maintainers run both (`docs/phase-5.md`, "Unlinkable is not untraceable").
+  Every
   connection redeems a new pass with a new key while one is left (a node of
   one hop with none left gets the last pass's key again, with a note). The
   test redeems one pass twice and sees it refused.
 - **Open code, built in CI.** Everything is in this folder, built and tested
-  by CI from the committed source. No release has come from that build yet:
-  the one release, the 0.1.0 preview, was built and published by hand,
-  without Authenticode (`docs/code-signing.md`). Its files are listed with
-  their SHA-256 in the release manifest (`landing/vpn/release/manifest.json`
-  in this repository), signed with the release key. Releases cut by the workflow (`hidravpn-build.yml`) start once
-  signing is on. The builds are not reproducible yet: rebuilding a release
-  from its source does not promise the same bytes.
+  by CI from the committed source. From 0.1.2 on, the Windows executables of
+  a release are built by that workflow (`hidravpn-build.yml`) on a push to
+  `main` and carry a build attestation (`gh attestation verify hidravpn.exe
+  --repo NeurexBK/HidraNet --signer-workflow
+  NeurexBK/HidraNet/.github/workflows/hidravpn-build.yml --source-ref
+  refs/heads/main`); the Linux files carry no build attestation. None is
+  Authenticode-signed yet (`docs/code-signing.md`). The current release's
+  files are listed with their SHA-256 and size in the release manifest
+  (`landing/vpn/release/manifest.json` in this repository), signed with the
+  release key; each new release replaces it, and the browser installs nothing
+  the manifest does not list.
+  The builds are not reproducible yet: rebuilding a release from its source
+  does not promise the same bytes.
 
 Strong privacy, not anonymity: `docs/phase-3.md` says exactly what each node
 can and cannot see.
+
+## Paying for it
+
+A node that admits with a pass takes one pass per connection. Passes are
+bought onto an anonymous prepaid account at the pass issuer, which knows it
+only by the SHA-256 of a random token kept on this machine
+(`/etc/hidravpn/pass.token` on Linux, `C:\ProgramData\HidraVPN\pass.token` on
+Windows; root or administrators only), with no name, e-mail or sign-up. That
+token is the only key to the passes bought on it. They are bought in packs
+with **HNET**, the HidraNet token on Solana (mint
+`Aov3BtQvrGXM5V9oiHu8PKJWeV8a2rFnr24fwWcNpump`), sent from any Solana wallet
+to the wallet the signed node list names, and to no other. Do all four steps
+while disconnected or connected with one hop: ordering, claiming and getting
+passes are refused while two hops are up, since each request carries the
+account token and would leave through the exit. On Windows, run the
+`hidravpn` commands from an administrator prompt, without `sudo`.
+
+1. Ask for an order: on the HidraNet Browser's VPN page (Settings, Passes,
+   Buy passes with HNET, Show packages), or `sudo hidravpn passes buy` to
+   list the packs and `sudo hidravpn passes buy 150` (the pack's number of
+   passes, as the list shows it) to order one.
+2. Send exactly the HNET amount the order shows, every decimal, before the
+   time it shows (two hours after the order is made): the last digits tell
+   your payment apart, and a payment of another amount, or made after that
+   time, is not credited.
+3. Claim it with the transaction's signature: Check payment on the VPN page,
+   or `sudo hidravpn passes claim <signature>`.
+4. Take passes for the nodes: Get 10 passes per node, or
+   `sudo hidravpn passes get`.
+
+Pack prices are set in dollars by the issuer and turned into HNET at the
+going rate when the order is made, so the amount of HNET follows the token's
+price. When you buy or fetch passes, the issuer sees the payment and, today,
+the address the request comes from; buying through Tor is planned. Payments
+on Solana are public: pay from a wallet you use for nothing else.
+`docs/phase-7-payments.md` says what the issuer learns from a purchase, and
+what it does not.
+
+## Install from the browser
+
+On the HidraNet Browser's VPN page, press **Install HidraVPN**. The browser
+downloads the release the signed manifest lists, checks every file's SHA-256
+and size against it, and installs the service; the same page updates it
+(Settings, Check for an update) and removes it. To install by hand, the files
+of each release are on the
+[releases page](https://github.com/NeurexBK/HidraNet/releases), with the
+commands in its notes.
 
 ## Linux: install and use
 
@@ -104,7 +166,8 @@ sudo hidravpn nodes discover <ip> --trust       # a node you know by other means
 sudo hidravpn new-identity                      # rebuild through another exit: a new address
 hidravpn status                                 # mode and what it hides, hops, handshakes, kill switch
 sudo hidravpn down                              # disconnect and restore the network
-sudo hidravpn-service uninstall                 # remove everything
+sudo hidravpn-service uninstall                 # remove the service; the programs, key, nodes, passes and pass token stay
+sudo hidravpn-service uninstall --purge         # also remove those, the pass account token included: passes left on it are lost
 ```
 
 Each `.json` is the invite a node printed when it admitted this machine's
