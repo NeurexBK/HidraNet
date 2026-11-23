@@ -20,6 +20,8 @@ pub struct ProxyConfig {
     /// Relays whose keys the operator pinned in the configuration: where
     /// the proxy starts from.
     pub static_relays: Vec<VerifiedRelay>,
+    /// Where the entry guards are kept between runs.
+    pub guard_file: std::path::PathBuf,
 }
 
 /// The SOCKS5 proxy.
@@ -40,7 +42,7 @@ pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     if config.static_relays.is_empty() {
         warn!("no relays are pinned in the configuration; the proxy cannot build a circuit");
     }
-    let pool = CircuitPool::new(config.static_relays);
+    let pool = CircuitPool::with_guard_file(config.static_relays, config.guard_file);
     // The first refresh may go through a one-hop circuit, if fewer than
     // three relays are pinned; the second then has enough for full ones.
     pool.refresh_relays().await;

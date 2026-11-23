@@ -504,6 +504,12 @@ async fn run_mail_standalone(
     Ok(())
 }
 
+/// Where this node keeps its entry guards: next to its keys, readable by
+/// this user only.
+fn guard_file(app_cfg: &config::AppConfig) -> std::path::PathBuf {
+    Path::new(&app_cfg.paths.keys_dir).join("guards.json")
+}
+
 /// How often a hidden service re-announces itself: well inside the hour
 /// after which other nodes forget a descriptor.
 const SERVICE_REPUBLISH_EVERY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -545,36 +551,35 @@ async fn run_server_mode(
     // front of every node it talks to, and announcing the site from there
     // says where the site is. Relays are learned, and the site announced,
     // through circuits, as the proxy does.
-    let pool = client::circuit_pool::CircuitPool::new(verified_relays(app_cfg, None).await);
+    let pool = client::circuit_pool::CircuitPool::with_guard_file(
+        verified_relays(app_cfg, None).await,
+        guard_file(app_cfg),
+    );
     pool.refresh_relays().await;
     if pool.relays().await.len() < 6 {
         pool.refresh_relays().await;
     }
 
-    let mut relays = pool.relays().await;
-    if relays.len() < 3 {
+    let known = pool.relays().await.len();
+    if known < 3 {
         return Err(format!(
-            "need at least 3 verified relays for a hidden service, have {}",
-            relays.len()
+            "need at least 3 verified relays for a hidden service, have {known}"
         )
         .into());
-    }
-    {
-        use rand::seq::SliceRandom;
-        relays.shuffle(&mut rand::thread_rng());
     }
 
     let local_port = app_cfg.hidden_service.local_port;
 
+    // From an entry guard, as every circuit is, to a random exit in a
+    // network of its own: that exit is the introduction point.
     info!("building circuit to introduction point...");
-    let mut intro_circuit = client::streaming::StreamingCircuit::build(&relays).await?;
+    let (mut intro_circuit, intro_addr) = pool.build_circuit_with_exit().await?;
     intro_circuit.register_service(service_hash.to_vec()).await?;
     info!("registered at introduction point");
 
     // The introduction point is the hop the service registered at: the last
     // one of its circuit. Signed by the service's own key, so a node on the
     // lookup path can withhold this descriptor but not swap it.
-    let intro_addr = relays[2].addr();
     let published = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     published
         .lock()
@@ -791,6 +796,7 @@ async fn run_proxy_mode(
     let proxy_config = client::proxy_runner::ProxyConfig {
         listen_addr: proxy_addr,
         static_relays,
+        guard_file: guard_file(app_cfg),
     };
 
     let api_addr: SocketAddr = format!("127.0.0.1:{API_PORT}").parse()?;
@@ -848,7 +854,7 @@ async fn run_send_mode(
     let relays = if dht_discover {
         // As in proxy mode, a client: relays come from the DHT through a
         // circuit, starting from the pinned ones, never by querying it.
-        let pool = client::circuit_pool::CircuitPool::new(pinned);
+        let pool = client::circuit_pool::CircuitPool::with_guard_file(pinned, guard_file(app_cfg));
         pool.refresh_relays().await;
         pool.relays().await
     } else {

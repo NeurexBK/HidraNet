@@ -2,14 +2,17 @@
 # The client reaches the entry relay and nothing else.
 #
 #   hn-client ── hn-core (router, firewall, capture) ──┬── hn-entry   198.51.100.1
-#   192.0.2.2    192.0.2.1 / 198.51.100.254 /          ├── hn-middle  198.51.100.2
+#   192.0.2.2                                          ├── hn-middle  203.0.113.129
 #   hn-host                                            │
 #   192.0.2.66                                         │
 #   hn-proxy                                           │
 #   192.0.2.130                                        │
-#                203.0.113.1                           ├── hn-exit    198.51.100.3
-#                                                      ├── hn-relay4  198.51.100.4
+#                                                      ├── hn-exit    192.0.2.193
+#                                                      ├── hn-relay4  198.51.100.65
 #                                                      └── hn-target  203.0.113.2
+#
+# The relays sit in three different /16 networks, except relay4, which
+# shares the entry's: no circuit may put those two together.
 #
 # The core routes between all of them, so the client COULD reach the middle,
 # the exit or the target: the network does not hide the path. The core's
@@ -34,8 +37,8 @@
 # the target and a .hidra service whose descriptor is only in the DHT, and
 # it must learn of the fourth relay. Its firewall lets it open TCP to a
 # relay's circuit port and nothing else: no UDP (the DHT), no DNS, no target.
-# It may use any relay as its first hop, so which relay that is is not
-# checked here.
+# Its first hop is always its entry guard: one relay, the same one after a
+# restart.
 #
 # The real `hidra-node --server` runs in hn-host and publishes a site: it
 # must learn relays, register at an introduction point and announce its
@@ -87,9 +90,6 @@ fi
 for ns in "${NS[@]}"; do ip netns add "$ns"; ip netns exec "$ns" ip link set lo up; done
 CORE="ip netns exec hn-core"
 $CORE sysctl -qw net.ipv4.ip_forward=1
-$CORE ip link add br-r type bridge
-$CORE ip addr add 198.51.100.254/24 dev br-r
-$CORE ip link set br-r up
 
 link() { # ns, ifname-in-ns, addr/len, gateway
   ip link add "$2" type veth peer name "core-$2"
@@ -104,17 +104,21 @@ link hn-client c0 192.0.2.2/26 192.0.2.1
 $CORE ip addr add 192.0.2.1/26 dev core-c0
 link hn-host   h0 192.0.2.66/26 192.0.2.65
 $CORE ip addr add 192.0.2.65/26 dev core-h0
-link hn-proxy  p0 192.0.2.130/25 192.0.2.129
-$CORE ip addr add 192.0.2.129/25 dev core-p0
-link hn-target t0 203.0.113.2/24 203.0.113.1
-$CORE ip addr add 203.0.113.1/24 dev core-t0
-link hn-entry  r1 198.51.100.1/24 198.51.100.254
-link hn-middle r2 198.51.100.2/24 198.51.100.254
-link hn-exit   r3 198.51.100.3/24 198.51.100.254
-link hn-relay4 r4 198.51.100.4/24 198.51.100.254
-for i in r1 r2 r3 r4; do $CORE ip link set "core-$i" master br-r; done
+link hn-proxy  p0 192.0.2.130/26 192.0.2.129
+$CORE ip addr add 192.0.2.129/26 dev core-p0
+link hn-target t0 203.0.113.2/25 203.0.113.1
+$CORE ip addr add 203.0.113.1/25 dev core-t0
+link hn-entry  r1 198.51.100.1/26 198.51.100.62
+$CORE ip addr add 198.51.100.62/26 dev core-r1
+link hn-relay4 r4 198.51.100.65/26 198.51.100.126
+$CORE ip addr add 198.51.100.126/26 dev core-r4
+link hn-middle r2 203.0.113.129/26 203.0.113.190
+$CORE ip addr add 203.0.113.190/26 dev core-r2
+link hn-exit   r3 192.0.2.193/26 192.0.2.254
+$CORE ip addr add 192.0.2.254/26 dev core-r3
+RELAYS="{ 198.51.100.1, 198.51.100.65, 203.0.113.129, 192.0.2.193 }"
 
-$CORE nft -f - <<'EOF'
+$CORE nft -f - <<EOF
 table inet anon {
   counter client_to_entry {}
   counter client_to_middle {}
@@ -127,13 +131,13 @@ table inet anon {
   counter host_to_other {}
   chain forward {
     type filter hook forward priority 0; policy accept;
-    ip saddr 192.0.2.130 ip daddr 198.51.100.0/24 tcp dport 9001 counter name proxy_to_relays accept
+    ip saddr 192.0.2.130 ip daddr $RELAYS tcp dport 9001 counter name proxy_to_relays accept
     ip saddr 192.0.2.130 counter name proxy_to_other drop
-    ip saddr 192.0.2.66 ip daddr 198.51.100.0/24 tcp dport 9001 counter name host_to_relays accept
+    ip saddr 192.0.2.66 ip daddr $RELAYS tcp dport 9001 counter name host_to_relays accept
     ip saddr 192.0.2.66 counter name host_to_other drop
     ip saddr 192.0.2.2 ip daddr 198.51.100.1 tcp dport 9001 counter name client_to_entry accept
-    ip saddr 192.0.2.2 ip daddr 198.51.100.2 counter name client_to_middle reject with tcp reset
-    ip saddr 192.0.2.2 ip daddr 198.51.100.3 counter name client_to_exit reject with tcp reset
+    ip saddr 192.0.2.2 ip daddr 203.0.113.129 counter name client_to_middle reject with tcp reset
+    ip saddr 192.0.2.2 ip daddr 192.0.2.193 counter name client_to_exit reject with tcp reset
     ip saddr 192.0.2.2 ip daddr 203.0.113.2 counter name client_to_target reject with tcp reset
     ip saddr 192.0.2.2 counter name client_to_other drop
   }
@@ -146,6 +150,8 @@ PIDS+=($!)
 $CORE tcpdump -U -n -i core-p0 -w "$WORK/proxy.pcap" >/dev/null 2>&1 &
 PIDS+=($!)
 $CORE tcpdump -U -n -i core-h0 -w "$WORK/host.pcap" >/dev/null 2>&1 &
+PIDS+=($!)
+$CORE tcpdump -U -n -i core-r1 -w "$WORK/entry.pcap" >/dev/null 2>&1 &
 PIDS+=($!)
 sleep 1
 
@@ -166,13 +172,13 @@ start() { # ns, log, args...
 start hn-target echo.log    echo  203.0.113.2:7000
 BOOT=198.51.100.1:7000
 start hn-entry  entry.log   relay 198.51.100.1:9001 "$WORK/entry.json"  --dht 198.51.100.1:7000
-start hn-middle middle.log  relay 198.51.100.2:9001 "$WORK/middle.json" --dht 198.51.100.2:7000 --bootstrap $BOOT
+start hn-middle middle.log  relay 203.0.113.129:9001 "$WORK/middle.json" --dht 203.0.113.129:7000 --bootstrap $BOOT
 MIDDLE_PID="${PIDS[-1]}"
-start hn-exit   exit.log    relay 198.51.100.3:9001 "$WORK/exit.json"   --dht 198.51.100.3:7000 --bootstrap $BOOT
+start hn-exit   exit.log    relay 192.0.2.193:9001 "$WORK/exit.json"   --dht 192.0.2.193:7000 --bootstrap $BOOT
 # Known only to the DHT: the client is not told about it.
-start hn-relay4 relay4.log  relay 198.51.100.4:9001 "$WORK/relay4.json" --dht 198.51.100.4:7000 --bootstrap $BOOT
+start hn-relay4 relay4.log  relay 198.51.100.65:9001 "$WORK/relay4.json" --dht 198.51.100.65:7000 --bootstrap $BOOT
 # A relay that signs a key it does not hold, on a second port of the exit.
-start hn-exit   liar.log    relay 198.51.100.3:9002 "$WORK/liar.json" --lie
+start hn-exit   liar.log    relay 192.0.2.193:9002 "$WORK/liar.json" --lie
 for _ in $(seq 120); do
   [ -s "$WORK/entry.json" ] && [ -s "$WORK/middle.json" ] && [ -s "$WORK/exit.json" ] \
     && [ -s "$WORK/relay4.json" ] && [ -s "$WORK/liar.json" ] && break
@@ -277,6 +283,17 @@ else
   fail "proxy: never learned of the relay known only to the DHT"
 fi
 kill "$PROXY_PID" "$HOST_PID" 2>/dev/null
+# The proxy again, same configuration: it must come back to the same guard.
+sleep 1
+ip netns exec hn-proxy "$NODE" --proxy --config "$WORK/client.toml" >"$WORK/proxy2.log" 2>&1 &
+PROXY_PID=$!
+PIDS+=($PROXY_PID)
+if socks socks-web2.log 203.0.113.2 7000; then
+  pass "proxy restarted: the target reached again ($(result socks-web2.log))"
+else
+  fail "proxy restarted ($(result socks-web2.log))"
+fi
+kill "$PROXY_PID" 2>/dev/null
 
 # ── Failures abort; nothing else is tried ───────────────────────────────────
 if client wrongkey.log "$WORK/middle.json" "$WORK/liar.json" 203.0.113.2:7000 expect-fail; then
@@ -289,6 +306,11 @@ if client tampered.log "$WORK/middle.json" "$WORK/tampered.json" 203.0.113.2:700
 else
   fail "descriptor altered after signing ($(result tampered.log))"
 fi
+if client samenet.log "$WORK/middle.json" "$WORK/relay4.json" 203.0.113.2:7000 expect-fail; then
+  pass "entry and exit in the same /16: path refused ($(result samenet.log))"
+else
+  fail "entry and exit in the same /16 ($(result samenet.log))"
+fi
 kill "$MIDDLE_PID" 2>/dev/null; sleep 0.5
 if client deadmiddle.log "$WORK/middle.json" "$WORK/exit.json" 203.0.113.2:7000 expect-fail; then
   pass "middle relay down: extension failed, circuit abandoned ($(result deadmiddle.log))"
@@ -298,7 +320,7 @@ fi
 
 # ── What the network saw ────────────────────────────────────────────────────
 sleep 1
-kill "${PIDS[0]}" "${PIDS[1]}" "${PIDS[2]}" 2>/dev/null; sleep 0.5
+kill "${PIDS[0]}" "${PIDS[1]}" "${PIDS[2]}" "${PIDS[3]}" 2>/dev/null; sleep 0.5
 [ "$(counter client_to_entry)" -gt 0 ] && pass "the client spoke to the entry relay ($(counter client_to_entry) packets)" \
   || fail "the client never reached the entry relay"
 for c in client_to_middle client_to_exit client_to_target client_to_other; do
@@ -338,11 +360,38 @@ n="$(tcpdump -n -r "$WORK/host.pcap" "udp and src host 192.0.2.66" 2>/dev/null |
 [ "$n" = 0 ] && pass "capture: 0 UDP packets from the server (no DHT, no DNS)" \
   || fail "capture: $n UDP packets from the server: $(tcpdump -n -r "$WORK/host.pcap" "udp and src host 192.0.2.66" 2>/dev/null | awk '{print $5}' | sort | uniq -c | tr '\n' ' ')"
 
+SYN_ANY='tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0'
+first_hops() { # pcap, source: the distinct relays it opened connections to
+  tcpdump -n -r "$1" "$SYN_ANY and src host $2 and dst port 9001" 2>/dev/null \
+    | awk '{print $5}' | sed 's/\.9001:$//' | sort -u
+}
+# Every first hop is one of the (at most two) guards in the node's guard
+# file. The second is used only for a circuit the first cannot start, such
+# as one that must end at the first guard itself (a site's introduction
+# point can be any relay).
+guards_of() { grep -oE '"addr":"[^"]*"' "$1" 2>/dev/null | cut -d'"' -f4 | sed 's/:9001$//'; }
+only_guards() { # label, pcap, source, guard file
+  local hops guards stray
+  hops="$(first_hops "$2" "$3")"
+  guards="$(guards_of "$4")"
+  stray="$(comm -23 <(echo "$hops" | sort -u) <(echo "$guards" | sort -u) | tr '\n' ' ')"
+  if [ -n "$hops" ] && [ "$(echo "$guards" | wc -l)" -le 2 ] && [ -z "${stray// }" ]; then
+    pass "$1: every circuit began at one of its guards ($(echo $hops | tr '\n' ' '))"
+  else
+    fail "$1: circuits began at relays that are not its guards: $stray (guards: $(echo $guards))"
+  fi
+}
+only_guards "proxy, before and after a restart" "$WORK/proxy.pcap" 192.0.2.130 "$WORK/client-keys/guards.json"
+only_guards "server" "$WORK/host.pcap" 192.0.2.66 "$WORK/host-keys/guards.json"
+n="$(tcpdump -n -r "$WORK/entry.pcap" "$SYN_ANY and ((src host 198.51.100.1 and dst host 198.51.100.65) or (src host 198.51.100.65 and dst host 198.51.100.1))" 2>/dev/null | wc -l)"
+[ "$n" = 0 ] && pass "no circuit joined the entry to relay4 (same /16)" \
+  || fail "$n connection(s) between the entry and relay4, which share a /16"
+
 # ── What the logs say ───────────────────────────────────────────────────────
 # Every process logs at DEBUG, failure paths included. None may write the
 # canary payload, the canary hostname, or the client's address — the client
 # itself included: its log is on the user's disk.
-for f in client wrongkey tampered deadmiddle entry middle exit relay4 liar echo proxy host; do
+for f in client wrongkey tampered samenet deadmiddle entry middle exit relay4 liar echo proxy proxy2 host; do
   [ -s "$WORK/$f.log" ] || [ "$f" = echo ] || fail "log $f.log is empty: the capture missed it"
 done
 grep -q "circuit extended" "$WORK/entry.log" && grep -q "extend failed" "$WORK/entry.log" \

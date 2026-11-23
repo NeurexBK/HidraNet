@@ -65,14 +65,9 @@ impl StreamingCircuit {
     }
 
     async fn build_path(path: &[VerifiedRelay]) -> Result<Self> {
-        for (i, a) in path.iter().enumerate() {
-            if path[..i]
-                .iter()
-                .any(|b| b.addr() == a.addr() || b.transport_key() == a.transport_key())
-            {
-                return Err(HidraError::Circuit("a relay appears twice in the path".into()));
-            }
-        }
+        // No relay twice, and no two hops in one network: a pair run by one
+        // operator, as entry and exit, sees both ends of the circuit.
+        crate::client::path::check_path(path)?;
 
         let conn = link::connect(path[0].addr(), path[0].transport_key()).await?;
         let (reader, mut writer) = conn.into_split();

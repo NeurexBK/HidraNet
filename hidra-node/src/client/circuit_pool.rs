@@ -6,6 +6,8 @@ use rand::seq::SliceRandom;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::client::guards::GuardSet;
+use crate::client::path::{choose_path, may_share_circuit};
 use crate::client::streaming::{StreamingCircuit, CIRCUIT_HOPS};
 use crate::error::{HidraError, Result};
 use crate::p2p::dht::descriptor::{ServiceDescriptor, VerifiedRelay};
@@ -38,20 +40,89 @@ pub struct CircuitPool {
     /// The ID puzzle difficulty a relay's DHT record must have paid for to
     /// be accepted from a directory answer.
     id_bits: u32,
+    /// The relays every circuit starts at. See `guards`.
+    guards: Mutex<GuardSet>,
 }
 
 impl CircuitPool {
+    /// A pool whose entry guards last as long as it does. A client that
+    /// runs more than once should keep them: `with_guard_file`.
+    // The binary keeps its guards on disk (`with_guard_file`); the tests do not.
+    #[allow(dead_code)]
     pub fn new(relays: Vec<VerifiedRelay>) -> Arc<Self> {
-        Self::with_id_bits(relays, crate::p2p::dht::node::ID_PUZZLE_BITS)
+        Self::build(relays, crate::p2p::dht::node::ID_PUZZLE_BITS, GuardSet::in_memory())
     }
 
     /// For a network with another ID difficulty: tests, private networks.
+    // The binary keeps its guards on disk (`with_guard_file`); the tests do not.
+    #[allow(dead_code)]
     pub fn with_id_bits(relays: Vec<VerifiedRelay>, id_bits: u32) -> Arc<Self> {
+        Self::build(relays, id_bits, GuardSet::in_memory())
+    }
+
+    /// Entry guards kept in `file` between runs, so a restart does not mean
+    /// a new first hop.
+    pub fn with_guard_file(relays: Vec<VerifiedRelay>, file: std::path::PathBuf) -> Arc<Self> {
+        Self::build(relays, crate::p2p::dht::node::ID_PUZZLE_BITS, GuardSet::load(file))
+    }
+
+    fn build(relays: Vec<VerifiedRelay>, id_bits: u32, guards: GuardSet) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(Vec::new()),
             relays: Mutex::new(relays),
             id_bits,
+            guards: Mutex::new(guards),
         })
+    }
+
+    /// The relays known, and the entry guards among them (chosen now if
+    /// there are none yet).
+    async fn relays_and_guards(&self) -> (Vec<VerifiedRelay>, Vec<VerifiedRelay>) {
+        let relays = self.relays().await;
+        let mut guards = self.guards.lock().await;
+        guards.update(&relays, now_secs());
+        (relays, guards.guards())
+    }
+
+    /// A circuit from the first entry guard that can build one, through a
+    /// random middle, to `exit` or to a random exit (one not in
+    /// `avoid_exits` while there is one). A guard that fails is not
+    /// replaced; the next guard is tried. Returns the circuit and its exit.
+    async fn build_from_guard(
+        &self,
+        exit: Option<&VerifiedRelay>,
+        avoid_exits: &[SocketAddr],
+    ) -> Result<(StreamingCircuit, SocketAddr)> {
+        let (relays, guards) = self.relays_and_guards().await;
+        let mut last = HidraError::Circuit("no entry guard".into());
+        for guard in &guards {
+            let exit = match exit {
+                Some(e) => Some(e.clone()),
+                None => {
+                    let fresh: Vec<&VerifiedRelay> = relays
+                        .iter()
+                        .filter(|r| may_share_circuit(guard, r) && !avoid_exits.contains(&r.addr()))
+                        .collect();
+                    fresh.choose(&mut rand::thread_rng()).map(|r| (*r).clone())
+                }
+            };
+            let path = match choose_path(&relays, guard, exit.as_ref()) {
+                Ok(p) => p,
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            };
+            let exit_addr = path[CIRCUIT_HOPS - 1].addr();
+            match StreamingCircuit::build(&path).await {
+                Ok(c) => return Ok((c, exit_addr)),
+                Err(e) => {
+                    warn!(error = %e, "circuit through this entry guard failed; trying the next");
+                    last = e;
+                }
+            }
+        }
+        Err(last)
     }
 
     pub async fn relays(&self) -> Vec<VerifiedRelay> {
@@ -61,7 +132,7 @@ impl CircuitPool {
     /// Learns relays from the DHT without querying it: each request goes
     /// through a circuit and the last hop asks its own DHT node. With three
     /// or more relays known that is a full circuit; with fewer, a one-hop
-    /// circuit to a known relay, which already sees this address. Every
+    /// circuit to the entry guard, which already sees this address. Every
     /// record that comes back is checked here (its ID puzzle and its signed
     /// descriptor); a hop can leave relays out, but not add one nobody
     /// signed. Returns how many relays are now usable.
@@ -73,10 +144,15 @@ impl CircuitPool {
             let circuit = if known.len() >= CIRCUIT_HOPS {
                 self.build_directory_circuit(&mut exits).await
             } else {
-                let Some(r) = known.choose(&mut rand::thread_rng()).cloned() else {
-                    break;
-                };
-                StreamingCircuit::build_directory(&r).await
+                let (_, guards) = self.relays_and_guards().await;
+                let mut built = Err(HidraError::Circuit("no entry guard".into()));
+                for g in &guards {
+                    built = StreamingCircuit::build_directory(g).await;
+                    if built.is_ok() {
+                        break;
+                    }
+                }
+                built
             };
             let mut circuit = match circuit {
                 Ok(c) => c,
@@ -162,16 +238,21 @@ impl CircuitPool {
         self.build_new_circuit().await
     }
 
+    /// A circuit from an entry guard to a random exit, and that exit's
+    /// address: what a hidden service registers at and announces.
+    pub async fn build_circuit_with_exit(&self) -> Result<(StreamingCircuit, SocketAddr)> {
+        self.build_from_guard(None, &[]).await
+    }
+
+    /// A circuit from an entry guard to a random exit.
     pub async fn build_new_circuit(&self) -> Result<StreamingCircuit> {
-        let relays = self.relays.lock().await.clone();
-        let selected = select_relays(&relays)?;
-        StreamingCircuit::build(&selected).await
+        Ok(self.build_from_guard(None, &[]).await?.0)
     }
 
     /// A fresh circuit whose last hop is the first of `exits` that is a
     /// verified relay: how a client reaches a hidden service's introduction
-    /// point. The other two hops are picked at random. A pooled circuit will
-    /// not do, since its exit is wherever it happened to end.
+    /// point. It starts at an entry guard, with a random middle. A pooled
+    /// circuit will not do, since its exit is wherever it happened to end.
     pub async fn build_circuit_to(&self, exits: &[SocketAddr]) -> Result<StreamingCircuit> {
         let relays = self.relays.lock().await.clone();
         let exit = exits
@@ -183,13 +264,7 @@ impl CircuitPool {
                     "no introduction point of this service is a relay with a verified key".into(),
                 )
             })?;
-        let others: Vec<VerifiedRelay> = relays
-            .into_iter()
-            .filter(|r| r.addr() != exit.addr() && r.transport_key() != exit.transport_key())
-            .collect();
-        let mut path = select_relays_n(&others, CIRCUIT_HOPS - 1)?;
-        path.push(exit);
-        StreamingCircuit::build(&path).await
+        Ok(self.build_from_guard(Some(&exit), &[]).await?.0)
     }
 
     pub async fn maintain(&self) {
@@ -242,26 +317,9 @@ impl CircuitPool {
     /// Asking the same question through different exits is what keeps one
     /// of them from deciding the answer alone.
     async fn build_directory_circuit(&self, used_exits: &mut Vec<SocketAddr>) -> Result<StreamingCircuit> {
-        let relays = self.relays().await;
-        let fresh: Vec<VerifiedRelay> = relays
-            .iter()
-            .filter(|r| !used_exits.contains(&r.addr()))
-            .cloned()
-            .collect();
-        let exit = {
-            let from = if fresh.is_empty() { &relays } else { &fresh };
-            from.choose(&mut rand::thread_rng())
-                .cloned()
-                .ok_or_else(|| HidraError::Circuit("no relays known".into()))?
-        };
-        let others: Vec<VerifiedRelay> = relays
-            .into_iter()
-            .filter(|r| r.addr() != exit.addr() && r.transport_key() != exit.transport_key())
-            .collect();
-        let mut path = select_relays_n(&others, CIRCUIT_HOPS - 1)?;
-        used_exits.push(exit.addr());
-        path.push(exit);
-        StreamingCircuit::build(&path).await
+        let (circuit, exit) = self.build_from_guard(None, used_exits).await?;
+        used_exits.push(exit);
+        Ok(circuit)
     }
 
     /// Publishes a service's descriptor through circuits, so no DHT node
@@ -325,31 +383,6 @@ fn accept_directory_nodes(nodes: &[NodeInfo], id_bits: u32) -> Vec<VerifiedRelay
         .filter(|n| n.id_is_valid(id_bits))
         .filter_map(|n| n.verified_relay())
         .collect()
-}
-
-fn select_relays(all: &[VerifiedRelay]) -> Result<Vec<VerifiedRelay>> {
-    select_relays_n(all, CIRCUIT_HOPS)
-}
-
-fn select_relays_n(all: &[VerifiedRelay], n: usize) -> Result<Vec<VerifiedRelay>> {
-    let mut distinct: Vec<VerifiedRelay> = Vec::with_capacity(all.len());
-    for r in all {
-        if !distinct
-            .iter()
-            .any(|d| d.addr() == r.addr() || d.transport_key() == r.transport_key())
-        {
-            distinct.push(r.clone());
-        }
-    }
-    if distinct.len() < n {
-        return Err(HidraError::Circuit(format!(
-            "need at least {n} verified relays, have {}",
-            distinct.len()
-        )));
-    }
-    distinct.shuffle(&mut rand::thread_rng());
-    distinct.truncate(n);
-    Ok(distinct)
 }
 
 #[cfg(test)]
