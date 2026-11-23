@@ -7,128 +7,68 @@ use tracing::{info, warn};
 
 use crate::client::circuit_pool::CircuitPool;
 use crate::error::Result;
-use crate::p2p::bootstrap::bootstrap;
-use crate::p2p::dht::DhtNode;
-use crate::proxy::stream_handler;
 use crate::p2p::dht::descriptor::VerifiedRelay;
+use crate::proxy::stream_handler;
 use crate::safelog::sensitive;
 
 const RELAY_CACHE_TTL: Duration = Duration::from_secs(120);
-const POOL_MAINTENANCE_INTERVAL: Duration =
-    Duration::from_secs(30);
+const POOL_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 const MIN_RELAYS: usize = 3;
 
 pub struct ProxyConfig {
     pub listen_addr: SocketAddr,
-    pub dht_addr: SocketAddr,
-    pub bootstrap_addrs: Vec<SocketAddr>,
-    /// Relays whose keys the operator pinned in the configuration.
+    /// Relays whose keys the operator pinned in the configuration: where
+    /// the proxy starts from.
     pub static_relays: Vec<VerifiedRelay>,
 }
 
+/// The SOCKS5 proxy.
+///
+/// It runs no DHT node and sends no DHT query. A DHT lookup goes to nodes
+/// the client does not choose, from the client's own address, and a lookup
+/// for a .hidra name says which site that address is about to visit. So the
+/// relay list and service descriptors are asked for through circuits, and
+/// the last hop of each asks its own DHT node (see `CircuitPool`).
 pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
-    let listener =
-        TcpListener::bind(config.listen_addr).await?;
+    let listener = TcpListener::bind(config.listen_addr).await?;
     info!(addr = %config.listen_addr, "HidraNet proxy listening on {}", config.listen_addr);
 
-    let signing_key = ed25519_dalek::SigningKey::generate(
-        &mut rand_core::OsRng,
+    info!(
+        relay_count = config.static_relays.len(),
+        "initial relay set loaded"
     );
-    let mut dht = DhtNode::new(
-        config.dht_addr,
-        signing_key,
-        None,
-    )
-    .await?;
-    dht.start().await;
-
-    if !config.bootstrap_addrs.is_empty() {
-        if let Err(e) =
-            bootstrap(&dht, &config.bootstrap_addrs).await
-        {
-            warn!(error = %e, "DHT bootstrap failed, will use static relays");
-        }
+    if config.static_relays.is_empty() {
+        warn!("no relays are pinned in the configuration; the proxy cannot build a circuit");
     }
-    let dht = Arc::new(dht);
-    let initial_relays = discover_relays(
-        &dht,
-        &config.static_relays,
-    )
-    .await;
-    info!(relay_count = initial_relays.len(), "initial relay set loaded");
-    let pool = CircuitPool::new(initial_relays);
+    let pool = CircuitPool::new(config.static_relays);
+    // The first refresh may go through a one-hop circuit, if fewer than
+    // three relays are pinned; the second then has enough for full ones.
+    pool.refresh_relays().await;
+    if pool.relays().await.len() < MIN_RELAYS * 2 {
+        pool.refresh_relays().await;
+    }
     pool.maintain().await;
     info!(pool_size = pool.pool_size().await, "circuit pool initialized");
 
     let pool_bg = Arc::clone(&pool);
-    let dht_bg = Arc::clone(&dht);
-    let static_relays = config.static_relays.clone();
     tokio::spawn(async move {
         let mut relay_refresh = Instant::now();
         loop {
             tokio::time::sleep(POOL_MAINTENANCE_INTERVAL).await;
             if relay_refresh.elapsed() > RELAY_CACHE_TTL {
-                let relays = discover_relays(
-                    &dht_bg,
-                    &static_relays,
-                )
-                .await;
-                if relays.len() >= MIN_RELAYS {
-                    pool_bg.update_relays(relays).await;
-                    relay_refresh = Instant::now();
-                }
+                pool_bg.refresh_relays().await;
+                relay_refresh = Instant::now();
             }
             pool_bg.maintain().await;
         }
     });
 
     loop {
-        let (stream, remote_addr) =
-            listener.accept().await?;
+        let (stream, remote_addr) = listener.accept().await?;
         info!(client_ip = %sensitive(&remote_addr), "accepted SOCKS5 connection");
         let pool = Arc::clone(&pool);
-        let dht_ref = Arc::clone(&dht);
         tokio::spawn(async move {
-            stream_handler::handle_socks5_connection(
-                stream,
-                pool,
-                dht_ref,
-                remote_addr,
-            )
-            .await;
+            stream_handler::handle_socks5_connection(stream, pool, remote_addr).await;
         });
     }
-}
-
-/// Relays a circuit may use: the operator's pinned ones and every relay the
-/// DHT knows of whose descriptor verifies. A relay the DHT names without a
-/// descriptor signed by its own identity is left out — there is no key to hold
-/// it to, so it cannot be a hop.
-async fn discover_relays(
-    dht: &DhtNode,
-    static_relays: &[VerifiedRelay],
-) -> Vec<VerifiedRelay> {
-    let mut all = static_relays.to_vec();
-    match dht.find_relays(MIN_RELAYS * 4).await {
-        Ok(nodes) => {
-            let found = nodes.len();
-            let mut unsigned = 0usize;
-            for n in nodes {
-                match n.verified_relay() {
-                    Some(r) if !all.iter().any(|a| a.addr() == r.addr()) => all.push(r),
-                    Some(_) => {}
-                    None => unsigned += 1,
-                }
-            }
-            info!(dht_found = found, unsigned, usable = all.len(), "relay set refreshed");
-        }
-        Err(e) => warn!(error = %e, "DHT relay discovery failed"),
-    }
-    if all.len() < MIN_RELAYS {
-        warn!(
-            usable = all.len(),
-            "fewer verified relays than a circuit needs; circuits will fail until more are found"
-        );
-    }
-    all
 }

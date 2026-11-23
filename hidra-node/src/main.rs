@@ -244,7 +244,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } else if cli.proxy {
         run_proxy_mode(&app_cfg).await?;
     } else if let Some(ref payload) = cli.send {
-        run_send_mode(&app_cfg, signing_key, payload, cli.dht_discover).await?;
+        run_send_mode(&app_cfg, payload, cli.dht_discover).await?;
     } else {
         run_relay_mode(&app_cfg, network_secret, signing_key).await?;
     }
@@ -755,24 +755,9 @@ async fn run_proxy_mode(
     let proxy_addr: SocketAddr =
         format!("{}:{}", app_cfg.proxy.listen_addr, app_cfg.proxy.port).parse()?;
 
-    // Port 0, not the configured one. A client has no reason to run a
-    // predictable, scannable service: on a fixed port, anyone who sweeps the
-    // internet for it gets a list of this network's users by IP, and "is a
-    // HidraNet user" is in many situations the whole thing a user needs
-    // hidden. An ephemeral port still sends queries and still receives the
-    // replies; it just is not something you can go looking for.
-    //
-    // It does not hide the address from a DHT peer that is contacted
-    // directly. Routing lookups through a circuit is the fix for that, and it
-    // is not done yet — see SECURITY.md.
-    let dht_addr: SocketAddr = "0.0.0.0:0".parse()?;
-
-    let bootstrap_addrs: Vec<SocketAddr> = app_cfg
-        .dht
-        .bootstrap_nodes
-        .iter()
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    // The proxy runs no DHT node: relays and .hidra descriptors are asked
+    // for through circuits (see proxy_runner), so no DHT node ever sees this
+    // address, and `dht.bootstrap_nodes` is not used here.
 
     // Only relays whose keys are pinned here or signed in the DHT. There used
     // to be three more, started inside this process, merged in whenever the
@@ -783,8 +768,6 @@ async fn run_proxy_mode(
 
     let proxy_config = client::proxy_runner::ProxyConfig {
         listen_addr: proxy_addr,
-        dht_addr,
-        bootstrap_addrs,
         static_relays,
     };
 
@@ -836,27 +819,18 @@ async fn run_proxy_mode(
 
 async fn run_send_mode(
     app_cfg: &config::AppConfig,
-    signing_key: SigningKey,
     payload: &str,
     dht_discover: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let relays = if dht_discover && app_cfg.dht.enabled {
-        // Ephemeral, as in proxy mode: a one-shot send is a client.
-        let dht_addr: SocketAddr = "0.0.0.0:0".parse()?;
-        let mut dht = p2p::dht::DhtNode::new(dht_addr, signing_key, None).await?;
-        dht.start().await;
-
-        let bootstrap_addrs: Vec<SocketAddr> = app_cfg
-            .dht
-            .bootstrap_nodes
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        p2p::bootstrap::bootstrap(&dht, &bootstrap_addrs).await?;
-        verified_relays(app_cfg, Some(&dht)).await
+    let pinned = verified_relays(app_cfg, None).await;
+    let relays = if dht_discover {
+        // As in proxy mode, a client: relays come from the DHT through a
+        // circuit, starting from the pinned ones, never by querying it.
+        let pool = client::circuit_pool::CircuitPool::new(pinned);
+        pool.refresh_relays().await;
+        pool.relays().await
     } else {
-        verified_relays(app_cfg, None).await
+        pinned
     };
 
     if relays.len() < 3 {
@@ -935,12 +909,17 @@ async fn run_relay_mode(
             );
         }
 
-        Some(dht)
+        Some(Arc::new(dht))
     } else {
         None
     };
 
-    let listener = network::listener::NodeListener::bind(addr, network_secret).await?;
+    // The relay answers clients' directory requests from its DHT node, so
+    // clients can learn relays and find .hidra services through a circuit.
+    let mut listener = network::listener::NodeListener::bind(addr, network_secret).await?;
+    if let Some(ref dht) = dht_node {
+        listener = listener.with_dht(Arc::clone(dht));
+    }
     info!(addr = %addr, "listening for inbound connections");
 
     tokio::select! {

@@ -432,17 +432,30 @@ impl DhtNode {
     /// the way can withhold a descriptor or hand out an older one; it cannot
     /// hand out one the service did not sign, and it loses to any path that
     /// reaches a newer one.
+    #[allow(dead_code)] // clients look services up through a circuit; the tests ask directly
     pub async fn lookup_service(
         &self,
         service_hash: &[u8; 20],
     ) -> Result<Option<(Vec<SocketAddr>, [u8; 32])>> {
+        Ok(self
+            .lookup_service_descriptor(service_hash)
+            .await?
+            .map(|d| (d.intro_points, d.service_pubkey)))
+    }
+
+    /// `lookup_service`, keeping the descriptor itself, so whoever asked
+    /// through a circuit can check the service's signature for themselves.
+    pub async fn lookup_service_descriptor(
+        &self,
+        service_hash: &[u8; 20],
+    ) -> Result<Option<ServiceDescriptor>> {
         let shared = &self.shared;
         let now = now_secs();
         let local = shared.store.lock().await.get(service_hash, now).cloned();
         if let Some(s) = &local {
             let mine = matches!(s.origin, Origin::Own | Origin::Fetched);
             if mine && now.saturating_sub(s.descriptor.revision) < LOCAL_DESCRIPTOR_FRESH_SECS {
-                return Ok(Some((s.descriptor.intro_points.clone(), s.descriptor.service_pubkey)));
+                return Ok(Some(s.descriptor.clone()));
             }
         }
         let target = service_target(service_hash);
@@ -479,7 +492,7 @@ impl DhtNode {
         if let Some(d) = &best {
             let _ = shared.store.lock().await.put(*service_hash, d.clone(), Origin::Fetched, now);
         }
-        Ok(best.map(|d| (d.intro_points, d.service_pubkey)))
+        Ok(best)
     }
 }
 

@@ -52,7 +52,19 @@ impl StreamingCircuit {
                 path.len()
             )));
         }
-        let path = &path[..CIRCUIT_HOPS];
+        Self::build_path(&path[..CIRCUIT_HOPS]).await
+    }
+
+    /// A one-hop circuit, for fetching the relay list from a relay the
+    /// client would connect to anyway when it knows too few to build a full
+    /// circuit. The relay learns that this address asked for the list, which
+    /// it could tell from the connection alone; it is never used for
+    /// anything that names a destination.
+    pub async fn build_directory(relay: &VerifiedRelay) -> Result<Self> {
+        Self::build_path(std::slice::from_ref(relay)).await
+    }
+
+    async fn build_path(path: &[VerifiedRelay]) -> Result<Self> {
         for (i, a) in path.iter().enumerate() {
             if path[..i]
                 .iter()
@@ -202,6 +214,37 @@ impl StreamingCircuit {
                 Err(HidraError::Circuit(format!("service registration failed: {reason}")))
             }
             _ => Err(HidraError::Circuit("unexpected register response".into())),
+        }
+    }
+
+    /// Relays the last hop finds in its DHT. Returned as received: the
+    /// caller checks each record's ID and descriptor.
+    pub async fn directory_relays(&mut self, max: u16) -> Result<Vec<crate::p2p::dht::node::NodeInfo>> {
+        let exit = self.exit();
+        self.send_to(exit, &RelayCommand::DirectoryRelays { max }).await?;
+        match self.exit_answer().await? {
+            RelayCommand::DirectoryRelaysAnswer { nodes } => Ok(nodes),
+            RelayCommand::DirectoryUnavailable => {
+                Err(HidraError::Circuit("this relay serves no directory".into()))
+            }
+            _ => Err(HidraError::Circuit("unexpected directory response".into())),
+        }
+    }
+
+    /// A service's descriptor, looked up by the last hop. Returned as
+    /// received: the caller checks the service's signature.
+    pub async fn directory_service(
+        &mut self,
+        service_hash: [u8; 20],
+    ) -> Result<Option<crate::p2p::dht::descriptor::ServiceDescriptor>> {
+        let exit = self.exit();
+        self.send_to(exit, &RelayCommand::DirectoryService { service_hash }).await?;
+        match self.exit_answer().await? {
+            RelayCommand::DirectoryServiceAnswer { descriptor } => Ok(descriptor),
+            RelayCommand::DirectoryUnavailable => {
+                Err(HidraError::Circuit("this relay serves no directory".into()))
+            }
+            _ => Err(HidraError::Circuit("unexpected directory response".into())),
         }
     }
 

@@ -35,7 +35,12 @@ use crate::network::connection::{LinkWriter, Message};
 use crate::network::link;
 use crate::onion::cell::RelayCommand;
 use crate::onion::layer::{Peeled, RelayHop};
+use crate::p2p::dht::DhtNode;
 use crate::safelog::sensitive;
+
+/// The most relays one directory answer carries: enough to build circuits
+/// from, small enough for one cell.
+const MAX_DIRECTORY_RELAYS: usize = 32;
 
 /// How long an exit waits for a target to accept a connection.
 const TARGET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -51,6 +56,9 @@ type IntroRegistry = Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<ClientPipe>>>>;
 pub struct RelayRouter {
     static_secret_bytes: Arc<[u8; 32]>,
     intro_registry: IntroRegistry,
+    /// This relay's DHT node, if it runs one: what it answers clients'
+    /// directory requests from.
+    dht: Option<Arc<DhtNode>>,
 }
 
 impl RelayRouter {
@@ -58,13 +66,19 @@ impl RelayRouter {
         Self {
             static_secret_bytes,
             intro_registry: Arc::new(Mutex::new(HashMap::new())),
+            dht: None,
         }
+    }
+
+    pub fn with_dht(mut self, dht: Option<Arc<DhtNode>>) -> Self {
+        self.dht = dht;
+        self
     }
 
     /// Serves one link, after its protocol byte, until the circuit on it ends.
     pub async fn handle_link(&self, stream: TcpStream) {
         let secret = StaticSecret::from(*self.static_secret_bytes);
-        let result = serve_link(stream, &secret, &self.intro_registry).await;
+        let result = serve_link(stream, &secret, &self.intro_registry, self.dht.as_ref()).await;
         drop(secret);
         match result {
             Ok(()) => debug!("circuit closed"),
@@ -150,6 +164,7 @@ struct Hop<'a> {
     next: Option<(u32, LinkWriter, mpsc::Receiver<Result<Message>>)>,
     exit: Exit,
     intro_registry: &'a IntroRegistry,
+    dht: Option<&'a Arc<DhtNode>>,
 }
 
 impl Hop<'_> {
@@ -295,6 +310,35 @@ impl Hop<'_> {
                 info!(bytes = bytes.len(), "probe received");
                 self.answer(&RelayCommand::ProbeReply(b"Received, agent".to_vec())).await
             }
+            RelayCommand::DirectoryRelays { max } => {
+                if self.next.is_some() {
+                    return Err(HidraError::Circuit("directory request for a hop past this one".into()));
+                }
+                let Some(dht) = self.dht else {
+                    return self.answer(&RelayCommand::DirectoryUnavailable).await;
+                };
+                let max = usize::from(max).min(MAX_DIRECTORY_RELAYS);
+                let nodes: Vec<_> = dht
+                    .find_relays(max)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|n| n.relay_descriptor.is_some())
+                    .collect();
+                info!(relays = nodes.len(), "directory request answered");
+                self.answer(&RelayCommand::DirectoryRelaysAnswer { nodes }).await
+            }
+            RelayCommand::DirectoryService { service_hash } => {
+                if self.next.is_some() {
+                    return Err(HidraError::Circuit("directory request for a hop past this one".into()));
+                }
+                let Some(dht) = self.dht else {
+                    return self.answer(&RelayCommand::DirectoryUnavailable).await;
+                };
+                info!(service = %sensitive(&hex(&service_hash)), "directory lookup for a service");
+                let descriptor = dht.lookup_service_descriptor(&service_hash).await.unwrap_or(None);
+                self.answer(&RelayCommand::DirectoryServiceAnswer { descriptor }).await
+            }
             other => Err(HidraError::Circuit(format!(
                 "a client does not send {}",
                 command_name(&other)
@@ -355,6 +399,9 @@ fn command_name(cmd: &RelayCommand) -> &'static str {
         RelayCommand::Extended { .. } => "EXTENDED",
         RelayCommand::ExtendFailed => "EXTEND_FAILED",
         RelayCommand::ProbeReply(_) => "PROBE_REPLY",
+        RelayCommand::DirectoryRelaysAnswer { .. } => "DIRECTORY_RELAYS_ANSWER",
+        RelayCommand::DirectoryServiceAnswer { .. } => "DIRECTORY_SERVICE_ANSWER",
+        RelayCommand::DirectoryUnavailable => "DIRECTORY_UNAVAILABLE",
         _ => "this command",
     }
 }
@@ -389,6 +436,7 @@ async fn serve_link(
     stream: TcpStream,
     secret: &StaticSecret,
     intro_registry: &IntroRegistry,
+    dht: Option<&Arc<DhtNode>>,
 ) -> Result<()> {
     let conn = link::accept(stream, secret).await?;
     let (reader, mut back) = conn.into_split();
@@ -419,6 +467,7 @@ async fn serve_link(
         next: None,
         exit: Exit::None,
         intro_registry,
+        dht,
     };
     let mut buf = vec![0u8; 16 * 1024];
     let result = loop {

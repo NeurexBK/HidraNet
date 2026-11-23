@@ -9,7 +9,6 @@ use tracing::{debug, info, warn};
 use crate::client::circuit_pool::CircuitPool;
 use crate::client::streaming::StreamingCircuit;
 use crate::error::{HidraError, Result};
-use crate::p2p::dht::DhtNode;
 use crate::proxy::resolver;
 use crate::proxy::socks5::{self, TargetAddr};
 use crate::safelog::sensitive;
@@ -20,11 +19,10 @@ const INITIAL_BACKOFF_MS: u64 = 100;
 pub async fn handle_socks5_connection(
     mut browser_stream: TcpStream,
     pool: Arc<CircuitPool>,
-    dht: Arc<DhtNode>,
     client_addr: SocketAddr,
 ) {
     if let Err(e) =
-        handle_inner(&mut browser_stream, &pool, &dht, client_addr).await
+        handle_inner(&mut browser_stream, &pool, client_addr).await
     {
         warn!(
             client_ip = %sensitive(&client_addr),
@@ -62,7 +60,6 @@ fn parse_hidra_address(host: &str) -> Option<[u8; 20]> {
 async fn handle_inner(
     browser: &mut TcpStream,
     pool: &CircuitPool,
-    dht: &DhtNode,
     client_addr: SocketAddr,
 ) -> Result<()> {
     socks5::handshake(browser).await?;
@@ -101,13 +98,15 @@ async fn handle_inner(
         info!(
             client_ip = %sensitive(&client_addr),
             address = %sensitive(&host),
-            "resolving .hidra hidden service via DHT"
+            "resolving .hidra hidden service through a circuit"
         );
-        let descriptor = dht.lookup_service(&service_hash).await?
+        // Asked through circuits, never from this address: the lookup names
+        // the site the user is about to visit.
+        let descriptor = pool.lookup_service(&service_hash).await?
             .ok_or_else(|| HidraError::Circuit(
-                format!("hidden service not found: {host}")
+                "hidden service not found".into()
             ))?;
-        let (intro_points, _service_pubkey) = descriptor;
+        let intro_points = descriptor.intro_points;
         info!(
             intro_points = intro_points.len(),
             "found hidden service descriptor"

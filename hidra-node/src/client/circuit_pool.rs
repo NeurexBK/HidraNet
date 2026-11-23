@@ -8,9 +8,16 @@ use tracing::{debug, info, warn};
 
 use crate::client::streaming::{StreamingCircuit, CIRCUIT_HOPS};
 use crate::error::{HidraError, Result};
-use crate::p2p::dht::descriptor::VerifiedRelay;
+use crate::p2p::dht::descriptor::{ServiceDescriptor, VerifiedRelay};
+use crate::p2p::dht::node::NodeInfo;
 
 const CIRCUIT_TTL: Duration = Duration::from_secs(300);
+/// Relays asked for per directory request, and the most the pool keeps.
+const DIRECTORY_ASK: u16 = 32;
+const MAX_KNOWN_RELAYS: usize = 256;
+/// Directory requests per refresh or lookup, each through its own circuit:
+/// one hop that withholds a relay or a descriptor does not decide alone.
+const DIRECTORY_CIRCUITS: usize = 2;
 const POOL_TARGET_SIZE: usize = 3;
 const MAX_POOL_SIZE: usize = 10;
 
@@ -27,24 +34,109 @@ struct PoolEntry {
 pub struct CircuitPool {
     entries: Mutex<Vec<PoolEntry>>,
     relays: Mutex<Vec<VerifiedRelay>>,
+    /// The ID puzzle difficulty a relay's DHT record must have paid for to
+    /// be accepted from a directory answer.
+    id_bits: u32,
 }
 
 impl CircuitPool {
     pub fn new(relays: Vec<VerifiedRelay>) -> Arc<Self> {
+        Self::with_id_bits(relays, crate::p2p::dht::node::ID_PUZZLE_BITS)
+    }
+
+    /// For a network with another ID difficulty: tests, private networks.
+    pub fn with_id_bits(relays: Vec<VerifiedRelay>, id_bits: u32) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(Vec::new()),
             relays: Mutex::new(relays),
+            id_bits,
         })
     }
 
-    pub async fn update_relays(&self, relays: Vec<VerifiedRelay>) {
-        let mut r = self.relays.lock().await;
-        info!(
-            old_count = r.len(),
-            new_count = relays.len(),
-            "relay list updated"
-        );
-        *r = relays;
+    pub async fn relays(&self) -> Vec<VerifiedRelay> {
+        self.relays.lock().await.clone()
+    }
+
+    /// Learns relays from the DHT without querying it: each request goes
+    /// through a circuit and the last hop asks its own DHT node. With three
+    /// or more relays known that is a full circuit; with fewer, a one-hop
+    /// circuit to a known relay, which already sees this address. Every
+    /// record that comes back is checked here (its ID puzzle and its signed
+    /// descriptor); a hop can leave relays out, but not add one nobody
+    /// signed. Returns how many relays are now usable.
+    pub async fn refresh_relays(&self) -> usize {
+        let known = self.relays().await;
+        let mut found = Vec::new();
+        for _ in 0..DIRECTORY_CIRCUITS {
+            let circuit = if known.len() >= CIRCUIT_HOPS {
+                self.build_new_circuit().await
+            } else {
+                let Some(r) = known.choose(&mut rand::thread_rng()).cloned() else {
+                    break;
+                };
+                StreamingCircuit::build_directory(&r).await
+            };
+            let mut circuit = match circuit {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(error = %e, "no circuit for a directory request");
+                    continue;
+                }
+            };
+            match circuit.directory_relays(DIRECTORY_ASK).await {
+                Ok(nodes) => found.extend(accept_directory_nodes(&nodes, self.id_bits)),
+                Err(e) => warn!(error = %e, "directory request failed"),
+            }
+            circuit.destroy().await;
+        }
+        let mut relays = self.relays.lock().await;
+        let mut added = 0usize;
+        for r in found {
+            if relays.len() < MAX_KNOWN_RELAYS
+                && !relays
+                    .iter()
+                    .any(|k| k.addr() == r.addr() || k.transport_key() == r.transport_key())
+            {
+                relays.push(r);
+                added += 1;
+            }
+        }
+        info!(added, usable = relays.len(), "relay set refreshed");
+        relays.len()
+    }
+
+    /// A hidden service's descriptor, looked up through circuits so the DHT
+    /// never sees who asked. Always a full circuit: the last hop learns which
+    /// service, never by whom. Each answer must carry the service's own
+    /// signature and be current; the newest of those wins.
+    pub async fn lookup_service(&self, service_hash: &[u8; 20]) -> Result<Option<ServiceDescriptor>> {
+        let mut best: Option<ServiceDescriptor> = None;
+        let mut asked = 0usize;
+        for _ in 0..DIRECTORY_CIRCUITS + 1 {
+            if asked == DIRECTORY_CIRCUITS {
+                break;
+            }
+            let mut circuit = match self.build_new_circuit().await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(error = %e, "no circuit for a service lookup");
+                    continue;
+                }
+            };
+            let answer = circuit.directory_service(*service_hash).await;
+            circuit.destroy().await;
+            let Ok(answer) = answer else { continue };
+            asked += 1;
+            if let Some(d) = answer.filter(|d| descriptor_is_current(d, service_hash, now_secs())) {
+                if best.as_ref().is_none_or(|b| d.revision > b.revision) {
+                    best = Some(d);
+                }
+            }
+        }
+        if asked == 0 {
+            return Err(HidraError::Circuit("no circuit could ask for the service".into()));
+        }
+        Ok(best)
     }
 
     pub async fn get_circuit(&self) -> Result<StreamingCircuit> {
@@ -141,6 +233,32 @@ impl CircuitPool {
     }
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Signed by the service for this address, and neither expired nor from the
+/// future: the same rule a DHT node applies before storing one.
+fn descriptor_is_current(d: &ServiceDescriptor, service_hash: &[u8; 20], now: u64) -> bool {
+    use crate::p2p::dht::store::{DESCRIPTOR_TTL_SECS, MAX_CLOCK_SKEW_SECS};
+    d.verify(service_hash).is_ok()
+        && d.revision <= now.saturating_add(MAX_CLOCK_SKEW_SECS)
+        && d.revision.saturating_add(DESCRIPTOR_TTL_SECS) > now
+}
+
+/// The relays in a directory answer a circuit may use: records whose ID was
+/// paid for at `id_bits` and whose relay descriptor the node itself signed.
+fn accept_directory_nodes(nodes: &[NodeInfo], id_bits: u32) -> Vec<VerifiedRelay> {
+    nodes
+        .iter()
+        .filter(|n| n.id_is_valid(id_bits))
+        .filter_map(|n| n.verified_relay())
+        .collect()
+}
+
 fn select_relays(all: &[VerifiedRelay]) -> Result<Vec<VerifiedRelay>> {
     select_relays_n(all, CIRCUIT_HOPS)
 }
@@ -164,4 +282,57 @@ fn select_relays_n(all: &[VerifiedRelay], n: usize) -> Result<Vec<VerifiedRelay>
     distinct.shuffle(&mut rand::thread_rng());
     distinct.truncate(n);
     Ok(distinct)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::p2p::dht::descriptor::RelayDescriptor;
+    use crate::p2p::dht::node::{solve_id_puzzle, NodeId};
+    use ed25519_dalek::SigningKey;
+    use rand_core::OsRng;
+
+    fn relay_record(bits: u32, paid: bool) -> NodeInfo {
+        let key = SigningKey::generate(&mut OsRng);
+        let pk = key.verifying_key().to_bytes();
+        let nonce = if paid { solve_id_puzzle(&pk, bits) } else { u64::MAX };
+        let addr: SocketAddr = "198.51.100.9:9001".parse().unwrap();
+        NodeInfo {
+            id: NodeId::for_node(&pk, nonce),
+            dht_addr: "198.51.100.9:7000".parse().unwrap(),
+            relay_addr: Some(addr),
+            public_key: pk,
+            id_nonce: nonce,
+            relay_descriptor: Some(RelayDescriptor::sign(&key, addr, [3; 32], 1)),
+        }
+    }
+
+    /// A hop answering a directory request can invent records; they are
+    /// dropped unless the ID was paid for and the relay signed the key.
+    #[test]
+    fn a_directory_answer_is_checked_record_by_record() {
+        let good = relay_record(8, true);
+        let unpaid = relay_record(8, false);
+        let mut swapped = relay_record(8, true);
+        swapped.relay_descriptor.as_mut().unwrap().transport_key = [4; 32];
+        let accepted = accept_directory_nodes(&[good, unpaid, swapped], 8);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].transport_key(), &[3; 32]);
+    }
+
+    #[test]
+    fn a_service_descriptor_must_be_signed_and_current() {
+        let key = SigningKey::generate(&mut OsRng);
+        let now = 1_000_000;
+        let d = ServiceDescriptor::sign(&key, vec!["198.51.100.3:9001".parse().unwrap()], now);
+        let hash = d.service_hash();
+        assert!(descriptor_is_current(&d, &hash, now));
+        assert!(!descriptor_is_current(&d, &[0; 20], now), "another address");
+        assert!(!descriptor_is_current(&d, &hash, now + 7200), "expired");
+        let future = ServiceDescriptor::sign(&key, d.intro_points.clone(), now + 7200);
+        assert!(!descriptor_is_current(&future, &hash, now), "from the future");
+        let mut moved = d.clone();
+        moved.intro_points = vec!["203.0.113.66:9001".parse().unwrap()];
+        assert!(!descriptor_is_current(&moved, &hash, now), "not as signed");
+    }
 }

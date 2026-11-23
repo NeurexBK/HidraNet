@@ -13,6 +13,7 @@ use crate::relay::router::RelayRouter;
 pub struct NodeListener {
     listener: TcpListener,
     static_secret: Arc<[u8; 32]>,
+    dht: Option<Arc<crate::p2p::dht::DhtNode>>,
 }
 
 impl NodeListener {
@@ -22,7 +23,16 @@ impl NodeListener {
         Ok(Self {
             listener,
             static_secret: Arc::new(static_secret.to_bytes()),
+            dht: None,
         })
+    }
+
+    /// Answers clients' directory requests from this DHT node: the relays it
+    /// knows and the service descriptors it can find, so clients never query
+    /// the DHT from their own address.
+    pub fn with_dht(mut self, dht: Arc<crate::p2p::dht::DhtNode>) -> Self {
+        self.dht = Some(dht);
+        self
     }
 
     /// Accepts links and hands each to the relay router.
@@ -31,7 +41,7 @@ impl NodeListener {
     /// user's address. The protocol byte is read on the connection's own task,
     /// so a peer that connects and says nothing holds up no one else.
     pub async fn accept_loop(&self) -> Result<()> {
-        let router = RelayRouter::new(Arc::clone(&self.static_secret));
+        let router = RelayRouter::new(Arc::clone(&self.static_secret)).with_dht(self.dht.clone());
 
         loop {
             let (mut stream, _) = self.listener.accept().await?;

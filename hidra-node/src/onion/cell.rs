@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HidraError, Result};
+use crate::p2p::dht::descriptor::ServiceDescriptor;
+use crate::p2p::dht::node::NodeInfo;
 
 /// What a client says to one hop of its circuit, and what that hop answers.
 /// It travels inside that hop's layer, so only the hop it is for can read it.
@@ -37,6 +39,18 @@ pub enum RelayCommand {
     /// Its content is never logged.
     Probe(Vec<u8>),
     ProbeReply(Vec<u8>),
+    /// Ask the hop to look relays up in the DHT for the client, so the
+    /// client never sends a DHT query from its own address. The answer is
+    /// node records with their signed relay descriptors, which the client
+    /// checks itself: the hop can leave relays out, not forge them.
+    DirectoryRelays { max: u16 },
+    DirectoryRelaysAnswer { nodes: Vec<NodeInfo> },
+    /// The same for a hidden service's descriptor. The hop learns which
+    /// service was asked for, not by whom; the service signed the answer.
+    DirectoryService { service_hash: [u8; 20] },
+    DirectoryServiceAnswer { descriptor: Option<ServiceDescriptor> },
+    /// This hop runs no DHT node.
+    DirectoryUnavailable,
 }
 
 impl RelayCommand {

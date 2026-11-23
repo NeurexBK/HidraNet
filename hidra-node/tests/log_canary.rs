@@ -170,29 +170,16 @@ async fn neither_the_canary_nor_the_client_address_reaches_any_log() {
     //    once to the hostname canary (fails at the exit) and once to the
     //    target with the payload canary.
     let pool = CircuitPool::new(relays.clone());
-    let dht = {
-        let node = hidra_node::p2p::dht::DhtNode::with_id_bits(
-            "127.0.0.7:0".parse().unwrap(),
-            ed25519_dalek::SigningKey::generate(&mut OsRng),
-            None,
-            8,
-        )
-        .await
-        .unwrap();
-        Arc::new(node)
-    };
     let proxy = TcpListener::bind("127.0.0.8:0").await.unwrap();
     let proxy_addr = proxy.local_addr().unwrap();
     {
         let pool = Arc::clone(&pool);
-        let dht = Arc::clone(&dht);
         tokio::spawn(async move {
             while let Ok((stream, from)) = proxy.accept().await {
                 let pool = Arc::clone(&pool);
-                let dht = Arc::clone(&dht);
                 tokio::spawn(async move {
                     hidra_node::proxy::stream_handler::handle_socks5_connection(
-                        stream, pool, dht, from,
+                        stream, pool, from,
                     )
                     .await;
                 });

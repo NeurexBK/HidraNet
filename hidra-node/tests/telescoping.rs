@@ -231,3 +231,78 @@ async fn a_circuit_through_relays_found_in_the_dht() {
         b"found in the DHT"
     );
 }
+
+/// The client learns relays and finds a hidden service without a DHT node
+/// of its own: each request goes through a circuit and the last hop asks
+/// its DHT. Starting from one pinned relay, the first request is a one-hop
+/// circuit to it; once three are known, requests use full circuits.
+#[tokio::test]
+async fn relays_and_services_are_looked_up_through_circuits() {
+    use ed25519_dalek::SigningKey;
+    use hidra_node::p2p::bootstrap::bootstrap;
+    use hidra_node::p2p::dht::DhtNode;
+    use std::sync::Arc;
+
+    const BITS: u32 = 8;
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut boot = DhtNode::with_id_bits(any, SigningKey::generate(&mut OsRng), None, BITS)
+        .await
+        .unwrap();
+    boot.start().await;
+    let boot_addr = boot.our_info().dht_addr;
+
+    let mut relays = Vec::new();
+    for _ in 0..4 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = PublicKey::from(&secret).to_bytes();
+        let l = NodeListener::bind(any, secret).await.unwrap();
+        let relay_addr = l.local_addr().unwrap();
+        let mut node = DhtNode::relay(any, SigningKey::generate(&mut OsRng), relay_addr, key, BITS)
+            .await
+            .unwrap();
+        node.start().await;
+        bootstrap(&node, &[boot_addr]).await.unwrap();
+        let node = Arc::new(node);
+        node.announce_relay().await.unwrap();
+        let l = l.with_dht(Arc::clone(&node));
+        tokio::spawn(async move { l.accept_loop().await });
+        relays.push((VerifiedRelay::pinned(relay_addr, key), node));
+    }
+    // A service, announced by its intro point's own DHT node.
+    let service_key = SigningKey::generate(&mut OsRng);
+    let intro = relays[3].0.addr();
+    boot.announce_signed_service(&service_key, vec![intro])
+        .await
+        .unwrap();
+    let service_hash =
+        hidra_node::p2p::dht::descriptor::service_hash_of(&service_key.verifying_key().to_bytes());
+
+    let pool = CircuitPool::with_id_bits(vec![relays[0].0.clone()], BITS);
+    let mut usable = 0;
+    for _ in 0..20 {
+        usable = pool.refresh_relays().await;
+        if usable >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(usable, 4, "every relay, found through the one pinned");
+
+    let found = pool
+        .lookup_service(&service_hash)
+        .await
+        .unwrap()
+        .expect("found");
+    assert_eq!(found.intro_points, vec![intro]);
+    assert!(pool.lookup_service(&[0x77; 20]).await.unwrap().is_none());
+}
+
+/// A relay without a DHT node says so; the client gets no relays and no
+/// descriptor from it, and is not sent to look elsewhere.
+#[tokio::test]
+async fn a_relay_without_a_dht_serves_no_directory() {
+    let relays = start_relays(3).await;
+    let pool = CircuitPool::new(relays);
+    assert_eq!(pool.refresh_relays().await, 3);
+    assert!(pool.lookup_service(&[1; 20]).await.is_err());
+}
