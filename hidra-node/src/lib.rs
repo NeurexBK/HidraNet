@@ -30,6 +30,7 @@ pub mod client;
 pub mod api;
 pub mod local_guard;
 pub mod safelog;
+pub mod timefmt;
 
 // Served by the binary, and in the library so the tests can reach them. These
 // four were inlined in main.rs, which is most of why hidramail's crypto — the

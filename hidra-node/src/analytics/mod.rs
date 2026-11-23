@@ -170,7 +170,6 @@ pub mod storage {
 pub mod collector {
     use super::storage::{AnalyticsDb, NetworkSnapshot, GeoEntry};
     use std::sync::Arc;
-    use chrono::Utc;
     use tracing::info;
 
     pub async fn run_collector(db: Arc<AnalyticsDb>, interval_secs: u64) {
@@ -187,9 +186,7 @@ pub mod collector {
                 tracing::warn!(error = %e, "failed to store analytics snapshot");
             }
 
-            let cutoff = (Utc::now() - chrono::Duration::days(31))
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
+            let cutoff = crate::timefmt::utc_seconds_ago(31 * 86_400);
             let _ = db.cleanup_old(&cutoff);
         }
     }
@@ -205,7 +202,7 @@ pub mod collector {
     /// do it honestly and should not do it at all. So those stay at zero, and
     /// the page says they are not collected.
     async fn collect_metrics() -> NetworkSnapshot {
-        let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let now = crate::timefmt::utc_now_seconds();
         let (relays, latency_avg_ms) = probe_local_relays().await;
         NetworkSnapshot {
             ts: now,
@@ -353,18 +350,14 @@ pub mod dashboard {
     }
 
     fn handle_traffic(db: &AnalyticsDb) -> (&'static str, &'static str, String) {
-        let since = (chrono::Utc::now() - chrono::Duration::hours(24))
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        let since = crate::timefmt::utc_seconds_ago(24 * 3_600);
         let snaps = db.query_snapshots(&since, 288).unwrap_or_default();
         let json = serde_json::to_string(&snaps).unwrap_or_else(|_| "[]".into());
         ("200 OK", "application/json", json)
     }
 
     fn handle_geo(db: &AnalyticsDb) -> (&'static str, &'static str, String) {
-        let since = (chrono::Utc::now() - chrono::Duration::hours(1))
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        let since = crate::timefmt::utc_seconds_ago(3_600);
         let geo = db.query_geo(&since).unwrap_or_default();
         let json = serde_json::to_string(&geo).unwrap_or_else(|_| "[]".into());
         ("200 OK", "application/json", json)

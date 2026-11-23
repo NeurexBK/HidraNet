@@ -860,7 +860,7 @@ impl Store {
                         }
                     }
                     let n = batch.len();
-                    let now = chrono::Utc::now().timestamp_millis();
+                    let now = crate::timefmt::unix_millis();
                     // A failed batch is retried, with a pause; a disk that
                     // keeps refusing marks the store broken and the relay
                     // stops taking retained publishes rather than keeping
