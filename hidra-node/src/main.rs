@@ -95,6 +95,7 @@ mod local_guard;
 
 #[path = "safelog.rs"]
 mod safelog;
+mod timefmt;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mod api

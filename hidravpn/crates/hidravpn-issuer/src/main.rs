@@ -1133,8 +1133,12 @@ const LAPSED_PRUNE_EVERY: i64 = 86_400;
 /// transaction could still be claimed against another order is an order's
 /// life after it, plus the clock slack.
 const KEEP_PAID: i64 = 2 * ORDER_LIFETIME + CLOCK_SLACK;
-/// Claims tried on one token's open orders before a new order is needed:
-/// each try is a lookup on the chain.
+/// Claims an open order may be tried with: each try is a lookup on the
+/// chain. A claim does not say which order it paid, so it is a try on each
+/// of the token's open orders, and the limit is held by the order tried the
+/// most. Never by the sum: with several orders open (one replaced by
+/// another, say), the sum would refuse even the paid order after a handful
+/// of claims, 30 divided by how many are open.
 const MAX_CLAIM_TRIES: u32 = 30;
 /// Lookups on the chain at once. A single claim's quorum (one lookup per
 /// RPC, in turn) holds one slot for its whole run, so this bounds how many
@@ -1948,8 +1952,17 @@ impl Index {
                 Known::Nothing
             };
         }
-        // As `before_claim` counts: one try more on each open order.
-        if !paid && open.iter().map(|o| o.2).sum::<u32>() + open.len() as u32 > MAX_CLAIM_TRIES {
+        // As `before_claim` counts: one try more on each open order, the
+        // one tried the most against the limit.
+        if !paid
+            && open
+                .iter()
+                .map(|o| o.2)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                > MAX_CLAIM_TRIES
+        {
             return Known::TooManyTries;
         }
         Known::Orders {
@@ -2164,7 +2177,7 @@ impl Orders {
         if open.is_empty() {
             return Err(NotClaimable::NoOrder);
         }
-        if open.iter().map(|o| o.tries).sum::<u32>() > MAX_CLAIM_TRIES {
+        if open.iter().map(|o| o.tries).max().unwrap_or(0) > MAX_CLAIM_TRIES {
             return Err(NotClaimable::TooManyTries);
         }
         Ok(Claimable::Open(open))
@@ -2797,6 +2810,40 @@ mod tests {
         assert_eq!(a.charge(&d, 1, 100), Ok((4, false)));
         assert_eq!(a.credit(&token_hash(&d), 20).unwrap(), 20);
         assert_eq!(a.charge(&d, 1, 100), Ok((19, true)));
+    }
+
+    #[test]
+    fn open_orders_do_not_share_their_tries() {
+        // Five orders open for one token (four replaced on the VPN page,
+        // one paid): with the tries added up, the paid order's claim was
+        // refused at the seventh check. Each order is held to the limit on
+        // its own, so the token gets MAX_CLAIM_TRIES claims, however many
+        // orders it has open.
+        let mut o = Orders::default();
+        let pack = Pack {
+            passes: 10,
+            price_raw: 50_000_000,
+            usd_cents: None,
+        };
+        let h = token_hash("several");
+        for _ in 0..MAX_OPEN_PER_ACCOUNT {
+            o.open(&h, &pack, 1000, 6).unwrap();
+        }
+        for n in 1..=MAX_CLAIM_TRIES {
+            assert!(
+                matches!(Index::of(&o).known(&h, 1001), Known::Orders { .. }),
+                "claim {n}: the index lets it through"
+            );
+            match o.before_claim(&h, &format!("not-final-yet-{n}"), 1001) {
+                Ok(Claimable::Open(v)) => assert_eq!(v.len(), MAX_OPEN_PER_ACCOUNT, "claim {n}"),
+                other => panic!("claim {n}: {other:?}"),
+            }
+        }
+        assert_eq!(Index::of(&o).known(&h, 1001), Known::TooManyTries);
+        assert_eq!(
+            o.before_claim(&h, "one-too-many", 1001),
+            Err(NotClaimable::TooManyTries)
+        );
     }
 
     #[test]
@@ -3917,15 +3964,25 @@ mod tests {
             i.known(&a, UNCLAIMED_LIFETIME),
             Known::Orders { hold: false }
         );
-        // Tried as often as it may be: answered without the bucket, unless
-        // a paid order of the token is what the claim may be about.
+        // Tries on several open orders do not add up: each order is held
+        // to the limit on its own. Five orders tried 10 times each (50 in
+        // all) may still be claimed.
         for x in o.orders.iter_mut().filter(|x| x.token_sha256 == a) {
-            x.tries = (MAX_CLAIM_TRIES / MAX_OPEN_PER_ACCOUNT as u32) - 1;
+            x.tries = 10;
         }
         assert_eq!(Index::of(&o).known(&a, 2), Known::Orders { hold: false });
+        // The order tried the most, one short of the limit: one claim more.
         o.orders
             .iter_mut()
             .find(|x| x.token_sha256 == a)
+            .unwrap()
+            .tries = MAX_CLAIM_TRIES - 1;
+        assert_eq!(Index::of(&o).known(&a, 2), Known::Orders { hold: false });
+        // Tried as often as it may be: answered without the bucket, unless
+        // a paid order of the token is what the claim may be about.
+        o.orders
+            .iter_mut()
+            .find(|x| x.token_sha256 == a && x.tries == MAX_CLAIM_TRIES - 1)
             .unwrap()
             .tries += 1;
         assert_eq!(Index::of(&o).known(&a, 2), Known::TooManyTries);
