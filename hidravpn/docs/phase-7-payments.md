@@ -176,8 +176,9 @@ operator's risk, as is the rate moving while an order is open.
   the whole issuer (30 and 20 at once, then 2 a second each). A share is
   spent only by a request that can do something: a quote that could open
   an order, a claim for a token that has one. A claim for a token with no
-  order, or whose orders were tried 30 times (each try is one lookup on
-  the chain; a new order is needed then), or a quote for a token that
+  order, or whose most-tried open order was tried 30 times (each try is
+  one lookup on the chain, and a claim is a try on each of the token's open
+  orders), or a quote for a token that
   already has its 5 orders open (or with the issuer full), is answered from
   an index of the orders file the issuer keeps in memory, by the token's
   hash, without the file, the lock or the bucket: any number of those
@@ -185,7 +186,10 @@ operator's risk, as is the rate moving while an order is open.
   compete for the claim bucket, with any signature, as a buyer's claim
   must: one token's claims are let on to the bucket 10 at once, then one
   every 6 seconds, so a flood of claims on one order takes a few shares, and
-  one token's orders get 30 tries between them, no more. What bounds many orders' claims is the quote
+  each of one token's open orders gets 30 tries, counted on its own: added
+  up, the tries of a few open orders (one replaced by another, say) would
+  refuse even the paid order after a handful of claims. What bounds many
+  orders' claims is the quote
   bucket they were opened through and, above all, the proxy's limit per
   client (next section). At most 20 000 orders are open at once; 4 lookups
   on the chain at a time. The orders file is written only when something
