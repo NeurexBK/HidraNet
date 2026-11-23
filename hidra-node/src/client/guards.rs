@@ -78,7 +78,7 @@ impl GuardSet {
 
     /// Drops guards that expired or that are no longer among `known`, and
     /// picks new ones from `known` until there are GUARDS, each in a network
-    /// none of the others is in. Saves the set if it changed.
+    /// none of the others is in and not of their operator's family. Saves the set if it changed.
     pub fn update(&mut self, known: &[VerifiedRelay], now: u64) {
         let before = self.guards.clone();
         self.guards
@@ -93,7 +93,11 @@ impl GuardSet {
             if self.guards.len() >= GUARDS {
                 break;
             }
-            if self.guards.iter().any(|g| same_network(&g.addr, &r.addr())) {
+            let other_network_and_operator = self.guards.iter().all(|g| {
+                !same_network(&g.addr, &r.addr())
+                    && !known.iter().any(|k| g.is(k) && k.same_family(r))
+            });
+            if !other_network_and_operator {
                 continue;
             }
             self.guards.push(Guard {
@@ -178,6 +182,55 @@ mod tests {
         assert!(set.guards().contains(&kept));
         assert!(!set.guards().contains(&gone));
         assert_eq!(set.guards().len(), GUARDS);
+    }
+
+    /// Two guards of one operator would be one guard: never both.
+    #[test]
+    fn the_two_guards_are_never_of_one_family() {
+        use crate::p2p::dht::descriptor::RelayDescriptor;
+        use ed25519_dalek::SigningKey;
+        use rand_core::OsRng;
+        let a = SigningKey::generate(&mut OsRng);
+        let b = SigningKey::generate(&mut OsRng);
+        let c = SigningKey::generate(&mut OsRng);
+        let id = |k: &SigningKey| k.verifying_key().to_bytes();
+        let ra = RelayDescriptor::sign_with_family(
+            &a,
+            "198.51.100.1:9001".parse().unwrap(),
+            [1; 32],
+            vec![id(&b)],
+            1,
+        );
+        let rb = RelayDescriptor::sign_with_family(
+            &b,
+            "203.0.113.1:9001".parse().unwrap(),
+            [2; 32],
+            vec![id(&a)],
+            1,
+        );
+        let rc = RelayDescriptor::sign_with_family(
+            &c,
+            "192.0.2.1:9001".parse().unwrap(),
+            [3; 32],
+            vec![],
+            1,
+        );
+        let known = vec![
+            ra.verify().unwrap(),
+            rb.verify().unwrap(),
+            rc.verify().unwrap(),
+        ];
+        for _ in 0..100 {
+            let mut set = GuardSet::in_memory();
+            set.update(&known, 0);
+            let g = set.guards();
+            assert_eq!(g.len(), 2);
+            let both = |x: &VerifiedRelay, y: &VerifiedRelay| g.contains(x) && g.contains(y);
+            assert!(
+                !both(&known[0], &known[1]),
+                "one operator's two relays as guards"
+            );
+        }
     }
 
     #[test]

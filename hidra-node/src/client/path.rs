@@ -5,7 +5,7 @@
 //! are likely to have one operator, or one hosting provider who can watch
 //! them all; such a pair, as entry and exit, sees both ends of the circuit.
 //! So no two hops of a circuit may be in the same IPv4 /16 or IPv6 /32, the
-//! rule Tor uses.
+//! rule Tor uses, nor be relays whose operator declared them one family.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -30,6 +30,7 @@ pub fn may_share_circuit(a: &VerifiedRelay, b: &VerifiedRelay) -> bool {
     a.addr() != b.addr()
         && a.transport_key() != b.transport_key()
         && !same_network(&a.addr(), &b.addr())
+        && !a.same_family(b)
 }
 
 /// Every pair of hops in `path` may share a circuit.
@@ -44,6 +45,11 @@ pub fn check_path(path: &[VerifiedRelay]) -> Result<()> {
             if same_network(&a.addr(), &b.addr()) {
                 return Err(HidraError::Circuit(
                     "two hops of the path are in the same network".into(),
+                ));
+            }
+            if a.same_family(b) {
+                return Err(HidraError::Circuit(
+                    "two hops of the path are run by one operator".into(),
                 ));
             }
         }
@@ -93,6 +99,65 @@ mod tests {
 
     fn relay(addr: &str, key: u8) -> VerifiedRelay {
         VerifiedRelay::pinned(addr.parse().unwrap(), [key; 32])
+    }
+
+    /// Relays from descriptors; `family[i]` lists the indexes relay `i`
+    /// declares.
+    fn relays_with_families(addrs: &[&str], family: &[&[usize]]) -> Vec<VerifiedRelay> {
+        use crate::p2p::dht::descriptor::RelayDescriptor;
+        use ed25519_dalek::SigningKey;
+        use rand_core::OsRng;
+        let keys: Vec<SigningKey> = addrs
+            .iter()
+            .map(|_| SigningKey::generate(&mut OsRng))
+            .collect();
+        addrs
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let fam = family[i]
+                    .iter()
+                    .map(|&j| keys[j].verifying_key().to_bytes())
+                    .collect();
+                RelayDescriptor::sign_with_family(
+                    &keys[i],
+                    a.parse().unwrap(),
+                    [i as u8 + 1; 32],
+                    fam,
+                    1,
+                )
+                .verify()
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// Two relays that name each other never share a circuit, whatever the
+    /// guard; one that names another alone is no family.
+    #[test]
+    fn relays_of_one_operator_never_share_a_circuit() {
+        let relays = relays_with_families(
+            &[
+                "198.51.100.1:9001",
+                "203.0.113.1:9001",
+                "192.0.2.1:9001",
+                "203.0.113.200:9001",
+            ],
+            &[&[], &[2], &[1], &[0]],
+        );
+        // 1 and 2 are a family; 3 names 0, 0 does not name 3.
+        assert!(check_path(&[relays[0].clone(), relays[1].clone(), relays[2].clone()]).is_err());
+        assert!(!may_share_circuit(&relays[1], &relays[2]));
+        assert!(may_share_circuit(&relays[0], &relays[3]));
+        for guard in &relays[..3] {
+            for _ in 0..200 {
+                if let Ok(path) = choose_path(&relays, guard, None) {
+                    assert!(check_path(&path).is_ok());
+                    let has = |i: usize| path.contains(&relays[i]);
+                    assert!(!(has(1) && has(2)));
+                }
+            }
+        }
     }
 
     #[test]

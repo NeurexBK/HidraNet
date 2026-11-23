@@ -122,6 +122,11 @@ pub struct NetworkConfig {
     /// descriptor, and no client builds a circuit through it.
     #[serde(default)]
     pub public_addr: Option<String>,
+    /// The identities (base64 Ed25519, as each relay logs at startup) of
+    /// the other relays the same operator runs. Each of them must list this
+    /// one too; clients then never put two of them in one circuit.
+    #[serde(default)]
+    pub family: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -368,3 +368,99 @@ async fn a_service_is_announced_through_circuits() {
         .expect("found");
     assert_eq!(found.intro_points, vec![intro]);
 }
+
+/// Two relays whose operator declares them one family, each naming the
+/// other in its descriptor, are learned with that family through the DHT
+/// (also when one of them was already pinned without it) and never put in
+/// one circuit. A relay that names another without being named back is no
+/// family.
+#[tokio::test]
+async fn relays_of_one_operator_are_kept_apart() {
+    use ed25519_dalek::SigningKey;
+    use hidra_node::client::path::{check_path, choose_path};
+    use hidra_node::p2p::bootstrap::bootstrap;
+    use hidra_node::p2p::dht::DhtNode;
+    use std::sync::Arc;
+
+    const BITS: u32 = 8;
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut boot = DhtNode::with_id_bits(any, SigningKey::generate(&mut OsRng), None, BITS)
+        .await
+        .unwrap();
+    boot.start().await;
+    let boot_addr = boot.our_info().dht_addr;
+
+    let identities: Vec<SigningKey> = (0..4).map(|_| SigningKey::generate(&mut OsRng)).collect();
+    let id = |i: usize| identities[i].verifying_key().to_bytes();
+    // 1 and 2 are one operator's; 3 names 0, but 0 does not name 3.
+    let families: [Vec<[u8; 32]>; 4] = [vec![], vec![id(2)], vec![id(1)], vec![id(0)]];
+    let mut pinned = Vec::new();
+    for i in 0..4 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = PublicKey::from(&secret).to_bytes();
+        let l = NodeListener::bind(any, secret).await.unwrap();
+        let relay_addr = l.local_addr().unwrap();
+        let mut node = DhtNode::relay_with_family(
+            any,
+            identities[i].clone(),
+            relay_addr,
+            key,
+            families[i].clone(),
+            BITS,
+        )
+        .await
+        .unwrap();
+        node.start().await;
+        bootstrap(&node, &[boot_addr]).await.unwrap();
+        let node = Arc::new(node);
+        node.announce_relay().await.unwrap();
+        let l = l.with_dht(Arc::clone(&node));
+        tokio::spawn(async move { l.accept_loop().await });
+        pinned.push(VerifiedRelay::pinned(relay_addr, key));
+    }
+
+    // Pinned, relay 1 has no family yet: a path with 1 and 2 is allowed...
+    let path = [pinned[0].clone(), pinned[1].clone(), pinned[2].clone()];
+    assert!(check_path(&path).is_ok());
+
+    // ...until the directory brings its descriptor.
+    let pool = CircuitPool::with_id_bits(vec![pinned[0].clone(), pinned[1].clone()], BITS);
+    let mut known = Vec::new();
+    for _ in 0..20 {
+        pool.refresh_relays().await;
+        known = pool.relays().await;
+        let upgraded = known
+            .iter()
+            .find(|r| **r == pinned[1])
+            .is_some_and(|r| known.iter().any(|o| *o == pinned[2] && r.same_family(o)));
+        if known.len() == 4 && upgraded {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let get = |i: usize| known.iter().find(|r| **r == pinned[i]).unwrap().clone();
+    assert!(
+        get(1).same_family(&get(2)),
+        "the pinned relay's family was learned"
+    );
+    assert!(
+        !get(0).same_family(&get(3)),
+        "named by 3 alone, 0 is not its family"
+    );
+
+    let err = match StreamingCircuit::build(&[get(1), get(0), get(2)]).await {
+        Ok(_) => panic!("a circuit through one operator's two relays"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("one operator"), "{err}");
+    for guard in &known {
+        for _ in 0..100 {
+            if let Ok(p) = choose_path(&known, guard, None) {
+                assert!(!(p.contains(&pinned[1]) && p.contains(&pinned[2])));
+            }
+        }
+    }
+    // And the pool still builds circuits, around the family.
+    let mut c = pool.build_new_circuit().await.unwrap();
+    c.destroy().await;
+}

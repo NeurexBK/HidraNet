@@ -188,6 +188,7 @@ impl DhtNode {
     /// and the X25519 key the relay answers circuit handshakes with. A relay
     /// started with `new` or `with_id_bits` announces itself without one, and
     /// no client will use it.
+    #[allow(dead_code)] // the binary always passes its family; tests and the harness use this
     pub async fn relay(
         bind_addr: SocketAddr,
         signing_key: SigningKey,
@@ -195,18 +196,43 @@ impl DhtNode {
         transport_key: [u8; 32],
         id_bits: u32,
     ) -> Result<Self> {
-        Self::build(bind_addr, signing_key, Some(relay_addr), Some(transport_key), id_bits).await
+        Self::relay_with_family(bind_addr, signing_key, relay_addr, transport_key, Vec::new(), id_bits)
+            .await
     }
 
+    /// `relay`, with the identities of the other relays its operator runs
+    /// named in its descriptor. Each of them must name this one too.
+    pub async fn relay_with_family(
+        bind_addr: SocketAddr,
+        signing_key: SigningKey,
+        relay_addr: SocketAddr,
+        transport_key: [u8; 32],
+        family: Vec<[u8; 32]>,
+        id_bits: u32,
+    ) -> Result<Self> {
+        Self::build(
+            bind_addr,
+            signing_key,
+            Some(relay_addr),
+            Some((transport_key, family)),
+            id_bits,
+        )
+        .await
+    }
+
+    /// `relay_addr` without a transport key announces a relay no client
+    /// will use: there is no descriptor to hold it to.
     async fn build(
         bind_addr: SocketAddr,
         signing_key: SigningKey,
         relay_addr: Option<SocketAddr>,
-        transport_key: Option<[u8; 32]>,
+        transport: Option<([u8; 32], Vec<[u8; 32]>)>,
         id_bits: u32,
     ) -> Result<Self> {
-        let relay_descriptor = match (relay_addr, transport_key) {
-            (Some(addr), Some(key)) => Some(RelayDescriptor::sign_now(&signing_key, addr, key)),
+        let relay_descriptor = match (relay_addr, transport) {
+            (Some(addr), Some((key, family))) => {
+                Some(RelayDescriptor::sign_now_with_family(&signing_key, addr, key, family))
+            }
             _ => None,
         };
         let socket = UdpSocket::bind(bind_addr).await?;

@@ -96,6 +96,8 @@ impl CircuitPool {
         let (relays, guards) = self.relays_and_guards().await;
         let mut last = HidraError::Circuit("no entry guard".into());
         for guard in &guards {
+            // The known record, which may carry the guard's family.
+            let guard = relays.iter().find(|r| *r == guard).unwrap_or(guard);
             let exit = match exit {
                 Some(e) => Some(e.clone()),
                 None => {
@@ -170,6 +172,12 @@ impl CircuitPool {
         let mut relays = self.relays.lock().await;
         let mut added = 0usize;
         for r in found {
+            // A pinned relay found with its descriptor: keep the descriptor's
+            // record, which knows the relay's family.
+            if let Some(k) = relays.iter_mut().find(|k| r.knows_more_than(k)) {
+                *k = r;
+                continue;
+            }
             if relays.len() < MAX_KNOWN_RELAYS
                 && !relays
                     .iter()

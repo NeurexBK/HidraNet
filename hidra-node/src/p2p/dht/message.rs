@@ -5,11 +5,12 @@ use crate::error::{HidraError, Result};
 use crate::p2p::dht::descriptor::ServiceDescriptor;
 use crate::p2p::dht::node::{NodeId, NodeInfo};
 
-/// Version 3 of the wire format: a relay's node record carries its signed
-/// relay descriptor (version 2 added puzzle nonces to node IDs and signatures
-/// to service descriptors). An older node drops these packets at the magic
-/// instead of misreading them, and the other way round.
-const MAGIC: &[u8; 4] = b"HDT3";
+/// Version 4 of the wire format: a relay descriptor names the relay's
+/// family (version 3 put signed relay descriptors in node records; version 2
+/// added puzzle nonces to node IDs and signatures to service descriptors). An
+/// older node drops these packets at the magic instead of misreading them,
+/// and the other way round.
+const MAGIC: &[u8; 4] = b"HDT4";
 const SIGNATURE_LEN: usize = 64;
 const PUBKEY_LEN: usize = 32;
 const HEADER_LEN: usize = 4 + SIGNATURE_LEN + PUBKEY_LEN;

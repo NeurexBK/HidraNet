@@ -4,6 +4,13 @@ name = "hidra-node-01"
 [network]
 listen_addr = "0.0.0.0"
 listen_port = 9150
+# Relays only. The address clients reach this relay at, for its signed
+# descriptor, when listen_addr is a wildcard:
+# public_addr = "198.51.100.1:9150"
+# The identities of the other relays you run (each logs its own at startup
+# as "relay identity"). Each of them must list this one too; clients then
+# never put two of your relays in one circuit.
+# family = ["<base64 identity>", "<base64 identity>"]
 
 [logging]
 level = "info"

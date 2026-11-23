@@ -875,6 +875,28 @@ async fn run_send_mode(
     Ok(())
 }
 
+/// `network.family`: base64 Ed25519 identities, at most MAX_FAMILY.
+fn parse_family(entries: &[String]) -> std::result::Result<Vec<[u8; 32]>, Box<dyn std::error::Error>> {
+    if entries.len() > p2p::dht::descriptor::MAX_FAMILY {
+        return Err(format!(
+            "network.family lists {} relays; at most {}",
+            entries.len(),
+            p2p::dht::descriptor::MAX_FAMILY
+        )
+        .into());
+    }
+    entries
+        .iter()
+        .map(|e| {
+            base64::engine::general_purpose::STANDARD
+                .decode(e.trim())
+                .ok()
+                .and_then(|k| <[u8; 32]>::try_from(k).ok())
+                .ok_or_else(|| format!("network.family: {e:?} is not a base64 32-byte identity").into())
+        })
+        .collect()
+}
+
 async fn run_relay_mode(
     app_cfg: &config::AppConfig,
     network_secret: StaticSecret,
@@ -897,14 +919,22 @@ async fn run_relay_mode(
     let dht_node = if app_cfg.dht.enabled {
         let dht_addr: SocketAddr =
             format!("{}:{}", app_cfg.network.listen_addr, app_cfg.dht.port).parse()?;
+        let family = parse_family(&app_cfg.network.family)?;
+        info!(
+            identity = %base64::engine::general_purpose::STANDARD
+                .encode(signing_key.verifying_key().to_bytes()),
+            family = family.len(),
+            "relay identity: list it in network.family of this operator's other relays"
+        );
         let mut dht = match public_addr {
             Some(public) => {
                 let transport_key = x25519_dalek::PublicKey::from(&network_secret).to_bytes();
-                p2p::dht::DhtNode::relay(
+                p2p::dht::DhtNode::relay_with_family(
                     dht_addr,
                     signing_key,
                     public,
                     transport_key,
+                    family,
                     p2p::dht::node::ID_PUZZLE_BITS,
                 )
                 .await?
