@@ -248,6 +248,23 @@ impl StreamingCircuit {
         }
     }
 
+    /// Asks the last hop to publish a service's descriptor in the DHT.
+    /// Whether it accepted; it checks the signature too.
+    pub async fn directory_announce(
+        &mut self,
+        descriptor: crate::p2p::dht::descriptor::ServiceDescriptor,
+    ) -> Result<bool> {
+        let exit = self.exit();
+        self.send_to(exit, &RelayCommand::DirectoryAnnounce { descriptor }).await?;
+        match self.exit_answer().await? {
+            RelayCommand::DirectoryAnnounced { accepted } => Ok(accepted),
+            RelayCommand::DirectoryUnavailable => {
+                Err(HidraError::Circuit("this relay serves no directory".into()))
+            }
+            _ => Err(HidraError::Circuit("unexpected directory response".into())),
+        }
+    }
+
     /// Sends a probe to the exit and returns its acknowledgement.
     pub async fn probe(&mut self, payload: &[u8]) -> Result<Vec<u8>> {
         let exit = self.exit();

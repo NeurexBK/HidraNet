@@ -15,7 +15,8 @@ const CIRCUIT_TTL: Duration = Duration::from_secs(300);
 /// Relays asked for per directory request, and the most the pool keeps.
 const DIRECTORY_ASK: u16 = 32;
 const MAX_KNOWN_RELAYS: usize = 256;
-/// Directory requests per refresh or lookup, each through its own circuit:
+/// Directory requests per refresh, lookup or announcement, each through its
+/// own circuit and, when enough relays are known, its own exit:
 /// one hop that withholds a relay or a descriptor does not decide alone.
 const DIRECTORY_CIRCUITS: usize = 2;
 const POOL_TARGET_SIZE: usize = 3;
@@ -67,9 +68,10 @@ impl CircuitPool {
     pub async fn refresh_relays(&self) -> usize {
         let known = self.relays().await;
         let mut found = Vec::new();
+        let mut exits = Vec::new();
         for _ in 0..DIRECTORY_CIRCUITS {
             let circuit = if known.len() >= CIRCUIT_HOPS {
-                self.build_new_circuit().await
+                self.build_directory_circuit(&mut exits).await
             } else {
                 let Some(r) = known.choose(&mut rand::thread_rng()).cloned() else {
                     break;
@@ -112,11 +114,12 @@ impl CircuitPool {
     pub async fn lookup_service(&self, service_hash: &[u8; 20]) -> Result<Option<ServiceDescriptor>> {
         let mut best: Option<ServiceDescriptor> = None;
         let mut asked = 0usize;
+        let mut exits = Vec::new();
         for _ in 0..DIRECTORY_CIRCUITS + 1 {
             if asked == DIRECTORY_CIRCUITS {
                 break;
             }
-            let mut circuit = match self.build_new_circuit().await {
+            let mut circuit = match self.build_directory_circuit(&mut exits).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(error = %e, "no circuit for a service lookup");
@@ -230,6 +233,71 @@ impl CircuitPool {
 
     pub async fn pool_size(&self) -> usize {
         self.entries.lock().await.len()
+    }
+}
+
+impl CircuitPool {
+    /// A full circuit for one directory request, ending at a relay not in
+    /// `used_exits` while there is one; its exit is then added to the list.
+    /// Asking the same question through different exits is what keeps one
+    /// of them from deciding the answer alone.
+    async fn build_directory_circuit(&self, used_exits: &mut Vec<SocketAddr>) -> Result<StreamingCircuit> {
+        let relays = self.relays().await;
+        let fresh: Vec<VerifiedRelay> = relays
+            .iter()
+            .filter(|r| !used_exits.contains(&r.addr()))
+            .cloned()
+            .collect();
+        let exit = {
+            let from = if fresh.is_empty() { &relays } else { &fresh };
+            from.choose(&mut rand::thread_rng())
+                .cloned()
+                .ok_or_else(|| HidraError::Circuit("no relays known".into()))?
+        };
+        let others: Vec<VerifiedRelay> = relays
+            .into_iter()
+            .filter(|r| r.addr() != exit.addr() && r.transport_key() != exit.transport_key())
+            .collect();
+        let mut path = select_relays_n(&others, CIRCUIT_HOPS - 1)?;
+        used_exits.push(exit.addr());
+        path.push(exit);
+        StreamingCircuit::build(&path).await
+    }
+
+    /// Publishes a service's descriptor through circuits, so no DHT node
+    /// sees the host's address: the last hop of each circuit announces it.
+    /// Always full circuits, each with another exit when the pool knows
+    /// enough relays for that. Returns how many
+    /// accepted it; an error if none could be asked.
+    pub async fn announce_service(&self, descriptor: &ServiceDescriptor) -> Result<usize> {
+        let mut accepted = 0usize;
+        let mut asked = 0usize;
+        let mut exits = Vec::new();
+        for _ in 0..DIRECTORY_CIRCUITS + 1 {
+            if asked == DIRECTORY_CIRCUITS {
+                break;
+            }
+            let mut circuit = match self.build_directory_circuit(&mut exits).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(error = %e, "no circuit for a service announcement");
+                    continue;
+                }
+            };
+            let answer = circuit.directory_announce(descriptor.clone()).await;
+            circuit.destroy().await;
+            match answer {
+                Ok(ok) => {
+                    asked += 1;
+                    accepted += usize::from(ok);
+                }
+                Err(e) => warn!(error = %e, "service announcement failed"),
+            }
+        }
+        if asked == 0 {
+            return Err(HidraError::Circuit("no circuit could announce the service".into()));
+        }
+        Ok(accepted)
     }
 }
 

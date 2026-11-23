@@ -328,6 +328,23 @@ impl Hop<'_> {
                 info!(relays = nodes.len(), "directory request answered");
                 self.answer(&RelayCommand::DirectoryRelaysAnswer { nodes }).await
             }
+            RelayCommand::DirectoryAnnounce { descriptor } => {
+                if self.next.is_some() {
+                    return Err(HidraError::Circuit("directory request for a hop past this one".into()));
+                }
+                let Some(dht) = self.dht else {
+                    return self.answer(&RelayCommand::DirectoryUnavailable).await;
+                };
+                let accepted = match dht.announce_on_behalf(descriptor).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        info!(error = %e, "relayed announcement refused");
+                        false
+                    }
+                };
+                info!(accepted, "relayed a service announcement");
+                self.answer(&RelayCommand::DirectoryAnnounced { accepted }).await
+            }
             RelayCommand::DirectoryService { service_hash } => {
                 if self.next.is_some() {
                     return Err(HidraError::Circuit("directory request for a hop past this one".into()));
@@ -402,6 +419,7 @@ fn command_name(cmd: &RelayCommand) -> &'static str {
         RelayCommand::DirectoryRelaysAnswer { .. } => "DIRECTORY_RELAYS_ANSWER",
         RelayCommand::DirectoryServiceAnswer { .. } => "DIRECTORY_SERVICE_ANSWER",
         RelayCommand::DirectoryUnavailable => "DIRECTORY_UNAVAILABLE",
+        RelayCommand::DirectoryAnnounced { .. } => "DIRECTORY_ANNOUNCED",
         _ => "this command",
     }
 }

@@ -306,3 +306,65 @@ async fn a_relay_without_a_dht_serves_no_directory() {
     assert_eq!(pool.refresh_relays().await, 3);
     assert!(pool.lookup_service(&[1; 20]).await.is_err());
 }
+
+/// A hidden service host publishes its descriptor through circuits: the last
+/// hop of each announces it, and another client finds it the same way. A
+/// descriptor that is stale, or not as the service signed it, is refused by
+/// the hop and never published.
+#[tokio::test]
+async fn a_service_is_announced_through_circuits() {
+    use ed25519_dalek::SigningKey;
+    use hidra_node::p2p::bootstrap::bootstrap;
+    use hidra_node::p2p::dht::DhtNode;
+    use hidra_node::p2p::dht::descriptor::ServiceDescriptor;
+    use std::sync::Arc;
+
+    const BITS: u32 = 8;
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut boot = DhtNode::with_id_bits(any, SigningKey::generate(&mut OsRng), None, BITS)
+        .await
+        .unwrap();
+    boot.start().await;
+    let boot_addr = boot.our_info().dht_addr;
+
+    let mut relays = Vec::new();
+    for _ in 0..3 {
+        let secret = StaticSecret::random_from_rng(OsRng);
+        let key = PublicKey::from(&secret).to_bytes();
+        let l = NodeListener::bind(any, secret).await.unwrap();
+        let relay_addr = l.local_addr().unwrap();
+        let mut node = DhtNode::relay(any, SigningKey::generate(&mut OsRng), relay_addr, key, BITS)
+            .await
+            .unwrap();
+        node.start().await;
+        bootstrap(&node, &[boot_addr]).await.unwrap();
+        let l = l.with_dht(Arc::new(node));
+        tokio::spawn(async move { l.accept_loop().await });
+        relays.push(VerifiedRelay::pinned(relay_addr, key));
+    }
+
+    let host = CircuitPool::with_id_bits(relays.clone(), BITS);
+    let service_key = SigningKey::generate(&mut OsRng);
+    let intro = relays[2].addr();
+
+    let stale = ServiceDescriptor::sign(&service_key, vec![intro], 1);
+    assert_eq!(host.announce_service(&stale).await.unwrap(), 0, "stale");
+    let mut moved = ServiceDescriptor::sign_now(&service_key, vec![intro]);
+    moved.intro_points = vec!["203.0.113.66:9001".parse().unwrap()];
+    assert_eq!(
+        host.announce_service(&moved).await.unwrap(),
+        0,
+        "not as signed"
+    );
+
+    let good = ServiceDescriptor::sign_now(&service_key, vec![intro]);
+    assert!(host.announce_service(&good).await.unwrap() > 0);
+
+    let visitor = CircuitPool::with_id_bits(relays, BITS);
+    let found = visitor
+        .lookup_service(&good.service_hash())
+        .await
+        .unwrap()
+        .expect("found");
+    assert_eq!(found.intro_points, vec![intro]);
+}

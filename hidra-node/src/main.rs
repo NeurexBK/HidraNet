@@ -504,6 +504,24 @@ async fn run_mail_standalone(
     Ok(())
 }
 
+/// How often a hidden service re-announces itself: well inside the hour
+/// after which other nodes forget a descriptor.
+const SERVICE_REPUBLISH_EVERY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Signs a fresh descriptor and has it announced through circuits.
+async fn announce_through_circuits(
+    pool: &client::circuit_pool::CircuitPool,
+    key: &SigningKey,
+    intro_addr: SocketAddr,
+) {
+    let descriptor = p2p::dht::descriptor::ServiceDescriptor::sign_now(key, vec![intro_addr]);
+    match pool.announce_service(&descriptor).await {
+        Ok(0) => warn!("no relay accepted the service announcement"),
+        Ok(n) => info!(accepted = n, "announced service in DHT through circuits"),
+        Err(e) => warn!(error = %e, "failed to announce service in DHT"),
+    }
+}
+
 async fn run_server_mode(
     app_cfg: &config::AppConfig,
     _signing_key: SigningKey,
@@ -523,26 +541,17 @@ async fn run_server_mode(
         "hidden service identity loaded"
     );
 
-    let dht_addr: SocketAddr = format!("0.0.0.0:{}", app_cfg.dht.port).parse()?;
-    let dht_signing_key = ed25519_dalek::SigningKey::generate(
-        &mut rand_core::OsRng,
-    );
-    let mut dht = p2p::dht::DhtNode::new(dht_addr, dht_signing_key, None).await?;
-    dht.start().await;
-
-    let bootstrap_addrs: Vec<SocketAddr> = app_cfg
-        .dht
-        .bootstrap_nodes
-        .iter()
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    if !bootstrap_addrs.is_empty() {
-        if let Err(e) = p2p::bootstrap::bootstrap(&dht, &bootstrap_addrs).await {
-            warn!(error = %e, "DHT bootstrap failed");
-        }
+    // No DHT node: it would put the host's address, on a fixed port, in
+    // front of every node it talks to, and announcing the site from there
+    // says where the site is. Relays are learned, and the site announced,
+    // through circuits, as the proxy does.
+    let pool = client::circuit_pool::CircuitPool::new(verified_relays(app_cfg, None).await);
+    pool.refresh_relays().await;
+    if pool.relays().await.len() < 6 {
+        pool.refresh_relays().await;
     }
 
-    let mut relays = verified_relays(app_cfg, Some(&dht)).await;
+    let mut relays = pool.relays().await;
     if relays.len() < 3 {
         return Err(format!(
             "need at least 3 verified relays for a hidden service, have {}",
@@ -566,14 +575,28 @@ async fn run_server_mode(
     // one of its circuit. Signed by the service's own key, so a node on the
     // lookup path can withhold this descriptor but not swap it.
     let intro_addr = relays[2].addr();
-    if let Err(e) = dht.announce_signed_service(
-        &service_keys.signing_key,
-        vec![intro_addr],
-    )
-    .await {
-        warn!(error = %e, "failed to announce service in DHT");
-    } else {
-        info!("announced service in DHT");
+    let published = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    published
+        .lock()
+        .await
+        .insert(service_hash, service_keys.signing_key.clone());
+    announce_through_circuits(&pool, &service_keys.signing_key, intro_addr).await;
+    // Other nodes forget a descriptor an hour after it was signed.
+    {
+        let pool = Arc::clone(&pool);
+        let published = Arc::clone(&published);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(SERVICE_REPUBLISH_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                pool.refresh_relays().await;
+                let keys: Vec<SigningKey> = published.lock().await.values().cloned().collect();
+                for key in keys {
+                    announce_through_circuits(&pool, &key, intro_addr).await;
+                }
+            }
+        });
     }
 
     let app_name = app_cfg.hidden_service.app.as_deref();
@@ -671,22 +694,21 @@ async fn run_server_mode(
 
         // Process DHT announcements from SevenNine in the service loop
         let sn_intro_addr = intro_addr;
+        let pool = Arc::clone(&pool);
+        let published = Arc::clone(&published);
         tokio::spawn(async move {
             while let Some(announcement) = dht_rx.recv().await {
                 match announcement {
                     apps::sevennine::DhtAnnouncement::Publish { service_hash, service_key } => {
-                        if let Err(e) = dht.announce_signed_service(
-                            &service_key,
-                            vec![sn_intro_addr],
-                        ).await {
-                            tracing::warn!(error = %e, "failed to publish site to DHT");
-                        } else {
-                            let hex: String = service_hash.iter().map(|b| format!("{b:02x}")).collect();
-                            tracing::info!(address = %sensitive(&hex), "site announced in DHT");
-                        }
+                        published.lock().await.insert(service_hash, (*service_key).clone());
+                        announce_through_circuits(&pool, &service_key, sn_intro_addr).await;
+                        let hex: String = service_hash.iter().map(|b| format!("{b:02x}")).collect();
+                        tracing::info!(address = %sensitive(&hex), "site announced in DHT");
                     }
                     apps::sevennine::DhtAnnouncement::Withdraw { service_hash } => {
-                        dht.withdraw_service(&service_hash).await;
+                        // Not re-announced again; other nodes forget it
+                        // within the hour.
+                        published.lock().await.remove(&service_hash);
                         tracing::info!("site withdrawn from DHT republishing");
                     }
                 }

@@ -49,6 +49,11 @@ pub enum RelayCommand {
     /// service was asked for, not by whom; the service signed the answer.
     DirectoryService { service_hash: [u8; 20] },
     DirectoryServiceAnswer { descriptor: Option<ServiceDescriptor> },
+    /// Ask the hop to publish a hidden service's descriptor in the DHT, so
+    /// the host never announces its site from its own address. The service
+    /// signed it; the hop checks that before passing it on.
+    DirectoryAnnounce { descriptor: ServiceDescriptor },
+    DirectoryAnnounced { accepted: bool },
     /// This hop runs no DHT node.
     DirectoryUnavailable,
 }

@@ -361,6 +361,9 @@ impl DhtNode {
     /// Signs a descriptor for the service whose key this is, announces it,
     /// and keeps re-announcing it every REPUBLISH_EVERY for as long as this
     /// node runs (other nodes forget a descriptor an hour after it was signed).
+    // A host announces through circuits now (CircuitPool::announce_service),
+    // so the binary no longer calls this; the DHT's own tests do.
+    #[allow(dead_code)]
     pub async fn announce_signed_service(
         &self,
         service_key: &SigningKey,
@@ -414,6 +417,9 @@ impl DhtNode {
 
     /// Stops republishing a service this node announced (a deleted site).
     /// Other nodes forget it within the hour; this node drops its key now.
+    // A host announces through circuits now (CircuitPool::announce_service),
+    // so the binary no longer calls this; the DHT's own tests do.
+    #[allow(dead_code)]
     pub async fn withdraw_service(&self, service_hash: &[u8; 20]) {
         self.shared.own_services.lock().await.remove(service_hash);
         self.shared.store.lock().await.forget_own(service_hash);
@@ -425,6 +431,23 @@ impl DhtNode {
     #[allow(dead_code)] // the binary signs with announce_signed_service
     pub async fn announce_service(&self, descriptor: ServiceDescriptor) -> Result<()> {
         self.shared.announce(descriptor, Origin::Own).await
+    }
+
+    /// Publishes a descriptor for a service whose host asked through a
+    /// circuit. It must be signed by the service and current. It is kept as
+    /// a looked-up copy, which the store may evict, never as this node's own,
+    /// which it never evicts: otherwise anyone with a circuit could fill
+    /// this node's store. Not republished here; the host asks again.
+    pub async fn announce_on_behalf(&self, descriptor: ServiceDescriptor) -> Result<()> {
+        let hash = descriptor.service_hash();
+        let now = now_secs();
+        let current = descriptor.revision <= now.saturating_add(store::MAX_CLOCK_SKEW_SECS)
+            && descriptor.revision.saturating_add(store::DESCRIPTOR_TTL_SECS) > now;
+        if !current {
+            return Err(HidraError::Protocol("service descriptor is not current".into()));
+        }
+        descriptor.verify(&hash)?;
+        self.shared.announce(descriptor, Origin::Fetched).await
     }
 
     /// The newest descriptor the service signed that any of the nodes found

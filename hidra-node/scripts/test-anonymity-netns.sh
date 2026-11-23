@@ -3,8 +3,10 @@
 #
 #   hn-client ── hn-core (router, firewall, capture) ──┬── hn-entry   198.51.100.1
 #   192.0.2.2    192.0.2.1 / 198.51.100.254 /          ├── hn-middle  198.51.100.2
+#   hn-host                                            │
+#   192.0.2.66                                         │
 #   hn-proxy                                           │
-#   192.0.2.130                                          │
+#   192.0.2.130                                        │
 #                203.0.113.1                           ├── hn-exit    198.51.100.3
 #                                                      ├── hn-relay4  198.51.100.4
 #                                                      └── hn-target  203.0.113.2
@@ -35,6 +37,11 @@
 # It may use any relay as its first hop, so which relay that is is not
 # checked here.
 #
+# The real `hidra-node --server` runs in hn-host and publishes a site: it
+# must learn relays, register at an introduction point and announce its
+# descriptor with the same firewall rule (TCP to a relay's circuit port and
+# nothing else), and the proxy must then reach the site by its .hidra name.
+#
 # Run as root from the repository root:  sudo bash hidra-node/scripts/test-anonymity-netns.sh
 set -u
 
@@ -43,7 +50,7 @@ CRATE="$HERE/.."
 BIN="$CRATE/target/debug/examples/netns_harness"
 NODE="$CRATE/target/debug/hidra-node"
 WORK=""
-NS=(hn-client hn-proxy hn-core hn-entry hn-middle hn-exit hn-relay4 hn-target)
+NS=(hn-client hn-host hn-proxy hn-core hn-entry hn-middle hn-exit hn-relay4 hn-target)
 PIDS=()
 
 ok=0; bad=0
@@ -93,8 +100,10 @@ link() { # ns, ifname-in-ns, addr/len, gateway
   ip netns exec "$1" ip route add default via "$4"
   $CORE ip link set "core-$2" up
 }
-link hn-client c0 192.0.2.2/25 192.0.2.1
-$CORE ip addr add 192.0.2.1/25 dev core-c0
+link hn-client c0 192.0.2.2/26 192.0.2.1
+$CORE ip addr add 192.0.2.1/26 dev core-c0
+link hn-host   h0 192.0.2.66/26 192.0.2.65
+$CORE ip addr add 192.0.2.65/26 dev core-h0
 link hn-proxy  p0 192.0.2.130/25 192.0.2.129
 $CORE ip addr add 192.0.2.129/25 dev core-p0
 link hn-target t0 203.0.113.2/24 203.0.113.1
@@ -114,10 +123,14 @@ table inet anon {
   counter client_to_other {}
   counter proxy_to_relays {}
   counter proxy_to_other {}
+  counter host_to_relays {}
+  counter host_to_other {}
   chain forward {
     type filter hook forward priority 0; policy accept;
     ip saddr 192.0.2.130 ip daddr 198.51.100.0/24 tcp dport 9001 counter name proxy_to_relays accept
     ip saddr 192.0.2.130 counter name proxy_to_other drop
+    ip saddr 192.0.2.66 ip daddr 198.51.100.0/24 tcp dport 9001 counter name host_to_relays accept
+    ip saddr 192.0.2.66 counter name host_to_other drop
     ip saddr 192.0.2.2 ip daddr 198.51.100.1 tcp dport 9001 counter name client_to_entry accept
     ip saddr 192.0.2.2 ip daddr 198.51.100.2 counter name client_to_middle reject with tcp reset
     ip saddr 192.0.2.2 ip daddr 198.51.100.3 counter name client_to_exit reject with tcp reset
@@ -131,6 +144,8 @@ counter() { $CORE nft list counter inet anon "$1" | awk '/packets/ {print $2}'; 
 $CORE tcpdump -U -n -i core-c0 -w "$WORK/client.pcap" >/dev/null 2>&1 &
 PIDS+=($!)
 $CORE tcpdump -U -n -i core-p0 -w "$WORK/proxy.pcap" >/dev/null 2>&1 &
+PIDS+=($!)
+$CORE tcpdump -U -n -i core-h0 -w "$WORK/host.pcap" >/dev/null 2>&1 &
 PIDS+=($!)
 sleep 1
 
@@ -188,8 +203,9 @@ start hn-target service.log service "$WORK/entry.json" "$WORK/middle.json" "$WOR
 for _ in $(seq 90); do [ -s "$WORK/service.name" ] && break; sleep 1; done
 sleep 3
 
-mkdir -p "$WORK/client-keys"
-cat >"$WORK/client.toml" <<CONFIG
+node_config() { # file, keys dir
+  mkdir -p "$2"
+  cat >"$1" <<CONFIG
 [node]
 name = "anonymity-test-client"
 [network]
@@ -199,18 +215,39 @@ listen_port = 9150
 level = "debug"
 format = "pretty"
 [paths]
-keys_dir = "$WORK/client-keys"
+keys_dir = "$2"
 [dht]
 bootstrap_nodes = ["$BOOT"]
 [proxy]
 listen_addr = "127.0.0.1"
 port = 9050
+[hidden_service]
+local_port = 8080
 CONFIG
-for r in entry middle exit; do
-  printf '[[relays]]\nname = "%s"\naddr = "%s"\nnoise_pubkey = "%s"\n' "$r" \
-    "$(grep -o '"addr":"[^"]*"' "$WORK/$r.json" | cut -d'"' -f4)" \
-    "$("$BIN" pin "$WORK/$r.json" 2>/dev/null | tail -n1)" >>"$WORK/client.toml"
+  for r in entry middle exit; do
+    printf '[[relays]]\nname = "%s"\naddr = "%s"\nnoise_pubkey = "%s"\n' "$r" \
+      "$(grep -o '"addr":"[^"]*"' "$WORK/$r.json" | cut -d'"' -f4)" \
+      "$("$BIN" pin "$WORK/$r.json" 2>/dev/null | tail -n1)" >>"$1"
+  done
+}
+node_config "$WORK/client.toml" "$WORK/client-keys"
+node_config "$WORK/host.toml" "$WORK/host-keys"
+
+# A site published by the real `hidra-node --server`, served from loopback
+# in its own namespace.
+start hn-host site.log echo 127.0.0.1:8080
+ip netns exec hn-host "$NODE" --server --config "$WORK/host.toml" >"$WORK/host.log" 2>&1 &
+HOST_PID=$!
+PIDS+=($HOST_PID)
+HOST_NAME=""
+for _ in $(seq 120); do
+  HOST_NAME="$(sed 's/\x1b\[[0-9;]*m//g' "$WORK/host.log" | grep -oE "available at: http://[0-9a-f]{40}\.hidra" | head -n1 | sed 's|.*http://||')"
+  [ -n "$HOST_NAME" ] && break
+  kill -0 "$HOST_PID" 2>/dev/null || break
+  sleep 1
 done
+sleep 2
+
 ip netns exec hn-proxy "$NODE" --proxy --config "$WORK/client.toml" >"$WORK/proxy.log" 2>&1 &
 PROXY_PID=$!
 PIDS+=($PROXY_PID)
@@ -229,12 +266,17 @@ if [ -n "$HIDRA_NAME" ] && socks socks-hidra.log "$HIDRA_NAME" 80; then
 else
   fail "proxy: the .hidra service ($(result socks-hidra.log 2>/dev/null))"
 fi
+if [ -n "$HOST_NAME" ] && socks socks-host.log "$HOST_NAME" 80; then
+  pass "server: a site published with --server reached by its .hidra name ($(result socks-host.log))"
+else
+  fail "server: the site published with --server (host said: $(sed 's/\x1b\[[0-9;]*m//g' "$WORK/host.log" | grep -E "ERROR|Error|error" | tail -n1 | cut -c1-160))"
+fi
 if sed 's/\x1b\[[0-9;]*m//g' "$WORK/proxy.log" | grep -qE "usable(:|=) ?4\b"; then
   pass "proxy: learned of the relay known only to the DHT"
 else
   fail "proxy: never learned of the relay known only to the DHT"
 fi
-kill "$PROXY_PID" 2>/dev/null
+kill "$PROXY_PID" "$HOST_PID" 2>/dev/null
 
 # ── Failures abort; nothing else is tried ───────────────────────────────────
 if client wrongkey.log "$WORK/middle.json" "$WORK/liar.json" 203.0.113.2:7000 expect-fail; then
@@ -256,7 +298,7 @@ fi
 
 # ── What the network saw ────────────────────────────────────────────────────
 sleep 1
-kill "${PIDS[0]}" "${PIDS[1]}" 2>/dev/null; sleep 0.5
+kill "${PIDS[0]}" "${PIDS[1]}" "${PIDS[2]}" 2>/dev/null; sleep 0.5
 [ "$(counter client_to_entry)" -gt 0 ] && pass "the client spoke to the entry relay ($(counter client_to_entry) packets)" \
   || fail "the client never reached the entry relay"
 for c in client_to_middle client_to_exit client_to_target client_to_other; do
@@ -281,16 +323,31 @@ n="$(tcpdump -n -r "$WORK/proxy.pcap" "udp and src host 192.0.2.130" 2>/dev/null
 [ "$n" = 0 ] && pass "capture: 0 UDP packets from the proxy (no DHT, no DNS)" \
   || fail "capture: $n UDP packets from the proxy: $(tcpdump -n -r "$WORK/proxy.pcap" "udp and src host 192.0.2.130" 2>/dev/null | awk '{print $5}' | sort | uniq -c | tr '\n' ' ')"
 
+n=0
+for r in entry middle exit relay4; do
+  sed 's/\x1b\[[0-9;]*m//g' "$WORK/$r.log" | grep -q "relayed a service announcement, accepted: true" && n=$((n + 1))
+done
+[ "$n" -ge 2 ] && pass "server: its announcement left through $n different exits" \
+  || fail "server: its announcement left through $n exit(s), not at least 2"
+n="$(counter host_to_relays)"
+[ "$n" -gt 0 ] && pass "server: spoke to relays' circuit ports ($n packets)" || fail "server: never reached a relay"
+n="$(counter host_to_other)"
+[ "$n" = 0 ] && pass "firewall: 0 packets from the server to anything but a relay's circuit port" \
+  || fail "firewall: $n packets from the server to something other than a relay's circuit port"
+n="$(tcpdump -n -r "$WORK/host.pcap" "udp and src host 192.0.2.66" 2>/dev/null | wc -l)"
+[ "$n" = 0 ] && pass "capture: 0 UDP packets from the server (no DHT, no DNS)" \
+  || fail "capture: $n UDP packets from the server: $(tcpdump -n -r "$WORK/host.pcap" "udp and src host 192.0.2.66" 2>/dev/null | awk '{print $5}' | sort | uniq -c | tr '\n' ' ')"
+
 # ── What the logs say ───────────────────────────────────────────────────────
 # Every process logs at DEBUG, failure paths included. None may write the
 # canary payload, the canary hostname, or the client's address — the client
 # itself included: its log is on the user's disk.
-for f in client wrongkey tampered deadmiddle entry middle exit relay4 liar echo proxy; do
+for f in client wrongkey tampered deadmiddle entry middle exit relay4 liar echo proxy host; do
   [ -s "$WORK/$f.log" ] || [ "$f" = echo ] || fail "log $f.log is empty: the capture missed it"
 done
 grep -q "circuit extended" "$WORK/entry.log" && grep -q "extend failed" "$WORK/entry.log" \
   || fail "the entry's log lacks the circuit's own lines: the capture missed it"
-leaks="$(grep -lE "$TAG|192\.0\.2\.(2|130)\b" "$WORK"/*.log 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+leaks="$(grep -lE "$TAG|192\.0\.2\.(2|66|130)\b" "$WORK"/*.log 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
 [ -z "$leaks" ] && pass "logs at DEBUG: no canary payload, no canary hostname, no client address" \
   || fail "the canary or the client's address is in: $leaks"
 
