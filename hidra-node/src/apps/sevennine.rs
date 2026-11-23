@@ -14,7 +14,6 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use blake3;
 use base64::Engine as _;
-use chrono::Utc;
 use crate::safelog::sensitive;
 
 /// What SevenNine asks the DHT to do with a site. Publishing carries the
@@ -261,7 +260,7 @@ impl SiteManager {
             name: name.clone(),
             hidra_address: hidra_address.clone(),
             public_key: public_key_b64,
-            created_at: Utc::now().to_rfc3339(),
+            created_at: crate::timefmt::utc_now_rfc3339(),
             files: vec!["index.html".into()],
             size_bytes: default_html.len() as u64,
             visits: 0,
